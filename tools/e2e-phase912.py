@@ -119,7 +119,7 @@ print('[十一-2] 供应商登记 + OA 申请→审批 OK')
 
 # ---- 十二期 ----
 snap = ok(call('POST', '/datagov/metrics/snapshot', {}, t), '指标快照')
-assert snap['snapshotted'] == 5
+assert snap['snapshotted'] >= 5  # 二十五期评审指标集扩充后为 9 项
 ms = ok(call('GET', '/datagov/metrics', token=t), '指标')
 drug_ratio = next(x for x in ms if x['code'] == 'M002')
 assert drug_ratio['latest_value'] is not None

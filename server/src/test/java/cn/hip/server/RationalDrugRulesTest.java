@@ -88,4 +88,37 @@ class RationalDrugRulesTest {
         assertDoesNotThrow(() -> doctorStationService.createOrders(rid,
                 List.of(new OrderLine("DRUG", drugId("布洛芬"), 1, "口服", "bid", "1粒", 3)), null));
     }
+
+    // ===== 二十五期：抗菌药分级处方权 =====
+
+    @Autowired jakarta.persistence.EntityManager entityManager;
+
+    /** 限制级抗菌药（头孢克肟 abx_level=2），无过敏史、缺省 1 级处方权 → 4014 拦截 */
+    @Test
+    void restrictedAbxBlockedWithoutPrivilege() {
+        Long rid = visitedRegistration(null);
+        var e = assertThrows(BizException.class, () -> doctorStationService.createOrders(rid,
+                List.of(new OrderLine("DRUG", drugId("头孢克肟"), 1, "口服", "bid", "1片", 3)), 1L));
+        assertEquals(4014, e.code);
+    }
+
+    /** 授权 2 级后可开限制级抗菌药 */
+    @Test
+    void restrictedAbxAllowedAfterGrant() {
+        entityManager.createNativeQuery("""
+                insert into med_abx_privilege(user_id, level) values (1, 2)
+                on conflict (user_id) do update set level = 2
+                """).executeUpdate();
+        Long rid = visitedRegistration(null);
+        assertDoesNotThrow(() -> doctorStationService.createOrders(rid,
+                List.of(new OrderLine("DRUG", drugId("头孢克肟"), 1, "口服", "bid", "1片", 3)), 1L));
+    }
+
+    /** 非限制级（阿莫西林 abx_level=1）不受缺省处方权影响 */
+    @Test
+    void nonRestrictedAbxNotBlocked() {
+        Long rid = visitedRegistration(null);
+        assertDoesNotThrow(() -> doctorStationService.createOrders(rid,
+                List.of(new OrderLine("DRUG", drugId("阿莫西林"), 1, "口服", "tid", "1粒", 3)), 1L));
+    }
 }

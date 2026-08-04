@@ -28,6 +28,7 @@ public class DoctorStationService {
     private final DrugItemRepository drugRepository;
     private final ChargeItemRepository chargeItemRepository;
     private final cn.hip.platform.empi.repository.PatientRepository patientRepository;
+    private final jakarta.persistence.EntityManager entityManager;
 
     private final AtomicLong groupSeq = new AtomicLong(System.currentTimeMillis() % 100000);
 
@@ -93,11 +94,14 @@ public class DoctorStationService {
         String stamp = LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE);
         String drugGroupNo = "CF" + stamp + "-" + groupSeq.incrementAndGet();
 
-        // 合理用药前置拦截（过敏禁忌 / 同诊重复用药）
+        // 合理用药前置拦截（过敏禁忌 / 同诊重复用药 / 抗菌药分级处方权）
         for (OrderLine line : lines) {
             if ("DRUG".equals(line.orderType())) {
                 drugRepository.findById(line.itemId())
-                        .ifPresent(drug -> checkRationalDrugUse(reg, drug.getName(), drug.getId()));
+                        .ifPresent(drug -> {
+                            checkRationalDrugUse(reg, drug.getName(), drug.getId());
+                            checkAbxPrivilege(drug, doctorId);
+                        });
             }
         }
 
@@ -164,6 +168,27 @@ public class DoctorStationService {
                         && !"CANCELLED".equals(o.getStatus()));
         if (duplicated) {
             throw new BizException(4013, "重复用药拦截：本次就诊已开过 " + drugName);
+        }
+    }
+
+    /** 二十五期：抗菌药分级处方权——限制/特殊级须相应授权（缺省 1 级=仅非限制级） */
+    private void checkAbxPrivilege(DrugItem drug, Long doctorId) {
+        int level = drug.getAbxLevel() == null ? 0 : drug.getAbxLevel();
+        if (level < 2) {
+            return;
+        }
+        int privilege = 1;
+        if (doctorId != null) {
+            var rows = entityManager.createNativeQuery(
+                            "select level from med_abx_privilege where user_id = ?")
+                    .setParameter(1, doctorId).getResultList();
+            if (!rows.isEmpty()) {
+                privilege = ((Number) rows.get(0)).intValue();
+            }
+        }
+        if (privilege < level) {
+            throw new BizException(4014, "抗菌药分级拦截：%s 为%s级抗菌药，医师处方权不足（当前 %d 级）"
+                    .formatted(drug.getName(), level == 2 ? "限制" : "特殊", privilege));
         }
     }
 

@@ -120,7 +120,7 @@ class LisRisReviewFlowTest {
         flush();
 
         // worklist 触发自动登记
-        var wl = medTechController.risWorklist().getData();
+        var wl = medTechController.risWorklist(null).getData();
         var mine = wl.stream().filter(w -> {
             var groupNo = orderRepository.findById(orderId).orElseThrow().getGroupNo();
             return groupNo.equals(w.get("group_no"));

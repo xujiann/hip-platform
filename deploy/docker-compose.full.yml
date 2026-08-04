@@ -1,0 +1,66 @@
+# 二十二期：全栈容器化编排（生产/试点参考）
+# 用法：在仓库根目录 docker compose -f deploy/docker-compose.full.yml up -d --build
+# 说明：开发机 Docker Desktop 不稳定时仍用 tools/dev-start.ps1（WSL postgres），本编排面向服务器部署。
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: hip
+      POSTGRES_USER: hip
+      POSTGRES_PASSWORD: ${HIP_DB_PASSWORD:-hip123456}
+    volumes:
+      - hip-pgdata:/var/lib/postgresql/data
+      - ./backups:/backups
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hip -d hip"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - hip-redisdata:/data
+
+  server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.server
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/hip
+      SPRING_DATASOURCE_USERNAME: hip
+      SPRING_DATASOURCE_PASSWORD: ${HIP_DB_PASSWORD:-hip123456}
+      SPRING_DATA_REDIS_HOST: redis
+      HIP_INTEGRATION_AI_URL: http://ai-service:8100
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+
+  ai-service:
+    build: ../ai-service
+
+  frontend:
+    build: ../frontend/shell
+    depends_on:
+      - server
+    ports:
+      - "80:80"
+
+  # 影像归档（PACS，选装）：与 WSL 安装版二选一
+  orthanc:
+    image: orthancteam/orthanc:latest
+    environment:
+      ORTHANC__REMOTE_ACCESS_ALLOWED: "true"
+    ports:
+      - "8042:8042"
+      - "4242:4242"
+    volumes:
+      - hip-orthanc:/var/lib/orthanc/db
+    profiles: ["pacs"]
+
+volumes:
+  hip-pgdata:
+  hip-redisdata:
+  hip-orthanc:

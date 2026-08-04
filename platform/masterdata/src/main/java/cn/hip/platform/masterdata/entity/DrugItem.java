@@ -42,6 +42,10 @@ public class DrugItem {
     @Column(nullable = false)
     private Integer stock = 0;
 
+    /** 抗菌药物分级：0 非管控 / 1 非限制 / 2 限制 / 3 特殊 */
+    @Column(nullable = false)
+    private Short abxLevel = (short) 0;
+
     /** 是否抗菌药物（分级管理用） */
     @Column(nullable = false)
     private Boolean antibiotic = false;

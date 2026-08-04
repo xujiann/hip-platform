@@ -145,24 +145,30 @@ public class MedTechController {
 
     // ===== RIS =====
 
-    /** 待报告：已收费检查申请（自动登记） */
+    /** 待报告：已收费检查申请（自动登记，按项目名归类模态：心电/内镜/超声/普放） */
     @GetMapping("/api/ris/worklist")
     @Transactional
-    public R<List<Map<String, Object>>> risWorklist() {
+    public R<List<Map<String, Object>>> risWorklist(@RequestParam(required = false) String modality) {
         jdbc.update("""
-                insert into ris_exam(order_id)
-                select o.id from outp_order o
+                insert into ris_exam(order_id, modality)
+                select o.id, case when o.item_name like '%心电%' then 'ECG'
+                                  when o.item_name like '%镜%' then 'ENDO'
+                                  when o.item_name like '%超声%' or o.item_name like '%彩超%' then 'US'
+                                  else 'GENERAL' end
+                from outp_order o
                 where o.order_type = 'EXAM' and o.status = 'CHARGED'
                   and not exists (select 1 from ris_exam e where e.order_id = o.id)
                 """);
-        return R.ok(jdbc.queryForList("""
-                select e.id, e.status, e.findings, e.impression, o.item_name, o.group_no, p.name as patient_name
+        String filter = modality == null ? "" : " and e.modality = ? ";
+        String sql = """
+                select e.id, e.status, e.modality, e.findings, e.impression, o.item_name, o.group_no, p.name as patient_name
                 from ris_exam e
                 join outp_order o on o.id = e.order_id
                 join outp_registration r on r.id = o.registration_id
                 join empi_patient p on p.id = r.patient_id
-                where e.status <> 'VERIFIED' order by e.id
-                """));
+                where e.status <> 'VERIFIED'
+                """ + filter + " order by e.id";
+        return R.ok(modality == null ? jdbc.queryForList(sql) : jdbc.queryForList(sql, modality));
     }
 
     public record RisReportReq(String findings, String impression) {}

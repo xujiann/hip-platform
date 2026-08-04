@@ -118,6 +118,7 @@ jobs:
           python3 tools/e2e-inpatient.py
           python3 tools/e2e-integration.py
           python3 tools/e2e-mllp.py
+          python3 tools/e2e-phase2226.py
 
       - name: 失败时输出服务端日志
         if: failure()

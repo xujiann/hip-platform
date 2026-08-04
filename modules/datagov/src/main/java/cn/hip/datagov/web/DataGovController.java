@@ -31,7 +31,26 @@ public class DataGovController {
                     """,
             "bed_occupancy", "select round(count(*) filter (where status = 'OCCUPIED')::numeric / nullif(count(*), 0) * 100, 2) from inp_bed",
             "avg_outp_cost", "select coalesce(round(sum(total_amount) / nullif(count(distinct registration_id), 0), 2), 0) from outp_charge where status = 'PAID'",
-            "in_hospital", "select count(*) from inp_admission where status = 'IN_HOSPITAL'");
+            "in_hospital", "select count(*) from inp_admission where status = 'IN_HOSPITAL'",
+            // 二十五期：公立医院评审指标集扩充
+            "avg_los", """
+                    select coalesce(round((avg(extract(epoch from (discharged_at - admit_at)) / 86400))::numeric, 1), 0)
+                    from inp_admission where status = 'DISCHARGED'
+                    """,
+            "abx_rx_ratio", """
+                    select coalesce(round(count(distinct o.group_no) filter (where d.abx_level >= 1)::numeric
+                        / nullif(count(distinct o.group_no), 0) * 100, 2), 0)
+                    from outp_order o join md_drug d on d.id = o.item_id
+                    where o.order_type = 'DRUG' and o.status <> 'CANCELLED'
+                    """,
+            "emr_sign_ratio", """
+                    select coalesce(round(count(*) filter (where signature is not null)::numeric
+                        / nullif(count(*), 0) * 100, 2), 0) from outp_emr
+                    """,
+            "ris_verified_ratio", """
+                    select coalesce(round(count(*) filter (where status = 'VERIFIED')::numeric
+                        / nullif(count(*), 0) * 100, 2), 0) from ris_exam
+                    """);
 
     /** 指标定义 + 最新快照 */
     @GetMapping("/api/datagov/metrics")

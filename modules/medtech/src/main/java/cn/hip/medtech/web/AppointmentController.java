@@ -1,0 +1,77 @@
+package cn.hip.medtech.web;
+
+import cn.hip.platform.core.common.R;
+import lombok.RequiredArgsConstructor;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+import java.util.Map;
+
+/** 二十三期：检查/检验时段预约——申请单收费后选时段，医技端按预约队列叫号 */
+@RestController
+@RequiredArgsConstructor
+@RequestMapping("/api/appointments")
+public class AppointmentController {
+
+    private final JdbcTemplate jdbc;
+
+    /** 可预约申请单：已收费的检查/检验、尚未预约 */
+    @GetMapping("/pending")
+    public R<List<Map<String, Object>>> pending() {
+        return R.ok(jdbc.queryForList("""
+                select o.id as order_id, o.order_type, o.item_name, o.group_no, p.name as patient_name
+                from outp_order o
+                join outp_registration r on r.id = o.registration_id
+                join empi_patient p on p.id = r.patient_id
+                where o.order_type in ('EXAM','LAB') and o.status = 'CHARGED'
+                  and not exists (select 1 from med_appointment a where a.order_id = o.id)
+                order by o.id desc limit 100
+                """));
+    }
+
+    public record BookReq(Long orderId, String slotDate, String period) {}
+
+    /** 预约：同时段顺序号自动生成 */
+    @PostMapping
+    @Transactional
+    public R<Map<String, Object>> book(@RequestBody BookReq req) {
+        if (!"AM".equals(req.period()) && !"PM".equals(req.period())) return R.fail(4510, "时段只能为 AM/PM");
+        var orders = jdbc.queryForList(
+                "select id from outp_order where id = ? and order_type in ('EXAM','LAB') and status = 'CHARGED'",
+                req.orderId());
+        if (orders.isEmpty()) return R.fail(4510, "申请单不存在或未收费");
+        Integer booked = jdbc.queryForObject(
+                "select count(*) from med_appointment where order_id = ?", Integer.class, req.orderId());
+        if (booked != null && booked > 0) return R.fail(4511, "该申请单已预约");
+        Integer seq = jdbc.queryForObject("""
+                select coalesce(max(seq_no), 0) + 1 from med_appointment where slot_date = ?::date and period = ?
+                """, Integer.class, req.slotDate(), req.period());
+        jdbc.update("insert into med_appointment(order_id, slot_date, period, seq_no) values (?,?::date,?,?)",
+                req.orderId(), req.slotDate(), req.period(), seq);
+        return R.ok(Map.of("seqNo", seq));
+    }
+
+    /** 预约队列（按日期） */
+    @GetMapping
+    public R<List<Map<String, Object>>> list(@RequestParam String date) {
+        return R.ok(jdbc.queryForList("""
+                select a.id, a.slot_date, a.period, a.seq_no, a.status, o.order_type, o.item_name, p.name as patient_name
+                from med_appointment a
+                join outp_order o on o.id = a.order_id
+                join outp_registration r on r.id = o.registration_id
+                join empi_patient p on p.id = r.patient_id
+                where a.slot_date = ?::date
+                order by a.period, a.seq_no
+                """, date));
+    }
+
+    /** 完成检查/检验（执行侧从队列消除） */
+    @PutMapping("/{id}/done")
+    public R<Void> done(@PathVariable Long id) {
+        int n = jdbc.update(
+                "update med_appointment set status = 'DONE' where id = ? and status in ('BOOKED','CALLED')", id);
+        return n == 0 ? R.fail(4512, "预约不存在或已完成") : R.ok();
+    }
+}
