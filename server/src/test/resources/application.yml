@@ -1,0 +1,30 @@
+spring:
+  application:
+    name: hip-server-test
+  datasource:
+    url: jdbc:postgresql://127.0.0.1:5432/hip_test
+    username: hip
+    password: hip123456
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+server:
+  port: 0
+
+hip:
+  security:
+    jwt-secret: test-only-secret-hip-platform-0123456789abcdef
+    jwt-expiry-hours: 1
+  integration:
+    mllp-enabled: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
