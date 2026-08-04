@@ -19,6 +19,10 @@ public interface OutpOrderRepository extends JpaRepository<OutpOrder, Long> {
 
     List<OutpOrder> findByGroupNo(String groupNo);
 
+    /** 审方队列：未审核的在途处方 */
+    @Query("from OutpOrder o where o.orderType = 'DRUG' and o.status = 'CREATED' and o.reviewStatus is null order by o.id")
+    List<OutpOrder> findPendingReviewDrugs();
+
     /** 医技执行队列：已收费的检验/检查/治疗 */
     @Query("from OutpOrder o where o.status = 'CHARGED' and o.orderType in ('LAB', 'EXAM', 'TREAT') order by o.id")
     List<OutpOrder> chargedExecutables();

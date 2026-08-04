@@ -43,6 +43,12 @@ public class OutpEmr {
     /** 书写医生 */
     private Long doctorId;
 
+    /** 电子签名值（签名后病历冻结） */
+    @Column(length = 128)
+    private String signature;
+
+    private Instant signedAt;
+
     @Column(nullable = false)
     private Instant updatedAt = Instant.now();
 

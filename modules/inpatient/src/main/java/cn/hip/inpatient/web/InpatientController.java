@@ -96,6 +96,19 @@ public class InpatientController {
         }
     }
 
+    public record TransferRequest(Long toDeptId, Long toBedId) {}
+
+    @PostMapping("/admissions/{id}/transfer")
+    public R<Object> transfer(@PathVariable Long id, @RequestBody TransferRequest req, Authentication auth) {
+        try {
+            var adm = inpatientService.transfer(id, req.toDeptId(), req.toBedId(), currentUserService.idOf(auth));
+            return R.ok(Map.of("admissionNo", adm.getAdmissionNo(),
+                    "deptId", adm.getDeptId(), "wardId", adm.getWardId(), "bedId", adm.getBedId()));
+        } catch (InpException e) {
+            return R.fail(e.code, e.getMessage());
+        }
+    }
+
     public record CreateOrdersRequest(List<InpatientService.OrderLine> lines) {}
 
     @PostMapping("/admissions/{id}/orders")

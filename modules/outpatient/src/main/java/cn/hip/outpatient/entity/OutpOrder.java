@@ -79,6 +79,15 @@ public class OutpOrder {
     /** 结算单 id，收费后回填 */
     private Long chargeId;
 
+    /** 审方：APPROVED 通过 / REJECTED 拒绝（拒绝即作废）；null 未审 */
+    @Column(length = 16)
+    private String reviewStatus;
+
+    @Column(length = 255)
+    private String reviewNote;
+
+    private Long reviewerId;
+
     private Long doctorId;
 
     @Column(nullable = false, updatable = false)

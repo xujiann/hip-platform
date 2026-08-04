@@ -28,6 +28,17 @@
         </el-card>
       </el-col>
       <el-col :span="10">
+        <el-card style="margin-bottom: 12px">
+          <template #header>运营指标</template>
+          <el-descriptions :column="2" border size="small">
+            <el-descriptions-item label="药占比">{{ op.drugRatio }}%</el-descriptions-item>
+            <el-descriptions-item label="门诊均次费用">¥{{ op.avgOutpCost }}</el-descriptions-item>
+            <el-descriptions-item label="出院人次">{{ op.dischargedCount }}</el-descriptions-item>
+            <el-descriptions-item label="平均住院日">{{ op.avgInpDays }} 天</el-descriptions-item>
+            <el-descriptions-item label="住院均次费用">¥{{ op.avgInpCost }}</el-descriptions-item>
+            <el-descriptions-item label="病组数">{{ (op.diagnosisGroups as unknown[])?.length ?? 0 }}</el-descriptions-item>
+          </el-descriptions>
+        </el-card>
         <el-card>
           <template #header>待办工作量</template>
           <el-descriptions :column="1" border>
@@ -55,6 +66,7 @@ import client from '../api/client'
 
 const overview = ref<Record<string, unknown>>({})
 const daily = ref<Record<string, unknown>[]>([])
+const op = ref<Record<string, unknown>>({})
 
 const cards = computed(() => [
   { label: '今日挂号', value: overview.value.todayRegistrations ?? '-' },
@@ -76,9 +88,12 @@ function barWidth(v: unknown) {
 }
 
 onMounted(async () => {
-  const [o, d] = await Promise.all([client.get('/stats/overview'), client.get('/stats/daily?days=7')])
+  const [o, d, p] = await Promise.all([
+    client.get('/stats/overview'), client.get('/stats/daily?days=7'), client.get('/stats/operation'),
+  ])
   overview.value = o.data.data
   daily.value = d.data.data
+  op.value = p.data.data
 })
 </script>
 

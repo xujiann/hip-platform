@@ -27,6 +27,7 @@ public class InpatientService {
     private final DepositRepo depositRepo;
     private final OrderRepo orderRepo;
     private final SettlementRepo settlementRepo;
+    private final TransferLogRepo transferLogRepo;
     private final DrugItemRepository drugRepository;
     private final ChargeItemRepository chargeItemRepository;
     private final InventoryService inventoryService;
@@ -148,6 +149,40 @@ public class InpatientService {
         o.setExecutorId(executorId);
         o.setExecutedAt(Instant.now());
         return orderRepo.save(o);
+    }
+
+    /** 转科转床：原子占新床成功后才释放旧床，全程留痕 */
+    @Transactional
+    public InpAdmission transfer(Long admissionId, Long toDeptId, Long toBedId, Long operatorId) {
+        InpAdmission adm = admissionRepo.findById(admissionId)
+                .orElseThrow(() -> new InpException(9003, "住院记录不存在"));
+        if (!"IN_HOSPITAL".equals(adm.getStatus())) {
+            throw new InpException(9013, "已出院不能转科");
+        }
+        if (adm.getBedId().equals(toBedId)) {
+            throw new InpException(9014, "目标床位与当前床位相同");
+        }
+        InpBed toBed = bedRepo.findById(toBedId).orElseThrow(() -> new InpException(9001, "床位不存在"));
+        if (bedRepo.occupy(toBedId, admissionId) == 0) {
+            throw new InpException(9002, "目标床位已被占用");
+        }
+        Long fromBedId = adm.getBedId();
+        Long fromDeptId = adm.getDeptId();
+        bedRepo.release(fromBedId);
+
+        InpTransferLog log = new InpTransferLog();
+        log.setAdmissionId(admissionId);
+        log.setFromDeptId(fromDeptId);
+        log.setToDeptId(toDeptId);
+        log.setFromBedId(fromBedId);
+        log.setToBedId(toBedId);
+        log.setOperatorId(operatorId);
+        transferLogRepo.save(log);
+
+        adm.setDeptId(toDeptId);
+        adm.setWardId(toBed.getWardId());
+        adm.setBedId(toBedId);
+        return admissionRepo.save(adm);
     }
 
     /** 出院结算：费用汇总、押金冲抵、释放床位 */

@@ -49,6 +49,48 @@ public class StatsController {
         return R.ok(m);
     }
 
+    /** 运营指标：药占比、均次费用、平均住院日、病组分析（DRG 雏形） */
+    @GetMapping("/operation")
+    public R<Map<String, Object>> operation() {
+        var m = new LinkedHashMap<String, Object>();
+        Double drugRevenue = jdbc.queryForObject("""
+                select coalesce(sum(amount), 0) from outp_order
+                where order_type = 'DRUG' and status in ('CHARGED','DISPENSED')
+                """, Double.class);
+        Double totalRevenue = jdbc.queryForObject("""
+                select coalesce(sum(amount), 0) from outp_order
+                where status in ('CHARGED','DISPENSED','EXECUTED')
+                """, Double.class);
+        m.put("drugRevenue", drugRevenue);
+        m.put("outpOrderRevenue", totalRevenue);
+        m.put("drugRatio", totalRevenue == 0 ? 0 : Math.round(drugRevenue / totalRevenue * 1000) / 10.0);
+        m.put("avgOutpCost", jdbc.queryForObject("""
+                select coalesce(round(sum(total_amount) / nullif(count(distinct registration_id), 0), 2), 0)
+                from outp_charge where status = 'PAID'
+                """, Double.class));
+        m.put("dischargedCount", jdbc.queryForObject(
+                "select count(*) from inp_admission where status = 'DISCHARGED'", Long.class));
+        m.put("avgInpDays", jdbc.queryForObject("""
+                select coalesce(round(avg(extract(epoch from (discharged_at - admit_at)) / 86400)::numeric, 1), 0)
+                from inp_admission where status = 'DISCHARGED'
+                """, Double.class));
+        m.put("avgInpCost", jdbc.queryForObject(
+                "select coalesce(round(avg(total_amount), 2), 0) from inp_settlement", Double.class));
+        m.put("diagnosisGroups", jdbc.queryForList("""
+                select coalesce(substring(a.admit_diag_icd, 1, 3), '未编码') as icd_group,
+                       max(coalesce(a.admit_diag_name, '未填写诊断')) as sample_name,
+                       count(*) as cases,
+                       coalesce(round(avg(s.total_amount), 2), 0) as avg_cost
+                from inp_admission a
+                left join inp_settlement s on s.admission_id = a.id
+                where a.status = 'DISCHARGED'
+                group by substring(a.admit_diag_icd, 1, 3)
+                order by cases desc
+                limit 20
+                """));
+        return R.ok(m);
+    }
+
     /** 近 N 日门诊挂号量与收入 */
     @GetMapping("/daily")
     public R<List<Map<String, Object>>> daily(@RequestParam(defaultValue = "7") int days) {

@@ -30,6 +30,7 @@ public class DoctorStationController {
     private final OutpOrderRepository orderRepository;
     private final PatientRepository patientRepository;
     private final CurrentUserService currentUserService;
+    private final cn.hip.platform.integration.signature.SignatureAdapter signatureAdapter;
 
     /** 接诊队列：当日挂号（含已诊，医生可回看） */
     @GetMapping("/worklist")
@@ -80,8 +81,22 @@ public class DoctorStationController {
     @PutMapping("/{registrationId}/emr")
     public R<OutpEmr> saveEmr(@PathVariable Long registrationId, @RequestBody SaveEmrRequest req,
                               Authentication auth) {
-        return R.ok(doctorStationService.saveEmr(registrationId, req.emr(),
-                req.diagnoses() == null ? List.of() : req.diagnoses(), currentUserService.idOf(auth)));
+        try {
+            return R.ok(doctorStationService.saveEmr(registrationId, req.emr(),
+                    req.diagnoses() == null ? List.of() : req.diagnoses(), currentUserService.idOf(auth)));
+        } catch (BizException e) {
+            return R.fail(e.code, e.getMessage());
+        }
+    }
+
+    @PostMapping("/{registrationId}/emr/sign")
+    public R<Object> signEmr(@PathVariable Long registrationId, Authentication auth) {
+        try {
+            var emr = doctorStationService.signEmr(registrationId, currentUserService.idOf(auth), signatureAdapter);
+            return R.ok(Map.of("signature", emr.getSignature(), "signedAt", emr.getSignedAt()));
+        } catch (BizException e) {
+            return R.fail(e.code, e.getMessage());
+        }
     }
 
     public record CreateOrdersRequest(List<DoctorStationService.OrderLine> lines) {}

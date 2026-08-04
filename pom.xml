@@ -19,6 +19,7 @@
         <module>modules/outpatient</module>
         <module>modules/inpatient</module>
         <module>modules/portal</module>
+        <module>modules/hrp</module>
         <module>datacenter/cdr</module>
         <module>server</module>
     </modules>
@@ -75,6 +76,11 @@
             <dependency>
                 <groupId>cn.hip</groupId>
                 <artifactId>hip-cdr</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cn.hip</groupId>
+                <artifactId>hip-hrp</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
