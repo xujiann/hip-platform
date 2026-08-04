@@ -7,6 +7,8 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
+
+
 import java.util.Map;
 
 @RestController
@@ -27,6 +29,25 @@ public class CdrController {
     public R<Object> documents(@PathVariable Long patientId,
                                @RequestParam(required = false) String docType) {
         return R.ok(syncService.patientDocuments(patientId, docType));
+    }
+
+    /** 病历全文检索（ILIKE 起步版） */
+    @GetMapping("/search")
+    public R<Object> search(@RequestParam String keyword) {
+        return R.ok(docRepository.search(keyword, org.springframework.data.domain.PageRequest.of(0, 50)));
+    }
+
+    /** 增量同步（updated_at 水位） */
+    @PostMapping("/sync-incremental")
+    @PreAuthorize("hasRole('ADMIN')")
+    public R<Map<String, Integer>> syncIncremental() {
+        return R.ok(syncService.syncIncremental());
+    }
+
+    /** CDA 样式 XML 输出（WS/T 500 结构骨架，字段映射简化版） */
+    @GetMapping(value = "/documents/{id}/cda", produces = "application/xml;charset=UTF-8")
+    public String cda(@PathVariable Long id) {
+        return syncService.toCda(id);
     }
 
     @GetMapping("/stats")

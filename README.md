@@ -77,4 +77,9 @@ cd frontend/shell && npm install && npm run dev
 - [x] 第十五期：手术麻醉（申请→排台→术后记录）、病历段落模板、PWA manifest
 - [x] 第十六期：参数覆盖矩阵生成器（docs/验收/参数覆盖矩阵.csv，4062 条）、患者迁移导入工具、并发压测基线（92.6 req/s、P95 135ms、防超挂校验通过）、部署手册（docs/部署手册.md）
 - 十三至十六期回归：`python tools/e2e-phase1316.py`
+- [x] 第十八期（V18）：聚合层下沉（medtech/qualitycare/datagov/hrp 四域独立模块）、机构参数化（sys_config，院名/票据抬头走配置，清除硬编码）、公开配置接口
+- [x] 第十九期：CDA（WS/T 500 骨架）XML 输出、病历全文检索（ILIKE 起步版）、CDR 增量同步（水位推进，二次增量为 0）
+- [x] 第二十期：Orthanc PACS（WSL 部署，DICOM 上传/按患者号调阅验证）、AI 子服务骨架（ai-service/ FastAPI，检验智能解读，主平台优雅降级）
+- [x] 第二十一期：参数矩阵自动初评（4062 条：74% 初评符合/24% 待人工/26 条涉外部）、分角色操作手册（docs/操作手册.md）、迁移演练通过
+- 十八至二十一期回归：`python tools/e2e-phase1821.py`
 - [ ] 后续演进（需外部条件）：真实医保 SDK、微信实名/电子健康卡、CDA 标准文档、CDC 增量同步、专科深化（手麻/ICU/PACS/AI 阅片）

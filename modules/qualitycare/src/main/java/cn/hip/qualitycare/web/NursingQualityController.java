@@ -1,4 +1,4 @@
-package cn.hip.server.web;
+package cn.hip.qualitycare.web;
 
 import cn.hip.platform.core.common.R;
 import cn.hip.platform.core.security.CurrentUserService;

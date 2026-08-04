@@ -2,7 +2,7 @@
   <div class="portal-page">
     <div class="portal-card">
       <h2>掌上医院</h2>
-      <p class="sub">峨眉山市人民医院 · 患者服务</p>
+      <p class="sub">{{ hospitalName }} · 患者服务</p>
       <el-form @keyup.enter="onLogin">
         <el-form-item>
           <el-input v-model="patientNo" placeholder="患者号（如 P00000002）" size="large" />
@@ -18,7 +18,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import axios from 'axios'
@@ -27,6 +27,12 @@ const router = useRouter()
 const patientNo = ref('')
 const phone = ref('')
 const loading = ref(false)
+const hospitalName = ref('')
+
+onMounted(async () => {
+  const resp = await axios.get('/api/config/public')
+  hospitalName.value = resp.data.data.hospital_name ?? ''
+})
 
 async function onLogin() {
   if (!patientNo.value || !phone.value) return

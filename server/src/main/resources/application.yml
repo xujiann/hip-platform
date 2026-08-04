@@ -24,6 +24,8 @@ hip:
   integration:
     mllp-enabled: true
     mllp-port: 2575
+    pacs-url: http://127.0.0.1:8042
+    ai-url: http://127.0.0.1:8100
 
 management:
   endpoints:

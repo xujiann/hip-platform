@@ -48,6 +48,18 @@
         </dependency>
         <dependency>
             <groupId>cn.hip</groupId>
+            <artifactId>hip-medtech</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>cn.hip</groupId>
+            <artifactId>hip-qualitycare</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>cn.hip</groupId>
+            <artifactId>hip-datagov</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>cn.hip</groupId>
             <artifactId>hip-inpatient</artifactId>
         </dependency>
         <dependency>

@@ -14,7 +14,7 @@ import cn.hip.platform.empi.entity.Patient;
 import cn.hip.platform.empi.service.PatientService;
 import cn.hip.platform.masterdata.repository.ChargeItemRepository;
 import cn.hip.platform.masterdata.repository.DrugItemRepository;
-import cn.hip.server.web.MedTechController;
+import cn.hip.medtech.web.MedTechController;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;

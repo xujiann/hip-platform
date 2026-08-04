@@ -1,4 +1,4 @@
-package cn.hip.server.web;
+package cn.hip.medtech.web;
 
 import cn.hip.platform.core.common.R;
 import cn.hip.platform.core.security.CurrentUserService;
@@ -21,6 +21,53 @@ public class MedTechController {
     private final JdbcTemplate jdbc;
     private final CurrentUserService currentUserService;
     private final ApplicationEventPublisher eventPublisher;
+
+    @org.springframework.beans.factory.annotation.Value("${hip.integration.pacs-url:}")
+    private String pacsUrl;
+
+    @org.springframework.beans.factory.annotation.Value("${hip.integration.ai-url:http://127.0.0.1:8100}")
+    private String aiUrl;
+
+    /** PACS 调阅入口（云胶片链接由前端拼装 Orthanc viewer 地址） */
+    @GetMapping("/api/ris/pacs-info")
+    public cn.hip.platform.core.common.R<Map<String, Object>> pacsInfo() {
+        return cn.hip.platform.core.common.R.ok(Map.of(
+                "configured", pacsUrl != null && !pacsUrl.isBlank(),
+                "pacsUrl", pacsUrl == null ? "" : pacsUrl,
+                "viewerUrl", pacsUrl == null || pacsUrl.isBlank() ? "" : pacsUrl + "/app/explorer.html"));
+    }
+
+    /** AI 子服务：检验结果智能解读（子服务不可达时优雅降级） */
+    @GetMapping("/api/ai/lab-advice")
+    public cn.hip.platform.core.common.R<Map<String, Object>> labAdvice(@RequestParam Long orderId) {
+        var results = jdbc.queryForList("""
+                select item_name as name, result_value as value, abnormal_flag as flag
+                from outp_lab_result where order_id = ? order by id
+                """, orderId);
+        if (results.isEmpty()) return cn.hip.platform.core.common.R.fail(9950, "该申请暂无结果");
+        try {
+            var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+            var client = java.net.http.HttpClient.newBuilder()
+                    .connectTimeout(java.time.Duration.ofSeconds(2)).build();
+            var request = java.net.http.HttpRequest.newBuilder()
+                    .uri(java.net.URI.create(aiUrl + "/analyze/lab"))
+                    .timeout(java.time.Duration.ofSeconds(5))
+                    .header("Content-Type", "application/json")
+                    .POST(java.net.http.HttpRequest.BodyPublishers.ofString(
+                            mapper.writeValueAsString(Map.of("results", results))))
+                    .build();
+            var resp = client.send(request, java.net.http.HttpResponse.BodyHandlers.ofString());
+            Map<String, Object> body = mapper.readValue(resp.body(),
+                    new com.fasterxml.jackson.core.type.TypeReference<>() {});
+            body.put("source", "ai-service");
+            return cn.hip.platform.core.common.R.ok(body);
+        } catch (Exception e) {
+            return cn.hip.platform.core.common.R.ok(Map.of(
+                    "source", "fallback",
+                    "advice", java.util.List.of("AI 子服务不可用，请人工判读"),
+                    "error", e.getClass().getSimpleName()));
+        }
+    }
 
     // ===== LIS =====
 

@@ -1,7 +1,7 @@
 <template>
   <div class="print-page">
     <div v-if="data" class="ticket">
-      <h2>峨眉山市人民医院</h2>
+      <h2>{{ hospitalName }}</h2>
       <h3>{{ titles[type] }}</h3>
       <hr />
       <template v-if="type === 'registration'">
@@ -49,6 +49,7 @@ const route = useRoute()
 const type = String(route.query.type ?? 'registration')
 const id = String(route.query.id ?? '')
 const data = ref<Record<string, unknown> | null>(null)
+const hospitalName = ref('')
 const now = new Date().toLocaleString('zh-CN')
 
 const titles: Record<string, string> = { registration: '挂号凭条', charge: '收费票据', 'lab-report': '检验报告单' }
@@ -59,8 +60,12 @@ function doPrint() {
 }
 
 onMounted(async () => {
-  const resp = await client.get(`/print/${type}/${id}`)
+  const [resp, cfg] = await Promise.all([
+    client.get(`/print/${type}/${id}`),
+    client.get('/config/public'),
+  ])
   data.value = resp.data.data
+  hospitalName.value = cfg.data.data.hospital_name ?? ''
 })
 </script>
 
