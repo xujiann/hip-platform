@@ -54,3 +54,71 @@ jobs:
         run: |
           npm ci
           npm run build
+
+  e2e:
+    name: 端到端回归（完整后端）
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: hip
+          POSTGRES_USER: hip
+          POSTGRES_PASSWORD: hip123456
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hip -d hip"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: 构建后端
+        run: mvn -B --no-transfer-progress -DskipTests package
+
+      - name: 启动后端并等待就绪
+        run: |
+          nohup java -jar server/target/hip-server-*.jar > server.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:8080/actuator/health && break
+            sleep 2
+          done
+          curl -sf http://localhost:8080/actuator/health || { tail -50 server.log; exit 1; }
+
+      - name: 准备基础数据（全新库需要 1 号/2 号患者）
+        run: |
+          python3 - <<'EOF'
+          import json, urllib.request
+          BASE = 'http://localhost:8080/api'
+          def call(m, p, b=None, t=None):
+              r = urllib.request.Request(BASE + p, method=m)
+              r.add_header('Content-Type', 'application/json')
+              if t: r.add_header('Authorization', 'Bearer ' + t)
+              return json.loads(urllib.request.urlopen(r, data=json.dumps(b).encode()).read().decode())
+          t = call('POST', '/auth/login', {'username': 'admin', 'password': 'admin123'})['data']['token']
+          call('POST', '/patients', {'name': 'Test', 'sex': 'U', 'idType': 'OTHER'}, t)
+          p2 = call('POST', '/patients', {'name': '张三', 'sex': 'M', 'idType': 'ID_CARD',
+                                          'idNo': '510181199003078514', 'phone': '13800138000',
+                                          'insuranceType': 'YB_RESIDENT'}, t)
+          assert p2['data']['patientNo'] == 'P00000002', p2
+          EOF
+
+      - name: 运行核心 E2E 套件
+        run: |
+          python3 tools/e2e-outpatient.py
+          python3 tools/e2e-inpatient.py
+          python3 tools/e2e-integration.py
+          python3 tools/e2e-mllp.py
+
+      - name: 失败时输出服务端日志
+        if: failure()
+        run: tail -100 server.log
