@@ -84,11 +84,12 @@ assert '白细胞' not in mine[0]['content'], '仅 HH/LL 触发危急值'
 aid = mine[0]['id']
 print(f"[5] 危急值告警 OK: {mine[0]['content']}")
 
-# 6 处理告警 + 驾驶舱计数归零
+# 6 处理告警 + 驾驶舱计数减一（可能存在其他套件的遗留告警，不假设全局为零）
+before = ok(call('GET', '/stats/overview', token=t), '统计')['pendingCriticalAlerts']
 ok(call('PUT', f'/outpatient/critical-alerts/{aid}/handle', token=t), '处理')
-ov = ok(call('GET', '/stats/overview', token=t), '统计')
-assert ov['pendingCriticalAlerts'] == 0
-print(f"[6] 告警处理完成，驾驶舱待处理归零")
+after = ok(call('GET', '/stats/overview', token=t), '统计')['pendingCriticalAlerts']
+assert after == before - 1, f'{before} -> {after}'
+print(f"[6] 告警处理完成，驾驶舱待处理 {before} -> {after}")
 
 # 7 医保退费冲正留痕 + 错误报文防护
 # 需先退费（检验已执行不可退，改验证错误报文路径）

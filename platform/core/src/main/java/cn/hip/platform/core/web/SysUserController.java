@@ -54,8 +54,9 @@ public class SysUserController {
         if (userRepository.findByUsername(req.username()).isPresent()) {
             return R.fail(1101, "用户名已存在");
         }
-        if (req.password() == null || req.password().length() < 6) {
-            return R.fail(1102, "初始密码不能少于 6 位");
+        String pwdError = passwordPolicyError(req.password());
+        if (pwdError != null) {
+            return R.fail(1102, pwdError);
         }
         SysUser u = new SysUser();
         u.setUsername(req.username());
@@ -71,7 +72,8 @@ public class SysUserController {
         if (u == null) return R.fail(1103, "用户不存在");
         applyFields(u, req);
         if (req.password() != null && !req.password().isBlank()) {
-            if (req.password().length() < 6) return R.fail(1102, "密码不能少于 6 位");
+            String pwdError = passwordPolicyError(req.password());
+            if (pwdError != null) return R.fail(1102, pwdError);
             u.setPassword(passwordEncoder.encode(req.password()));
         }
         return R.ok(UserDto.from(userRepository.save(u)));
@@ -86,6 +88,13 @@ public class SysUserController {
         u.setEnabled(enabled);
         userRepository.save(u);
         return R.ok();
+    }
+
+    /** 等保密码策略：至少 8 位且同时含字母与数字 */
+    private String passwordPolicyError(String pwd) {
+        if (pwd == null || pwd.length() < 8) return "密码不能少于 8 位";
+        if (!pwd.matches(".*[A-Za-z].*") || !pwd.matches(".*\\d.*")) return "密码须同时包含字母和数字";
+        return null;
     }
 
     private void applyFields(SysUser u, SaveUserRequest req) {

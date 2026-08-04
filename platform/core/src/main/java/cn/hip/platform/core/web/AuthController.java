@@ -28,14 +28,38 @@ public class AuthController {
 
     public record LoginRequest(@NotBlank String username, @NotBlank String password) {}
 
+    private static final int MAX_FAILED = 5;
+    private static final java.time.Duration LOCK_DURATION = java.time.Duration.ofMinutes(15);
+
     @PostMapping("/login")
     public R<Map<String, Object>> login(@RequestBody LoginRequest req) {
+        var userOpt = userRepository.findByUsername(req.username());
+        if (userOpt.isPresent()) {
+            var u = userOpt.get();
+            if (u.getLockedUntil() != null && u.getLockedUntil().isAfter(java.time.Instant.now())) {
+                return R.fail(1002, "账号已锁定，请 15 分钟后重试");
+            }
+        }
         try {
             authenticationManager.authenticate(
                     new UsernamePasswordAuthenticationToken(req.username(), req.password()));
         } catch (BadCredentialsException e) {
+            // 防爆破：连续失败 5 次锁定 15 分钟
+            userOpt.ifPresent(u -> {
+                u.setFailedAttempts(u.getFailedAttempts() + 1);
+                if (u.getFailedAttempts() >= MAX_FAILED) {
+                    u.setLockedUntil(java.time.Instant.now().plus(LOCK_DURATION));
+                    u.setFailedAttempts(0);
+                }
+                userRepository.save(u);
+            });
             return R.fail(1001, "用户名或密码错误");
         }
+        userOpt.ifPresent(u -> {
+            u.setFailedAttempts(0);
+            u.setLockedUntil(null);
+            userRepository.save(u);
+        });
         String token = jwtService.issue(req.username());
         return R.ok(Map.of("token", token));
     }

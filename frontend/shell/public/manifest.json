@@ -1,0 +1,10 @@
+{
+  "name": "医院信息平台",
+  "short_name": "HIP",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#233044",
+  "theme_color": "#1a6fc9",
+  "description": "医院通用信息化平台移动工作台",
+  "icons": []
+}

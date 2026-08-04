@@ -41,6 +41,13 @@ public class SysUser {
     @Column(nullable = false)
     private Boolean enabled = true;
 
+    /** 连续登录失败次数（防爆破，成功登录清零） */
+    @Column(nullable = false)
+    private Integer failedAttempts = 0;
+
+    /** 锁定截止时间 */
+    private Instant lockedUntil;
+
     @Column(nullable = false, updatable = false)
     private Instant createdAt = Instant.now();
 
