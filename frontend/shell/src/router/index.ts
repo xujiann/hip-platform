@@ -1,0 +1,50 @@
+import { createRouter, createWebHistory } from 'vue-router'
+
+const router = createRouter({
+  history: createWebHistory(),
+  routes: [
+    { path: '/login', component: () => import('../views/LoginView.vue') },
+    { path: '/portal', component: () => import('../views/portal/PortalLoginView.vue') },
+    { path: '/portal/home', component: () => import('../views/portal/PortalHomeView.vue') },
+    {
+      path: '/',
+      component: () => import('../views/MainLayout.vue'),
+      children: [
+        { path: '', redirect: '/dashboard' },
+        { path: 'dashboard', component: () => import('../views/DashboardView.vue') },
+        { path: 'system/users', component: () => import('../views/system/UsersView.vue') },
+        { path: 'system/depts', component: () => import('../views/system/DeptsView.vue') },
+        { path: 'system/roles', component: () => import('../views/system/RolesView.vue') },
+        { path: 'patient/registry', component: () => import('../views/patient/PatientRegistryView.vue') },
+        { path: 'outpatient/register', component: () => import('../views/outpatient/RegisterView.vue') },
+        { path: 'outpatient/schedules', component: () => import('../views/outpatient/SchedulesView.vue') },
+        { path: 'outpatient/doctor', component: () => import('../views/outpatient/DoctorStationView.vue') },
+        { path: 'outpatient/charge', component: () => import('../views/outpatient/ChargeView.vue') },
+        { path: 'outpatient/pharmacy', component: () => import('../views/outpatient/PharmacyView.vue') },
+        { path: 'outpatient/exec', component: () => import('../views/outpatient/ExecStationView.vue') },
+        { path: 'integration/monitor', component: () => import('../views/integration/MonitorView.vue') },
+        { path: 'cdr/patient360', component: () => import('../views/cdr/Patient360View.vue') },
+        { path: 'masterdata/drugs', component: () => import('../views/masterdata/DrugsView.vue') },
+        { path: 'masterdata/charge-items', component: () => import('../views/masterdata/ChargeItemsView.vue') },
+        { path: 'masterdata/inventory', component: () => import('../views/masterdata/InventoryView.vue') },
+        { path: 'inpatient/admission', component: () => import('../views/inpatient/AdmissionView.vue') },
+        { path: 'inpatient/doctor', component: () => import('../views/inpatient/InpDoctorView.vue') },
+        { path: 'inpatient/nurse', component: () => import('../views/inpatient/InpNurseView.vue') },
+        { path: 'inpatient/discharge', component: () => import('../views/inpatient/DischargeView.vue') },
+      ],
+    },
+  ],
+})
+
+router.beforeEach((to) => {
+  // 患者端独立会话，不走院内登录
+  if (to.path.startsWith('/portal')) {
+    if (to.path !== '/portal' && !localStorage.getItem('hip_portal_token')) return '/portal'
+    return
+  }
+  const token = localStorage.getItem('hip_token')
+  if (!token && to.path !== '/login') return '/login'
+  if (token && to.path === '/login') return '/'
+})
+
+export default router

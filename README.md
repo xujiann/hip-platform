@@ -1,0 +1,64 @@
+# 医院通用信息化平台 (HIP)
+
+面向中小型医院的一体化信息平台。规划见 [总体规划.md](总体规划.md)，实施背景见 [平台建设规划.md](平台建设规划.md)。
+
+## 技术栈
+
+- 后端：Java 21 + Spring Boot 3（Maven 多模块，模块化单体）
+- 前端：Vue 3 + TypeScript + Element Plus + Vite
+- 数据库：PostgreSQL 16 + Redis（docker-compose 提供）
+- 迁移：Flyway（`server/src/main/resources/db/migration`）
+
+## 目录结构
+
+```
+platform/core    平台底座：用户/组织/RBAC/JWT 认证
+modules/         业务模块（门诊、住院、EMR…，按迭代加入）
+server/          Spring Boot 启动器，聚合各模块
+frontend/shell   前端工作台外壳（登录、菜单、布局）
+deploy/          docker-compose（postgres + redis）
+docs/            规划与架构决策记录
+```
+
+## 本地启动
+
+```bash
+# 1. 启动数据库（本机 Docker Desktop 不稳定，开发暂用 WSL Ubuntu 内的 PostgreSQL；
+#    一键脚本：powershell -ExecutionPolicy Bypass -File tools\dev-start.ps1）
+wsl -d Ubuntu -u root -- service postgresql start
+# 生产/正常环境仍用：cd deploy && docker compose up -d
+
+# 2. 启动后端（首次启动自动建表并创建 admin/admin123）
+mvn -pl server -am spring-boot:run
+
+# 3. 启动前端
+cd frontend/shell && npm install && npm run dev
+# 打开 http://localhost:5173 ，用 admin/admin123 登录
+```
+
+## 当前进度（门诊 MVP 闭环已通）
+
+- [x] 骨架：Maven 多模块 + 前端外壳 + 登录认证（JWT）+ RBAC + 服务端菜单下发
+- [x] 系统管理：用户 / 科室 / 角色（Flyway V1）
+- [x] 患者建档 EMPI（V2）：身份证推算性别生日、同证件号幂等、多字段搜索
+- [x] 门诊挂号（V3）：排班号源、原子占号防超挂、退号释放
+- [x] 主数据（V4）：药品目录、收费项目、ICD-10 简表（种子数据）
+- [x] 医生站（V5）：接诊、门诊病历、ICD 诊断、处方/检查检验开单（统一订单行）
+- [x] 门诊收费：结算单生成、订单转已收费、挂号费并单（V6 起挂号自动生成 REG 订单行）
+- [x] 退费：整单退费（已发药需先退药、已执行不可退）、已收费退号拦截
+- [x] 医技执行站（V6）：检验/检查/治疗执行队列、结果文本录入、报告查询
+- [x] 药房发药：原子扣库存、重复发药防护
+- [x] 药库进销存（V7）：入库单（批号/效期/供应商）、库存流水（入库/出库/盘点统一留痕，发药与病区执行自动记 OUT）、盘点调整、低库存预警
+- [x] 住院线（V8）：病区床位（原子占床）、入院登记（押金）、住院医嘱（记账式）、护士执行（药品执行扣库存）、出院结算（押金冲抵、床位释放）
+- [x] 住院病历与生命体征（V9）：入院记录/病程记录/出院小结时间线、护士体征录入（体温单数据源）
+- [x] 运营驾驶舱：工作台统计卡（挂号/收入/在院/床位使用率）、近 7 日趋势、五类待办工作量
+- [x] 退药流程：发药台退药入口，库存回补 + RET 流水，退药后可整单退费（闭合费用生命周期）
+- [x] 角色-菜单授权编辑：角色页勾选树授权，内置 ADMIN 角色保护不可改
+- [x] 体温单图表：医生站体征页体温/脉搏双面板趋势图（共享时间轴、无双轴、悬浮提示，配色经 CVD 校验）
+- 回归测试：`python tools/e2e-outpatient.py`（门诊）、`python tools/e2e-inpatient.py`（住院+进销存）、`python tools/e2e-emr-stats.py`（病历/体征/统计）
+- [x] 集成引擎 v1（V10）：HL7 V2 解析器 + ORU^R01 检验结果回传（医嘱自动执行、结果落库、HH/LL 危急值告警与处理闭环）、医保适配器 SPI（Mock 实现，结算/退费冲正出站留痕）、集成消息日志与监控页
+- 集成回归：`python tools/e2e-integration.py`
+- [x] CDR 临床数据中心（V11，datacenter/cdr）：门诊就诊/检验报告/住院摘要三类文档抽取同步（幂等 upsert），患者 360 时间轴视图
+- [x] 互联网医院患者端（modules/portal）：H5 登录（独立 PORTAL 令牌，与院内接口完全隔离）、在线预约挂号、我的挂号/检验报告/费用；访问 `/portal`
+- 第三期回归：`python tools/e2e-phase3.py`
+- [ ] 后续演进：CDC 增量同步替代全量抽取、真实医保 SDK 适配、MLLP/TCP 承载、微信实名/电子健康卡接入、CDA 标准文档格式
