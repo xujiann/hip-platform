@@ -1,0 +1,869 @@
+<title>HIP 标准化平台图解</title>
+<style>
+  :root {
+    --bg: #f6f8f9;
+    --surface: #ffffff;
+    --ink: #1c262e;
+    --muted: #5b6b76;
+    --line: #d3dce2;
+    --std: #0b6e78;
+    --std-soft: rgba(11, 110, 120, 0.09);
+    --impl: #a05c00;
+    --impl-soft: rgba(160, 92, 0, 0.09);
+    --danger: #b3382e;
+    --danger-soft: rgba(179, 56, 46, 0.08);
+    --code-bg: rgba(91, 107, 118, 0.1);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #10161a;
+      --surface: #171f25;
+      --ink: #dbe4ea;
+      --muted: #8da0ab;
+      --line: #2c3a43;
+      --std: #45b5bf;
+      --std-soft: rgba(69, 181, 191, 0.12);
+      --impl: #dfa452;
+      --impl-soft: rgba(223, 164, 82, 0.12);
+      --danger: #e0716a;
+      --danger-soft: rgba(224, 113, 106, 0.12);
+      --code-bg: rgba(141, 160, 171, 0.16);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #10161a;
+    --surface: #171f25;
+    --ink: #dbe4ea;
+    --muted: #8da0ab;
+    --line: #2c3a43;
+    --std: #45b5bf;
+    --std-soft: rgba(69, 181, 191, 0.12);
+    --impl: #dfa452;
+    --impl-soft: rgba(223, 164, 82, 0.12);
+    --danger: #e0716a;
+    --danger-soft: rgba(224, 113, 106, 0.12);
+    --code-bg: rgba(141, 160, 171, 0.16);
+  }
+  :root[data-theme="light"] {
+    --bg: #f6f8f9;
+    --surface: #ffffff;
+    --ink: #1c262e;
+    --muted: #5b6b76;
+    --line: #d3dce2;
+    --std: #0b6e78;
+    --std-soft: rgba(11, 110, 120, 0.09);
+    --impl: #a05c00;
+    --impl-soft: rgba(160, 92, 0, 0.09);
+    --danger: #b3382e;
+    --danger-soft: rgba(179, 56, 46, 0.08);
+    --code-bg: rgba(91, 107, 118, 0.1);
+  }
+
+  html { background: var(--bg); }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Source Han Sans SC", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+    line-height: 1.8;
+    font-size: 15px;
+    margin: 0;
+  }
+  .doc { max-width: 920px; margin: 0 auto; padding: 48px 28px 96px; }
+
+  header.masthead { border-bottom: 2px solid var(--ink); padding-bottom: 28px; margin-bottom: 36px; }
+  .masthead .kicker {
+    font-size: 12px; letter-spacing: 0.18em; color: var(--std);
+    font-weight: 700; text-transform: uppercase; margin-bottom: 10px;
+  }
+  h1 {
+    font-size: 34px; line-height: 1.3; margin: 0 0 12px; font-weight: 800;
+    letter-spacing: 0.01em; text-wrap: balance;
+  }
+  .masthead .sub { color: var(--muted); max-width: 42em; margin: 0 0 16px; }
+  .masthead .meta { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); }
+  .masthead .meta span strong { color: var(--ink); font-weight: 600; }
+
+  nav.toc {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+    padding: 18px 22px; margin-bottom: 44px;
+    columns: 2; column-gap: 36px;
+  }
+  nav.toc a { color: var(--ink); text-decoration: none; display: block; padding: 3px 0; font-size: 13.5px; }
+  nav.toc a:hover, nav.toc a:focus { color: var(--std); }
+  nav.toc a .no { color: var(--std); font-weight: 700; margin-right: 8px; font-variant-numeric: tabular-nums; }
+  @media (max-width: 640px) { nav.toc { columns: 1; } }
+
+  section { margin-bottom: 56px; }
+  h2 {
+    font-size: 22px; font-weight: 800; margin: 0 0 6px;
+    padding-top: 12px; border-top: 1px solid var(--line);
+    text-wrap: balance;
+  }
+  h2 .no { color: var(--std); margin-right: 10px; font-variant-numeric: tabular-nums; }
+  h3 { font-size: 16.5px; font-weight: 700; margin: 28px 0 6px; }
+  p { margin: 10px 0; max-width: 46em; }
+  ul, ol { max-width: 44em; padding-left: 1.4em; }
+  li { margin: 5px 0; }
+  .lead { color: var(--muted); font-size: 14px; margin-bottom: 18px; max-width: 46em; }
+
+  code {
+    font-family: "JetBrains Mono", Consolas, "Courier New", monospace;
+    font-size: 0.88em; background: var(--code-bg); border-radius: 3px; padding: 1px 5px;
+  }
+
+  figure {
+    margin: 26px 0; background: var(--surface); border: 1px solid var(--line);
+    border-radius: 6px; padding: 22px 18px 12px; overflow-x: auto;
+  }
+  figure svg { display: block; max-width: 100%; height: auto; margin: 0 auto; min-width: 640px; }
+  figcaption {
+    font-size: 12.5px; color: var(--muted); margin-top: 12px; padding-top: 10px;
+    border-top: 1px dashed var(--line); max-width: none;
+  }
+  figcaption b { color: var(--ink); }
+
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; margin: 16px 0; }
+  th, td { border: 1px solid var(--line); padding: 7px 12px; text-align: left; vertical-align: top; }
+  th { background: var(--std-soft); font-weight: 700; }
+  td .tag { font-size: 11px; border-radius: 3px; padding: 1px 6px; white-space: nowrap; }
+  .tag-ok { background: var(--std-soft); color: var(--std); font-weight: 600; }
+  .tag-todo { background: var(--impl-soft); color: var(--impl); font-weight: 600; }
+
+  .principle {
+    border-left: 3px solid var(--std); background: var(--std-soft);
+    padding: 12px 18px; border-radius: 0 6px 6px 0; margin: 18px 0; max-width: 46em;
+  }
+  .principle b { color: var(--std); }
+
+  /* SVG 语义类 —— 中性元素走 currentColor，两个语义色只给承载对比的元素 */
+  svg { color: var(--ink); font-family: inherit; }
+  svg text { font-size: 12.5px; fill: currentColor; }
+  svg .t-muted { fill: var(--muted); font-size: 11px; }
+  svg .t-small { font-size: 10.5px; }
+  svg .t-bold { font-weight: 700; }
+  svg .t-std { fill: var(--std); font-weight: 700; }
+  svg .t-impl { fill: var(--impl); font-weight: 700; }
+  svg .t-danger { fill: var(--danger); font-weight: 700; }
+  svg .box { fill: var(--surface); stroke: currentColor; stroke-width: 1.1; }
+  svg .box-soft { fill: var(--code-bg); stroke: var(--muted); stroke-width: 0.8; }
+  svg .box-std { fill: var(--std-soft); stroke: var(--std); stroke-width: 1.4; }
+  svg .box-impl { fill: var(--impl-soft); stroke: var(--impl); stroke-width: 1.4; }
+  svg .box-danger { fill: var(--danger-soft); stroke: var(--danger); stroke-width: 1.2; }
+  svg .box-dashed { stroke-dasharray: 5 4; }
+  svg .ln { stroke: currentColor; stroke-width: 1.2; fill: none; }
+  svg .ln-std { stroke: var(--std); stroke-width: 1.5; fill: none; }
+  svg .ln-impl { stroke: var(--impl); stroke-width: 1.5; fill: none; }
+  svg .ln-danger { stroke: var(--danger); stroke-width: 1.3; fill: none; }
+  svg .ln-dashed { stroke-dasharray: 5 4; }
+
+  @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+</style>
+
+<div class="doc">
+
+<header class="masthead">
+  <div class="kicker">HIP · Hospital Information Platform</div>
+  <h1>标准化医院信息平台 · 图解说明</h1>
+  <p class="sub">把面向单家医院的信息系统，升级为同级别同类医院（县市级综合医院）可复用的标准产品；
+  每家医院实施时按个性化需求做实施层开发，标准核心永不分叉。</p>
+  <div class="meta">
+    <span>版本 <strong>v1.0</strong></span>
+    <span>日期 <strong>2026-08-06</strong></span>
+    <span>基线 <strong>hip-platform（12 后端模块 · 39 迁移 · 65+ 页面 · 18 套 E2E）</strong></span>
+    <span>配套文本 <strong>docs/产品化方案.md</strong></span>
+  </div>
+</header>
+
+<nav class="toc" aria-label="目录">
+  <a href="#s1"><span class="no">1</span>总原则：一条不变式</a>
+  <a href="#s2"><span class="no">2</span>四层标准化模型</a>
+  <a href="#s3"><span class="no">3</span>部署形态：一院一实例</a>
+  <a href="#s4"><span class="no">4</span>个性化需求的处置决策</a>
+  <a href="#s5"><span class="no">5</span>标准产品层：模块地图</a>
+  <a href="#s6"><span class="no">6</span>配置层：数据即个性化</a>
+  <a href="#s7"><span class="no">7</span>SPI 扩展层：换实现不换平台</a>
+  <a href="#s8"><span class="no">8</span>实施定制层与版本规约</a>
+  <a href="#s9"><span class="no">9</span>实施工艺：从装机到试运行</a>
+  <a href="#s10"><span class="no">10</span>产品化路线图</a>
+</nav>
+
+<!-- ============ 1 总原则 ============ -->
+<section id="s1">
+  <h2><span class="no">1</span>总原则：一条不变式</h2>
+  <p class="lead">标准化不是把系统做「通用」，而是把「每家医院的不同」安放到正确的层里。</p>
+  <div class="principle">
+    <b>不变式：</b>每家医院 = <b>同一个标准发布产物</b> + 该院的配置与数据 + 少量实施层扩展。<br>
+    个性化落地优先级：<b>改配置 &gt; 换数据 &gt; 实现 SPI &gt; 实施扩展模块</b>；任何情况下不 fork 平台核心代码。
+  </div>
+  <p>这条不变式成立的前提，是平台已经具备三个「标准化基因」：机构参数全部走
+  <code>sys_config</code>、菜单/角色/规则库全部数据库化、对外差异点全部收敛为适配器接口（SPI）。
+  这些能力在现平台已存在，产品化的工作是把它们<b>制度化并补齐工具链</b>。</p>
+</section>
+
+<!-- ============ 2 四层模型 ============ -->
+<section id="s2">
+  <h2><span class="no">2</span>四层标准化模型</h2>
+  <p class="lead">越往下越稳定、随产品版本演进；越往上越灵活、随医院实施变更。升级只动下层产物，不破坏上层内容。</p>
+
+  <figure>
+    <svg viewBox="0 0 880 400" role="img" aria-label="四层标准化模型：自下而上为标准产品层、配置层、SPI 扩展层、实施定制层，左侧标注个性化程度递增，右侧标注各层变更主体">
+      <defs>
+        <marker id="ar1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+      <!-- 左侧程度轴 -->
+      <line x1="52" y1="330" x2="52" y2="60" class="ln" marker-end="url(#ar1)"/>
+      <text x="40" y="200" transform="rotate(-90 40 200)" text-anchor="middle" class="t-muted">个性化程度递增</text>
+
+      <!-- L4 实施定制层 -->
+      <rect x="90" y="44" width="500" height="66" rx="4" class="box-impl"/>
+      <text x="108" y="70" class="t-impl">L4 实施定制层</text>
+      <text x="108" y="92" class="t-small">impl/&lt;hospital&gt; 独立模块 · Flyway V10000+ 段 · 前端 /impl/* 路由</text>
+      <text x="620" y="70" class="t-small t-bold">实施项目组</text>
+      <text x="620" y="88" class="t-muted">随该院项目变更</text>
+
+      <!-- L3 SPI -->
+      <rect x="90" y="122" width="500" height="66" rx="4" class="box"/>
+      <text x="108" y="148" class="t-bold">L3 SPI 扩展层</text>
+      <text x="108" y="170" class="t-small">InsuranceAdapter · PayAdapter · SignatureAdapter · int_adapter · ai-service</text>
+      <text x="620" y="148" class="t-small t-bold">地区 / 供应商实现包</text>
+      <text x="620" y="166" class="t-muted">同省同商可跨院复用</text>
+
+      <!-- L2 配置层 -->
+      <rect x="90" y="200" width="500" height="66" rx="4" class="box"/>
+      <text x="108" y="226" class="t-bold">L2 配置层</text>
+      <text x="108" y="248" class="t-small">sys_config · 科室病区床位 · 角色菜单 · 字典 · 规则库（CDSS/DRG/医保）· 报表</text>
+      <text x="620" y="226" class="t-small t-bold">实施工程师</text>
+      <text x="620" y="244" class="t-muted">纯数据，不写代码</text>
+
+      <!-- L1 标准产品层 -->
+      <rect x="90" y="278" width="500" height="74" rx="4" class="box-std"/>
+      <text x="108" y="305" class="t-std">L1 标准产品层</text>
+      <text x="108" y="327" class="t-small">12 后端模块 + 前端 65+ 页面 + Flyway V1–V999 + 平台必需字典</text>
+      <text x="620" y="305" class="t-small t-bold">产品团队</text>
+      <text x="620" y="323" class="t-muted">随版本统一升级</text>
+
+      <!-- 升级箭头 -->
+      <line x1="820" y1="352" x2="820" y2="286" class="ln-std" marker-end="url(#ar1)"/>
+      <text x="820" y="378" text-anchor="middle" class="t-std t-small">版本升级</text>
+      <text x="820" y="392" text-anchor="middle" class="t-muted t-small">只替换 L1 产物</text>
+    </svg>
+    <figcaption><b>图 2-1 · 四层标准化模型。</b>L1 是所有医院共用的同一构建产物；L2 用数据表达医院差异；L3 用适配器实现对接差异；L4 承接前三层放不下的真定制。版本升级仅替换 L1，上三层内容随库保留。</figcaption>
+  </figure>
+
+  <table>
+    <thead><tr><th style="width:9em">层</th><th>内容</th><th style="width:11em">变更主体</th><th style="width:8em">现状</th></tr></thead>
+    <tbody>
+      <tr><td><b>L1 标准产品</b></td><td>12 后端模块、前端 65+ 页、Flyway V1–V999、必需字典</td><td>产品团队，随版本发布</td><td><span class="tag tag-ok">已具备</span></td></tr>
+      <tr><td><b>L2 配置</b></td><td>sys_config、组织结构、角色菜单、字典、规则库、报表引擎</td><td>实施工程师，纯数据</td><td><span class="tag tag-ok">机制已全 DB 化</span> <span class="tag tag-todo">缺初始化工具</span></td></tr>
+      <tr><td><b>L3 SPI 扩展</b></td><td>医保 / 支付 / CA / 设备路由 / AI 服务五类适配器</td><td>按地区、供应商做实现包</td><td><span class="tag tag-ok">接口已定义含 Mock</span></td></tr>
+      <tr><td><b>L4 实施定制</b></td><td>该院独有页面 / 接口 / 报表，独立模块</td><td>实施项目组</td><td><span class="tag tag-todo">机制待建</span></td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ============ 3 部署形态 ============ -->
+<section id="s3">
+  <h2><span class="no">3</span>部署形态：一院一实例</h2>
+  <p class="lead">标准化的收益来自「同一产物 + 分层配置」，而不是共享数据库。</p>
+
+  <figure>
+    <svg viewBox="0 0 880 350" role="img" aria-label="部署形态对比：左侧多租户共库方案被否决，右侧采用一院一实例方案，同一标准产物分发到三家医院，各自拥有独立实例与独立数据库">
+      <defs>
+        <marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+        <marker id="ar3s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--std)"/>
+        </marker>
+      </defs>
+
+      <!-- 左：多租户（否决） -->
+      <text x="160" y="34" text-anchor="middle" class="t-danger">✗ 多租户共库（否决）</text>
+      <rect x="55" y="52" width="210" height="118" rx="4" class="box-danger box-dashed"/>
+      <text x="160" y="76" text-anchor="middle" class="t-small">一个共享实例</text>
+      <rect x="72" y="90" width="54" height="26" rx="3" class="box-soft"/>
+      <text x="99" y="107" text-anchor="middle" class="t-small">医院A</text>
+      <rect x="133" y="90" width="54" height="26" rx="3" class="box-soft"/>
+      <text x="160" y="107" text-anchor="middle" class="t-small">医院B</text>
+      <rect x="194" y="90" width="54" height="26" rx="3" class="box-soft"/>
+      <text x="221" y="107" text-anchor="middle" class="t-small">医院C</text>
+      <line x1="160" y1="122" x2="160" y2="146" class="ln-danger" marker-end="url(#ar3)"/>
+      <rect x="110" y="148" width="100" height="30" rx="3" class="box-danger"/>
+      <text x="160" y="167" text-anchor="middle" class="t-small">共享数据库</text>
+      <text x="160" y="212" text-anchor="middle" class="t-muted t-small">独立法人 · 等保数据边界</text>
+      <text x="160" y="228" text-anchor="middle" class="t-muted t-small">院内网部署 —— 三点均不允许共库</text>
+
+      <!-- 分隔 -->
+      <line x1="300" y1="50" x2="300" y2="300" class="ln ln-dashed" opacity="0.5"/>
+
+      <!-- 右：一院一实例（采用） -->
+      <text x="600" y="34" text-anchor="middle" class="t-std">✓ 一院一实例（采用）</text>
+      <rect x="500" y="50" width="200" height="44" rx="4" class="box-std"/>
+      <text x="600" y="69" text-anchor="middle" class="t-std t-small">标准发布产物 v1.x</text>
+      <text x="600" y="86" text-anchor="middle" class="t-muted t-small">jar + dist + compose，全院同一份</text>
+
+      <line x1="530" y1="94" x2="425" y2="140" class="ln-std" marker-end="url(#ar3s)"/>
+      <line x1="600" y1="94" x2="600" y2="140" class="ln-std" marker-end="url(#ar3s)"/>
+      <line x1="670" y1="94" x2="775" y2="140" class="ln-std" marker-end="url(#ar3s)"/>
+
+      <g>
+        <rect x="345" y="144" width="160" height="120" rx="4" class="box"/>
+        <text x="425" y="166" text-anchor="middle" class="t-bold t-small">医院 A 实例</text>
+        <rect x="360" y="178" width="130" height="24" rx="3" class="box-soft"/>
+        <text x="425" y="194" text-anchor="middle" class="t-small">A 院配置 + 字典</text>
+        <rect x="360" y="206" width="130" height="24" rx="3" class="box-impl"/>
+        <text x="425" y="222" text-anchor="middle" class="t-small">impl/a-hospital</text>
+        <rect x="360" y="234" width="130" height="22" rx="3" class="box-soft"/>
+        <text x="425" y="249" text-anchor="middle" class="t-small">独立数据库</text>
+      </g>
+      <g>
+        <rect x="520" y="144" width="160" height="120" rx="4" class="box"/>
+        <text x="600" y="166" text-anchor="middle" class="t-bold t-small">医院 B 实例</text>
+        <rect x="535" y="178" width="130" height="24" rx="3" class="box-soft"/>
+        <text x="600" y="194" text-anchor="middle" class="t-small">B 院配置 + 字典</text>
+        <rect x="535" y="206" width="130" height="24" rx="3" class="box-soft box-dashed"/>
+        <text x="600" y="222" text-anchor="middle" class="t-small">（无定制模块）</text>
+        <rect x="535" y="234" width="130" height="22" rx="3" class="box-soft"/>
+        <text x="600" y="249" text-anchor="middle" class="t-small">独立数据库</text>
+      </g>
+      <g>
+        <rect x="695" y="144" width="160" height="120" rx="4" class="box"/>
+        <text x="775" y="166" text-anchor="middle" class="t-bold t-small">医院 C 实例</text>
+        <rect x="710" y="178" width="130" height="24" rx="3" class="box-soft"/>
+        <text x="775" y="194" text-anchor="middle" class="t-small">C 院配置 + 字典</text>
+        <rect x="710" y="206" width="130" height="24" rx="3" class="box-impl"/>
+        <text x="775" y="222" text-anchor="middle" class="t-small">impl/c-hospital</text>
+        <rect x="710" y="234" width="130" height="22" rx="3" class="box-soft"/>
+        <text x="775" y="249" text-anchor="middle" class="t-small">独立数据库</text>
+      </g>
+      <text x="600" y="292" text-anchor="middle" class="t-muted t-small">差异全部在实例内部（配置 / 数据 / impl 模块），产物层完全一致</text>
+    </svg>
+    <figcaption><b>图 3-1 · 部署形态对比。</b>左侧共库方案被否决：县市级医院是独立法人，等保要求数据边界，且系统跑在院内网。右侧为采用方案：同一标准产物分发到每家医院，各院独立实例、独立数据库；医院间的全部差异都收纳在自己实例的配置、数据与可选 impl 模块里。</figcaption>
+  </figure>
+</section>
+
+<!-- ============ 4 决策流 ============ -->
+<section id="s4">
+  <h2><span class="no">4</span>个性化需求的处置决策</h2>
+  <p class="lead">每一条个性化需求进来，按同一条决策链落到四层中的某一层——链条末端不存在「改平台核心」这个选项。</p>
+
+  <figure>
+    <svg viewBox="0 0 880 300" role="img" aria-label="个性化需求处置决策流：依次判断能否用配置、数据、SPI 实现满足，都不能则进入实施定制模块，禁止修改平台核心">
+      <defs>
+        <marker id="ar4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+
+      <rect x="20" y="120" width="110" height="44" rx="4" class="box-impl"/>
+      <text x="75" y="139" text-anchor="middle" class="t-small t-bold">个性化需求</text>
+      <text x="75" y="155" text-anchor="middle" class="t-muted t-small">来自某家医院</text>
+
+      <!-- 判定1 -->
+      <line x1="130" y1="142" x2="168" y2="142" class="ln" marker-end="url(#ar4)"/>
+      <path d="M 230 112 L 292 142 L 230 172 L 168 142 Z" class="box"/>
+      <text x="230" y="138" text-anchor="middle" class="t-small">改参数 / 开关</text>
+      <text x="230" y="153" text-anchor="middle" class="t-small">能满足？</text>
+      <line x1="230" y1="112" x2="230" y2="76" class="ln-std" marker-end="url(#ar4)"/>
+      <text x="240" y="98" class="t-std t-small">是</text>
+      <rect x="168" y="34" width="124" height="40" rx="4" class="box-std"/>
+      <text x="230" y="52" text-anchor="middle" class="t-std t-small">L2 · 改配置</text>
+      <text x="230" y="67" text-anchor="middle" class="t-muted t-small">sys_config / 菜单</text>
+
+      <!-- 判定2 -->
+      <line x1="292" y1="142" x2="330" y2="142" class="ln" marker-end="url(#ar4)"/>
+      <text x="308" y="134" class="t-muted t-small">否</text>
+      <path d="M 392 112 L 454 142 L 392 172 L 330 142 Z" class="box"/>
+      <text x="392" y="138" text-anchor="middle" class="t-small">换字典 / 规则库</text>
+      <text x="392" y="153" text-anchor="middle" class="t-small">能满足？</text>
+      <line x1="392" y1="112" x2="392" y2="76" class="ln-std" marker-end="url(#ar4)"/>
+      <text x="402" y="98" class="t-std t-small">是</text>
+      <rect x="330" y="34" width="124" height="40" rx="4" class="box-std"/>
+      <text x="392" y="52" text-anchor="middle" class="t-std t-small">L2 · 换数据</text>
+      <text x="392" y="67" text-anchor="middle" class="t-muted t-small">字典 / CDSS / DRG</text>
+
+      <!-- 判定3 -->
+      <line x1="454" y1="142" x2="492" y2="142" class="ln" marker-end="url(#ar4)"/>
+      <text x="470" y="134" class="t-muted t-small">否</text>
+      <path d="M 554 112 L 616 142 L 554 172 L 492 142 Z" class="box"/>
+      <text x="554" y="138" text-anchor="middle" class="t-small">差异点已有</text>
+      <text x="554" y="153" text-anchor="middle" class="t-small">SPI 接口？</text>
+      <line x1="554" y1="112" x2="554" y2="76" class="ln-std" marker-end="url(#ar4)"/>
+      <text x="564" y="98" class="t-std t-small">是</text>
+      <rect x="492" y="34" width="124" height="40" rx="4" class="box-std"/>
+      <text x="554" y="52" text-anchor="middle" class="t-std t-small">L3 · 写适配器实现</text>
+      <text x="554" y="67" text-anchor="middle" class="t-muted t-small">医保 / 支付 / CA…</text>
+
+      <!-- 兜底 -->
+      <line x1="616" y1="142" x2="672" y2="142" class="ln" marker-end="url(#ar4)"/>
+      <text x="638" y="134" class="t-muted t-small">否</text>
+      <rect x="674" y="116" width="180" height="52" rx="4" class="box-impl"/>
+      <text x="764" y="138" text-anchor="middle" class="t-impl t-small">L4 · 实施定制模块</text>
+      <text x="764" y="155" text-anchor="middle" class="t-muted t-small">impl/&lt;hospital&gt; + V10000+</text>
+
+      <!-- 禁止分支 -->
+      <line x1="764" y1="168" x2="764" y2="210" class="ln-danger ln-dashed" marker-end="url(#ar4)"/>
+      <rect x="674" y="212" width="180" height="44" rx="4" class="box-danger box-dashed"/>
+      <text x="764" y="231" text-anchor="middle" class="t-danger t-small">✗ 修改平台核心代码</text>
+      <text x="764" y="248" text-anchor="middle" class="t-muted t-small">任何情况下禁止（丧失可升级性）</text>
+      <text x="640" y="238" text-anchor="end" class="t-muted t-small">若 L4 也想不通，回头</text>
+      <text x="640" y="253" text-anchor="end" class="t-muted t-small">提产品需求，进版本排期</text>
+    </svg>
+    <figcaption><b>图 4-1 · 处置决策链。</b>三个判定依次消化掉绝大多数需求（经验上 L2 配置与数据能覆盖 8 成以上）；剩余真定制进 L4 实施模块。虚线分支「改平台核心」永远关闭——真正值得进核心的能力，走产品需求进版本排期，让所有医院受益。</figcaption>
+  </figure>
+</section>
+
+<!-- ============ 5 模块地图 ============ -->
+<section id="s5">
+  <h2><span class="no">5</span>标准产品层：模块地图</h2>
+  <p class="lead">L1 的构成：四个平台底座模块支撑八个业务域模块，server 聚合装配，前端单壳承载全部页面。</p>
+
+  <figure>
+    <svg viewBox="0 0 880 430" role="img" aria-label="平台模块地图：server 启动器聚合平台底座四模块、业务域八模块与数据中心，前端壳与 AI 子服务旁挂">
+      <defs>
+        <marker id="ar5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+
+      <!-- server -->
+      <rect x="240" y="20" width="400" height="58" rx="4" class="box-std"/>
+      <text x="440" y="44" text-anchor="middle" class="t-std">server · 启动器与跨域聚合</text>
+      <text x="440" y="63" text-anchor="middle" class="t-muted t-small">驾驶舱统计 / 运维 / 审计与慢接口过滤器 / 打印日结 / 交款核对</text>
+
+      <line x1="440" y1="78" x2="440" y2="106" class="ln" marker-end="url(#ar5)"/>
+      <text x="450" y="97" class="t-muted t-small">聚合装配（scanBasePackages=cn.hip）</text>
+
+      <!-- 业务域 -->
+      <rect x="40" y="110" width="800" height="120" rx="4" class="box"/>
+      <text x="58" y="132" class="t-bold t-small">业务域 modules/ + datacenter/</text>
+      <g class="t-small">
+        <rect x="58" y="146" width="112" height="30" rx="3" class="box-soft"/><text x="114" y="165" text-anchor="middle" class="t-small">outpatient 门诊</text>
+        <rect x="180" y="146" width="112" height="30" rx="3" class="box-soft"/><text x="236" y="165" text-anchor="middle" class="t-small">inpatient 住院</text>
+        <rect x="302" y="146" width="112" height="30" rx="3" class="box-soft"/><text x="358" y="165" text-anchor="middle" class="t-small">medtech 医技</text>
+        <rect x="424" y="146" width="112" height="30" rx="3" class="box-soft"/><text x="480" y="165" text-anchor="middle" class="t-small">qualitycare 质护</text>
+        <rect x="546" y="146" width="112" height="30" rx="3" class="box-soft"/><text x="602" y="165" text-anchor="middle" class="t-small">insurance 医保</text>
+        <rect x="668" y="146" width="112" height="30" rx="3" class="box-soft"/><text x="724" y="165" text-anchor="middle" class="t-small">portal 患者端</text>
+        <rect x="58" y="186" width="112" height="30" rx="3" class="box-soft"/><text x="114" y="205" text-anchor="middle" class="t-small">hrp 人财物</text>
+        <rect x="180" y="186" width="112" height="30" rx="3" class="box-soft"/><text x="236" y="205" text-anchor="middle" class="t-small">datagov 数据治理</text>
+        <rect x="302" y="186" width="112" height="30" rx="3" class="box-soft"/><text x="358" y="205" text-anchor="middle" class="t-small">cdr 临床数据中心</text>
+      </g>
+
+      <line x1="440" y1="230" x2="440" y2="258" class="ln" marker-end="url(#ar5)"/>
+      <text x="450" y="249" class="t-muted t-small">依赖</text>
+
+      <!-- 底座 -->
+      <rect x="40" y="262" width="800" height="82" rx="4" class="box"/>
+      <text x="58" y="284" class="t-bold t-small">平台底座 platform/</text>
+      <g>
+        <rect x="58" y="298" width="180" height="34" rx="3" class="box-soft"/><text x="148" y="315" text-anchor="middle" class="t-small">core 认证 · RBAC · 审计 · 配置</text>
+        <rect x="252" y="298" width="180" height="34" rx="3" class="box-soft"/><text x="342" y="315" text-anchor="middle" class="t-small">empi 患者主索引</text>
+        <rect x="446" y="298" width="180" height="34" rx="3" class="box-soft"/><text x="536" y="315" text-anchor="middle" class="t-small">masterdata 药品 · 收费 · ICD · 价格</text>
+        <rect x="640" y="298" width="180" height="34" rx="3" class="box-soft"/><text x="730" y="315" text-anchor="middle" class="t-small">integration HL7 · MLLP · 适配器</text>
+      </g>
+
+      <!-- 旁挂 -->
+      <rect x="40" y="368" width="390" height="44" rx="4" class="box box-dashed"/>
+      <text x="235" y="387" text-anchor="middle" class="t-small">frontend/shell · Vue3 单壳 65+ 页面（路由懒加载）</text>
+      <text x="235" y="403" text-anchor="middle" class="t-muted t-small">品牌 / 菜单由 L2 配置驱动</text>
+      <rect x="450" y="368" width="390" height="44" rx="4" class="box box-dashed"/>
+      <text x="645" y="387" text-anchor="middle" class="t-small">ai-service · Python FastAPI 子服务（HTTP，可缺席）</text>
+      <text x="645" y="403" text-anchor="middle" class="t-muted t-small">平台侧优雅降级</text>
+    </svg>
+    <figcaption><b>图 5-1 · 模块地图。</b>依赖方向自上而下：server 只做装配与跨域聚合，业务域模块之间不互相依赖（经由底座与事件解耦），底座四模块承载身份、主数据与集成能力。前端壳与 AI 子服务旁挂，均由配置驱动、可独立缺席。</figcaption>
+  </figure>
+</section>
+
+<!-- ============ 6 配置层 ============ -->
+<section id="s6">
+  <h2><span class="no">6</span>配置层：数据即个性化</h2>
+  <p class="lead">医院之间 80% 的差异是数据形态的差异。配置层回答两个问题：哪些东西是数据？新医院第一天怎么把它们装进去？</p>
+
+  <h3>6.1 种子数据三类分层</h3>
+  <p>现平台 31 个迁移中字典种子与演示数据混排，产品化后按去向分三类。历史迁移不改（Flyway 纪律），
+  分层通过<b>新库初始化路径</b>实现：平台迁移照跑，B/C 两类由工具决定装或不装。</p>
+
+  <figure>
+    <svg viewBox="0 0 880 260" role="img" aria-label="种子数据三类分层：A 平台必需随 Flyway，B 行业基线由 init-hospital 导入且实施可替换，C 演示数据仅进演示环境">
+      <defs>
+        <marker id="ar6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+      <g>
+        <rect x="40" y="30" width="240" height="86" rx="4" class="box-std"/>
+        <text x="160" y="54" text-anchor="middle" class="t-std">A · 平台必需</text>
+        <text x="160" y="76" text-anchor="middle" class="t-small">菜单 · 角色 · 默认参数</text>
+        <text x="160" y="94" text-anchor="middle" class="t-small">数据元 · 术语框架</text>
+        <line x1="160" y1="116" x2="160" y2="152" class="ln-std" marker-end="url(#ar6)"/>
+        <rect x="60" y="156" width="200" height="52" rx="4" class="box"/>
+        <text x="160" y="178" text-anchor="middle" class="t-small t-bold">Flyway 迁移</text>
+        <text x="160" y="196" text-anchor="middle" class="t-muted t-small">随产品发布，装机即有</text>
+      </g>
+      <g>
+        <rect x="320" y="30" width="240" height="86" rx="4" class="box"/>
+        <text x="440" y="54" text-anchor="middle" class="t-bold">B · 行业基线</text>
+        <text x="440" y="76" text-anchor="middle" class="t-small">ICD-10 简表 · 给药途径 · 班次</text>
+        <text x="440" y="94" text-anchor="middle" class="t-small">CDSS / DRG 示例规则</text>
+        <line x1="440" y1="116" x2="440" y2="152" class="ln" marker-end="url(#ar6)"/>
+        <rect x="340" y="156" width="200" height="52" rx="4" class="box"/>
+        <text x="440" y="178" text-anchor="middle" class="t-small t-bold">init-hospital 导入</text>
+        <text x="440" y="196" text-anchor="middle" class="t-muted t-small">默认装，实施可换院方目录</text>
+      </g>
+      <g>
+        <rect x="600" y="30" width="240" height="86" rx="4" class="box box-dashed"/>
+        <text x="720" y="54" text-anchor="middle" class="t-bold">C · 演示数据</text>
+        <text x="720" y="76" text-anchor="middle" class="t-small">演示患者 · 排班 · 体检套餐</text>
+        <text x="720" y="94" text-anchor="middle" class="t-small">7 个演示账号</text>
+        <line x1="720" y1="116" x2="720" y2="152" class="ln ln-dashed" marker-end="url(#ar6)"/>
+        <rect x="620" y="156" width="200" height="52" rx="4" class="box box-dashed"/>
+        <text x="720" y="178" text-anchor="middle" class="t-small t-bold">bootstrap-demo</text>
+        <text x="720" y="196" text-anchor="middle" class="t-danger t-small">仅演示环境 · 生产不装</text>
+      </g>
+      <text x="440" y="242" text-anchor="middle" class="t-muted t-small">同一物理机制（SQL / API 导入），按去向分流：A 跟版本走，B 跟实施走，C 跟演示走</text>
+    </svg>
+    <figcaption><b>图 6-1 · 种子数据三类分层。</b>判据是「谁在什么时机需要它」：平台自身跑起来必需的进 A；行业通用但院方可能自带的进 B；只为看效果的进 C。生产库里永远不应出现 C 类数据。</figcaption>
+  </figure>
+
+  <h3>6.2 模块级功能开关</h3>
+  <p>医院未采购或暂不使用的模块（如 ICU、体检、科研）需要能整体关闭。开关是一份配置、两处生效——只藏菜单不拦接口是伪关闭。</p>
+
+  <figure>
+    <svg viewBox="0 0 880 230" role="img" aria-label="功能开关双路生效：sys_config 中 module.icu.enabled=false 同时驱动前端菜单过滤与后端接口拦截">
+      <defs>
+        <marker id="ar7" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+      <rect x="40" y="80" width="220" height="60" rx="4" class="box-std"/>
+      <text x="150" y="105" text-anchor="middle" class="t-std t-small">sys_config</text>
+      <text x="150" y="126" text-anchor="middle" style="font-family: Consolas, monospace; font-size: 12px;">module.icu.enabled = false</text>
+
+      <line x1="260" y1="96" x2="380" y2="58" class="ln" marker-end="url(#ar7)"/>
+      <text x="308" y="62" class="t-muted t-small">① 菜单树过滤</text>
+      <rect x="384" y="30" width="230" height="52" rx="4" class="box"/>
+      <text x="499" y="52" text-anchor="middle" class="t-small t-bold">前端：入口消失</text>
+      <text x="499" y="70" text-anchor="middle" class="t-muted t-small">/api/auth/me 返回的菜单已剔除</text>
+
+      <line x1="260" y1="124" x2="380" y2="162" class="ln" marker-end="url(#ar7)"/>
+      <text x="300" y="162" class="t-muted t-small">② 接口拦截</text>
+      <rect x="384" y="138" width="230" height="52" rx="4" class="box"/>
+      <text x="499" y="160" text-anchor="middle" class="t-small t-bold">后端：API 返回 404</text>
+      <text x="499" y="178" text-anchor="middle" class="t-muted t-small">过滤器按模块前缀统一拦截</text>
+
+      <line x1="614" y1="56" x2="700" y2="98" class="ln" marker-end="url(#ar7)"/>
+      <line x1="614" y1="164" x2="700" y2="122" class="ln" marker-end="url(#ar7)"/>
+      <rect x="704" y="86" width="140" height="48" rx="4" class="box-std"/>
+      <text x="774" y="106" text-anchor="middle" class="t-std t-small">模块真关闭</text>
+      <text x="774" y="124" text-anchor="middle" class="t-muted t-small">直连 URL 也进不去</text>
+    </svg>
+    <figcaption><b>图 6-2 · 功能开关的双路生效。</b>一个配置键同时驱动两条路径：菜单过滤解决「看不见」，接口拦截解决「进不去」。缺后者时，知道 URL 的用户仍可直接调用被关闭模块的接口——审计与等保均不接受。</figcaption>
+  </figure>
+
+  <h3>6.3 配置层清单（实施工程师视角）</h3>
+  <table>
+    <thead><tr><th style="width:10em">配置域</th><th>内容</th><th style="width:14em">载体</th></tr></thead>
+    <tbody>
+      <tr><td>机构与品牌</td><td>院名、logo、主题色、打印页眉落款</td><td><code>sys_config</code></td></tr>
+      <tr><td>业务参数</td><td>医保统筹比例、DRG 费率、替检开关、慢接口阈值等 30+ 键</td><td><code>sys_config</code>（配置手册成册）</td></tr>
+      <tr><td>组织结构</td><td>科室、病区、床位、服务窗口</td><td>系统管理页 / init 导入</td></tr>
+      <tr><td>权限形态</td><td>8 角色基线 + 按院增删、菜单绑定</td><td><code>sys_role</code> / <code>sys_menu</code></td></tr>
+      <tr><td>字典目录</td><td>药品、收费项目、ICD、抗菌分级、药理分类</td><td>CSV 模板批量导入</td></tr>
+      <tr><td>规则库</td><td>CDSS 四规则表、DRG 分组目录、医保对照与审核规则</td><td>业务页维护 / 官方目录替换</td></tr>
+      <tr><td>报表与打印</td><td>自定义报表（SELECT 白名单引擎）、打印数据集</td><td>报表引擎 / 打印页</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ============ 7 SPI ============ -->
+<section id="s7">
+  <h2><span class="no">7</span>SPI 扩展层：换实现不换平台</h2>
+  <p class="lead">对外对接是医院间差异最硬的部分——各省医保、各家支付商、各厂 CA 与设备，接口互不相同。平台把每一类差异收敛为一个接口，实施时只替换实现。</p>
+
+  <figure>
+    <svg viewBox="0 0 880 360" role="img" aria-label="SPI 扩展点：平台核心通过五个适配器接口对接医保、支付、CA、检验设备与 AI 模型，每个接口自带 Mock 实现">
+      <defs>
+        <marker id="ar8" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+
+      <!-- 平台 -->
+      <rect x="40" y="60" width="200" height="240" rx="5" class="box-std"/>
+      <text x="140" y="90" text-anchor="middle" class="t-std">平台核心</text>
+      <text x="140" y="112" text-anchor="middle" class="t-muted t-small">业务流程 · 留痕体系</text>
+      <text x="140" y="128" text-anchor="middle" class="t-muted t-small">int_message_log 不变</text>
+
+      <!-- 接口插座 -->
+      <g>
+        <rect x="220" y="76" width="20" height="24" class="box"/>
+        <rect x="220" y="126" width="20" height="24" class="box"/>
+        <rect x="220" y="176" width="20" height="24" class="box"/>
+        <rect x="220" y="226" width="20" height="24" class="box"/>
+        <rect x="220" y="272" width="20" height="24" class="box"/>
+      </g>
+
+      <!-- 五条适配线 -->
+      <g>
+        <line x1="240" y1="88" x2="380" y2="88" class="ln" marker-end="url(#ar8)"/>
+        <rect x="384" y="70" width="200" height="38" rx="4" class="box"/>
+        <text x="484" y="87" text-anchor="middle" class="t-small t-bold">InsuranceAdapter</text>
+        <text x="484" y="102" text-anchor="middle" class="t-muted t-small">结算 / 退费 / 对账</text>
+        <line x1="584" y1="88" x2="680" y2="88" class="ln" marker-end="url(#ar8)"/>
+        <rect x="684" y="70" width="160" height="38" rx="4" class="box-soft"/>
+        <text x="764" y="94" text-anchor="middle" class="t-small">省医保平台 / SDK</text>
+      </g>
+      <g>
+        <line x1="240" y1="138" x2="380" y2="138" class="ln" marker-end="url(#ar8)"/>
+        <rect x="384" y="120" width="200" height="38" rx="4" class="box"/>
+        <text x="484" y="137" text-anchor="middle" class="t-small t-bold">PayAdapter</text>
+        <text x="484" y="152" text-anchor="middle" class="t-muted t-small">出码 / 回调 / 作废</text>
+        <line x1="584" y1="138" x2="680" y2="138" class="ln" marker-end="url(#ar8)"/>
+        <rect x="684" y="120" width="160" height="38" rx="4" class="box-soft"/>
+        <text x="764" y="144" text-anchor="middle" class="t-small">聚合支付服务商</text>
+      </g>
+      <g>
+        <line x1="240" y1="188" x2="380" y2="188" class="ln" marker-end="url(#ar8)"/>
+        <rect x="384" y="170" width="200" height="38" rx="4" class="box"/>
+        <text x="484" y="187" text-anchor="middle" class="t-small t-bold">SignatureAdapter</text>
+        <text x="484" y="202" text-anchor="middle" class="t-muted t-small">病历签名 / 冻结</text>
+        <line x1="584" y1="188" x2="680" y2="188" class="ln" marker-end="url(#ar8)"/>
+        <rect x="684" y="170" width="160" height="38" rx="4" class="box-soft"/>
+        <text x="764" y="194" text-anchor="middle" class="t-small">CA 厂商</text>
+      </g>
+      <g>
+        <line x1="240" y1="238" x2="380" y2="238" class="ln" marker-end="url(#ar8)"/>
+        <rect x="384" y="220" width="200" height="38" rx="4" class="box"/>
+        <text x="484" y="237" text-anchor="middle" class="t-small t-bold">MLLP / HL7 + int_adapter</text>
+        <text x="484" y="252" text-anchor="middle" class="t-muted t-small">ORU 结果回传 · 文件/DB 路由</text>
+        <line x1="584" y1="238" x2="680" y2="238" class="ln" marker-end="url(#ar8)"/>
+        <rect x="684" y="220" width="160" height="38" rx="4" class="box-soft"/>
+        <text x="764" y="244" text-anchor="middle" class="t-small">LIS 设备 · 第三方系统</text>
+      </g>
+      <g>
+        <line x1="240" y1="284" x2="380" y2="284" class="ln" marker-end="url(#ar8)"/>
+        <rect x="384" y="266" width="200" height="38" rx="4" class="box"/>
+        <text x="484" y="283" text-anchor="middle" class="t-small t-bold">ai-service（HTTP）</text>
+        <text x="484" y="298" text-anchor="middle" class="t-muted t-small">检验解读 · 缺席时优雅降级</text>
+        <line x1="584" y1="284" x2="680" y2="284" class="ln" marker-end="url(#ar8)"/>
+        <rect x="684" y="266" width="160" height="38" rx="4" class="box-soft"/>
+        <text x="764" y="290" text-anchor="middle" class="t-small">AI 模型 / 知识库</text>
+      </g>
+
+      <!-- Mock 说明 -->
+      <rect x="40" y="322" width="544" height="26" rx="3" class="box-dashed box"/>
+      <text x="312" y="339" text-anchor="middle" class="t-muted t-small">每个接口自带 Mock 实现：开发、演示、E2E 回归不依赖任何外部方；真实对接=替换实现类，业务流程与留痕不动</text>
+    </svg>
+    <figcaption><b>图 7-1 · 五类 SPI 扩展点。</b>平台核心只认识接口，不认识具体供应商。同省医保、同一支付商的适配器实现可以打成实现包在多家医院复用——这正是「地区级复用」的来源。所有出站调用统一落 <code>int_message_log</code> 留痕，对账体系与实现无关。</figcaption>
+  </figure>
+</section>
+
+<!-- ============ 8 实施定制层与版本规约 ============ -->
+<section id="s8">
+  <h2><span class="no">8</span>实施定制层与版本规约</h2>
+  <p class="lead">L4 的关键是隔离规约：定制代码放哪里、数据库版本号怎么分段、升级时两者怎样互不打架。</p>
+
+  <h3>8.1 Flyway 版本分段</h3>
+  <figure>
+    <svg viewBox="0 0 880 150" role="img" aria-label="Flyway 版本号分段：V1 到 V999 为平台保留段，V10000 以上为实施定制段，两段在同一数据库中互不冲突">
+      <defs>
+        <marker id="ar9" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+      <line x1="40" y1="70" x2="850" y2="70" class="ln" marker-end="url(#ar9)"/>
+      <rect x="60" y="52" width="380" height="36" rx="4" class="box-std"/>
+      <text x="250" y="74" text-anchor="middle" class="t-std t-small">平台保留段 V1 – V999（当前 V39）</text>
+      <rect x="500" y="52" width="280" height="36" rx="4" class="box-impl"/>
+      <text x="640" y="74" text-anchor="middle" class="t-impl t-small">实施定制段 V10000+</text>
+      <text x="250" y="112" text-anchor="middle" class="t-muted t-small">产品团队专用 · 随版本发布 · 历史版本不可修改</text>
+      <text x="640" y="112" text-anchor="middle" class="t-muted t-small">实施项目专用 · 只建自有表（impl_ 前缀）· 不动平台表结构</text>
+      <text x="470" y="46" text-anchor="middle" class="t-muted t-small">留 9000 个版本号间隔</text>
+    </svg>
+    <figcaption><b>图 8-1 · 版本号分段。</b>平台与实施在同一个 Flyway 历史表里各占一段，永不相撞：平台升级新增 V40、V41…，实施定制新增 V10001、V10002…。实施段只允许创建 <code>impl_</code> 前缀的自有表，禁止修改平台表结构——这是升级兼容性的底线。</figcaption>
+  </figure>
+
+  <h3>8.2 升级流水线</h3>
+  <figure>
+    <svg viewBox="0 0 880 150" role="img" aria-label="升级流水线：停服、备份数据库、替换 jar 与前端产物、启动时 Flyway 自动前滚、回归抽查，失败则用备份回滚">
+      <defs>
+        <marker id="ar10" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+      <g>
+        <rect x="30" y="40" width="120" height="46" rx="4" class="box"/>
+        <text x="90" y="60" text-anchor="middle" class="t-small t-bold">停服</text>
+        <text x="90" y="77" text-anchor="middle" class="t-muted t-small">维护窗口</text>
+        <line x1="150" y1="63" x2="186" y2="63" class="ln" marker-end="url(#ar10)"/>
+        <rect x="190" y="40" width="120" height="46" rx="4" class="box"/>
+        <text x="250" y="60" text-anchor="middle" class="t-small t-bold">备份数据库</text>
+        <text x="250" y="77" text-anchor="middle" class="t-muted t-small">db-backup.ps1</text>
+        <line x1="310" y1="63" x2="346" y2="63" class="ln" marker-end="url(#ar10)"/>
+        <rect x="350" y="40" width="130" height="46" rx="4" class="box-std"/>
+        <text x="415" y="60" text-anchor="middle" class="t-std t-small">替换发布产物</text>
+        <text x="415" y="77" text-anchor="middle" class="t-muted t-small">jar + dist 整体换</text>
+        <line x1="480" y1="63" x2="516" y2="63" class="ln" marker-end="url(#ar10)"/>
+        <rect x="520" y="40" width="150" height="46" rx="4" class="box"/>
+        <text x="595" y="60" text-anchor="middle" class="t-small t-bold">启动 · 自动前滚</text>
+        <text x="595" y="77" text-anchor="middle" class="t-muted t-small">Flyway 只跑新增版本</text>
+        <line x1="670" y1="63" x2="706" y2="63" class="ln" marker-end="url(#ar10)"/>
+        <rect x="710" y="40" width="130" height="46" rx="4" class="box"/>
+        <text x="775" y="60" text-anchor="middle" class="t-small t-bold">回归抽查</text>
+        <text x="775" y="77" text-anchor="middle" class="t-muted t-small">核心 E2E 场景</text>
+      </g>
+      <path d="M 775 86 L 775 116 L 250 116 L 250 90" class="ln-danger ln-dashed" marker-end="url(#ar10)"/>
+      <text x="512" y="132" text-anchor="middle" class="t-danger t-small">任一步失败 → 用备份恢复回滚（升级演练进 E2E，每个版本发布前彩排一次）</text>
+    </svg>
+    <figcaption><b>图 8-2 · 升级流水线。</b>升级动作只有「换产物 + 自动前滚」两件实事，其余是保险。配置、字典、规则库、实施段迁移全部在数据库里，产物替换动不到它们——这就是四层模型对升级的意义。</figcaption>
+  </figure>
+
+  <h3>8.3 实施定制模块规约</h3>
+  <ul>
+    <li><b>代码位置</b>：<code>impl/&lt;hospital&gt;</code> 独立 Maven 模块，依赖平台 jar，包名 <code>cn.hip.impl.*</code> 由启动器自动扫描；</li>
+    <li><b>数据库</b>：仅 V10000+ 段迁移，只建 <code>impl_</code> 前缀自有表；需要平台数据时读平台表、写自己的表；</li>
+    <li><b>前端</b>：定制页面走 <code>/impl/*</code> 路由前缀，懒加载，独立目录，不改平台页面源码；</li>
+    <li><b>发布</b>：标准产物 + impl 模块 jar 同机部署；平台升级时 impl 模块随编译验证兼容性。</li>
+  </ul>
+</section>
+
+<!-- ============ 9 实施工艺 ============ -->
+<section id="s9">
+  <h2><span class="no">9</span>实施工艺：从装机到试运行</h2>
+  <p class="lead">标准产品的价值最终由实施工艺兑现：一条可重复的流水线，每一步有工具、有产物、有退出条件。</p>
+
+  <figure>
+    <svg viewBox="0 0 880 290" role="img" aria-label="实施流水线七步：装机部署、初始化、字典导入、接口适配、培训、试运行、反馈闭环，反馈以小版本回流">
+      <defs>
+        <marker id="ar11" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+      <g>
+        <rect x="30" y="40" width="180" height="58" rx="4" class="box"/>
+        <text x="120" y="62" text-anchor="middle" class="t-small t-bold">① 装机部署</text>
+        <text x="120" y="80" text-anchor="middle" class="t-muted t-small">compose 或裸机 · HTTPS</text>
+        <line x1="210" y1="69" x2="248" y2="69" class="ln" marker-end="url(#ar11)"/>
+
+        <rect x="252" y="40" width="180" height="58" rx="4" class="box-std"/>
+        <text x="342" y="62" text-anchor="middle" class="t-std t-small">② 初始化</text>
+        <text x="342" y="80" text-anchor="middle" class="t-muted t-small">init-hospital：院名/科室/角色/开关</text>
+        <line x1="432" y1="69" x2="470" y2="69" class="ln" marker-end="url(#ar11)"/>
+
+        <rect x="474" y="40" width="180" height="58" rx="4" class="box"/>
+        <text x="564" y="62" text-anchor="middle" class="t-small t-bold">③ 字典导入</text>
+        <text x="564" y="80" text-anchor="middle" class="t-muted t-small">药品/收费/ICD CSV 模板</text>
+        <line x1="654" y1="69" x2="692" y2="69" class="ln" marker-end="url(#ar11)"/>
+
+        <rect x="696" y="40" width="160" height="58" rx="4" class="box"/>
+        <text x="776" y="62" text-anchor="middle" class="t-small t-bold">④ 接口适配</text>
+        <text x="776" y="80" text-anchor="middle" class="t-muted t-small">医保/支付/CA/设备 SPI</text>
+      </g>
+
+      <path d="M 776 98 L 776 138 L 120 138 L 120 172" class="ln" marker-end="url(#ar11)"/>
+
+      <g>
+        <rect x="30" y="176" width="180" height="58" rx="4" class="box"/>
+        <text x="120" y="198" text-anchor="middle" class="t-small t-bold">⑤ 培训</text>
+        <text x="120" y="216" text-anchor="middle" class="t-muted t-small">8 角色 + 患者端脚本</text>
+        <line x1="210" y1="205" x2="248" y2="205" class="ln" marker-end="url(#ar11)"/>
+
+        <rect x="252" y="176" width="180" height="58" rx="4" class="box"/>
+        <text x="342" y="198" text-anchor="middle" class="t-small t-bold">⑥ 试运行</text>
+        <text x="342" y="216" text-anchor="middle" class="t-muted t-small">备份任务计划 · 健康告警</text>
+        <line x1="432" y1="205" x2="470" y2="205" class="ln" marker-end="url(#ar11)"/>
+
+        <rect x="474" y="176" width="180" height="58" rx="4" class="box-impl"/>
+        <text x="564" y="198" text-anchor="middle" class="t-impl t-small">⑦ 反馈闭环</text>
+        <text x="564" y="216" text-anchor="middle" class="t-muted t-small">ops_fault_ticket 台账分级</text>
+      </g>
+
+      <path d="M 654 205 L 780 205 L 780 258 L 340 258" class="ln-impl ln-dashed" marker-end="url(#ar11)"/>
+      <text x="560" y="250" text-anchor="middle" class="t-impl t-small">按需小版本：配置修正就地生效 / 产品缺陷进版本 / 真定制进 impl</text>
+      <rect x="200" y="244" width="140" height="28" rx="4" class="box"/>
+      <text x="270" y="262" text-anchor="middle" class="t-small">分层归位处置</text>
+    </svg>
+    <figcaption><b>图 9-1 · 实施流水线。</b>①–④ 是技术实施（约数周，取决于接口对接），⑤–⑦ 进入运行期。反馈闭环的关键动作是「分层归位」：每个问题先判定属于哪一层，再决定是改配置、出补丁版本还是做 impl 定制——与第 4 节的决策链同构。</figcaption>
+  </figure>
+
+  <h3>实施工艺包（随产品交付的文档件）</h3>
+  <ul>
+    <li><b>实施 checklist</b>：从装机到上线逐项打勾，每项带退出条件；</li>
+    <li><b>接口现状调研表</b>：进场首日摸底医保 / LIS 设备 / PACS / CA 现状与联系人；</li>
+    <li><b>配置手册</b>：全部 <code>sys_config</code> 键、字典模板、角色矩阵成册；</li>
+    <li><b>操作培训脚本</b>：8 角色 + 患者端（已具备，docs/培训脚本.md）。</li>
+  </ul>
+</section>
+
+<!-- ============ 10 路线图 ============ -->
+<section id="s10">
+  <h2><span class="no">10</span>产品化路线图</h2>
+  <p class="lead">三期递进，每期一个可验证的出口；峨眉山试点并行推进，实施经验反哺分层清单。</p>
+
+  <figure>
+    <svg viewBox="0 0 880 330" role="img" aria-label="产品化三期路线图：一期标准版可装第二家医院，二期发布与实施工艺，三期虚拟第二医院彩排；峨眉山试点并行反哺">
+      <defs>
+        <marker id="ar12" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+
+      <g>
+        <rect x="30" y="36" width="250" height="130" rx="4" class="box-std"/>
+        <text x="155" y="60" text-anchor="middle" class="t-std">一期 · 标准版成型</text>
+        <text x="46" y="84" class="t-small">· 种子数据三类分层清单</text>
+        <text x="46" y="103" class="t-small">· init-hospital 工具 + CSV 模板</text>
+        <text x="46" y="122" class="t-small">· 模块级功能开关（双路生效）</text>
+        <text x="46" y="141" class="t-small">· 品牌配置化 · impl 规约 ADR</text>
+        <text x="155" y="184" text-anchor="middle" class="t-std t-small">出口：标准版可装第二家医院</text>
+        <line x1="280" y1="100" x2="318" y2="100" class="ln" marker-end="url(#ar12)"/>
+      </g>
+      <g>
+        <rect x="322" y="36" width="240" height="130" rx="4" class="box"/>
+        <text x="442" y="60" text-anchor="middle" class="t-bold">二期 · 发布与实施工艺</text>
+        <text x="338" y="84" class="t-small">· 语义化版本，定 1.0.0</text>
+        <text x="338" y="103" class="t-small">· 发布打包脚本 + CHANGELOG</text>
+        <text x="338" y="122" class="t-small">· N-1→N 升级演练进 E2E</text>
+        <text x="338" y="141" class="t-small">· 实施工艺包三件套</text>
+        <text x="442" y="184" text-anchor="middle" class="t-muted t-small">出口：可交付、可升级</text>
+        <line x1="562" y1="100" x2="600" y2="100" class="ln" marker-end="url(#ar12)"/>
+      </g>
+      <g>
+        <rect x="604" y="36" width="250" height="130" rx="4" class="box-impl"/>
+        <text x="729" y="60" text-anchor="middle" class="t-impl">三期 · 虚拟第二医院彩排</text>
+        <text x="620" y="84" class="t-small">· 不同院名科室 · 关 2-3 个模块</text>
+        <text x="620" y="103" class="t-small">· 换一套字典 · 假医保适配器</text>
+        <text x="620" y="122" class="t-small">· impl 示例模块（V10000 + 定制页）</text>
+        <text x="620" y="141" class="t-small">· 全量 E2E 在该实例复跑</text>
+        <text x="729" y="184" text-anchor="middle" class="t-impl t-small">出口：标准+个性化路径被证明</text>
+      </g>
+
+      <!-- 并行轨 -->
+      <line x1="30" y1="220" x2="854" y2="220" class="ln ln-dashed" opacity="0.4"/>
+      <rect x="30" y="238" width="530" height="56" rx="4" class="box"/>
+      <text x="46" y="262" class="t-bold t-small">并行轨 · 峨眉山试点（第一个实施案例，规划 v15-B/C）</text>
+      <text x="46" y="281" class="t-muted t-small">安全基线 → 数据迁移 → 培训 → 试运行反馈（ops_fault_ticket）</text>
+      <path d="M 560 266 L 620 266 L 620 170" class="ln-impl ln-dashed" marker-end="url(#ar12)"/>
+      <text x="700" y="262" class="t-impl t-small">实施经验反哺：</text>
+      <text x="700" y="280" class="t-muted t-small">配置清单 / 工艺包实测修订</text>
+    </svg>
+    <figcaption><b>图 10-1 · 产品化三期与并行试点。</b>三期是「先能装、再能交付、最后证明」的递进：三期彩排通过（一个从未见过的"医院"完整装出来并跑绿全量 E2E），标准化模型才算闭环。峨眉山试点不等产品化——它本身就是第一个实施案例，其真实摩擦是最好的分层清单校验。</figcaption>
+  </figure>
+
+  <h3>验收口径</h3>
+  <ol>
+    <li>同一发布产物在两个「医院」实例上运行，无任何代码分叉；</li>
+    <li>第二家医院从裸机到可培训 ≤ 1 人日（不含外部接口联调）；</li>
+    <li>关闭模块后菜单与接口双失效，E2E 断言通过；</li>
+    <li>N-1 → N 升级演练：备份→前滚→回归全绿，实施段迁移无冲突；</li>
+    <li>全量 18 套 E2E 在虚拟第二医院实例复跑通过。</li>
+  </ol>
+</section>
+
+<footer style="border-top: 1px solid var(--line); padding-top: 18px; color: var(--muted); font-size: 12.5px;">
+  HIP 标准化平台图解 v1.0 · 2026-08-06 · 配套文本版：docs/产品化方案.md · 仓库：hip-platform
+</footer>
+
+</div>
