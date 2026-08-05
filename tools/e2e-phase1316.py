@@ -6,29 +6,11 @@ import datetime
 import urllib.error
 import urllib.parse
 import urllib.request
-
-BASE = 'http://localhost:8080/api'
-sys.stdout.reconfigure(encoding='utf-8')
+from e2elib import BASE, call, find_free_bed, login, ok, q  # noqa: E402
 
 
-def call(method, path, body=None, token=None, raw=False):
-    req = urllib.request.Request(BASE + path, method=method)
-    req.add_header('Content-Type', 'application/json')
-    if token:
-        req.add_header('Authorization', 'Bearer ' + token)
-    data = json.dumps(body).encode('utf-8') if body is not None else None
-    with urllib.request.urlopen(req, data=data) as resp:
-        body_bytes = resp.read()
-        return body_bytes.decode('utf-8') if raw else json.loads(body_bytes.decode('utf-8'))
 
-
-def ok(r, step):
-    assert r['code'] == 0, f'{step}: {r}'
-    return r['data']
-
-
-q = urllib.parse.quote
-t = ok(call('POST', '/auth/login', {'username': 'admin', 'password': 'admin123'}), '登录')['token']
+t = login()
 today = datetime.date.today().isoformat()
 
 # 准备：挂号→接诊→开检验+检查→收费
@@ -103,14 +85,7 @@ assert next(x for x in ws2['orders'] if x['orderType'] == 'EXAM')['status'] == '
 print('[十四-2] RIS 登记→报告→审核→医嘱执行 OK')
 
 # ---- 十五期：手麻 ----
-wards = [d for d in ok(call('GET', '/system/depts', token=t), '科室') if d['type'] == 'NURSING']
-free = None
-for w in wards:
-    beds = ok(call('GET', f"/inpatient/beds?wardId={w['id']}", token=t), '床')
-    free = next((b for b in beds if b['status'] == 'FREE'), None)
-    if free:
-        break
-assert free, '无空床（请先清理在院测试数据）'
+free = find_free_bed(t)
 adm = ok(call('POST', '/inpatient/admissions', {'patientId': 2, 'deptId': 2, 'bedId': free['id'],
                                                 'deposit': 0, 'payMethod': 'CASH'}, t), '入院')
 ok(call('POST', '/inpatient/surgeries', {'admissionId': adm['id'], 'procedureName': '腹腔镜胆囊切除术',

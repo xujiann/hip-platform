@@ -5,35 +5,15 @@ import json
 import sys
 import urllib.parse
 import urllib.request
+from e2elib import BASE, call, find_free_bed, login, ok, q  # noqa: E402
 
-BASE = 'http://localhost:8080/api'
-sys.stdout.reconfigure(encoding='utf-8')
-
-
-def call(method, path, body=None, token=None):
-    req = urllib.request.Request(BASE + path, method=method)
-    req.add_header('Content-Type', 'application/json')
-    if token:
-        req.add_header('Authorization', 'Bearer ' + token)
-    data = json.dumps(body).encode('utf-8') if body is not None else None
-    try:
-        with urllib.request.urlopen(req, data=data) as resp:
-            return json.loads(resp.read().decode('utf-8'))
-    except urllib.error.HTTPError as e:
-        raise AssertionError(f'{method} {path} -> HTTP {e.code}: {e.read().decode("utf-8", "replace")[:300]}')
-
-
-def ok(r, step):
-    assert r['code'] == 0, f'{step}: {r}'
-    return r['data']
 
 
 def close(a, b, step):
     assert abs(float(a) - float(b)) < 0.01, f'{step}: {a} != {b}'
 
 
-q = urllib.parse.quote
-t = ok(call('POST', '/auth/login', {'username': 'admin', 'password': 'admin123'}), '登录')['token']
+t = login()
 today = datetime.date.today().isoformat()
 stamp = datetime.datetime.now().strftime('%H%M%S')
 
@@ -118,14 +98,7 @@ ok(call('POST', '/insurance/catalog', {'itemType': 'ITEM', 'itemCode': 'C0203', 
 print('[医保-6] 目录调整即时生效 OK（雾化吸入 C→B 后按乙类分割，居民 70% 统筹 11.34）')
 
 # 住院医保：入院→出院结算走 YB 通道→对账含住院单
-wards = [d for d in ok(call('GET', '/system/depts', token=t), '科室') if d['type'] == 'NURSING']
-free = None
-for w in wards:
-    beds = ok(call('GET', f"/inpatient/beds?wardId={w['id']}", token=t), '床')
-    free = next((b for b in beds if b['status'] == 'FREE'), None)
-    if free:
-        break
-assert free, '无空床'
+free = find_free_bed(t)
 adm = ok(call('POST', '/inpatient/admissions', {'patientId': pat['id'], 'deptId': 2, 'bedId': free['id'],
                                                 'deposit': 0, 'payMethod': 'CASH'}, t), '入院')
 settle = ok(call('POST', f"/inpatient/admissions/{adm['id']}/discharge?payMethod=YB", {}, t), '医保出院')

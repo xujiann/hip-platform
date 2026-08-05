@@ -6,46 +6,19 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-
-BASE = 'http://localhost:8080/api'
-sys.stdout.reconfigure(encoding='utf-8')
+from e2elib import BASE, call, discharge_cleanup, find_free_bed, new_patient, login, ok, q  # noqa: E402
 
 
-def call(method, path, body=None, token=None):
-    req = urllib.request.Request(BASE + path, method=method)
-    req.add_header('Content-Type', 'application/json')
-    if token:
-        req.add_header('Authorization', 'Bearer ' + token)
-    data = json.dumps(body).encode('utf-8') if body is not None else None
-    try:
-        with urllib.request.urlopen(req, data=data) as resp:
-            return json.loads(resp.read().decode('utf-8'))
-    except urllib.error.HTTPError as e:
-        raise AssertionError(f'{method} {path} -> HTTP {e.code}: {e.read().decode("utf-8", "replace")[:300]}')
 
-
-def ok(r, step):
-    assert r['code'] == 0, f'{step}: {r}'
-    return r['data']
-
-
-q = urllib.parse.quote
-t = ok(call('POST', '/auth/login', {'username': 'admin', 'password': 'admin123'}), '登录')['token']
+t = login()
 today = datetime.date.today().isoformat()
 stamp = datetime.datetime.now().strftime('%H%M%S')
 
 # ============ 三十九期 ============
 
 # 风险评估：Braden 10 → 高危；Morse 30 → 中危；越界拦截；趋势与高危预警
-pat = ok(call('POST', '/patients', {'name': '评估E2E' + stamp, 'sex': 'F'}, t), '建患者')
-wards = [d for d in ok(call('GET', '/system/depts', token=t), '科室') if d['type'] == 'NURSING']
-free = None
-for w in wards:
-    beds = ok(call('GET', f"/inpatient/beds?wardId={w['id']}", token=t), '床')
-    free = next((b for b in beds if b['status'] == 'FREE'), None)
-    if free:
-        break
-assert free, '无空床'
+pat = new_patient(t, '评估E2E' + stamp, 'F')
+free = find_free_bed(t)
 adm = ok(call('POST', '/inpatient/admissions', {'patientId': pat['id'], 'deptId': 2, 'bedId': free['id'],
                                                 'diagIcd': 'I63.9', 'diagName': '脑梗死',
                                                 'deposit': 0, 'payMethod': 'CASH'}, t), '入院')
@@ -135,6 +108,6 @@ assert all(h['pay_method'] == 'CASH' for h in cash_hits)
 print(f"[四十-4] 结账明细检索 OK（今日 {len(hits)} 笔，按支付方式过滤生效）")
 
 # 收尾：出院释放床位
-ok(call('POST', f"/inpatient/admissions/{adm['id']}/discharge", {}, t), '收尾出院')
+discharge_cleanup(t, adm['id'])
 
 print('\n=== 三十九至四十期 E2E 全部通过 ===')

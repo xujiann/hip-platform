@@ -6,28 +6,9 @@ import sys
 import urllib.parse
 import urllib.request
 
-BASE = 'http://localhost:8080/api'
-sys.stdout.reconfigure(encoding='utf-8')
 
 
-def call(method, path, body=None, token=None, raw=False):
-    req = urllib.request.Request(BASE + path, method=method)
-    req.add_header('Content-Type', 'application/json')
-    if token:
-        req.add_header('Authorization', 'Bearer ' + token)
-    data = json.dumps(body).encode('utf-8') if body is not None else None
-    with urllib.request.urlopen(req, data=data) as resp:
-        b = resp.read().decode('utf-8')
-        return b if raw else json.loads(b)
-
-
-def ok(r, step):
-    assert r['code'] == 0, f'{step}: {r}'
-    return r['data']
-
-
-q = urllib.parse.quote
-t = ok(call('POST', '/auth/login', {'username': 'admin', 'password': 'admin123'}), '登录')['token']
+t = login()
 
 # 十八期：机构参数化（公开配置匿名可读，院名通用化）
 cfg = ok(call('GET', '/config/public'), '公开配置')
@@ -73,6 +54,7 @@ print(f"[二十-2] PACS 配置接入 OK（viewer: {pacs['viewerUrl']}）")
 
 # 二十一期：迁移演练（模板导入，幂等）
 import os
+from e2elib import BASE, call, login, ok, q  # noqa: E402
 env = dict(os.environ, PYTHONIOENCODING='utf-8')
 r = subprocess.run([sys.executable, 'tools/import-patients.py', 'tools/migrate-templates/patients.csv'],
                    capture_output=True, text=True, encoding='utf-8', errors='replace', env=env)

@@ -6,25 +6,8 @@ import subprocess
 import sys
 import urllib.parse
 import urllib.request
+from e2elib import BASE, call, discharge_cleanup, find_free_bed, new_patient, login, ok, q  # noqa: E402
 
-BASE = 'http://localhost:8080/api'
-sys.stdout.reconfigure(encoding='utf-8')
-
-
-def call(method, path, body=None, token=None, raw=False):
-    req = urllib.request.Request(BASE + path, method=method)
-    req.add_header('Content-Type', 'application/json')
-    if token:
-        req.add_header('Authorization', 'Bearer ' + token)
-    data = json.dumps(body).encode('utf-8') if body is not None else None
-    with urllib.request.urlopen(req, data=data) as resp:
-        b = resp.read().decode('utf-8')
-        return b if raw else json.loads(b)
-
-
-def ok(r, step):
-    assert r['code'] == 0, f'{step}: {r}'
-    return r['data']
 
 
 def wsl(cmd):
@@ -32,8 +15,7 @@ def wsl(cmd):
                           capture_output=True, text=True, encoding='utf-8', errors='replace')
 
 
-q = urllib.parse.quote
-t = ok(call('POST', '/auth/login', {'username': 'admin', 'password': 'admin123'}), '登录')['token']
+t = login()
 today = datetime.date.today().isoformat()
 stamp = datetime.datetime.now().strftime('%H%M%S')
 
@@ -90,7 +72,7 @@ print(f'[廿二-3] {drill}→台账+告警消除 OK')
 ok(call('PUT', '/outpatient/abx-privileges/1?level=1', token=t), '复位处方权')
 
 # 准备：专用测试患者 + 挂号→接诊→开单（静脉青霉素类+检查+检验）→收费
-pat = ok(call('POST', '/patients', {'name': 'E2E廿二' + stamp, 'sex': 'M'}, t), '建患者')
+pat = new_patient(t, 'E2E廿二' + stamp, 'M')
 pid = pat['id']
 sch = ok(call('POST', '/outpatient/schedules', {'deptId': 1, 'scheduleDate': today, 'fee': 5, 'capacity': 30}, t), '排班')
 reg = ok(call('POST', '/outpatient/registrations', {'patientId': pid, 'scheduleId': sch['id']}, t), '挂号')
@@ -145,14 +127,7 @@ ok(call('POST', '/queue-center/LAB/call-next', {}, t), '检验叫号')
 print('[廿三-3] 叫号扩展 OK（药房/检查/检验三队列均可叫号，检查预约联动 CALLED）')
 
 # 合理用血：全状态机（含违规拦截）
-wards = [d for d in ok(call('GET', '/system/depts', token=t), '科室') if d['type'] == 'NURSING']
-free = None
-for w in wards:
-    beds = ok(call('GET', f"/inpatient/beds?wardId={w['id']}", token=t), '床')
-    free = next((b for b in beds if b['status'] == 'FREE'), None)
-    if free:
-        break
-assert free, '无空床'
+free = find_free_bed(t)
 adm = ok(call('POST', '/inpatient/admissions', {'patientId': pid, 'deptId': 2, 'bedId': free['id'],
                                                 'diagIcd': 'I21.0', 'diagName': '急性心肌梗死',
                                                 'deposit': 0, 'payMethod': 'CASH'}, t), '入院')
@@ -356,6 +331,6 @@ assert len(odr['metricSnapshots']) >= 9
 print(f"[廿六-4] ODR OK（今日门诊 {odr['outpToday']}，在院 {odr['inHospital']}，指标快照 {len(odr['metricSnapshots'])} 项）")
 
 # 收尾：出院释放床位（避免反复运行占满病区）
-ok(call('POST', f"/inpatient/admissions/{adm['id']}/discharge", {}, t), '收尾出院')
+discharge_cleanup(t, adm['id'])
 
 print('\n=== 二十二至二十六期 E2E 全部通过 ===')

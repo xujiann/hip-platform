@@ -6,28 +6,11 @@ import sys
 import datetime
 import urllib.parse
 import urllib.request
-
-BASE = 'http://localhost:8080/api'
-sys.stdout.reconfigure(encoding='utf-8')
+from e2elib import BASE, call, login, ok, q  # noqa: E402
 
 
-def call(method, path, body=None, token=None):
-    req = urllib.request.Request(BASE + path, method=method)
-    req.add_header('Content-Type', 'application/json')
-    if token:
-        req.add_header('Authorization', 'Bearer ' + token)
-    data = json.dumps(body).encode('utf-8') if body is not None else None
-    with urllib.request.urlopen(req, data=data) as resp:
-        return json.loads(resp.read().decode('utf-8'))
 
-
-def ok(r, step):
-    assert r['code'] == 0, f'{step}: {r}'
-    return r['data']
-
-
-q = urllib.parse.quote
-t = ok(call('POST', '/auth/login', {'username': 'admin', 'password': 'admin123'}), '登录')['token']
+t = login()
 today = datetime.date.today().isoformat()
 
 # 准备一个在院患者

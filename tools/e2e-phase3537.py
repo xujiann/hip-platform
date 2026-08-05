@@ -8,31 +8,11 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-
-BASE = 'http://localhost:8080/api'
-sys.stdout.reconfigure(encoding='utf-8')
+from e2elib import BASE, call, discharge_cleanup, find_free_bed, new_patient, login, ok, q  # noqa: E402
 
 
-def call(method, path, body=None, token=None):
-    req = urllib.request.Request(BASE + path, method=method)
-    req.add_header('Content-Type', 'application/json')
-    if token:
-        req.add_header('Authorization', 'Bearer ' + token)
-    data = json.dumps(body).encode('utf-8') if body is not None else None
-    try:
-        with urllib.request.urlopen(req, data=data) as resp:
-            return json.loads(resp.read().decode('utf-8'))
-    except urllib.error.HTTPError as e:
-        raise AssertionError(f'{method} {path} -> HTTP {e.code}: {e.read().decode("utf-8", "replace")[:300]}')
 
-
-def ok(r, step):
-    assert r['code'] == 0, f'{step}: {r}'
-    return r['data']
-
-
-q = urllib.parse.quote
-t = ok(call('POST', '/auth/login', {'username': 'admin', 'password': 'admin123'}), '登录')['token']
+t = login()
 today = datetime.date.today().isoformat()
 month = today[:7]
 stamp = datetime.datetime.now().strftime('%H%M%S')
@@ -97,15 +77,8 @@ print(f"[卅五-3] 价格规则留痕（{old_price}→{old_price + 1}→调回�
 # ============ 三十六期：院感专项与窗口科研 ============
 
 # 三管监测：置管→日评估→判定感染→千日率；另一根拔管
-pat = ok(call('POST', '/patients', {'name': '三管E2E' + stamp, 'sex': 'M'}, t), '建患者')
-wards = [d for d in ok(call('GET', '/system/depts', token=t), '科室') if d['type'] == 'NURSING']
-free = None
-for w in wards:
-    beds = ok(call('GET', f"/inpatient/beds?wardId={w['id']}", token=t), '床')
-    free = next((b for b in beds if b['status'] == 'FREE'), None)
-    if free:
-        break
-assert free, '无空床'
+pat = new_patient(t, '三管E2E' + stamp, 'M')
+free = find_free_bed(t)
 adm = ok(call('POST', '/inpatient/admissions', {'patientId': pat['id'], 'deptId': 2, 'bedId': free['id'],
                                                 'diagIcd': 'J96.0', 'diagName': '呼吸衰竭',
                                                 'deposit': 0, 'payMethod': 'CASH'}, t), '入院')
@@ -154,6 +127,6 @@ assert os.path.exists('docs/验收/技术偏离表.csv')
 print(f"[卅七-1] 封版工具链 OK（演示引导幂等 + 技术偏离表导出：{r2.stdout.strip().splitlines()[0]}）")
 
 # 收尾：出院释放床位
-ok(call('POST', f"/inpatient/admissions/{adm['id']}/discharge", {}, t), '收尾出院')
+discharge_cleanup(t, adm['id'])
 
 print('\n=== 三十五至三十七期 E2E 全部通过 ===')

@@ -7,28 +7,11 @@ import json
 import sys
 import urllib.parse
 import urllib.request
-
-BASE = 'http://localhost:8080/api'
-sys.stdout.reconfigure(encoding='utf-8')
+from e2elib import BASE, call, login, ok, q  # noqa: E402
 
 
-def call(method, path, body=None, token=None):
-    req = urllib.request.Request(BASE + path, method=method)
-    req.add_header('Content-Type', 'application/json')
-    if token:
-        req.add_header('Authorization', 'Bearer ' + token)
-    data = json.dumps(body).encode('utf-8') if body is not None else None
-    with urllib.request.urlopen(req, data=data) as resp:
-        return json.loads(resp.read().decode('utf-8'))
 
-
-def ok(r, step):
-    assert r['code'] == 0, f'{step} 失败: {r}'
-    return r['data']
-
-
-q = urllib.parse.quote
-token = ok(call('POST', '/auth/login', {'username': 'admin', 'password': 'admin123'}), '登录')['token']
+token = login()
 
 amx = ok(call('GET', '/masterdata/drugs?keyword=' + q('阿莫西林'), token=token), '药品')[0]
 stock0 = amx['stock']

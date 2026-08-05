@@ -8,32 +8,11 @@ import datetime
 import urllib.error
 import urllib.parse
 import urllib.request
-
-BASE = 'http://localhost:8080/api'
-sys.stdout.reconfigure(encoding='utf-8')
+from e2elib import BASE, call, login, ok, q  # noqa: E402
 
 
-def call(method, path, body=None, token=None):
-    req = urllib.request.Request(BASE + path, method=method)
-    req.add_header('Content-Type', 'application/json')
-    if token:
-        req.add_header('Authorization', 'Bearer ' + token)
-    data = json.dumps(body).encode('utf-8') if body is not None else None
-    try:
-        with urllib.request.urlopen(req, data=data) as resp:
-            return resp.status, json.loads(resp.read().decode('utf-8'))
-    except urllib.error.HTTPError as e:
-        return e.code, None
 
-
-def ok(r, step):
-    status, body = r
-    assert status == 200 and body and body['code'] == 0, f'{step} 失败: {status} {body}'
-    return body['data']
-
-
-q = urllib.parse.quote
-t = ok(call('POST', '/auth/login', {'username': 'admin', 'password': 'admin123'}), '登录')['token']
+t = login()
 today = datetime.date.today().isoformat()
 
 # 1 CDR 全量同步

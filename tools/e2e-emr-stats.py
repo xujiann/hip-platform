@@ -3,26 +3,11 @@
 import json
 import sys
 import urllib.request
-
-BASE = 'http://localhost:8080/api'
-sys.stdout.reconfigure(encoding='utf-8')
+from e2elib import BASE, call, login, ok, q  # noqa: E402
 
 
-def call(m, p, b=None, t=None):
-    r = urllib.request.Request(BASE + p, method=m)
-    r.add_header('Content-Type', 'application/json')
-    if t:
-        r.add_header('Authorization', 'Bearer ' + t)
-    d = json.dumps(b).encode() if b is not None else None
-    return json.loads(urllib.request.urlopen(r, data=d).read().decode())
 
-
-def ok(r, s):
-    assert r['code'] == 0, f'{s}: {r}'
-    return r['data']
-
-
-t = ok(call('POST', '/auth/login', {'username': 'admin', 'password': 'admin123'}), '登录')['token']
+t = login()
 
 ward = [d for d in ok(call('GET', '/system/depts', t=t), '科室') if d['type'] == 'NURSING'][0]
 free = next(b for b in ok(call('GET', f"/inpatient/beds?wardId={ward['id']}", t=t), '床位') if b['status'] == 'FREE')

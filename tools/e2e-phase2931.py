@@ -6,38 +6,18 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-
-BASE = 'http://localhost:8080/api'
-sys.stdout.reconfigure(encoding='utf-8')
+from e2elib import BASE, call, discharge_cleanup, find_free_bed, login, ok, q  # noqa: E402
 
 
-def call(method, path, body=None, token=None):
-    req = urllib.request.Request(BASE + path, method=method)
-    req.add_header('Content-Type', 'application/json')
-    if token:
-        req.add_header('Authorization', 'Bearer ' + token)
-    data = json.dumps(body).encode('utf-8') if body is not None else None
-    try:
-        with urllib.request.urlopen(req, data=data) as resp:
-            return json.loads(resp.read().decode('utf-8'))
-    except urllib.error.HTTPError as e:
-        raise AssertionError(f'{method} {path} -> HTTP {e.code}: {e.read().decode("utf-8", "replace")[:300]}')
 
-
-def ok(r, step):
-    assert r['code'] == 0, f'{step}: {r}'
-    return r['data']
-
-
-q = urllib.parse.quote
-login = call('POST', '/auth/login', {'username': 'admin', 'password': 'admin123'})
-t = ok(login, '登录')['token']
+login_resp = call('POST', '/auth/login', {'username': 'admin', 'password': 'admin123'})
+t = ok(login_resp, '登录')['token']
 today = datetime.date.today().isoformat()
 stamp = datetime.datetime.now().strftime('%H%M%S')
 
 # ============ 三十一期（先验登录附加字段） ============
-assert 'passwordAgeDays' in login['data'] and 'passwordExpireWarning' in login['data'], login['data']
-print(f"[卅一-1] 密码有效期提醒 OK（口令已使用 {login['data']['passwordAgeDays']} 天，预警={login['data']['passwordExpireWarning']}）")
+assert 'passwordAgeDays' in login_resp['data'] and 'passwordExpireWarning' in login_resp['data'], login_resp['data']
+print(f"[卅一-1] 密码有效期提醒 OK（口令已使用 {login_resp['data']['passwordAgeDays']} 天，预警={login_resp['data']['passwordExpireWarning']}）")
 
 # ============ 二十九期：患者服务与支付闭环 ============
 
@@ -125,14 +105,7 @@ assert len(ok(call('GET', '/mrstats/icd-composition', token=t), 'ICD构成')) >=
 print(f"[卅-1] 病案统计 OK（出院 {ov['discharged']} 份，编码率 {ov['codedRate']}%，疾病谱 TOP{len(top)}）")
 
 # 手术 + 麻醉记录单（术中时间轴 + PACU 苏醒判定）
-wards = [d for d in ok(call('GET', '/system/depts', token=t), '科室') if d['type'] == 'NURSING']
-free = None
-for w in wards:
-    beds = ok(call('GET', f"/inpatient/beds?wardId={w['id']}", token=t), '床')
-    free = next((b for b in beds if b['status'] == 'FREE'), None)
-    if free:
-        break
-assert free, '无空床'
+free = find_free_bed(t)
 adm = ok(call('POST', '/inpatient/admissions', {'patientId': pat['id'], 'deptId': 2, 'bedId': free['id'],
                                                 'diagIcd': 'K80.2', 'diagName': '胆囊结石',
                                                 'deposit': 0, 'payMethod': 'CASH'}, t), '入院')
@@ -209,6 +182,6 @@ assert all(any(k in s['path'] for k in keywords) for s in sens), sens[:3]
 print(f"[卅一-3] 敏感操作审计 OK（{len(sens)} 条，含支付作废/用户管理等路径）")
 
 # 收尾：出院释放床位
-ok(call('POST', f"/inpatient/admissions/{adm['id']}/discharge", {}, t), '收尾出院')
+discharge_cleanup(t, adm['id'])
 
 print('\n=== 二十九至三十一期 E2E 全部通过 ===')

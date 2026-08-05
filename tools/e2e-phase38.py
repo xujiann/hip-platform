@@ -6,27 +6,8 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
+from e2elib import BASE, call, login, ok, q  # noqa: E402
 
-BASE = 'http://localhost:8080/api'
-sys.stdout.reconfigure(encoding='utf-8')
-
-
-def call(method, path, body=None, token=None):
-    req = urllib.request.Request(BASE + path, method=method)
-    req.add_header('Content-Type', 'application/json')
-    if token:
-        req.add_header('Authorization', 'Bearer ' + token)
-    data = json.dumps(body).encode('utf-8') if body is not None else None
-    try:
-        with urllib.request.urlopen(req, data=data) as resp:
-            return json.loads(resp.read().decode('utf-8'))
-    except urllib.error.HTTPError as e:
-        raise AssertionError(f'{method} {path} -> HTTP {e.code}: {e.read().decode("utf-8", "replace")[:200]}')
-
-
-def ok(r, step):
-    assert r['code'] == 0, f'{step}: {r}'
-    return r['data']
 
 
 # 引导演示账号（幂等）

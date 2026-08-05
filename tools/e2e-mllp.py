@@ -6,24 +6,8 @@ import sys
 import datetime
 import urllib.parse
 import urllib.request
+from e2elib import BASE, call, login, ok, q  # noqa: E402
 
-BASE = 'http://localhost:8080/api'
-sys.stdout.reconfigure(encoding='utf-8')
-
-
-def call(method, path, body=None, token=None):
-    req = urllib.request.Request(BASE + path, method=method)
-    req.add_header('Content-Type', 'application/json')
-    if token:
-        req.add_header('Authorization', 'Bearer ' + token)
-    data = json.dumps(body).encode('utf-8') if body is not None else None
-    with urllib.request.urlopen(req, data=data) as resp:
-        return json.loads(resp.read().decode('utf-8'))
-
-
-def ok(r, step):
-    assert r['code'] == 0, f'{step}: {r}'
-    return r['data']
 
 
 def mllp_send(payload: str) -> str:
@@ -38,8 +22,7 @@ def mllp_send(payload: str) -> str:
         return buf.split(b'\x0b', 1)[-1].split(b'\x1c', 1)[0].decode('utf-8')
 
 
-q = urllib.parse.quote
-t = ok(call('POST', '/auth/login', {'username': 'admin', 'password': 'admin123'}), '登录')['token']
+t = login()
 today = datetime.date.today().isoformat()
 
 # 准备：挂号→接诊→开检验→收费

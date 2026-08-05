@@ -6,31 +6,11 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-
-BASE = 'http://localhost:8080/api'
-sys.stdout.reconfigure(encoding='utf-8')
+from e2elib import BASE, call, discharge_cleanup, find_free_bed, new_patient, login, ok, q  # noqa: E402
 
 
-def call(method, path, body=None, token=None):
-    req = urllib.request.Request(BASE + path, method=method)
-    req.add_header('Content-Type', 'application/json')
-    if token:
-        req.add_header('Authorization', 'Bearer ' + token)
-    data = json.dumps(body).encode('utf-8') if body is not None else None
-    try:
-        with urllib.request.urlopen(req, data=data) as resp:
-            return json.loads(resp.read().decode('utf-8'))
-    except urllib.error.HTTPError as e:
-        raise AssertionError(f'{method} {path} -> HTTP {e.code}: {e.read().decode("utf-8", "replace")[:300]}')
 
-
-def ok(r, step):
-    assert r['code'] == 0, f'{step}: {r}'
-    return r['data']
-
-
-q = urllib.parse.quote
-t = ok(call('POST', '/auth/login', {'username': 'admin', 'password': 'admin123'}), '登录')['token']
+t = login()
 today = datetime.date.today().isoformat()
 stamp = datetime.datetime.now().strftime('%H%M%S')
 
@@ -98,7 +78,7 @@ print('[卅二-4] 制度文件库 OK（上传→检索→在线预览）')
 
 # ============ 三十三期：护理与院感精细化 ============
 
-pat = ok(call('POST', '/patients', {'name': '报卡E2E' + stamp, 'sex': 'M'}, t), '建患者')
+pat = new_patient(t, '报卡E2E' + stamp, 'M')
 r = call('POST', '/infection/cards', {'patientId': pat['id'], 'diseaseName': 'x', 'cardClass': 'X'}, t)
 assert r['code'] == 4700
 ok(call('POST', '/infection/cards', {'patientId': pat['id'], 'diseaseName': '肺结核',
@@ -111,14 +91,7 @@ ok(call('PUT', f"/infection/cards/{card['id']}/submit", token=t), '上报')
 print('[卅三-1] 传染病报卡闭环 OK（报卡→审核→上报，越级 4703，类别校验 4700）')
 
 # 体温日历 + 术后发热监测（入院→手术完成→录 38.5℃ 体征）
-wards = [d for d in ok(call('GET', '/system/depts', token=t), '科室') if d['type'] == 'NURSING']
-free = None
-for w in wards:
-    beds = ok(call('GET', f"/inpatient/beds?wardId={w['id']}", token=t), '床')
-    free = next((b for b in beds if b['status'] == 'FREE'), None)
-    if free:
-        break
-assert free, '无空床'
+free = find_free_bed(t)
 adm = ok(call('POST', '/inpatient/admissions', {'patientId': pat['id'], 'deptId': 2, 'bedId': free['id'],
                                                 'diagIcd': 'A15.0', 'diagName': '肺结核',
                                                 'deposit': 0, 'payMethod': 'CASH'}, t), '入院')
@@ -216,6 +189,6 @@ assert len(logs) >= 1
 print('[卅四-4] 适配器路由 OK（ORU→文件落地留痕，停用拦截 4712）')
 
 # 收尾：出院释放床位
-ok(call('POST', f"/inpatient/admissions/{adm['id']}/discharge", {}, t), '收尾出院')
+discharge_cleanup(t, adm['id'])
 
 print('\n=== 三十二至三十四期 E2E 全部通过 ===')
