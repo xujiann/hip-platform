@@ -53,4 +53,25 @@ if not pkgs:
 else:
     print(f'体检套餐：已有 {len(pkgs)} 个，跳过')
 
+# 三十八期：多角色演示账号（幂等）
+DEMO_USERS = [
+    ('doctor01', '演示门诊医生', ['DOCTOR_OUTP']),
+    ('nurse01', '演示护士', ['NURSE']),
+    ('cashier01', '演示收费员', ['CASHIER']),
+    ('pharm01', '演示药师', ['PHARMACIST']),
+    ('tech01', '演示医技', ['TECHNICIAN']),
+    ('quality01', '演示质控院感', ['QUALITY']),
+    ('ops01', '演示运营后勤', ['OPERATION']),
+]
+existing = {u['username'] for u in call('GET', '/system/users?page=0&size=100', t=t)['data']['records']}
+created = 0
+for username, real_name, roles in DEMO_USERS:
+    if username in existing:
+        continue
+    r = call('POST', '/system/users', {'username': username, 'password': 'Demo1234',
+                                       'realName': real_name, 'roleCodes': roles}, t)
+    if r['code'] == 0:
+        created += 1
+print(f'演示账号：新建 {created} 个（统一密码 Demo1234，含医生/护士/收费/药师/医技/质控/运营）')
+
 print('演示数据引导完成 ✔')
