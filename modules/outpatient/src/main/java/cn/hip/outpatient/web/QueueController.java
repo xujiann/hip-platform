@@ -27,7 +27,7 @@ public class QueueController {
     private final SysDeptRepository deptRepository;
     private final EntityManager entityManager;
 
-    /** 大屏队列：某科室今日候诊+已叫号 */
+    /** 大屏队列：某科室今日候诊+已叫号+过号 */
     @GetMapping
     public R<Map<String, Object>> queue(@RequestParam Long deptId) {
         var today = registrationRepository.findByVisitDateOrderByIdDesc(LocalDate.now()).stream()
@@ -39,7 +39,40 @@ public class QueueController {
                 .sorted((a, b) -> a.getRegNo() - b.getRegNo()).map(this::brief).toList());
         m.put("called", today.stream().filter(r -> "CALLED".equals(r.getStatus())).map(this::brief).toList());
         m.put("visiting", today.stream().filter(r -> "VISITED".equals(r.getStatus())).map(this::brief).toList());
+        m.put("passed", today.stream().filter(r -> "PASSED".equals(r.getStatus()))
+                .sorted((a, b) -> a.getRegNo() - b.getRegNo()).map(this::brief).toList());
         return R.ok(m);
+    }
+
+    /** 过号：叫号未到 → 移入过号队列（大屏显示，可重呼） */
+    @PostMapping("/pass")
+    @Transactional
+    public R<Void> pass(@RequestParam Long registrationId) {
+        var reg = registrationRepository.findById(registrationId).orElse(null);
+        if (reg == null || !"CALLED".equals(reg.getStatus())) {
+            return R.fail(3302, "仅已叫号未到的患者可过号");
+        }
+        reg.setStatus("PASSED");
+        registrationRepository.save(reg);
+        return R.ok();
+    }
+
+    /** 重呼过号患者：过号队列 → 重新叫号（顺延效果：不占候诊队首） */
+    @PostMapping("/recall")
+    @Transactional
+    public R<Map<String, Object>> recall(@RequestParam Long registrationId) {
+        var reg = registrationRepository.findById(registrationId).orElse(null);
+        if (reg == null || !"PASSED".equals(reg.getStatus())) {
+            return R.fail(3303, "仅过号患者可重呼");
+        }
+        reg.setStatus("CALLED");
+        registrationRepository.save(reg);
+        entityManager.createNativeQuery(
+                        "insert into outp_call_log(registration_id, dept_id, reg_no, called_at) values (?,?,?,?)")
+                .setParameter(1, reg.getId()).setParameter(2, reg.getDeptId())
+                .setParameter(3, reg.getRegNo()).setParameter(4, Instant.now())
+                .executeUpdate();
+        return R.ok(brief(reg));
     }
 
     /** 叫下一号：取候诊最小号序置为 CALLED 并留痕 */

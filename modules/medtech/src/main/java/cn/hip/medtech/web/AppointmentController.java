@@ -74,4 +74,35 @@ public class AppointmentController {
                 "update med_appointment set status = 'DONE' where id = ? and status in ('BOOKED','CALLED')", id);
         return n == 0 ? R.fail(4512, "预约不存在或已完成") : R.ok();
     }
+
+    public record RescheduleReq(String slotDate, String period) {}
+
+    /** 改约：直接选择新时段，重排顺序号 */
+    @PutMapping("/{id}/reschedule")
+    @Transactional
+    public R<Map<String, Object>> reschedule(@PathVariable Long id, @RequestBody RescheduleReq req) {
+        if (!"AM".equals(req.period()) && !"PM".equals(req.period())) return R.fail(4510, "时段只能为 AM/PM");
+        Integer exists = jdbc.queryForObject(
+                "select count(*) from med_appointment where id = ? and status = 'BOOKED'", Integer.class, id);
+        if (exists == null || exists == 0) return R.fail(4513, "仅未叫号的预约可改约");
+        Integer seq = jdbc.queryForObject("""
+                select coalesce(max(seq_no), 0) + 1 from med_appointment where slot_date = ?::date and period = ?
+                """, Integer.class, req.slotDate(), req.period());
+        jdbc.update("update med_appointment set slot_date = ?::date, period = ?, seq_no = ? where id = ?",
+                req.slotDate(), req.period(), seq, id);
+        return R.ok(Map.of("seqNo", seq));
+    }
+
+    public record BatchCancelReq(List<Long> ids) {}
+
+    /** 批量取消预约 */
+    @PostMapping("/batch-cancel")
+    @Transactional
+    public R<Map<String, Object>> batchCancel(@RequestBody BatchCancelReq req) {
+        int n = 0;
+        for (Long id : req.ids()) {
+            n += jdbc.update("update med_appointment set status = 'CANCELLED' where id = ? and status = 'BOOKED'", id);
+        }
+        return R.ok(Map.of("cancelled", n));
+    }
 }

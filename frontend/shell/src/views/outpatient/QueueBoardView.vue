@@ -15,8 +15,14 @@
         <h4>请就诊</h4>
         <div v-for="c in called" :key="c.registrationId as number" class="big called">
           {{ c.regNo }} 号 · {{ maskName(c.patientName as string) }}
+          <el-button link type="warning" size="small" @click="pass(c)">过号</el-button>
         </div>
         <el-empty v-if="!called.length" description="—" :image-size="40" />
+        <h4 style="margin-top: 12px">过号（{{ passed.length }} 人）</h4>
+        <div v-for="p in passed" :key="p.registrationId as number" class="row passed-row">
+          {{ p.regNo }} 号 · {{ maskName(p.patientName as string) }}
+          <el-button link type="primary" size="small" @click="recall(p)">重呼</el-button>
+        </div>
       </div>
       <div class="col">
         <h4>候诊（{{ waiting.length }} 人）</h4>
@@ -45,6 +51,7 @@ const deptName = ref('')
 const waiting = ref<Record<string, unknown>[]>([])
 const called = ref<Record<string, unknown>[]>([])
 const visiting = ref<Record<string, unknown>[]>([])
+const passed = ref<Record<string, unknown>[]>([])
 let timer: number | undefined
 
 function maskName(name: string) {
@@ -60,6 +67,18 @@ async function load() {
   waiting.value = d.waiting
   called.value = d.called
   visiting.value = d.visiting
+  passed.value = d.passed ?? []
+}
+
+async function pass(row: Record<string, unknown>) {
+  await client.post('/outpatient/queue/pass', null, { params: { registrationId: row.registrationId } })
+  await load()
+}
+
+async function recall(row: Record<string, unknown>) {
+  const resp = await client.post('/outpatient/queue/recall', null, { params: { registrationId: row.registrationId } })
+  ElMessage.success(`重呼 ${resp.data.data.regNo} 号`)
+  await load()
 }
 
 async function callNext() {

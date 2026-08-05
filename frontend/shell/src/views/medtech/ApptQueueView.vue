@@ -25,15 +25,21 @@
           <el-date-picker v-model="queryDate" type="date" value-format="YYYY-MM-DD" size="small"
                           style="width: 140px; margin-left: 8px" @change="loadAppts" />
         </h4>
-        <el-table :data="appts" size="small" border>
+        <el-button size="small" type="danger" :disabled="!selection.length" @click="batchCancel"
+                   style="margin-bottom: 6px">批量取消（{{ selection.length }}）</el-button>
+        <el-table :data="appts" size="small" border @selection-change="(s: Record<string, unknown>[]) => selection = s">
+          <el-table-column type="selection" width="42" :selectable="(row: Record<string, unknown>) => row.status === 'BOOKED'" />
           <el-table-column prop="period" label="时段" width="70" />
           <el-table-column prop="seq_no" label="顺序号" width="80" />
           <el-table-column prop="patient_name" label="患者" width="100" />
           <el-table-column prop="item_name" label="项目" show-overflow-tooltip />
-          <el-table-column prop="status" label="状态" width="90" />
-          <el-table-column label="操作" width="90">
+          <el-table-column prop="status" label="状态" width="100" />
+          <el-table-column label="操作" width="150">
             <template #default="{ row }">
-              <el-button v-if="row.status !== 'DONE'" link type="success" size="small" @click="done(row)">完成</el-button>
+              <el-button v-if="row.status === 'BOOKED'" link type="warning" size="small" @click="reschedule(row)">
+                改约</el-button>
+              <el-button v-if="['BOOKED', 'CALLED'].includes(String(row.status))" link type="success" size="small"
+                         @click="done(row)">完成</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -64,13 +70,14 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
 
 const tab = ref('appt')
 const pending = ref<Record<string, unknown>[]>([])
 const appts = ref<Record<string, unknown>[]>([])
 const queryDate = ref(new Date().toISOString().slice(0, 10))
+const selection = ref<Record<string, unknown>[]>([])
 
 const queues = reactive([
   { type: 'PHARMACY', label: '药房取药叫号', waiting: [] as Record<string, unknown>[], called: [] as Record<string, unknown>[] },
@@ -97,6 +104,20 @@ async function book(row: Record<string, unknown>) {
 async function done(row: Record<string, unknown>) {
   await client.put(`/appointments/${row.id}/done`)
   await loadAppts()
+}
+async function reschedule(row: Record<string, unknown>) {
+  const { value } = await ElMessageBox.prompt('新时段：日期,AM/PM（逗号分隔）', '改约',
+    { inputValue: `${queryDate.value},PM` })
+  const [slotDate, period] = value.split(/[,，]/).map((s: string) => s.trim())
+  const resp = await client.put(`/appointments/${row.id}/reschedule`, { slotDate, period })
+  ElMessage.success(`已改约，新顺序号 ${resp.data.data.seqNo}`)
+  await loadAppts()
+}
+async function batchCancel() {
+  const resp = await client.post('/appointments/batch-cancel', { ids: selection.value.map((s) => s.id) })
+  ElMessage.success(`已取消 ${resp.data.data.cancelled} 条`)
+  selection.value = []
+  await Promise.all([loadPending(), loadAppts()])
 }
 async function callNext(type: string) {
   const resp = await client.post(`/queue-center/${type}/call-next`)

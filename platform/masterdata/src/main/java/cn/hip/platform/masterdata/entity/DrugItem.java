@@ -46,6 +46,14 @@ public class DrugItem {
     @Column(nullable = false)
     private Short abxLevel = (short) 0;
 
+    /** 药品分类：W 西药 / C 中成药 */
+    @Column(nullable = false, length = 2)
+    private String drugClass = "W";
+
+    /** 每销售单位所含 DDD 数（抗菌药使用强度折算用） */
+    @Column(precision = 8, scale = 2)
+    private BigDecimal dddPerUnit;
+
     /** 是否抗菌药物（分级管理用） */
     @Column(nullable = false)
     private Boolean antibiotic = false;

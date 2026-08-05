@@ -122,6 +122,7 @@ jobs:
           python3 tools/e2e-insurance.py
           python3 tools/e2e-drg-cdss.py
           python3 tools/e2e-phase2931.py
+          python3 tools/e2e-phase3234.py
 
       - name: 失败时输出服务端日志
         if: failure()
