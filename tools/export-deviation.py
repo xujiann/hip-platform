@@ -19,20 +19,35 @@ VERDICT_MAP = {
     '待人工评估': ('待复核', '初评未匹配，须项目组逐条人工确认'),
 }
 
+# 待评条目若有二级终审结论（matrix-final-review.py 产出），以终审为准
+FINAL_MAP = {
+    '功能等效': ('正偏离/无偏离', None),          # 说明取终审说明
+    '部分符合': ('部分响应', None),
+    '归配套产品': ('配套产品响应', None),
+    '涉外部条件': ('外部条件', None),
+    '格式行(非参数)': ('非参数行', '文档转换产生的表格分隔残渣，不计入参数总数'),
+    '待人工签认': ('待复核', '二级评审未匹配，须项目组签认'),
+}
+
 with open(SRC, encoding='utf-8-sig') as f:
     rows = list(csv.DictReader(f))
 
-stats = collections.Counter(r['初评'] for r in rows)
+stats = collections.Counter()
 with open(DST, 'w', newline='', encoding='utf-8-sig') as f:
     w = csv.writer(f)
     w.writerow(['序号', '实质性★', '重要▲', '参数摘要', '响应结论', '响应说明'])
     for r in rows:
-        concl, note = VERDICT_MAP.get(r['初评'], ('待复核', ''))
+        final = (r.get('终审') or '').strip()
+        if r['初评'] == '待人工评估' and final in FINAL_MAP:
+            concl, fixed = FINAL_MAP[final]
+            note = fixed if fixed else r.get('终审说明', '')
+        else:
+            concl, note = VERDICT_MAP.get(r['初评'], ('待复核', ''))
+        stats[concl] += 1
         w.writerow([r['序号'], r['实质性★'], r['重要▲'], r['参数摘要'], concl, note])
 
 total = len(rows)
-print(f'技术偏离表已导出：{DST}（{total} 条）')
+print(f'技术偏离表（终版）已导出：{DST}（{total} 条）')
 for k, v in stats.most_common():
-    concl = VERDICT_MAP.get(k, ('?',))[0]
-    print(f'  {concl}: {v} ({v * 100 // total}%)')
-print('注意：终版须项目组人工复核「待复核」项并对★条款逐条签认。')
+    print(f'  {k}: {v} ({v * 100 // total}%)')
+print('注意：「待复核」项须项目组逐条签认，★实质性条款单独复核。')
