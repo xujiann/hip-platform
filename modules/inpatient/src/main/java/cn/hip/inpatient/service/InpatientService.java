@@ -31,6 +31,7 @@ public class InpatientService {
     private final DrugItemRepository drugRepository;
     private final ChargeItemRepository chargeItemRepository;
     private final InventoryService inventoryService;
+    private final cn.hip.platform.integration.insurance.InsuranceAdapter insuranceAdapter;
 
     private final AtomicLong groupSeq = new AtomicLong(System.currentTimeMillis() % 100000);
 
@@ -188,6 +189,12 @@ public class InpatientService {
     /** 出院结算：费用汇总、押金冲抵、释放床位 */
     @Transactional
     public InpSettlement discharge(Long admissionId, Long cashierId) {
+        return discharge(admissionId, cashierId, "CASH");
+    }
+
+    /** 出院结算：payMethod=YB 时走医保通道上传结算（费用总额口径） */
+    @Transactional
+    public InpSettlement discharge(Long admissionId, Long cashierId, String payMethod) {
         InpAdmission adm = admissionRepo.findById(admissionId)
                 .orElseThrow(() -> new InpException(9003, "住院记录不存在"));
         if (!"IN_HOSPITAL".equals(adm.getStatus())) {
@@ -214,7 +221,14 @@ public class InpatientService {
         s.setDepositAmount(deposit);
         s.setBalance(deposit.subtract(total));
         s.setCashierId(cashierId);
+        s.setPayMethod(payMethod == null ? "CASH" : payMethod);
         s = settlementRepo.save(s);
+        if ("YB".equals(s.getPayMethod())) {
+            var res = insuranceAdapter.uploadSettlement(s.getSettleNo(), total);
+            if (!res.ok()) {
+                throw new InpException(9013, "医保出院结算上传失败: " + res.message());
+            }
+        }
 
         adm.setStatus("DISCHARGED");
         adm.setDischargedAt(Instant.now());

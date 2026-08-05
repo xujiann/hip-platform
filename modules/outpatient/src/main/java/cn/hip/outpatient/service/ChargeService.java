@@ -22,6 +22,7 @@ public class ChargeService {
     private final OutpOrderRepository orderRepository;
     private final OutpChargeRepository chargeRepository;
     private final InsuranceAdapter insuranceAdapter;
+    private final InsuranceSettleService insuranceSettleService;
 
     /** 结算：全部未收费订单一次结清 */
     @Transactional
@@ -49,6 +50,7 @@ public class ChargeService {
             orderRepository.save(o);
         }
         if ("YB".equals(charge.getPayMethod())) {
+            insuranceSettleService.splitAndAudit(charge, unpaid);
             var res = insuranceAdapter.uploadSettlement(charge.getChargeNo(), total);
             if (!res.ok()) {
                 throw new BizException(5006, "医保结算上传失败: " + res.message());

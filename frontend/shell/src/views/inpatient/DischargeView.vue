@@ -22,6 +22,10 @@
       <div class="actions">
         <el-input-number v-model="extraDeposit" :min="0" :step="100" />
         <el-button @click="addDeposit">补交押金</el-button>
+        <el-select v-model="payMethod" style="width: 110px">
+          <el-option label="现金结清" value="CASH" />
+          <el-option label="医保结算" value="YB" />
+        </el-select>
         <el-button type="danger" :loading="discharging" @click="discharge">出院结算</el-button>
       </div>
       <el-table :data="detail.orders" size="small" height="260" style="margin-top: 12px">
@@ -47,6 +51,7 @@ const admissions = ref<Record<string, unknown>[]>([])
 const current = ref<Record<string, unknown> | null>(null)
 const detail = ref<Record<string, unknown> | null>(null)
 const extraDeposit = ref(0)
+const payMethod = ref('CASH')
 const discharging = ref(false)
 
 const balance = computed(() =>
@@ -80,7 +85,8 @@ async function discharge() {
   await ElMessageBox.confirm(`确认为 ${current.value.patientName} 办理出院结算？`, '出院确认')
   discharging.value = true
   try {
-    const resp = await client.post(`/inpatient/admissions/${current.value.id}/discharge`)
+    const resp = await client.post(`/inpatient/admissions/${current.value.id}/discharge`, null,
+      { params: { payMethod: payMethod.value } })
     const s = resp.data.data
     const msg = Number(s.balance) >= 0 ? `应退 ¥${s.balance}` : `应补 ¥${Math.abs(Number(s.balance))}`
     ElMessage.success(`出院结算完成 ${s.settleNo}：费用 ¥${s.totalAmount}，押金 ¥${s.depositAmount}，${msg}`)

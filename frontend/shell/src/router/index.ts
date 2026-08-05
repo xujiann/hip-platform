@@ -54,6 +54,7 @@ const router = createRouter({
         { path: 'specialty', component: () => import('../views/medtech/SpecialtyView.vue') },
         { path: 'mgmt', component: () => import('../views/quality/MgmtView.vue') },
         { path: 'datagov/standards', component: () => import('../views/datagov/DataStdView.vue') },
+        { path: 'insurance', component: () => import('../views/integration/InsuranceView.vue') },
       ],
     },
   ],

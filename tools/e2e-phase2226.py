@@ -355,4 +355,7 @@ assert odr['outpToday'] >= 1 and odr['inHospital'] >= 1
 assert len(odr['metricSnapshots']) >= 9
 print(f"[廿六-4] ODR OK（今日门诊 {odr['outpToday']}，在院 {odr['inHospital']}，指标快照 {len(odr['metricSnapshots'])} 项）")
 
+# 收尾：出院释放床位（避免反复运行占满病区）
+ok(call('POST', f"/inpatient/admissions/{adm['id']}/discharge", {}, t), '收尾出院')
+
 print('\n=== 二十二至二十六期 E2E 全部通过 ===')

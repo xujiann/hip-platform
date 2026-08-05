@@ -26,5 +26,9 @@
             <groupId>cn.hip</groupId>
             <artifactId>hip-platform-masterdata</artifactId>
         </dependency>
+        <dependency>
+            <groupId>cn.hip</groupId>
+            <artifactId>hip-platform-integration</artifactId>
+        </dependency>
     </dependencies>
 </project>

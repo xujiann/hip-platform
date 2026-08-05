@@ -151,9 +151,11 @@ public class InpatientController {
     }
 
     @PostMapping("/admissions/{id}/discharge")
-    public R<Object> discharge(@PathVariable Long id, Authentication auth) {
+    public R<Object> discharge(@PathVariable Long id,
+                               @RequestParam(required = false, defaultValue = "CASH") String payMethod,
+                               Authentication auth) {
         try {
-            return R.ok(inpatientService.discharge(id, currentUserService.idOf(auth)));
+            return R.ok(inpatientService.discharge(id, currentUserService.idOf(auth), payMethod));
         } catch (InpException e) {
             return R.fail(e.code, e.getMessage());
         }

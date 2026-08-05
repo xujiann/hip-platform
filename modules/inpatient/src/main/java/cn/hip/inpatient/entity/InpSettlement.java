@@ -38,6 +38,10 @@ public class InpSettlement {
 
     private Long cashierId;
 
+    /** 结清方式：CASH / YB 医保（差额部分） */
+    @Column(nullable = false, length = 16)
+    private String payMethod = "CASH";
+
     @Column(nullable = false, updatable = false)
     private Instant createdAt = Instant.now();
 }
