@@ -130,23 +130,47 @@ res = ok(call('POST', '/drg/group-all', {}, t), '批量入组')
 assert res['grouped'] >= 3 and res['ambiguous'] >= 1, res
 cases = ok(call('GET', '/drg/cases', token=t), '入组明细')
 by_adm = {c['admission_no']: c for c in cases}
-assert by_adm[a1['admissionNo']]['drg_code'] == 'FM19', by_adm[a1['admissionNo']]
-assert by_adm[a2['admissionNo']]['drg_code'] == 'FR41', by_adm[a2['admissionNo']]
-assert by_adm[a3['admissionNo']]['drg_code'] == 'ES31', by_adm[a3['admissionNo']]
+# 无其他诊断 → 尾码 5（不伴并发症）
+assert by_adm[a1['admissionNo']]['drg_code'] == 'FM15', by_adm[a1['admissionNo']]
+assert by_adm[a2['admissionNo']]['drg_code'] == 'FR45', by_adm[a2['admissionNo']]
+assert by_adm[a3['admissionNo']]['drg_code'] == 'ES35', by_adm[a3['admissionNo']]
 assert by_adm[a4['admissionNo']]['drg_code'] == 'QY', by_adm[a4['admissionNo']]
-print(f"[DRG-1] 分组器 OK（同诊断 I21 手术→FM19(3.12)/内科→FR41(1.32)，J15→ES31，未知→QY；本批入组 {res['grouped']}+歧义 {res['ambiguous']}）")
+print(f"[DRG-1] ADRG 分组 OK（I21 手术→FM15(3.12)/内科→FR45(1.32)，J15→ES35，未知→QY；本批 {res['grouped']}+歧义 {res['ambiguous']}）")
 
 # 幂等：再次入组不重复
 res2 = ok(call('POST', '/drg/group-all', {}, t), '再次入组')
 assert res2['grouped'] == 0 and res2['ambiguous'] == 0, res2
 print('[DRG-2] 入组幂等 OK（重复执行 0 新增）')
 
-# 分析：CMI 与费用消耗指数
+# 细分组：补录其他诊断（I50 心衰=MCC / E11 糖尿病=CC）→ 重新入组 → 尾码与权重变化
+ok(call('POST', '/inpatient/diagnoses', {'admissionId': a2['id'], 'icd': 'I50.9', 'name': '心力衰竭'}, t), '补录MCC')
+r = call('POST', '/inpatient/diagnoses', {'admissionId': a2['id'], 'icd': 'I50.9', 'name': '心力衰竭'}, t)
+assert r['code'] == 9015, '重复诊断应拦截'
+ok(call('POST', '/inpatient/diagnoses', {'admissionId': a3['id'], 'icd': 'E11.9', 'name': '2型糖尿病'}, t), '补录CC')
+ok(call('POST', '/drg/regroup-all', {}, t), '重新入组')
+cases2 = {c['admission_no']: c for c in ok(call('GET', '/drg/cases', token=t), '明细2')}
+c2, c3 = cases2[a2['admissionNo']], cases2[a3['admissionNo']]
+assert c2['drg_code'] == 'FR41' and c2['severity'] == 'MCC', c2
+assert abs(float(c2['weight']) - 1.32 * 1.30) < 0.001, c2
+assert c3['drg_code'] == 'ES33' and c3['severity'] == 'CC', c3
+assert abs(float(c3['weight']) - 0.89 * 1.15) < 0.001, c3
+print(f"[DRG-3] 细分组 OK（补心衰→FR41/MCC 权重 {c2['weight']}，补糖尿病→ES33/CC 权重 {c3['weight']}，重算生效）")
+
+# 支付模拟：标杆=权重×费率，费用极端值高低倍率标记
 ana = ok(call('GET', '/drg/analysis', token=t), '分析')
-assert ana['cases'] >= 4 and float(ana['cmi']) > 0
-fm19 = next(g for g in ana['groups'] if g['drg_code'] == 'FM19')
-assert abs(float(fm19['weight']) - 3.12) < 0.001
-print(f"[DRG-3] 病组分析 OK（{ana['cases']} 例，总权重 {ana['totalWeight']}，CMI={ana['cmi']}，歧义 {ana['ambiguous']} 例）")
+assert ana['cases'] >= 4 and float(ana['cmi']) > 0 and float(ana['rate']) > 0
+assert 'totalBenchmark' in ana and 'totalBalance' in ana
+fr41 = next(g for g in ana['groups'] if g['drg_code'] == 'FR41')
+assert abs(float(fr41['benchmark_pay']) - float(fr41['weight']) * float(ana['rate'])) < 0.01
+assert 'time_index' in fr41
+assert abs(float(c2['benchmark_pay']) - 1.716 * float(ana['rate'])) < 0.01, c2
+assert c2['pay_flag'] == 'LOW', f"零费用病例应标低倍率: {c2['pay_flag']}"
+print(f"[DRG-4] 支付模拟 OK（费率 {ana['rate']} 元/权重，标杆合计 ￥{ana['totalBenchmark']}，模拟结余 ￥{ana['totalBalance']}，零费用例标低倍率）")
+
+# 科室 CMI
+dept = ok(call('GET', '/drg/dept-analysis', token=t), '科室CMI')
+assert len(dept) >= 1 and all('cmi' in d for d in dept)
+print(f"[DRG-5] 科室 CMI OK（{len(dept)} 个科室，首位 {dept[0]['dept_name']} CMI={dept[0]['cmi']}）")
 
 # 收尾：作废未收费处方（防污染审方/收费队列），处方权复位
 for o in o_blf + o_lvx:
