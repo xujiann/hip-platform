@@ -1,9 +1,11 @@
 package cn.hip.outpatient.service;
 
+import cn.hip.insurance.service.InsuranceSplitService;
 import cn.hip.outpatient.entity.OutpCharge;
 import cn.hip.outpatient.entity.OutpOrder;
 import cn.hip.outpatient.repository.OutpChargeRepository;
 import cn.hip.outpatient.repository.OutpOrderRepository;
+import cn.hip.outpatient.repository.OutpRegistrationRepository;
 import cn.hip.outpatient.service.RegistrationService.BizException;
 import cn.hip.platform.integration.insurance.InsuranceAdapter;
 import lombok.RequiredArgsConstructor;
@@ -21,8 +23,9 @@ public class ChargeService {
 
     private final OutpOrderRepository orderRepository;
     private final OutpChargeRepository chargeRepository;
+    private final OutpRegistrationRepository registrationRepository;
     private final InsuranceAdapter insuranceAdapter;
-    private final InsuranceSettleService insuranceSettleService;
+    private final InsuranceSplitService insuranceSplitService;
 
     /** 结算：全部未收费订单一次结清 */
     @Transactional
@@ -50,7 +53,10 @@ public class ChargeService {
             orderRepository.save(o);
         }
         if ("YB".equals(charge.getPayMethod())) {
-            insuranceSettleService.splitAndAudit(charge, unpaid);
+            Long patientId = registrationRepository.findById(registrationId).orElseThrow().getPatientId();
+            insuranceSplitService.splitAndAudit("OUTP", charge.getChargeNo(), patientId, total,
+                    unpaid.stream().map(o -> new InsuranceSplitService.YbLine(
+                            o.getOrderType(), o.getItemCode(), o.getItemName(), o.getAmount(), o.getQty())).toList());
             var res = insuranceAdapter.uploadSettlement(charge.getChargeNo(), total);
             if (!res.ok()) {
                 throw new BizException(5006, "医保结算上传失败: " + res.message());
@@ -93,6 +99,7 @@ public class ChargeService {
                 // 与结算同语义：冲正失败即回滚本地退费，杜绝「本地已退费、医保未冲正」的悬账
                 throw new BizException(5007, "医保退费冲正失败: " + res.message());
             }
+            insuranceSplitService.reverse(charge.getChargeNo());
         }
         charge.setStatus("REFUNDED");
         return chargeRepository.save(charge);

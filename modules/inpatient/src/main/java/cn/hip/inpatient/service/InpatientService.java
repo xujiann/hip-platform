@@ -32,6 +32,7 @@ public class InpatientService {
     private final ChargeItemRepository chargeItemRepository;
     private final InventoryService inventoryService;
     private final cn.hip.platform.integration.insurance.InsuranceAdapter insuranceAdapter;
+    private final cn.hip.insurance.service.InsuranceSplitService insuranceSplitService;
 
     private final AtomicLong groupSeq = new AtomicLong(System.currentTimeMillis() % 100000);
 
@@ -224,6 +225,12 @@ public class InpatientService {
         s.setPayMethod(payMethod == null ? "CASH" : payMethod);
         s = settlementRepo.save(s);
         if ("YB".equals(s.getPayMethod())) {
+            // 住院行级分割（批次二）：与门诊共用分割引擎，biz_type=INP 走住院比例
+            insuranceSplitService.splitAndAudit("INP", s.getSettleNo(), adm.getPatientId(), total,
+                    orders.stream().filter(o -> "EXECUTED".equals(o.getStatus()))
+                            .map(o -> new cn.hip.insurance.service.InsuranceSplitService.YbLine(
+                                    o.getOrderType(), o.getItemCode(), o.getItemName(), o.getAmount(), o.getQty()))
+                            .toList());
             var res = insuranceAdapter.uploadSettlement(s.getSettleNo(), total);
             if (!res.ok()) {
                 throw new InpException(9013, "医保出院结算上传失败: " + res.message());

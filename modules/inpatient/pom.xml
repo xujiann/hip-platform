@@ -30,5 +30,9 @@
             <groupId>cn.hip</groupId>
             <artifactId>hip-platform-integration</artifactId>
         </dependency>
+        <dependency>
+            <groupId>cn.hip</groupId>
+            <artifactId>hip-insurance</artifactId>
+        </dependency>
     </dependencies>
 </project>
