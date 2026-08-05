@@ -125,6 +125,7 @@ jobs:
           python3 tools/e2e-phase3234.py
           python3 tools/e2e-phase3537.py
           python3 tools/e2e-phase38.py
+          python3 tools/e2e-phase3940.py
 
       - name: 失败时输出服务端日志
         if: failure()

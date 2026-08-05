@@ -104,6 +104,54 @@
         </template>
       </el-tab-pane>
 
+      <el-tab-pane label="风险评估" name="risk">
+        <el-form inline size="small">
+          <el-form-item><el-input v-model="risk.admissionId" placeholder="住院ID" style="width: 100px" /></el-form-item>
+          <el-form-item>
+            <el-select v-model="risk.assessType" style="width: 170px">
+              <el-option label="Braden 压力性损伤" value="BRADEN" />
+              <el-option label="Morse 跌倒" value="MORSE" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="评分"><el-input-number v-model="risk.score" :min="0" :max="125" /></el-form-item>
+          <el-button type="primary" size="small" @click="doAssess">评估</el-button>
+          <el-button size="small" @click="loadRiskTrend">查趋势</el-button>
+        </el-form>
+        <el-alert title="Braden 6-23：≤12 高危 / 13-14 中危 / ≥15 低危 ｜ Morse 0-125：≥45 高危 / 25-44 中危 / <25 低危"
+                  type="info" show-icon :closable="false" style="margin-bottom: 8px" />
+        <el-table :data="riskTrend" size="small" border>
+          <el-table-column prop="assessed_at" label="时间" width="170" />
+          <el-table-column label="量表" width="100">
+            <template #default="{ row }">{{ row.assess_type === 'BRADEN' ? 'Braden' : 'Morse' }}</template>
+          </el-table-column>
+          <el-table-column prop="score" label="评分" width="80" />
+          <el-table-column label="风险" width="90">
+            <template #default="{ row }">
+              <el-tag size="small" :type="row.risk_level === 'HIGH' ? 'danger'
+                : row.risk_level === 'MID' ? 'warning' : 'success'">
+                {{ { HIGH: '高危', MID: '中危', LOW: '低危' }[row.risk_level as string] }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="趋势" width="180">
+            <template #default="{ row }">
+              <div class="bar"><div class="bar-in" :style="{ width: Math.min(100, row.score / 1.25) + '%' }" /></div>
+            </template>
+          </el-table-column>
+          <el-table-column prop="assessor" label="评估人" width="90" />
+        </el-table>
+        <h4>在院高危预警</h4>
+        <el-table :data="riskAlerts" size="small" border>
+          <el-table-column prop="dept_name" label="科室" width="130" />
+          <el-table-column prop="admission_no" label="住院号" width="140" />
+          <el-table-column prop="patient_name" label="患者" width="90" />
+          <el-table-column label="量表" width="90">
+            <template #default="{ row }">{{ row.assess_type === 'BRADEN' ? 'Braden' : 'Morse' }}</template>
+          </el-table-column>
+          <el-table-column prop="score" label="评分" width="80" />
+          <el-table-column prop="assessed_at" label="最近评估" width="170" />
+        </el-table>
+      </el-tab-pane>
+
       <el-tab-pane label="交接班" name="handover">
         <el-form inline size="small">
           <el-form-item><el-input v-model="ho.deptId" placeholder="科室ID" style="width: 90px" /></el-form-item>
@@ -156,6 +204,22 @@ const calAdmId = ref('')
 const card = reactive({ patientId: '', diseaseName: '', cardClass: 'B' })
 const planForm = reactive({ title: '', standard: '', adHoc: false })
 const ho = reactive({ deptId: '', shiftType: 'DAY', summary: '', todo: '' })
+const riskTrend = ref<Record<string, unknown>[]>([])
+const riskAlerts = ref<Record<string, unknown>[]>([])
+const risk = reactive({ admissionId: '', assessType: 'BRADEN', score: 15 })
+
+async function loadRiskTrend() {
+  if (!risk.admissionId) return
+  riskTrend.value = (await client.get('/nursing/risk-assess', { params: { admissionId: risk.admissionId } })).data.data
+}
+async function loadRiskAlerts() { riskAlerts.value = (await client.get('/nursing/risk-assess/alerts')).data.data }
+async function doAssess() {
+  if (!risk.admissionId) return
+  const r = (await client.post('/nursing/risk-assess',
+    { admissionId: Number(risk.admissionId), assessType: risk.assessType, score: risk.score })).data.data
+  ElMessage.success(`已评估：${{ HIGH: '高危', MID: '中危', LOW: '低危' }[r.riskLevel as string]}`)
+  await Promise.all([loadRiskTrend(), loadRiskAlerts()])
+}
 
 async function loadCards() { cards.value = (await client.get('/infection/cards')).data.data }
 async function loadCalendar() {
@@ -220,6 +284,7 @@ watch(tab, (t) => {
   if (t === 'temp') loadFever()
   if (t === 'qccheck') loadPlans()
   if (t === 'handover') loadShift()
+  if (t === 'risk') loadRiskAlerts()
 })
 onMounted(loadCards)
 </script>

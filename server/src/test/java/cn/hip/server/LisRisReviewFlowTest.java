@@ -96,7 +96,7 @@ class LisRisReviewFlowTest {
         chargeService.settle(rid, "CASH", null);
         flush();
 
-        String barcode = (String) medTechController.collect(orderId).getData().get("barcode");
+        String barcode = (String) medTechController.collect(orderId, null).getData().get("barcode");
         assertEquals(0, medTechController.receive(barcode).getCode());
         assertEquals(0, medTechController.publish(barcode, new MedTechController.PublishReq(List.of(
                 new MedTechController.ManualResult("HGB", "血红蛋白", "40", "g/L", "130-175", "LL"))), admin).getCode());

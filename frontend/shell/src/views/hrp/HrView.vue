@@ -79,6 +79,54 @@
         </el-table>
       </el-tab-pane>
 
+      <el-tab-pane label="继续教育/考勤" name="cme">
+        <el-form inline size="small">
+          <el-form-item><el-input v-model="cme.employeeId" placeholder="员工ID" style="width: 90px" /></el-form-item>
+          <el-form-item><el-input v-model="cme.projectName" placeholder="继续教育项目名" style="width: 200px" /></el-form-item>
+          <el-form-item label="学分"><el-input-number v-model="cme.credit" :min="0" :step="0.5" :precision="1" /></el-form-item>
+          <el-form-item label="年度"><el-input v-model="cme.cmeYear" style="width: 80px" /></el-form-item>
+          <el-button type="primary" size="small" @click="addCme">登记</el-button>
+        </el-form>
+        <el-row :gutter="16">
+          <el-col :span="14">
+            <el-table :data="cmeRecords" size="small" border>
+              <el-table-column prop="emp_name" label="员工" width="90" />
+              <el-table-column prop="project_name" label="项目" show-overflow-tooltip />
+              <el-table-column prop="credit" label="学分" width="70" />
+              <el-table-column prop="cme_year" label="年度" width="80" />
+            </el-table>
+          </el-col>
+          <el-col :span="10">
+            <h4 style="margin-top: 0">年度学分汇总</h4>
+            <el-table :data="cmeSummary" size="small" border>
+              <el-table-column prop="emp_name" label="员工" width="90" />
+              <el-table-column prop="cme_year" label="年度" width="80" />
+              <el-table-column prop="total_credit" label="总学分" width="90" />
+            </el-table>
+          </el-col>
+        </el-row>
+        <h4>
+          考勤（打卡/补卡）
+          <el-date-picker v-model="attDate" type="date" value-format="YYYY-MM-DD" size="small"
+                          style="width: 140px; margin-left: 8px" @change="loadAtt" />
+          <el-button link type="primary" size="small" @click="punch(false)">打卡</el-button>
+          <el-button link type="warning" size="small" @click="punch(true)">补卡</el-button>
+        </h4>
+        <el-table :data="attendance" size="small" border>
+          <el-table-column prop="emp_no" label="工号" width="90" />
+          <el-table-column prop="emp_name" label="员工" width="90" />
+          <el-table-column prop="check_in" label="上班" width="80" />
+          <el-table-column prop="check_out" label="下班" width="80" />
+          <el-table-column label="类型" width="80">
+            <template #default="{ row }">
+              <el-tag :type="row.att_type === 'MAKEUP' ? 'warning' : 'success'" size="small">
+                {{ row.att_type === 'MAKEUP' ? '补卡' : '打卡' }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="note" label="说明" show-overflow-tooltip />
+        </el-table>
+      </el-tab-pane>
+
       <el-tab-pane label="通讯录" name="dir">
         <el-table :data="directory" size="small" border>
           <el-table-column prop="dept_name" label="科室" width="140" />
@@ -130,6 +178,19 @@
             </template>
           </el-table-column>
         </el-table>
+        <h4>价值调整/附件
+          <el-button link type="warning" size="small" @click="addAdjust">增值/折旧补录</el-button>
+          <el-button link type="primary" size="small" @click="addAssetDoc">附件登记</el-button>
+        </h4>
+        <el-table :data="adjusts" size="small" border>
+          <el-table-column prop="asset_name" label="资产" width="150" />
+          <el-table-column label="类型" width="100">
+            <template #default="{ row }">{{ row.adjust_type === 'APPRECIATION' ? '增值' : '折旧补录' }}</template>
+          </el-table-column>
+          <el-table-column prop="amount" label="金额" width="100" />
+          <el-table-column prop="reason" label="原因" show-overflow-tooltip />
+          <el-table-column prop="created_at" label="时间" width="170" />
+        </el-table>
         <h4>房屋建筑台账
           <el-button link type="primary" size="small" @click="addBuilding">登记房屋</el-button>
         </h4>
@@ -169,6 +230,27 @@
           <el-table-column prop="paid_amount" label="收款金额" width="110" />
           <el-table-column prop="refund_cnt" label="退款笔数" width="90" />
           <el-table-column prop="refund_amount" label="退款金额" width="110" />
+        </el-table>
+        <h4>结账明细检索
+          <el-date-picker v-model="searchFrom" type="date" value-format="YYYY-MM-DD" size="small"
+                          style="width: 130px; margin-left: 8px" />
+          <el-date-picker v-model="searchTo" type="date" value-format="YYYY-MM-DD" size="small"
+                          style="width: 130px; margin-left: 4px" />
+          <el-select v-model="searchPay" size="small" clearable placeholder="全部方式"
+                     style="width: 110px; margin-left: 4px">
+            <el-option label="现金" value="CASH" /><el-option label="微信" value="WECHAT" />
+            <el-option label="支付宝" value="ALIPAY" /><el-option label="医保" value="YB" />
+          </el-select>
+          <el-button type="primary" size="small" style="margin-left: 4px" @click="searchCharges">检索</el-button>
+        </h4>
+        <el-table v-if="chargeHits.length" :data="chargeHits" size="small" border max-height="300">
+          <el-table-column prop="charge_no" label="结算单号" width="170" />
+          <el-table-column prop="patient_name" label="患者" width="90" />
+          <el-table-column prop="total_amount" label="金额" width="90" />
+          <el-table-column prop="pay_method" label="方式" width="90" />
+          <el-table-column prop="status" label="状态" width="100" />
+          <el-table-column prop="cashier" label="收款员" width="100" />
+          <el-table-column prop="created_at" label="时间" width="170" />
         </el-table>
         <h4>异常明细（退费/作废支付单）</h4>
         <el-table :data="recon?.anomalies ?? []" size="small" border>
@@ -216,6 +298,61 @@ const emp = reactive({ empNo: '', name: '', deptId: '', title: '', phone: '' })
 const tr = reactive({ employeeId: '', category: '', certName: '' })
 const tf = reactive({ assetId: '', toDeptId: '' })
 const pr = reactive({ itemId: '', newPrice: 0, reason: '' })
+const cmeRecords = ref<Record<string, unknown>[]>([])
+const cmeSummary = ref<Record<string, unknown>[]>([])
+const attendance = ref<Record<string, unknown>[]>([])
+const adjusts = ref<Record<string, unknown>[]>([])
+const chargeHits = ref<Record<string, unknown>[]>([])
+const attDate = ref(today)
+const searchFrom = ref(today)
+const searchTo = ref(today)
+const searchPay = ref('')
+const cme = reactive({ employeeId: '', projectName: '', credit: 5, cmeYear: today.slice(0, 4) })
+
+async function loadCme() {
+  const d = (await client.get('/hr/cme')).data.data
+  cmeRecords.value = d.records
+  cmeSummary.value = d.creditSummary
+}
+async function loadAtt() {
+  attendance.value = (await client.get('/hr/attendance', { params: { date: attDate.value } })).data.data
+}
+async function addCme() {
+  if (!cme.employeeId || !cme.projectName) return
+  await client.post('/hr/cme', { employeeId: Number(cme.employeeId), projectName: cme.projectName,
+    credit: cme.credit, cmeYear: Number(cme.cmeYear), organizer: '省继教平台' })
+  cme.projectName = ''
+  await loadCme()
+}
+async function punch(makeup: boolean) {
+  const tip = makeup ? '员工ID,上班,下班,补卡说明（逗号分隔）' : '员工ID,上班,下班（逗号分隔）'
+  const { value } = await ElMessageBox.prompt(tip, makeup ? '补卡' : '打卡',
+    { inputValue: makeup ? '1,08:00,17:30,忘带工牌' : '1,08:00,17:30' })
+  const [employeeId, checkIn, checkOut, note] = value.split(/[,，]/).map((s: string) => s.trim())
+  await client.post('/hr/attendance', { employeeId: Number(employeeId), workDate: attDate.value,
+    checkIn, checkOut, attType: makeup ? 'MAKEUP' : 'NORMAL', note })
+  await loadAtt()
+}
+async function loadAdjusts() { adjusts.value = (await client.get('/asset-plus/value-adjusts')).data.data }
+async function addAdjust() {
+  const { value } = await ElMessageBox.prompt('资产ID,类型(APPRECIATION/DEP_FIX),金额,原因', '价值调整',
+    { inputValue: `${tf.assetId || 1},DEP_FIX,1000,历史折旧补录` })
+  const [assetId, adjustType, amount, reason] = value.split(/[,，]/).map((s: string) => s.trim())
+  await client.post('/asset-plus/value-adjusts',
+    { assetId: Number(assetId), adjustType, amount: Number(amount), reason })
+  await loadAdjusts()
+}
+async function addAssetDoc() {
+  const { value } = await ElMessageBox.prompt('资产ID,附件名', '附件登记',
+    { inputValue: `${tf.assetId || 1},购置合同.pdf` })
+  const [assetId, docName] = value.split(/[,，]/).map((s: string) => s.trim())
+  await client.post('/asset-plus/docs', { assetId: Number(assetId), docName, remark: '' })
+  ElMessage.success('已登记')
+}
+async function searchCharges() {
+  chargeHits.value = (await client.get('/finance/charge-search',
+    { params: { from: searchFrom.value, to: searchTo.value, payMethod: searchPay.value || undefined } })).data.data
+}
 
 async function loadEmps() {
   emps.value = (await client.get('/hr/employees', { params: { keyword: empKeyword.value || undefined } })).data.data
@@ -311,8 +448,9 @@ async function changePrice() {
 
 watch(tab, (t) => {
   if (t === 'train') loadTrain()
+  if (t === 'cme') { loadCme(); loadAtt() }
   if (t === 'dir') loadDir()
-  if (t === 'asset') loadAsset()
+  if (t === 'asset') { loadAsset(); loadAdjusts() }
   if (t === 'finance') loadFinance()
 })
 onMounted(loadEmps)

@@ -18,6 +18,11 @@
           <el-table-column prop="barcode" label="条码" width="140" />
           <el-table-column prop="patient_name" label="患者" width="90" />
           <el-table-column prop="item_name" label="项目" />
+          <el-table-column label="替检" width="110">
+            <template #default="{ row }">
+              <el-tag v-if="row.substitute" type="danger" size="small">替检：{{ row.substitute_name }}</el-tag>
+            </template>
+          </el-table-column>
           <el-table-column label="状态" width="90">
             <template #default="{ row }">{{ statusNames[row.status as string] }}</template>
           </el-table-column>
@@ -58,7 +63,7 @@
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
 
 const tab = ref('pending')
@@ -75,8 +80,12 @@ async function load() {
 }
 
 async function collect(row: Record<string, unknown>) {
-  const resp = await client.post('/lis/samples', null, { params: { orderId: row.order_id } })
-  ElMessage.success(`条码 ${resp.data.data.barcode}`)
+  // 三十九期：替检参数化——留空为本人，填写则登记替检人（分检页红色醒目提示）
+  const { value } = await ElMessageBox.prompt('替检人（本人采样请留空）', '采样打码',
+    { inputValue: '', inputPlaceholder: '如：家属 张某' })
+  const resp = await client.post('/lis/samples', null,
+    { params: { orderId: row.order_id, substituteName: value || undefined } })
+  ElMessage.success(`条码 ${resp.data.data.barcode}${value ? '（替检已标识）' : ''}`)
   await load()
 }
 

@@ -85,16 +85,25 @@ public class MedTechController {
                 """));
     }
 
-    /** 采样打码 */
+    /** 采样打码（三十九期：替检参数化——lis_allow_substitute 关闭时拦截，开启时留替检人标识供分检醒目提示） */
     @PostMapping("/api/lis/samples")
     @Transactional
-    public R<Map<String, Object>> collect(@RequestParam Long orderId) {
+    public R<Map<String, Object>> collect(@RequestParam Long orderId,
+                                          @RequestParam(required = false) String substituteName) {
+        boolean substitute = substituteName != null && !substituteName.isBlank();
+        if (substitute) {
+            var allow = jdbc.queryForList(
+                    "select cfg_value from sys_config where cfg_key = 'lis_allow_substitute'", String.class);
+            if (!allow.isEmpty() && "false".equalsIgnoreCase(allow.get(0))) {
+                return R.fail(4770, "本院参数已禁止替检");
+            }
+        }
         String barcode = "BC" + System.currentTimeMillis() % 1000000000L;
         int n = jdbc.update("""
-                insert into lis_sample(order_id, barcode)
-                select ?, ? where exists (select 1 from outp_order o where o.id = ? and o.order_type = 'LAB' and o.status = 'CHARGED')
+                insert into lis_sample(order_id, barcode, substitute, substitute_name)
+                select ?, ?, ?, ? where exists (select 1 from outp_order o where o.id = ? and o.order_type = 'LAB' and o.status = 'CHARGED')
                   and not exists (select 1 from lis_sample s where s.order_id = ?)
-                """, orderId, barcode, orderId, orderId);
+                """, orderId, barcode, substitute, substitute ? substituteName : null, orderId, orderId);
         return n == 0 ? R.fail(9940, "申请不存在/未收费/已采样") : R.ok(Map.of("barcode", barcode));
     }
 
@@ -111,7 +120,8 @@ public class MedTechController {
     @GetMapping("/api/lis/samples")
     public R<List<Map<String, Object>>> samples() {
         return R.ok(jdbc.queryForList("""
-                select s.id, s.barcode, s.status, s.collected_at, o.id as order_id, o.item_name, o.group_no,
+                select s.id, s.barcode, s.status, s.collected_at, s.substitute, s.substitute_name,
+                       o.id as order_id, o.item_name, o.group_no,
                        p.name as patient_name
                 from lis_sample s
                 join outp_order o on o.id = s.order_id
