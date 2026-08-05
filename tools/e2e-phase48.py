@@ -72,7 +72,7 @@ amx = ok(call('GET', '/masterdata/drugs?keyword=' + q('阿莫西林'), token=t),
 r = call('POST', f'/outpatient/doctor/{rid}/orders', {'lines': [{'orderType': 'DRUG', 'itemId': amx['id'], 'qty': 1}]}, t)
 assert r['code'] == 4012, f'青霉素过敏应拦截阿莫西林(西林): {r}'
 blf = ok(call('GET', '/masterdata/drugs?keyword=' + q('布洛芬'), token=t), '药2')[0]
-ok(call('POST', f'/outpatient/doctor/{rid}/orders', {'lines': [{'orderType': 'DRUG', 'itemId': blf['id'], 'qty': 1}]}, t), '开布洛芬')
+blf_oid = ok(call('POST', f'/outpatient/doctor/{rid}/orders', {'lines': [{'orderType': 'DRUG', 'itemId': blf['id'], 'qty': 1}]}, t), '开布洛芬')[0]['id']
 r = call('POST', f'/outpatient/doctor/{rid}/orders', {'lines': [{'orderType': 'DRUG', 'itemId': blf['id'], 'qty': 1}]}, t)
 assert r['code'] == 4013, f'重复用药应拦截: {r}'
 ok(call('PUT', '/patients/2', {'name': '张三', 'sex': 'M', 'idType': 'ID_CARD', 'idNo': '510181199003078514',
@@ -81,7 +81,7 @@ print('[五-1] 过敏禁忌拦截(4012) + 重复用药拦截(4013) OK')
 
 # ---- 第五期：审方 ----
 pending = ok(call('GET', '/outpatient/review/pending', token=t), '审方队列')
-mine = next(p for p in pending if p['itemName'] == blf['name'])
+mine = next(p for p in pending if p['orderId'] == blf_oid)  # 用本次创建的订单 id，防命中他单同名药
 ok(call('PUT', f"/outpatient/review/{mine['orderId']}/reject?reason=" + q('用量不适宜'), token=t), '拒绝')
 ws = ok(call('GET', f'/outpatient/doctor/{rid}/workspace', token=t), '工作区')
 o = next(x for x in ws['orders'] if x['id'] == mine['orderId'])

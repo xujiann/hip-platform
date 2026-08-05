@@ -29,6 +29,7 @@ public class DoctorStationService {
     private final ChargeItemRepository chargeItemRepository;
     private final cn.hip.platform.empi.repository.PatientRepository patientRepository;
     private final jakarta.persistence.EntityManager entityManager;
+    private final CdssService cdssService;
 
     private final AtomicLong groupSeq = new AtomicLong(System.currentTimeMillis() % 100000);
 
@@ -95,15 +96,19 @@ public class DoctorStationService {
         String drugGroupNo = "CF" + stamp + "-" + groupSeq.incrementAndGet();
 
         // 合理用药前置拦截（过敏禁忌 / 同诊重复用药 / 抗菌药分级处方权）
+        List<CdssService.DrugLine> newDrugs = new java.util.ArrayList<>();
         for (OrderLine line : lines) {
             if ("DRUG".equals(line.orderType())) {
                 drugRepository.findById(line.itemId())
                         .ifPresent(drug -> {
                             checkRationalDrugUse(reg, drug.getName(), drug.getId());
                             checkAbxPrivilege(drug, doctorId);
+                            newDrugs.add(new CdssService.DrugLine(drug.getName(), line.days()));
                         });
             }
         }
+        // CDSS 处方审查（相互作用 4015 / 年龄禁忌 4017 拦截，疗程超限留痕提醒）
+        cdssService.checkPrescription(registrationId, reg.getPatientId(), newDrugs);
 
         return lines.stream().map(line -> {
             OutpOrder o = new OutpOrder();

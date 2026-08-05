@@ -55,6 +55,8 @@ const router = createRouter({
         { path: 'mgmt', component: () => import('../views/quality/MgmtView.vue') },
         { path: 'datagov/standards', component: () => import('../views/datagov/DataStdView.vue') },
         { path: 'insurance', component: () => import('../views/integration/InsuranceView.vue') },
+        { path: 'drg', component: () => import('../views/datagov/DrgView.vue') },
+        { path: 'cdss', component: () => import('../views/outpatient/CdssView.vue') },
       ],
     },
   ],

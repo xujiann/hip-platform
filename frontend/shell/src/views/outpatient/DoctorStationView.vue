@@ -50,6 +50,10 @@
                 <el-option v-for="i in icdOptions" :key="i.code" :label="`${i.name} (${i.code})`" :value="i.code" />
               </el-select>
             </el-form-item>
+            <el-form-item v-if="cdssTips.length" label="CDSS">
+              <el-alert v-for="(tip, i) in cdssTips" :key="i" :title="tip" type="warning" show-icon
+                        :closable="false" style="margin-bottom: 4px" />
+            </el-form-item>
             <el-form-item label="处理意见"><el-input v-model="emr.advice" type="textarea" :rows="2" /></el-form-item>
             <el-button type="primary" :loading="savingEmr" @click="saveEmr">保存病历</el-button>
           </el-form>
@@ -170,6 +174,7 @@ const submitting = ref(false)
 
 const emr = reactive({ chiefComplaint: '', presentIllness: '', pastHistory: '', physicalExam: '', advice: '' })
 const diagCodes = ref<string[]>([])
+const cdssTips = ref<string[]>([])
 const icdOptions = ref<{ code: string; name: string }[]>([])
 const knownIcd = new Map<string, string>()
 
@@ -236,9 +241,19 @@ async function saveEmr() {
       diagnoses: diagCodes.value.map((code) => ({ icdCode: code, icdName: knownIcd.get(code) ?? code })),
     })
     ElMessage.success('病历已保存')
+    await loadCdssTips()
   } finally {
     savingEmr.value = false
   }
+}
+
+// CDSS：按主诊断给出诊疗建议
+async function loadCdssTips() {
+  cdssTips.value = []
+  const primary = diagCodes.value[0]
+  if (!primary) return
+  const resp = await client.get('/cdss/suggestions', { params: { icd: primary } })
+  cdssTips.value = (resp.data.data as { content: string }[]).map((s) => s.content)
 }
 
 async function searchDrugs(kw: string) {
