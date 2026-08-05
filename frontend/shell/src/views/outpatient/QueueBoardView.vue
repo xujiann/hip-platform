@@ -7,6 +7,7 @@
           <el-option v-for="d in depts" :key="d.id" :label="d.name" :value="d.id" />
         </el-select>
         <el-button type="primary" @click="callNext">叫下一号</el-button>
+        <el-checkbox v-model="voiceOn" style="margin: 0 4px">语音播报</el-checkbox>
         <el-button link @click="load">刷新</el-button>
       </div>
     </div>
@@ -41,7 +42,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import client from '../../api/client'
 
@@ -78,13 +79,26 @@ async function pass(row: Record<string, unknown>) {
 async function recall(row: Record<string, unknown>) {
   const resp = await client.post('/outpatient/queue/recall', null, { params: { registrationId: row.registrationId } })
   ElMessage.success(`重呼 ${resp.data.data.regNo} 号`)
+  speak(`重呼 ${resp.data.data.regNo} 号，请尽快到${deptName.value}就诊`)
   await load()
+}
+
+// 三十六期：叫号语音播报（Web Speech，无需外部依赖）
+const voiceOn = ref(localStorage.getItem('hip_board_voice') !== 'off')
+watch(voiceOn, (v) => localStorage.setItem('hip_board_voice', v ? 'on' : 'off'))
+function speak(text: string) {
+  if (!voiceOn.value || !('speechSynthesis' in window)) return
+  const u = new SpeechSynthesisUtterance(text)
+  u.lang = 'zh-CN'
+  u.rate = 0.9
+  window.speechSynthesis.speak(u)
 }
 
 async function callNext() {
   const resp = await client.post('/outpatient/queue/call-next', null, { params: { deptId: deptId.value } })
   const r = resp.data.data
   ElMessage.success(`请 ${r.regNo} 号 ${r.patientName} 就诊`)
+  speak(`请 ${r.regNo} 号，${maskName(r.patientName as string)}，到${deptName.value}就诊`)
   await load()
 }
 
