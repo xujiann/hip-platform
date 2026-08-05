@@ -72,10 +72,8 @@ t_doc = ok(call('POST', '/auth/login', {'username': 'doctor01', 'password': 'Dem
 try:
     call('GET', '/ops/health-overview', token=t_doc)
     raise AssertionError('医生不应能访问运维接口')
-except AssertionError as e:
-    if '不应能访问' in str(e):
-        raise
-    assert 'HTTP 403' in str(e) or 'HTTP 401' in str(e), e
+except urllib.error.HTTPError as e:
+    assert e.code in (401, 403), e
 print('[卅八-8] 接口级权限 OK（医生访问运维接口被拒）')
 
 print('\n=== 三十八期 E2E 全部通过 ===')

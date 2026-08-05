@@ -35,7 +35,7 @@ assert len(docs2) == len(docs), f'幂等失败: {len(docs)} -> {len(docs2)}'
 print('[3] 重复同步幂等 OK')
 
 # 4 患者端登录（正确/错误手机号）
-status, bad = call('POST', '/portal/login', {'patientNo': 'P00000002', 'phone': '13900000000'})
+bad = call('POST', '/portal/login', {'patientNo': 'P00000002', 'phone': '13900000000'})
 assert bad['code'] == 9501
 pt = ok(call('POST', '/portal/login', {'patientNo': 'P00000002', 'phone': '13800138000'}), '患者登录')
 ptoken = pt['token']
@@ -60,9 +60,17 @@ assert any(w['patientNo'] == 'P00000002' and w['deptName'] == booking['deptName'
 print('    院内挂号队列同步可见 ✓')
 
 # 7 越权防护：患者令牌访问院内接口应 401/403
-status, _ = call('GET', '/system/users', token=ptoken)
+def status_of(path):
+    # 断言安全拦截：请求并返回 HTTP 状态码
+    try:
+        call('GET', path, token=ptoken)
+        return 200
+    except urllib.error.HTTPError as e:
+        return e.code
+
+status = status_of('/system/users')
 assert status in (401, 403), f'患者令牌不应访问院内接口: {status}'
-status, _ = call('GET', '/stats/overview', token=ptoken)
+status = status_of('/stats/overview')
 assert status in (401, 403)
 print(f"[7] 患者令牌访问院内接口被拒（{status}）OK")
 

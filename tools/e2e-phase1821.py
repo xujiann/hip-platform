@@ -5,6 +5,7 @@ import subprocess
 import sys
 import urllib.parse
 import urllib.request
+from e2elib import BASE, call, login, ok, q  # noqa: E402
 
 
 
@@ -54,7 +55,6 @@ print(f"[二十-2] PACS 配置接入 OK（viewer: {pacs['viewerUrl']}）")
 
 # 二十一期：迁移演练（模板导入，幂等）
 import os
-from e2elib import BASE, call, login, ok, q  # noqa: E402
 env = dict(os.environ, PYTHONIOENCODING='utf-8')
 r = subprocess.run([sys.executable, 'tools/import-patients.py', 'tools/migrate-templates/patients.csv'],
                    capture_output=True, text=True, encoding='utf-8', errors='replace', env=env)
