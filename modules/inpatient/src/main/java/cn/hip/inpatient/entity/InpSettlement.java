@@ -42,6 +42,10 @@ public class InpSettlement {
     @Column(nullable = false, length = 16)
     private String payMethod = "CASH";
 
+    /** 医保结算号（YB 单，通道返回后回填） */
+    @Column(length = 64)
+    private String ybSettleNo;
+
     @Column(nullable = false, updatable = false)
     private Instant createdAt = Instant.now();
 }

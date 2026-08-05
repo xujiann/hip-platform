@@ -228,6 +228,8 @@ public class InpatientService {
             if (!res.ok()) {
                 throw new InpException(9013, "医保出院结算上传失败: " + res.message());
             }
+            s.setYbSettleNo(res.settleNo());
+            s = settlementRepo.save(s);
         }
 
         adm.setStatus("DISCHARGED");

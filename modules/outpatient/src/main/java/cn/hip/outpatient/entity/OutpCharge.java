@@ -39,6 +39,10 @@ public class OutpCharge {
     /** 收费员 */
     private Long cashierId;
 
+    /** 医保结算号（YB 单，通道返回后回填；冲正/对账按此号发起） */
+    @Column(length = 64)
+    private String ybSettleNo;
+
     @Column(nullable = false, updatable = false)
     private Instant createdAt = Instant.now();
 }

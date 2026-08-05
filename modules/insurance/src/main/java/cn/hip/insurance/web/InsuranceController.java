@@ -169,8 +169,11 @@ public class InsuranceController {
                 from outp_charge where pay_method = 'YB' and status = 'PAID' and created_at::date = current_date
                 """));
         m.put("splitToday", jdbc.queryForMap("""
-                select coalesce(sum(fund_pay), 0) as fund_pay, coalesce(sum(self_pay), 0) as self_pay
-                from yb_settle_split where created_at::date = current_date
+                select coalesce(sum(s.fund_pay), 0) as fund_pay, coalesce(sum(s.self_pay), 0) as self_pay
+                from yb_settle_split s
+                left join outp_charge c on s.biz_type = 'OUTP' and c.charge_no = s.charge_no
+                where s.created_at::date = current_date
+                  and (s.biz_type <> 'OUTP' or c.status = 'PAID')
                 """));
         m.put("auditWarns", jdbc.queryForObject(
                 "select count(*) from yb_audit_log where created_at::date = current_date", Integer.class));

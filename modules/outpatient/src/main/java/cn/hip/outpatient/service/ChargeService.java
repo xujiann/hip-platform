@@ -55,6 +55,8 @@ public class ChargeService {
             if (!res.ok()) {
                 throw new BizException(5006, "医保结算上传失败: " + res.message());
             }
+            charge.setYbSettleNo(res.settleNo());
+            charge = chargeRepository.save(charge);
         }
         return charge;
     }
@@ -86,7 +88,11 @@ public class ChargeService {
             orderRepository.save(o);
         }
         if ("YB".equals(charge.getPayMethod())) {
-            insuranceAdapter.uploadRefund(charge.getChargeNo());
+            var res = insuranceAdapter.uploadRefund(charge.getChargeNo());
+            if (!res.ok()) {
+                // 与结算同语义：冲正失败即回滚本地退费，杜绝「本地已退费、医保未冲正」的悬账
+                throw new BizException(5007, "医保退费冲正失败: " + res.message());
+            }
         }
         charge.setStatus("REFUNDED");
         return chargeRepository.save(charge);
