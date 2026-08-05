@@ -19,6 +19,7 @@
         <module>modules/outpatient</module>
         <module>modules/inpatient</module>
         <module>modules/portal</module>
+        <module>modules/insurance</module>
         <module>modules/hrp</module>
         <module>modules/medtech</module>
         <module>modules/qualitycare</module>
@@ -104,6 +105,11 @@
             <dependency>
                 <groupId>cn.hip</groupId>
                 <artifactId>hip-inpatient</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cn.hip</groupId>
+                <artifactId>hip-insurance</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

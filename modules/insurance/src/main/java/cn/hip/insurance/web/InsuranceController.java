@@ -1,4 +1,4 @@
-package cn.hip.server.web;
+package cn.hip.insurance.web;
 
 import cn.hip.platform.core.common.R;
 import lombok.RequiredArgsConstructor;
