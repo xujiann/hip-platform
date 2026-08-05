@@ -67,8 +67,9 @@ regs = ok(call('GET', '/portal/my/registrations', token=ptoken), '我的挂号')
 labs = ok(call('GET', '/portal/my/lab-reports', token=ptoken), '我的报告')
 charges = ok(call('GET', '/portal/my/charges', token=ptoken), '我的费用')
 assert regs and labs and charges
-assert any(any(r['abnormalFlag'] == 'LL' for r in l['results']) for l in labs)
-print(f"[5] 患者端：挂号 {len(regs)} 条，报告 {len(labs)} 份（含危急值展示），费用 {len(charges)} 笔")
+# 二十九期起危急值不外显：LL/HH 在患者端遮蔽为 CRIT 回院提示
+assert any(any(r['abnormalFlag'] == 'CRIT' for r in l['results']) for l in labs)
+print(f"[5] 患者端：挂号 {len(regs)} 条，报告 {len(labs)} 份（危急值已遮蔽为回院提示），费用 {len(charges)} 笔")
 
 # 6 在线预约挂号
 sch = ok(call('POST', '/outpatient/schedules', {'deptId': 2, 'scheduleDate': today, 'fee': 15, 'capacity': 5}, t), '放号')

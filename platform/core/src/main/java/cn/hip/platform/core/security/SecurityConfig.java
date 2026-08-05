@@ -30,7 +30,7 @@ public class SecurityConfig {
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/api/auth/login", "/api/portal/login", "/api/config/public",
-                                "/actuator/health").permitAll()
+                                "/api/share/*", "/actuator/health").permitAll()
                         // 患者端仅能访问 portal 接口；院内接口对 PORTAL 角色完全隔离
                         .requestMatchers("/api/portal/**").hasRole("PORTAL")
                         .anyRequest().access(new WebExpressionAuthorizationManager(

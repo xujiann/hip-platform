@@ -48,6 +48,10 @@ public class SysUser {
     /** 锁定截止时间 */
     private Instant lockedUntil;
 
+    /** 密码最近修改时间（等保：定期更换口令提醒） */
+    @Column(nullable = false)
+    private Instant passwordUpdatedAt = Instant.now();
+
     @Column(nullable = false, updatable = false)
     private Instant createdAt = Instant.now();
 

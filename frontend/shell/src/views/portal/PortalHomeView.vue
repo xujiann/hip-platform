@@ -54,7 +54,40 @@
         <el-empty v-if="!labs.length" description="暂无报告" />
       </el-tab-pane>
 
-      <el-tab-pane label="费用" name="charges">
+      <el-tab-pane label="检查报告" name="exams">
+        <el-card v-for="(e, i) in examReports" :key="i" class="item" shadow="never">
+          <b>{{ e.item_name }}</b>
+          <el-tag size="small" style="margin-left: 6px">{{ e.report_type === 'PATH' ? '病理' : '检查' }}</el-tag>
+          <span class="muted">{{ String(e.report_date).slice(0, 10) }}</span>
+          <div style="margin-top: 6px"><b>结论：</b>{{ e.conclusion }}</div>
+          <div class="muted">{{ e.detail }}</div>
+        </el-card>
+        <el-empty v-if="!examReports.length" description="暂无报告" />
+      </el-tab-pane>
+
+      <el-tab-pane label="缴费" name="charges">
+        <template v-if="bills.length">
+          <h4>待缴费</h4>
+          <el-card v-for="b in bills" :key="String(b.registration_id)" class="item" shadow="never">
+            <div class="row">
+              <div>
+                <b>¥{{ b.total }}</b>
+                <span class="muted">{{ String(b.items).slice(0, 40) }}</span>
+              </div>
+              <div>
+                <el-button size="small" type="success" @click="startPay(b, 'WECHAT')">微信支付</el-button>
+                <el-button size="small" type="primary" @click="startPay(b, 'ALIPAY')">支付宝</el-button>
+              </div>
+            </div>
+          </el-card>
+        </template>
+        <el-card v-if="paying" class="item" shadow="never">
+          <b>扫码支付 ¥{{ paying.amount }}</b>
+          <div class="muted" style="word-break: break-all">{{ paying.qrContent }}</div>
+          <el-button size="small" type="success" style="margin-top: 6px" @click="confirmPay">
+            我已支付（模拟回调）</el-button>
+        </el-card>
+        <h4>历史账单</h4>
         <el-card v-for="c in charges" :key="String(c.chargeNo)" class="item" shadow="never">
           <div class="row">
             <div>
@@ -66,7 +99,18 @@
             </el-tag>
           </div>
         </el-card>
-        <el-empty v-if="!charges.length" description="暂无费用记录" />
+        <el-empty v-if="!charges.length && !bills.length" description="暂无费用记录" />
+      </el-tab-pane>
+
+      <el-tab-pane label="智能导诊" name="guide">
+        <el-input v-model="symptom" placeholder="描述症状，如：胸闷两天" clearable>
+          <template #append><el-button @click="doGuide">导诊</el-button></template>
+        </el-input>
+        <el-card v-for="(g, i) in guides" :key="i" class="item" shadow="never" style="margin-top: 8px">
+          <b>建议科室：{{ g.dept_name }}</b>
+          <div class="muted">{{ g.advice }}</div>
+        </el-card>
+        <el-empty v-if="guided && !guides.length" description="未匹配到科室，建议挂全科/咨询导诊台" />
       </el-tab-pane>
     </el-tabs>
   </div>
@@ -86,6 +130,12 @@ const schedules = ref<Record<string, unknown>[]>([])
 const regs = ref<Record<string, unknown>[]>([])
 const labs = ref<Record<string, unknown>[]>([])
 const charges = ref<Record<string, unknown>[]>([])
+const examReports = ref<Record<string, unknown>[]>([])
+const bills = ref<Record<string, unknown>[]>([])
+const paying = ref<{ payNo: string; amount: unknown; qrContent: string } | null>(null)
+const symptom = ref('')
+const guides = ref<Record<string, unknown>[]>([])
+const guided = ref(false)
 
 const regNames: Record<string, string> = { REGISTERED: '已挂号', CANCELLED: '已退号', VISITED: '已就诊' }
 const regTag: Record<string, string> = { REGISTERED: 'success', CANCELLED: 'info', VISITED: '' }
@@ -111,12 +161,34 @@ async function loadSchedules() {
 }
 
 async function loadMine() {
-  const [r, l, c] = await Promise.all([
+  const [r, l, c, e, b] = await Promise.all([
     portal.get('/my/registrations'), portal.get('/my/lab-reports'), portal.get('/my/charges'),
+    portal.get('/my/exam-reports'), portal.get('/my/pending-bill'),
   ])
   regs.value = r.data.data
   labs.value = l.data.data
   charges.value = c.data.data
+  examReports.value = e.data.data
+  bills.value = b.data.data
+}
+
+async function startPay(bill: Record<string, unknown>, channel: string) {
+  const resp = await portal.post('/my/pay', { registrationId: bill.registration_id, channel })
+  paying.value = resp.data.data
+}
+
+async function confirmPay() {
+  if (!paying.value) return
+  const resp = await portal.post(`/my/pay/${paying.value.payNo}/confirm`)
+  ElMessage.success(`缴费成功：${resp.data.data.chargeNo}`)
+  paying.value = null
+  await loadMine()
+}
+
+async function doGuide() {
+  if (!symptom.value) return
+  guides.value = (await portal.get('/guide', { params: { symptom: symptom.value } })).data.data
+  guided.value = true
 }
 
 async function book(s: Record<string, unknown>) {

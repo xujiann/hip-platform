@@ -38,6 +38,8 @@ public class PortalController {
     private final OutpLabResultRepository labResultRepository;
     private final OutpChargeRepository chargeRepository;
     private final SysDeptRepository deptRepository;
+    private final cn.hip.outpatient.service.PayService payService;
+    private final org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     public record PortalLoginRequest(String patientNo, String phone) {}
 
@@ -71,6 +73,7 @@ public class PortalController {
         }).toList());
     }
 
+    /** 检验报告：危急值不直接外显（HH/LL 结果替换为回院提示，避免患者误读延误） */
     @GetMapping("/my/lab-reports")
     public R<List<Map<String, Object>>> myLabReports(Authentication auth) {
         Long pid = patientId(auth);
@@ -82,9 +85,96 @@ public class PortalController {
                     m.put("orderId", o.getId());
                     m.put("itemName", o.getItemName());
                     m.put("reportDate", o.getCreatedAt());
-                    m.put("results", labResultRepository.findByOrderIdOrderByIdAsc(o.getId()));
+                    m.put("results", labResultRepository.findByOrderIdOrderByIdAsc(o.getId()).stream()
+                            .map(x -> {
+                                var rm = new LinkedHashMap<String, Object>();
+                                boolean critical = "HH".equals(x.getAbnormalFlag()) || "LL".equals(x.getAbnormalFlag());
+                                rm.put("itemName", x.getItemName());
+                                rm.put("resultValue", critical ? "结果异常，请尽快回院复诊" : x.getResultValue());
+                                rm.put("unit", critical ? "" : x.getUnit());
+                                rm.put("refRange", x.getRefRange());
+                                rm.put("abnormalFlag", critical ? "CRIT" : x.getAbnormalFlag());
+                                return rm;
+                            }).toList());
                     return (Map<String, Object>) m;
                 }).toList());
+    }
+
+    /** 检查/病理报告（已审核发布） */
+    @GetMapping("/my/exam-reports")
+    public R<List<Map<String, Object>>> myExamReports(Authentication auth) {
+        Long pid = patientId(auth);
+        var reports = jdbc.queryForList("""
+                select 'EXAM' as report_type, o.item_name, e.impression as conclusion, e.findings as detail,
+                       e.verified_at as report_date
+                from ris_exam e
+                join outp_order o on o.id = e.order_id
+                join outp_registration r on r.id = o.registration_id
+                where r.patient_id = ? and e.status = 'VERIFIED'
+                union all
+                select 'PATH', o.item_name, s.diagnosis, s.micro_finding, s.diagnosed_at
+                from path_specimen s
+                join outp_order o on o.id = s.order_id
+                join outp_registration r on r.id = o.registration_id
+                where r.patient_id = ? and s.status = 'DIAGNOSED'
+                order by report_date desc
+                """, pid, pid);
+        return R.ok(reports);
+    }
+
+    /** 待缴费账单（按就诊分组） */
+    @GetMapping("/my/pending-bill")
+    public R<List<Map<String, Object>>> myPendingBill(Authentication auth) {
+        Long pid = patientId(auth);
+        return R.ok(jdbc.queryForList("""
+                select r.id as registration_id, r.visit_date, sum(o.amount) as total,
+                       string_agg(o.item_name, '、') as items
+                from outp_order o
+                join outp_registration r on r.id = o.registration_id
+                where r.patient_id = ? and o.status = 'CREATED'
+                group by r.id, r.visit_date order by r.id desc
+                """, pid));
+    }
+
+    public record PortalPayRequest(Long registrationId, String channel) {}
+
+    /** 在线缴费：出码（校验挂号归属本人） */
+    @PostMapping("/my/pay")
+    public R<Object> pay(@RequestBody PortalPayRequest req, Authentication auth) {
+        Long pid = patientId(auth);
+        var reg = registrationRepository.findById(req.registrationId()).orElse(null);
+        if (reg == null || !reg.getPatientId().equals(pid)) return R.fail(9502, "挂号记录不存在或非本人");
+        try {
+            return R.ok(payService.createPayOrder(req.registrationId(), req.channel()));
+        } catch (RegistrationService.BizException e) {
+            return R.fail(e.code, e.getMessage());
+        }
+    }
+
+    /** 支付确认（Mock 钱包回调） */
+    @PostMapping("/my/pay/{payNo}/confirm")
+    public R<Object> confirmPay(@PathVariable String payNo, Authentication auth) {
+        Long pid = patientId(auth);
+        Integer own = jdbc.queryForObject("""
+                select count(*) from pay_order po
+                join outp_registration r on r.id = po.registration_id
+                where po.pay_no = ? and r.patient_id = ?
+                """, Integer.class, payNo, pid);
+        if (own == null || own == 0) return R.fail(9502, "支付单不存在或非本人");
+        try {
+            return R.ok(payService.confirm(payNo, null));
+        } catch (RegistrationService.BizException e) {
+            return R.fail(e.code, e.getMessage());
+        }
+    }
+
+    /** 智能导诊：症状关键词 → 科室推荐 */
+    @GetMapping("/guide")
+    public R<List<Map<String, Object>>> guide(@RequestParam String symptom) {
+        return R.ok(jdbc.queryForList("""
+                select keyword, dept_name, advice from triage_guide
+                where ? like '%' || keyword || '%' order by id
+                """, symptom));
     }
 
     @GetMapping("/my/charges")

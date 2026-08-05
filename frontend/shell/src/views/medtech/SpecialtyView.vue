@@ -82,6 +82,45 @@
         </el-table>
       </el-tab-pane>
 
+      <el-tab-pane label="麻醉记录" name="anes">
+        <el-form inline size="small">
+          <el-form-item><el-input v-model="anes.surgeryId" placeholder="手术ID" style="width: 100px" /></el-form-item>
+          <el-form-item>
+            <el-select v-model="anes.phase" style="width: 110px">
+              <el-option label="术中" value="INTRA" /><el-option label="复苏 PACU" value="PACU" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="HR"><el-input v-model="anes.hr" style="width: 70px" /></el-form-item>
+          <el-form-item label="BP"><el-input v-model="anes.sbp" style="width: 65px" />/<el-input v-model="anes.dbp" style="width: 65px" /></el-form-item>
+          <el-form-item label="SpO2"><el-input v-model="anes.spo2" style="width: 65px" /></el-form-item>
+          <el-form-item v-if="anes.phase === 'PACU'" label="Steward">
+            <el-input v-model="anes.stewardScore" style="width: 65px" />
+          </el-form-item>
+          <el-button type="primary" size="small" @click="recordAnes">记录</el-button>
+          <el-button size="small" @click="loadAnes">查询</el-button>
+        </el-form>
+        <el-alert v-if="pacu" :type="pacu.canLeave ? 'success' : 'warning'" show-icon :closable="false"
+                  :title="pacu.latestScore < 0 ? '暂无 PACU 苏醒评分'
+                    : `最近 Steward 评分 ${pacu.latestScore} 分，${pacu.canLeave ? '≥4 可出复苏室' : '<4 继续观察'}`"
+                  style="margin: 8px 0" />
+        <el-table :data="anesRecords" size="small" border>
+          <el-table-column prop="recorded_at" label="时间" width="170" />
+          <el-table-column label="阶段" width="90">
+            <template #default="{ row }">
+              <el-tag :type="row.phase === 'PACU' ? 'warning' : 'info'" size="small">
+                {{ row.phase === 'PACU' ? '复苏' : '术中' }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="hr" label="HR" width="70" />
+          <el-table-column label="BP" width="90">
+            <template #default="{ row }">{{ row.sbp }}/{{ row.dbp }}</template>
+          </el-table-column>
+          <el-table-column prop="spo2" label="SpO2" width="70" />
+          <el-table-column prop="steward_score" label="Steward" width="80" />
+          <el-table-column prop="note" label="备注" show-overflow-tooltip />
+        </el-table>
+      </el-tab-pane>
+
       <el-tab-pane label="ICU 记录" name="icu">
         <el-form inline size="small">
           <el-form-item><el-input v-model="icu.admissionId" placeholder="住院ID" style="width: 100px" /></el-form-item>
@@ -140,6 +179,25 @@ const balance = ref<Record<string, unknown> | null>(null)
 const er = reactive({ triageId: '', bedNo: '' })
 const icu = reactive({ admissionId: '', temperature: '', pulse: '', respiration: '', sbp: '', dbp: '',
   spo2: '', gcs: '', intakeMl: '', outputMl: '', ventilator: false })
+const anesRecords = ref<Record<string, unknown>[]>([])
+const pacu = ref<{ latestScore: number; canLeave: boolean } | null>(null)
+const anes = reactive({ surgeryId: '', phase: 'INTRA', hr: '', sbp: '', dbp: '', spo2: '', stewardScore: '' })
+
+async function loadAnes() {
+  if (!anes.surgeryId) return
+  anesRecords.value = (await client.get('/anes/records', { params: { surgeryId: anes.surgeryId } })).data.data
+  pacu.value = (await client.get('/anes/records/pacu-status', { params: { surgeryId: anes.surgeryId } })).data.data
+}
+async function recordAnes() {
+  if (!anes.surgeryId) return
+  const num = (v: string) => (v === '' ? null : Number(v))
+  await client.post('/anes/records', {
+    surgeryId: Number(anes.surgeryId), phase: anes.phase, hr: num(anes.hr), sbp: num(anes.sbp),
+    dbp: num(anes.dbp), spo2: num(anes.spo2), stewardScore: num(anes.stewardScore),
+  })
+  ElMessage.success('已记录')
+  await loadAnes()
+}
 
 const outcomeText = (o: string) => ({ DISCHARGED: '已离院', ADMITTED: '已住院', TRANSFERRED: '已转院' }[o] ?? o)
 

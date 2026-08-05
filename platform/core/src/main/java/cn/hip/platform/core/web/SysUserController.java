@@ -75,6 +75,7 @@ public class SysUserController {
             String pwdError = passwordPolicyError(req.password());
             if (pwdError != null) return R.fail(1102, pwdError);
             u.setPassword(passwordEncoder.encode(req.password()));
+            u.setPasswordUpdatedAt(java.time.Instant.now());
         }
         return R.ok(UserDto.from(userRepository.save(u)));
     }

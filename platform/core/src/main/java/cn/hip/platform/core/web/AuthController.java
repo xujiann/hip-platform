@@ -61,7 +61,13 @@ public class AuthController {
             userRepository.save(u);
         });
         String token = jwtService.issue(req.username());
-        return R.ok(Map.of("token", token));
+        // 等保：口令使用时长与定期更换提醒（超过 90 天提示）
+        long pwdAgeDays = userOpt
+                .map(u -> java.time.Duration.between(u.getPasswordUpdatedAt(), java.time.Instant.now()).toDays())
+                .orElse(0L);
+        return R.ok(Map.of("token", token,
+                "passwordAgeDays", pwdAgeDays,
+                "passwordExpireWarning", pwdAgeDays >= 90));
     }
 
     @GetMapping("/me")

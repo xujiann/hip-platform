@@ -18,11 +18,28 @@ public class PatientController {
     @GetMapping
     public R<Map<String, Object>> search(@RequestParam(defaultValue = "") String keyword,
                                          @RequestParam(defaultValue = "0") int page,
-                                         @RequestParam(defaultValue = "20") int size) {
+                                         @RequestParam(defaultValue = "20") int size,
+                                         org.springframework.security.core.Authentication auth) {
         var p = patientService.search(keyword, page, size);
+        // 等保：列表场景手机号/证件号脱敏，仅 ADMIN 角色见明文
+        boolean admin = auth != null && auth.getAuthorities().stream()
+                .anyMatch(a -> "ROLE_ADMIN".equals(a.getAuthority()));
         return R.ok(Map.of(
                 "total", p.getTotalElements(),
-                "records", p.getContent().stream().map(this::toDto).toList()));
+                "records", p.getContent().stream()
+                        .map(x -> admin ? toDto(x) : maskSensitive(toDto(x))).toList()));
+    }
+
+    /** 手机号保留前3后4，证件号保留前4后3 */
+    private Map<String, Object> maskSensitive(Map<String, Object> dto) {
+        dto.computeIfPresent("phone", (k, v) -> mask(String.valueOf(v), 3, 4));
+        dto.computeIfPresent("idNo", (k, v) -> mask(String.valueOf(v), 4, 3));
+        return dto;
+    }
+
+    private String mask(String s, int head, int tail) {
+        if (s == null || s.isBlank() || "null".equals(s) || s.length() <= head + tail) return s;
+        return s.substring(0, head) + "*".repeat(s.length() - head - tail) + s.substring(s.length() - tail);
     }
 
     @PostMapping
