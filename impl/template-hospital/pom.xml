@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 实施定制模块模板（ADR-0003）：复制为 impl/<hospital> 后改 artifactId 与包名。
+     标准仓库根 pom 不包含本模块；实施仓库启用：根 pom <modules> 加入 + server pom 加依赖。 -->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>cn.hip</groupId>
+        <artifactId>hip-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+    <artifactId>hip-impl-template</artifactId>
+    <name>实施定制模板（示例，勿直接部署）</name>
+    <dependencies>
+        <dependency><groupId>cn.hip</groupId><artifactId>hip-platform-core</artifactId></dependency>
+    </dependencies>
+</project>

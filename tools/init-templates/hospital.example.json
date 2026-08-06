@@ -1,0 +1,32 @@
+{
+  "adminCurrentPassword": "admin123",
+  "adminNewPassword": "请改成8位以上含大小写与数字的强口令",
+  "hospital": {
+    "name": "示例县人民医院",
+    "extraConfig": {}
+  },
+  "modules": {
+    "drg": true,
+    "cdss": true,
+    "insurance": true,
+    "blood": true,
+    "hr": true,
+    "surgery": false
+  },
+  "depts": [
+    { "name": "内科门诊", "code": "NKMZ", "type": "CLINIC" },
+    { "name": "外科门诊", "code": "WKMZ", "type": "CLINIC" },
+    { "name": "内科病区", "code": "NKBQ", "type": "NURSING", "beds": 30 },
+    { "name": "外科病区", "code": "WKBQ", "type": "NURSING", "beds": 30 }
+  ],
+  "accounts": [
+    { "username": "doctor01", "realName": "示例医生", "password": "Demo@2026a", "roleCodes": ["DOCTOR"] },
+    { "username": "nurse01", "realName": "示例护士", "password": "Demo@2026a", "roleCodes": ["NURSE"] },
+    { "username": "cashier01", "realName": "示例收费员", "password": "Demo@2026a", "roleCodes": ["CASHIER"] }
+  ],
+  "dictionaries": {
+    "drugsCsv": "drugs.example.csv",
+    "chargeItemsCsv": "charge-items.example.csv",
+    "ybCatalogCsv": "../migrate-templates/yb-catalog.csv"
+  }
+}

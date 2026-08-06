@@ -19,9 +19,15 @@ public class InsuranceAutoReconJob {
 
     @Scheduled(cron = "0 30 1 * * *")
     public void dailyRecon() {
-        var flag = jdbc.queryForList(
-                "select cfg_value from sys_config where cfg_key = 'yb_auto_recon_enabled'", String.class);
-        if (flag.isEmpty() || !"1".equals(flag.get(0))) {
+        // 医保模块整体停用或自动对账开关关闭时不跑
+        var flags = jdbc.queryForList(
+                "select cfg_key, cfg_value from sys_config where cfg_key in ('yb_auto_recon_enabled', 'module.insurance.enabled')");
+        for (var f : flags) {
+            if (!"1".equals(f.get("cfg_value"))) {
+                return;
+            }
+        }
+        if (flags.stream().noneMatch(f -> "yb_auto_recon_enabled".equals(f.get("cfg_key")))) {
             return;
         }
         String date = LocalDate.now().minusDays(1).toString();

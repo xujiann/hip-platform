@@ -18,8 +18,9 @@ server:
 
 hip:
   security:
-    # 生产环境务必通过环境变量 HIP_SECURITY_JWT_SECRET 覆盖
-    jwt-secret: dev-only-secret-change-me-hip-platform-0123456789
+    # 安全基线：生产/试点通过环境变量 HIP_JWT_SECRET 注入（≥32 字符随机串）；
+    # 未注入时回落开发占位值，仅限本机开发与 CI
+    jwt-secret: ${HIP_JWT_SECRET:dev-only-secret-change-me-hip-platform-0123456789}
     jwt-expiry-hours: 12
   integration:
     mllp-enabled: true

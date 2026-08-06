@@ -33,6 +33,30 @@ public class InpatientController {
     private final SysDeptRepository deptRepository;
     private final CurrentUserService currentUserService;
 
+    public record CreateBedsRequest(Long wardId, Integer count) {}
+
+    /** 产品化一期：病区床位批量创建（实施工具；bed_no 自增补位，重复号自动跳过） */
+    @PostMapping("/beds")
+    @org.springframework.security.access.prepost.PreAuthorize("hasRole('ADMIN')")
+    public R<Map<String, Object>> createBeds(@RequestBody CreateBedsRequest req) {
+        if (req.wardId() == null || req.count() == null || req.count() < 1 || req.count() > 200) {
+            return R.fail(9020, "wardId 必填，count 须为 1-200");
+        }
+        var existing = bedRepo.findByWardIdOrderByBedNo(req.wardId()).stream()
+                .map(cn.hip.inpatient.entity.InpBed::getBedNo).collect(java.util.stream.Collectors.toSet());
+        int created = 0;
+        for (int no = 1; created < req.count() && no <= 999; no++) {
+            String bedNo = String.format("%02d", no);
+            if (existing.contains(bedNo)) continue;
+            var b = new cn.hip.inpatient.entity.InpBed();
+            b.setWardId(req.wardId());
+            b.setBedNo(bedNo);
+            bedRepo.save(b);
+            created++;
+        }
+        return R.ok(Map.of("created", created));
+    }
+
     @GetMapping("/beds")
     public R<List<Map<String, Object>>> beds(@RequestParam Long wardId) {
         return R.ok(bedRepo.findByWardIdOrderByBedNo(wardId).stream().map(b -> {

@@ -1,6 +1,7 @@
 package cn.hip.platform.core.web;
 
 import cn.hip.platform.core.common.R;
+import cn.hip.platform.core.config.ModuleGate;
 import cn.hip.platform.core.entity.SysMenu;
 import cn.hip.platform.core.entity.SysUser;
 import cn.hip.platform.core.repository.SysUserRepository;
@@ -25,6 +26,7 @@ public class AuthController {
     private final AuthenticationManager authenticationManager;
     private final JwtService jwtService;
     private final SysUserRepository userRepository;
+    private final ModuleGate moduleGate;
 
     public record LoginRequest(@NotBlank String username, @NotBlank String password) {}
 
@@ -73,11 +75,20 @@ public class AuthController {
     @GetMapping("/me")
     public R<Map<String, Object>> me(Authentication authentication) {
         SysUser user = userRepository.findByUsername(authentication.getName()).orElseThrow();
-        List<Map<String, Object>> menus = user.getRoles().stream()
+        // 模块开关：停用模块的菜单不下发（API 侧由 ModuleGateFilter 兜底 404）
+        var disabledPaths = moduleGate.disabledMenuPaths();
+        List<SysMenu> visible = user.getRoles().stream()
                 .flatMap(r -> r.getMenus().stream())
                 .filter(SysMenu::getEnabled)
+                .filter(m -> m.getPath() == null || !disabledPaths.contains(m.getPath()))
                 .distinct()
                 .sorted(Comparator.comparing(SysMenu::getSortNo))
+                .toList();
+        // 清理因过滤而空掉的父目录
+        var parentIds = visible.stream().map(SysMenu::getParentId)
+                .filter(java.util.Objects::nonNull).collect(java.util.stream.Collectors.toSet());
+        List<Map<String, Object>> menus = visible.stream()
+                .filter(m -> !"DIR".equals(m.getType()) || parentIds.contains(m.getId()))
                 .map(m -> Map.<String, Object>of(
                         "id", m.getId(),
                         "parentId", m.getParentId() == null ? 0 : m.getParentId(),
