@@ -1,0 +1,5 @@
+item_type,item_code,item_name,yb_code,charge_class,self_ratio,effective_date
+DRUG,D0001,阿莫西林胶囊,XJ01CA04000101,A,0,2026-01-01
+DRUG,D0003,头孢克肟分散片,XJ01DD08000303,B,0.10,2026-01-01
+ITEM,C0001,血常规(五分类),250203001,A,0,2026-01-01
+ITEM,C0003,肝功能全套,250403005,B,0.10,2026-01-01

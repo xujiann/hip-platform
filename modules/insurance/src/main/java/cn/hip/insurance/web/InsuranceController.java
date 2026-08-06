@@ -1,5 +1,6 @@
 package cn.hip.insurance.web;
 
+import cn.hip.insurance.service.InsuranceReconService;
 import cn.hip.platform.core.common.R;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -13,7 +14,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-/** 二十七期：医保管理——目录对照维护、结算分割查询、审核提醒、对账、汇总 */
+/** 二十七期：医保管理——目录对照维护、结算分割查询、审核提醒、对账、汇总；批次三补 CSV 导入与对照率 */
 @RestController
 @RequiredArgsConstructor
 @PreAuthorize("hasRole('ADMIN')")
@@ -21,6 +22,7 @@ import java.util.Set;
 public class InsuranceController {
 
     private final JdbcTemplate jdbc;
+    private final InsuranceReconService reconService;
 
     // ---- 目录对照 ----
     public record MapReq(String itemType, String itemCode, String itemName,
@@ -40,7 +42,7 @@ public class InsuranceController {
         return R.ok();
     }
 
-    /** 对照表 + 未对照项目提示 */
+    /** 对照表 + 未对照项目提示 + 对照率统计 */
     @GetMapping("/catalog")
     public R<Map<String, Object>> catalog() {
         var m = new LinkedHashMap<String, Object>();
@@ -55,7 +57,64 @@ public class InsuranceController {
                   and not exists (select 1 from yb_catalog_map m where m.item_type = 'ITEM' and m.item_code = c.code)
                 order by code
                 """));
+        m.put("stats", jdbc.queryForMap("""
+                select
+                  (select count(*) from md_drug where enabled) as total_drugs,
+                  (select count(*) from md_drug d where enabled and exists
+                     (select 1 from yb_catalog_map m where m.item_type = 'DRUG' and m.item_code = d.code)) as mapped_drugs,
+                  (select count(*) from md_charge_item where enabled) as total_items,
+                  (select count(*) from md_charge_item c where enabled and exists
+                     (select 1 from yb_catalog_map m where m.item_type = 'ITEM' and m.item_code = c.code)) as mapped_items
+                """));
         return R.ok(m);
+    }
+
+    /** 目录对照 CSV 批量导入（实施工具）：列 item_type,item_code,item_name,yb_code,charge_class,self_ratio[,effective_date]
+     *  首行为表头则自动跳过；逐行校验，错误行跳过并回报行号原因；合法行 upsert 即时生效 */
+    @PostMapping(value = "/catalog/import", consumes = "text/plain")
+    @Transactional
+    public R<Map<String, Object>> importCatalog(@RequestBody String csv) {
+        int ok = 0;
+        List<String> errors = new ArrayList<>();
+        String[] lines = csv.split("\\r?\\n");
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i].strip();
+            if (line.isEmpty()) continue;
+            if (i == 0 && line.toLowerCase().startsWith("item_type")) continue;
+            String[] f = line.split(",", -1);
+            if (f.length < 6) {
+                errors.add("第" + (i + 1) + "行：列数不足 6");
+                continue;
+            }
+            String itemType = f[0].strip(), itemCode = f[1].strip(), itemName = f[2].strip();
+            String ybCode = f[3].strip(), chargeClass = f[4].strip().toUpperCase();
+            if (!Set.of("DRUG", "ITEM").contains(itemType)) {
+                errors.add("第" + (i + 1) + "行：类型只能为 DRUG/ITEM");
+                continue;
+            }
+            if (!Set.of("A", "B", "C").contains(chargeClass)) {
+                errors.add("第" + (i + 1) + "行：类别只能为 A/B/C");
+                continue;
+            }
+            double selfRatio;
+            try {
+                selfRatio = f[5].strip().isEmpty() ? 0 : Double.parseDouble(f[5].strip());
+                if (selfRatio < 0 || selfRatio > 1) throw new NumberFormatException();
+            } catch (NumberFormatException e) {
+                errors.add("第" + (i + 1) + "行：自付比例须为 0-1 数值");
+                continue;
+            }
+            String effective = f.length > 6 && !f[6].strip().isEmpty() ? f[6].strip() : null;
+            jdbc.update("""
+                    insert into yb_catalog_map(item_type, item_code, item_name, yb_code, charge_class, self_ratio, effective_date)
+                    values (?,?,?,?,?,?, coalesce(?::date, current_date))
+                    on conflict (item_type, item_code) do update set yb_code = excluded.yb_code,
+                        item_name = excluded.item_name, charge_class = excluded.charge_class,
+                        self_ratio = excluded.self_ratio, effective_date = excluded.effective_date, updated_at = now()
+                    """, itemType, itemCode, itemName, ybCode, chargeClass, selfRatio, effective);
+            ok++;
+        }
+        return R.ok(Map.of("imported", ok, "errorCount", errors.size(), "errors", errors));
     }
 
     // ---- 结算分割 ----
@@ -79,10 +138,10 @@ public class InsuranceController {
         return R.ok(jdbc.queryForList("select * from yb_audit_log order by id desc limit 200"));
     }
 
-    // ---- 对账：业务账（门诊结算/住院结算） vs 医保通道留痕 ----
+    // ---- 对账：业务账（门诊结算/住院结算） vs 医保通道留痕（逻辑在 InsuranceReconService，自动对账任务共用） ----
     @GetMapping("/reconcile")
     public R<Map<String, Object>> reconcile(@RequestParam String date) {
-        List<Map<String, Object>> rows = reconRows(date);
+        List<Map<String, Object>> rows = reconService.reconRows(date);
         long matched = rows.stream().filter(r -> (Boolean) r.get("consistent")).count();
         var m = new LinkedHashMap<String, Object>();
         m.put("rows", rows);
@@ -94,70 +153,13 @@ public class InsuranceController {
 
     /** 保存对账批次留痕 */
     @PostMapping("/reconcile")
-    @Transactional
     public R<Map<String, Object>> saveReconcile(@RequestParam String date) {
-        List<Map<String, Object>> rows = reconRows(date);
-        long matched = rows.stream().filter(r -> (Boolean) r.get("consistent")).count();
-        String diffDetail = rows.stream().filter(r -> !(Boolean) r.get("consistent"))
-                .map(r -> String.valueOf(r.get("charge_no"))).reduce((x, y) -> x + "," + y).orElse("");
-        jdbc.update("""
-                insert into yb_recon_batch(recon_date, total_cnt, matched_cnt, diff_cnt, detail)
-                values (?::date,?,?,?,?)
-                """, date, rows.size(), matched, rows.size() - matched, diffDetail);
-        return R.ok(Map.of("total", rows.size(), "matched", matched, "diff", rows.size() - matched));
+        return R.ok(reconService.reconcileAndSave(date));
     }
 
     @GetMapping("/reconcile/batches")
     public R<List<Map<String, Object>>> batches() {
         return R.ok(jdbc.queryForList("select * from yb_recon_batch order by id desc limit 50"));
-    }
-
-    private List<Map<String, Object>> reconRows(String date) {
-        List<Map<String, Object>> out = new ArrayList<>();
-        // 门诊：YB 结算单 ←→ 通道 settle/refund 报文
-        for (var c : jdbc.queryForList("""
-                select charge_no, total_amount, status from outp_charge
-                where pay_method = 'YB' and created_at::date = ?::date order by id
-                """, date)) {
-            String no = (String) c.get("charge_no");
-            boolean hasSettle = msgExists(no, "outpatient.settle") || msgExists(no, "inpatient.settle");
-            boolean hasRefund = msgExists(no, "outpatient.refund");
-            boolean refunded = "REFUNDED".equals(c.get("status"));
-            boolean consistent = refunded ? hasSettle && hasRefund : hasSettle;
-            out.add(reconRow("OUTP", no, c.get("total_amount"), (String) c.get("status"),
-                    hasSettle, hasRefund, consistent));
-        }
-        // 住院：YB 出院结算 ←→ 通道 settle 报文
-        for (var s : jdbc.queryForList("""
-                select settle_no, total_amount from inp_settlement
-                where pay_method = 'YB' and created_at::date = ?::date order by id
-                """, date)) {
-            String no = (String) s.get("settle_no");
-            boolean hasSettle = msgExists(no, "settle");
-            out.add(reconRow("INP", no, s.get("total_amount"), "PAID", hasSettle, false, hasSettle));
-        }
-        return out;
-    }
-
-    private boolean msgExists(String refNo, String apiKeyword) {
-        Integer n = jdbc.queryForObject("""
-                select count(*) from int_message_log
-                where channel = 'YB' and status = 'OK' and ref_no = ? and payload like ?
-                """, Integer.class, refNo, "%" + apiKeyword + "%");
-        return n != null && n > 0;
-    }
-
-    private Map<String, Object> reconRow(String bizType, String no, Object amount, String status,
-                                         boolean hasSettle, boolean hasRefund, boolean consistent) {
-        var r = new LinkedHashMap<String, Object>();
-        r.put("biz_type", bizType);
-        r.put("charge_no", no);
-        r.put("amount", amount);
-        r.put("local_status", status);
-        r.put("has_settle_msg", hasSettle);
-        r.put("has_refund_msg", hasRefund);
-        r.put("consistent", consistent);
-        return r;
     }
 
     // ---- 医保汇总 ----

@@ -43,6 +43,17 @@
           </el-form-item>
           <el-button type="primary" size="small" @click="saveMapping">保存对照</el-button>
         </el-form>
+        <div style="margin: 4px 0 10px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+          <span v-if="catalogStats" style="font-size: 13px;">
+            对照率：药品 {{ catalogStats.mapped_drugs }}/{{ catalogStats.total_drugs }}，
+            诊疗 {{ catalogStats.mapped_items }}/{{ catalogStats.total_items }}（合计 {{ mappedRate }}%）
+          </span>
+          <el-button size="small" @click="csvInput?.click()">CSV 批量导入</el-button>
+          <span style="font-size: 12px; color: #909399;">
+            列：item_type,item_code,item_name,yb_code,charge_class,self_ratio[,effective_date]（模板 tools/migrate-templates/yb-catalog.csv）
+          </span>
+          <input ref="csvInput" type="file" accept=".csv,text/csv" style="display: none" @change="importCsv" />
+        </div>
         <el-row :gutter="16">
           <el-col :span="15">
             <h4>已对照（{{ mapped.length }}）</h4>
@@ -82,6 +93,7 @@
           <el-table-column prop="class_a" label="甲类" width="80" />
           <el-table-column prop="class_b" label="乙类" width="80" />
           <el-table-column prop="class_c" label="丙类" width="80" />
+          <el-table-column prop="deductible_pay" label="起付线" width="80" />
           <el-table-column label="统筹支付" width="100">
             <template #default="{ row }"><b style="color: #2563eb">￥{{ row.fund_pay }}</b></template>
           </el-table-column>
@@ -170,6 +182,15 @@ const batches = ref<Record<string, unknown>[]>([])
 const splitDate = ref(today)
 const reconDate = ref(today)
 const mapForm = reactive({ itemType: 'DRUG', itemCode: '', itemName: '', ybCode: '', chargeClass: 'A', selfRatio: 0 })
+const catalogStats = ref<Record<string, number> | null>(null)
+const csvInput = ref<HTMLInputElement>()
+
+const mappedRate = computed(() => {
+  const s = catalogStats.value
+  if (!s) return 0
+  const total = s.total_drugs + s.total_items
+  return total === 0 ? 0 : Math.round(((s.mapped_drugs + s.mapped_items) / total) * 1000) / 10
+})
 
 const unmapped = computed(() => [
   ...unmappedRaw.value.drugs.map((d) => ({ ...d, kind: '药品' })),
@@ -181,6 +202,23 @@ async function loadCatalog() {
   const d = (await client.get('/insurance/catalog')).data.data
   mapped.value = d.mapped
   unmappedRaw.value = { drugs: d.unmappedDrugs, items: d.unmappedItems }
+  catalogStats.value = d.stats
+}
+
+async function importCsv(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0]
+  if (!file) return
+  const text = await file.text()
+  const r = (await client.post('/insurance/catalog/import', text,
+    { headers: { 'Content-Type': 'text/plain' } })).data.data
+  if (r.errorCount > 0) {
+    ElMessageBox.alert(r.errors.join('<br>'), `导入 ${r.imported} 条，${r.errorCount} 行有误`,
+      { dangerouslyUseHTMLString: true })
+  } else {
+    ElMessage.success(`导入 ${r.imported} 条`)
+  }
+  if (csvInput.value) csvInput.value.value = ''
+  await loadCatalog()
 }
 async function loadSplits() { splits.value = (await client.get('/insurance/splits', { params: { date: splitDate.value } })).data.data }
 async function loadAudits() { audits.value = (await client.get('/insurance/audits')).data.data }
@@ -193,9 +231,12 @@ async function saveMapping() {
   await loadCatalog()
 }
 function showDetail(row: Record<string, unknown>) {
-  const items = JSON.parse(String(row.detail || '[]')) as { item: string; class: string; amount: number; fund: number }[]
+  // 批次二起明细含 eligible（可报销基数，统筹在账单级计算）；旧数据仍是行级 fund
+  const items = JSON.parse(String(row.detail || '[]')) as
+    { item: string; class: string; amount: number; eligible?: number; fund?: number }[]
   ElMessageBox.alert(
-    items.map((i) => `${i.item}（${i.class}类）￥${i.amount} → 统筹 ￥${i.fund}`).join('<br>'),
+    items.map((i) => `${i.item}（${i.class}类）￥${i.amount} → ${
+      i.eligible !== undefined ? `可报销 ￥${i.eligible}` : `统筹 ￥${i.fund}`}`).join('<br>'),
     `分割明细 ${row.charge_no}`, { dangerouslyUseHTMLString: true })
 }
 async function runRecon() { recon.value = (await client.get('/insurance/reconcile', { params: { date: reconDate.value } })).data.data }

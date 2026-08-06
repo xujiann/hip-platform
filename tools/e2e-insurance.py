@@ -97,15 +97,19 @@ ok(call('POST', '/insurance/catalog', {'itemType': 'ITEM', 'itemCode': 'C0203', 
                                        'ybCode': '120500003', 'chargeClass': 'C', 'selfRatio': 0}, t), '还原对照')
 print('[医保-6] 目录调整即时生效 OK（雾化吸入 C→B 后按乙类分割，居民 70% 统筹 11.34）')
 
-# 住院医保：入院→出院结算走 YB 通道→对账含住院单
+# 住院医保：入院→出院结算走 YB 通道→对账含住院单 + 行级分割(INP) + 结算号回填
 free = find_free_bed(t)
 adm = ok(call('POST', '/inpatient/admissions', {'patientId': pat['id'], 'deptId': 2, 'bedId': free['id'],
                                                 'deposit': 0, 'payMethod': 'CASH'}, t), '入院')
 settle = ok(call('POST', f"/inpatient/admissions/{adm['id']}/discharge?payMethod=YB", {}, t), '医保出院')
+assert settle.get('ybSettleNo', '').startswith('YB'), f"住院医保结算号应回填: {settle.get('ybSettleNo')}"
 recon3 = ok(call('GET', f'/insurance/reconcile?date={today}', token=t), '试对账3')
 inp = next(r for r in recon3['rows'] if r['charge_no'] == settle['settleNo'])
 assert inp['biz_type'] == 'INP' and inp['consistent'], inp
-print(f"[医保-7] 住院医保通道 OK（{settle['settleNo']} 出院结算上传留痕，对账一致）")
+inp_sp = next((s for s in ok(call('GET', f'/insurance/splits?date={today}', token=t), '住院分割')
+               if s['charge_no'] == settle['settleNo']), None)
+assert inp_sp is not None and inp_sp['biz_type'] == 'INP', f'出院 YB 结算应有 INP 行级分割: {inp_sp}'
+print(f"[医保-7] 住院医保通道 OK（{settle['settleNo']} 上传留痕+结算号 {settle['ybSettleNo']}，INP 行级分割，对账一致）")
 
 # 汇总
 summ = ok(call('GET', '/insurance/summary', token=t), '汇总')
@@ -113,4 +117,45 @@ assert summ['mappedCount'] >= 13 and summ['outpToday']['cnt'] >= 1
 assert summ['lastRecon'], '应有对账批次'
 print(f"[医保-8] 医保汇总 OK（今日 {summ['outpToday']['cnt']} 笔，统筹 ￥{summ['splitToday']['fund_pay']}，提醒 {summ['auditWarns']} 条）")
 
-print('\n=== 二十七期医保 E2E 全部通过 ===')
+# 批次三：CSV 批量导入（1 合法行 + 1 非法行）与对照率统计
+csv = ("item_type,item_code,item_name,yb_code,charge_class,self_ratio,effective_date\n"
+       "ITEM,C0203,雾化吸入,120500003,C,0,2026-01-01\n"
+       "ITEM,BADROW,坏行示例,X,Z,9\n")
+imp = ok(call('POST', '/insurance/catalog/import', token=t, text=csv), 'CSV导入')
+assert imp['imported'] == 1 and imp['errorCount'] == 1, imp
+cat2 = ok(call('GET', '/insurance/catalog', token=t), '目录2')
+st = cat2['stats']
+assert st['total_drugs'] >= st['mapped_drugs'] >= 1 and st['total_items'] >= st['mapped_items'] >= 1
+print(f"[医保-9] CSV 导入 OK（1 行入库、1 行拦截），对照率 药品 {st['mapped_drugs']}/{st['total_drugs']} 诊疗 {st['mapped_items']}/{st['total_items']}")
+
+# 批次二：年度起付线（居民 5 元）→ 统筹按 (可报销-起付)×比例；退费恢复年度额度
+ok(call('PUT', '/config/yb_deductible_resident?value=5', token=t), '设起付线')
+try:
+    pat3 = ok(call('POST', '/patients', {'name': '医保E2E线' + stamp, 'sex': 'F', 'insuranceType': 'YB_RESIDENT'}, t), '建患者3')
+    reg3 = ok(call('POST', '/outpatient/registrations', {'patientId': pat3['id'], 'scheduleId': sch['id']}, t), '挂号3')
+    ok(call('POST', f"/outpatient/doctor/{reg3['id']}/start", {}, t), '接诊3')
+    ok(call('POST', f"/outpatient/doctor/{reg3['id']}/orders", {'lines': [
+        {'orderType': 'LAB', 'itemId': lab['id'], 'qty': 1}]}, t), '开单3')
+    c3 = ok(call('POST', '/outpatient/charges/settle', {'registrationId': reg3['id'], 'payMethod': 'YB'}, t), '结算3')
+    assert c3.get('ybSettleNo', '').startswith('YB'), f"门诊医保结算号应回填: {c3.get('ybSettleNo')}"
+    sp3 = next(s for s in ok(call('GET', f'/insurance/splits?date={today}', token=t), '分割3')
+               if s['charge_no'] == c3['chargeNo'])
+    # 肝功能 60 乙类自付10% → 可报销 54；挂号 5 丙类。起付 5 → (54-5)*0.7 = 34.30
+    close(sp3['deductible_pay'], 5.00, '起付线扣除')
+    close(sp3['fund_pay'], 34.30, '统筹3')
+    # 退费恢复额度：再结算同款单，起付线应重新扣 5
+    ok(call('POST', f"/outpatient/charges/{c3['id']}/refund", {}, t), '退费3')
+    reg4 = ok(call('POST', '/outpatient/registrations', {'patientId': pat3['id'], 'scheduleId': sch['id']}, t), '挂号4')
+    ok(call('POST', f"/outpatient/doctor/{reg4['id']}/start", {}, t), '接诊4')
+    ok(call('POST', f"/outpatient/doctor/{reg4['id']}/orders", {'lines': [
+        {'orderType': 'LAB', 'itemId': lab['id'], 'qty': 1}]}, t), '开单4')
+    c4 = ok(call('POST', '/outpatient/charges/settle', {'registrationId': reg4['id'], 'payMethod': 'YB'}, t), '结算4')
+    sp4 = next(s for s in ok(call('GET', f'/insurance/splits?date={today}', token=t), '分割4')
+               if s['charge_no'] == c4['chargeNo'])
+    close(sp4['deductible_pay'], 5.00, '退费后起付线恢复')
+    ok(call('POST', f"/outpatient/charges/{c4['id']}/refund", {}, t), '收尾退费4')
+finally:
+    ok(call('PUT', '/config/yb_deductible_resident?value=0', token=t), '还原起付线')
+print('[医保-10] 年度起付线 OK（(54-5)×0.70=34.30，退费恢复额度后再扣如初），配置已还原')
+
+print('\n=== 二十七期医保 E2E 全部通过（含批次一二三扩展）===')
