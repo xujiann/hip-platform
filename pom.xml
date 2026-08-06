@@ -26,6 +26,7 @@
         <module>modules/datagov</module>
         <module>datacenter/cdr</module>
         <module>server</module>
+        <module>bureau/server</module>
     </modules>
 
     <properties>
