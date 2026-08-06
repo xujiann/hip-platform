@@ -171,7 +171,7 @@
     <span>版本 <strong>v1.0</strong></span>
     <span>日期 <strong>2026-08-06</strong></span>
     <span>代码位置 <strong>modules/insurance · platform/integration · V24 迁移</strong></span>
-    <span>回归 <strong>e2e-insurance.py 8 步进 CI · 3 单元测试</strong></span>
+    <span>回归 <strong>e2e-insurance.py 10 步进 CI · 7 单元测试</strong></span>
   </div>
 </header>
 
@@ -384,7 +384,7 @@
       <line x1="650" y1="292" x2="650" y2="256" class="ln ln-dashed" marker-end="url(#ia3)"/>
 
       <text x="440" y="392" text-anchor="middle" class="t-muted t-small">同一结算单幂等（charge_no 唯一，冲突不重插）；分割完成即触发第 6 节的审核规则</text>
-      <text x="440" y="410" text-anchor="middle" class="t-muted t-small">住院医保当前按费用总额口径上传，行级分割为门诊口径（住院行级分割属后续增强）</text>
+      <text x="440" y="410" text-anchor="middle" class="t-muted t-small">年度起付线/封顶线（sys_config，默认 0=不启用）：启用后统筹按账单级「(基数−起付扣除)×比例，封顶截断」，退费自动恢复年度额度</text>
     </svg>
     <figcaption><b>图 3-1 · 费用分割计算管线（带实数示例）。</b>每行订单独立走「分类 → 基数 → × 统筹比例」三步再汇总：甲类全额纳入，乙类先扣自付比例，丙类归零。¥100 的结算单最终落为统筹 ¥39.95 + 个人 ¥60.05，行级明细以 JSON 留在 <code>yb_settle_split.detail</code>，患者可追问「哪一项报了多少」。</figcaption>
   </figure>
@@ -498,7 +498,7 @@
         <line x1="410" y1="196" x2="456" y2="196" class="ln" marker-end="url(#ia5)"/>
         <rect x="460" y="170" width="160" height="52" rx="4" class="box-std"/>
         <text x="540" y="192" text-anchor="middle" class="t-std t-small">uploadSettlement</text>
-        <text x="540" y="210" text-anchor="middle" class="t-muted t-small">结算单号 CY，总额口径</text>
+        <text x="540" y="210" text-anchor="middle" class="t-muted t-small">结算单号 CY，行级分割(INP)</text>
         <line x1="620" y1="196" x2="666" y2="196" class="ln" marker-end="url(#ia5)"/>
         <rect x="670" y="170" width="170" height="52" rx="4" class="box"/>
         <text x="755" y="192" text-anchor="middle" class="t-small t-bold">DISCHARGED 出院</text>
@@ -718,7 +718,8 @@
   <ul>
     <li><b>外部条件项</b>：电子医保凭证、异地就医备案与结算、医保移动支付——依赖医保局接口资质；</li>
     <li><b>配套产品项</b>：商用审核规则库（申诉、飞检、大数据稽核）——<code>yb_audit_log</code> 同表扩展接入；</li>
-    <li><b>后续增强</b>：住院行级分割（当前总额口径）、目录对照批量导入模板。</li>
+    <li><b>已于完善三批次补齐（2026-08-06）</b>：退费冲正失败回滚（5007）、医保结算号持久化、住院行级分割、
+      年度起付线/封顶线待遇模型、目录 CSV 批量导入与对照率、每日自动对账（差异自动开运维工单）、ADR-0002 SDK 实现约定。</li>
   </ul>
 </section>
 
@@ -742,8 +743,8 @@
   <table>
     <thead><tr><th style="width:14em">项</th><th>覆盖</th></tr></thead>
     <tbody>
-      <tr><td><code>e2e-insurance.py</code>（8 步，进 CI）</td><td>目录对照维护 → YB 结算 → 分割金额<b>精确断言</b> → 审核触发 → 退费冲正 → 住院 YB 通道 → 对账一致 → 批次留痕</td></tr>
-      <tr><td>单元测试 ×3</td><td>甲乙丙分割计算、审核规则触发边界（随 48 测试全绿）</td></tr>
+      <tr><td><code>e2e-insurance.py</code>（10 步，进 CI）</td><td>目录对照维护 → YB 结算 → 分割金额<b>精确断言</b> → 审核触发 → 退费冲正 → 住院 YB 通道（结算号回填 + INP 行级分割） → 对账一致 → 批次留痕 → CSV 导入与对照率 → 年度起付线与退费恢复</td></tr>
+      <tr><td>单元测试 ×7</td><td>甲乙丙分割计算、审核规则边界、起付线累计、封顶截断、退费冲销、住院比例（随 52 测试全绿）</td></tr>
       <tr><td>性能</td><td>对账逐单点查已补 <code>int_message_log(ref_no)</code> 索引（V39）</td></tr>
       <tr><td>安全</td><td>医保接口 ADMIN 角色限定；目录维护路径进敏感操作审计</td></tr>
     </tbody>
