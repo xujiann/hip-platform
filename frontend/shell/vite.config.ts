@@ -30,7 +30,8 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5173,
+    // autoPort：预览环境经 PORT 注入端口，本地手工启动回落 5173
+    port: Number(process.env.PORT) || 5173,
     proxy: {
       '/api': {
         target: 'http://localhost:8080',
