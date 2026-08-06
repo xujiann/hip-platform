@@ -15,5 +15,6 @@
     <name>实施定制模板（示例，勿直接部署）</name>
     <dependencies>
         <dependency><groupId>cn.hip</groupId><artifactId>hip-platform-core</artifactId></dependency>
+        <dependency><groupId>cn.hip</groupId><artifactId>hip-platform-integration</artifactId></dependency>
     </dependencies>
 </project>

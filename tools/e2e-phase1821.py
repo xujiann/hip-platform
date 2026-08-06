@@ -11,12 +11,15 @@ from e2elib import BASE, call, login, ok, q  # noqa: E402
 
 t = login()
 
-# 十八期：机构参数化（公开配置匿名可读，院名通用化）
+# 十八期：机构参数化（公开配置匿名可读，院名通用化）——院名是各院数据，只验证参数化机制而非具体值
 cfg = ok(call('GET', '/config/public'), '公开配置')
-assert cfg['hospital_name'] == '示范医院', cfg
+orig_name = cfg['hospital_name']
+assert orig_name, cfg
 assert '峨眉山' not in json.dumps(cfg, ensure_ascii=False)
-ok(call('PUT', '/config/hospital_name?value=' + q('示范医院'), token=t), '配置更新')
-print(f"[十八-1] 机构参数化 OK（院名走配置：{cfg['hospital_name']}，无硬编码地域）")
+ok(call('PUT', '/config/hospital_name?value=' + q('参数化验证院'), token=t), '配置更新')
+assert ok(call('GET', '/config/public'), '公开配置2')['hospital_name'] == '参数化验证院'
+ok(call('PUT', '/config/hospital_name?value=' + q(orig_name), token=t), '还原院名')
+print(f"[十八-1] 机构参数化 OK（院名走配置：{orig_name}，改名即时生效并还原，无硬编码地域）")
 
 # 十八期：下沉后的四域接口回归（护理质控/患者管理/HRP/数据治理/医技）
 for path, name in [('/inpatient/nursing/board', '护理白板'), ('/patientcare/satisfaction/stats', '满意度'),

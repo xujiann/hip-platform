@@ -66,10 +66,12 @@ ok(call('PUT', f"/inpatient/consults/{c['id']}/complete?opinion=" + q('建议调
 print('[十-3] 院内会诊闭环 OK')
 
 amx = ok(call('GET', '/masterdata/drugs?keyword=' + q('二甲双胍'), token=t), '药')[0]
-ok(call('POST', '/pathways', {'name': '2型糖尿病基础路径', 'icdPrefix': 'E11', 'description': '入院常规',
+# 教训三现：不能取列表[0]（会命中其他套件建的模板）——建唯一名模板后按名回查本次那条
+pw_name = '2型糖尿病基础路径' + datetime.datetime.now().strftime('%H%M%S')
+ok(call('POST', '/pathways', {'name': pw_name, 'icdPrefix': 'E11', 'description': '入院常规',
                               'items': [{'orderType': 'DRUG', 'itemId': amx['id'], 'qty': 1,
                                          'usageRoute': '口服', 'frequency': 'bid', 'dosePerTime': '1片'}]}, t), '路径模板')
-pw = ok(call('GET', '/pathways', token=t), '路径列表')[0]
+pw = next(p for p in ok(call('GET', '/pathways', token=t), '路径列表') if p['name'] == pw_name)
 applied = ok(call('POST', f"/pathways/{pw['id']}/apply/{aid}", {}, t), '入径')
 assert applied['orders'] == 1
 print('[十-4] 临床路径模板→入径批量开嘱 OK')
