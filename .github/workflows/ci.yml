@@ -104,7 +104,17 @@ jobs:
               r.add_header('Content-Type', 'application/json')
               if t: r.add_header('Authorization', 'Bearer ' + t)
               return json.loads(urllib.request.urlopen(r, data=json.dumps(b).encode()).read().decode())
-          t = call('POST', '/auth/login', {'username': 'admin', 'password': 'admin123'})['data']['token']
+          # 登录带重试：服务刚就绪时偶发瞬时错误（连接池预热等）曾致误报
+          import time
+          t = None
+          for i in range(5):
+              resp = call('POST', '/auth/login', {'username': 'admin', 'password': 'admin123'})
+              if resp.get('code') == 0:
+                  t = resp['data']['token']
+                  break
+              print('login retry', i + 1, resp)
+              time.sleep(3)
+          assert t, '登录重试 5 次仍失败'
           call('POST', '/patients', {'name': 'Test', 'sex': 'U', 'idType': 'OTHER'}, t)
           p2 = call('POST', '/patients', {'name': '张三', 'sex': 'M', 'idType': 'ID_CARD',
                                           'idNo': '510181199003078514', 'phone': '13800138000',
