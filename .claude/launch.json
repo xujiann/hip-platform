@@ -4,15 +4,13 @@
     {
       "name": "hip-frontend",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--prefix", "frontend/shell"],
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--prefix",
+        "frontend/shell"
+      ],
       "port": 5173,
-      "autoPort": true
-    },
-    {
-      "name": "bureau-frontend",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--prefix", "frontend/bureau"],
-      "port": 5174,
       "autoPort": true
     }
   ]
