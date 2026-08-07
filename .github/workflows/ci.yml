@@ -117,7 +117,7 @@ jobs:
           assert t, '登录重试 5 次仍失败'
           call('POST', '/patients', {'name': 'Test', 'sex': 'U', 'idType': 'OTHER'}, t)
           p2 = call('POST', '/patients', {'name': '张三', 'sex': 'M', 'idType': 'ID_CARD',
-                                          'idNo': '510181199003078514', 'phone': '13800138000',
+                                          'idNo': '510181199003078511', 'phone': '13800138000',
                                           'insuranceType': 'YB_RESIDENT'}, t)
           assert p2['data']['patientNo'] == 'P00000002', p2
           EOF
