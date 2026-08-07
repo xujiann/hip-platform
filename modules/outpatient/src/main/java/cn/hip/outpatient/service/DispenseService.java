@@ -27,10 +27,9 @@ public class DispenseService {
         if (!"DISPENSED".equals(o.getStatus()) || !"DRUG".equals(o.getOrderType())) {
             throw new BizException(6004, "仅已发药的药品可退药");
         }
-        var drug = drugRepository.findById(o.getItemId())
-                .orElseThrow(() -> new BizException(6005, "药品不存在"));
-        drug.setStock(drug.getStock() + o.getQty());
-        drugRepository.save(drug);
+        if (drugRepository.restoreStock(o.getItemId(), o.getQty()) == 0) {
+            throw new BizException(6005, "药品不存在");
+        }
         inventoryService.logReturn(o.getItemId(), o.getQty(), o.getGroupNo(), operatorId);
         o.setStatus("CHARGED");
         return orderRepository.save(o);

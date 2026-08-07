@@ -38,7 +38,15 @@ public class ErObservationController {
                 "select count(*) from er_observation where bed_no = ? and status = 'IN'",
                 Integer.class, req.bedNo());
         if (bedBusy != null && bedBusy > 0) return R.fail(4562, "留观床 " + req.bedNo() + " 已占用");
-        jdbc.update("insert into er_observation(triage_id, bed_no) values (?,?)", req.triageId(), req.bedNo());
+        try {
+            jdbc.update("insert into er_observation(triage_id, bed_no) values (?,?)", req.triageId(), req.bedNo());
+        } catch (org.springframework.dao.DuplicateKeyException e) {
+            // 并发兜底：uk_er_obs_active_triage / uk_er_obs_active_bed 部分唯一索引拦截双占
+            if (String.valueOf(e.getMessage()).contains("uk_er_obs_active_bed")) {
+                return R.fail(4562, "留观床 " + req.bedNo() + " 已占用");
+            }
+            return R.fail(4561, "该患者已在留观中");
+        }
         return R.ok();
     }
 
