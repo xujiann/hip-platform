@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """MLLP/TCP E2E：socket 发送 MLLP 帧的 ORU^R01 → 医嘱自动执行 + ACK 校验"""
 import json
+import os
 import socket
 import sys
 import datetime
@@ -11,7 +12,7 @@ from e2elib import BASE, call, login, ok, q  # noqa: E402
 
 
 def mllp_send(payload: str) -> str:
-    with socket.create_connection(('localhost', 2575), timeout=10) as s:
+    with socket.create_connection(('localhost', int(os.environ.get('HIP_E2E_MLLP_PORT', '2575'))), timeout=10) as s:
         s.sendall(b'\x0b' + payload.encode('utf-8') + b'\x1c\x0d')
         buf = b''
         while b'\x1c\x0d' not in buf:

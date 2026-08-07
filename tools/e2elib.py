@@ -4,11 +4,13 @@
 前提：后端运行于 localhost:8080。
 """
 import json
+import os
 import sys
 import urllib.parse
 import urllib.request
 
-BASE = 'http://localhost:8080/api'
+# 可用 HIP_E2E_BASE 指向其他实例（如并行验证 8081），子进程经环境变量继承
+BASE = os.environ.get('HIP_E2E_BASE', 'http://localhost:8080/api')
 q = urllib.parse.quote
 
 # Windows 控制台默认 GBK，统一切 UTF-8
