@@ -6,6 +6,8 @@
 
 **智能导诊**是患者端（/portal）的功能：输入症状，系统推荐就诊科室。读其实现（[PortalController.java](../../modules/portal/src/main/java/cn/hip/portal/web/PortalController.java) 的 `/api/portal/guide`）会发现它既不是模型也不是外部服务，而是一条 SQL——按症状关键词 LIKE 匹配 `triage_guide` 规则表（[V27 迁移](../../server/src/main/resources/db/migration/V27__phase29_patient_pay.sql)内置 12 条种子，如"胸痛→急诊科，勿自行驾车""发热→发热门诊，请佩戴口罩"），返回科室与就医建议。它属于种子数据分层中的 C 类演示数据：业务页可维护、按院增删。一张几十条的规则表撑起的"智能"，恰是行业里大量"智能导诊"产品的真实底色——关键词规则起步，知识图谱与对话模型是后话。
 
+导诊的**患者端集成方式**也值得一看：入口在患者端 H5 首页，与预约挂号、报告查询并列；接口挂在 `/api/portal` 下，走独立的 PORTAL 令牌与 ROLE_PORTAL 角色（与院内接口完全隔离，第 5 章）。推荐结果直接衔接"预约挂号"动作——导诊的产品价值不在推荐算法多聪明，而在把"不知道挂哪科"的患者引导进正确的号源，因此它天然属于患者端而非医生端。
+
 **ai-service** 则是平台外的独立 HTTP 服务：一个 FastAPI 骨架（[main.py](../../ai-service/main.py)，全部实现 60 行 Python），定义了两个接口——`/analyze/lab` 检验结果智能解读、`/analyze/image` 影像风险评分。当前实现是**规则版 mock**：检验解读按异常标志（HH/H/L/LL）查一张四项指标的规则字典给出建议文本，影像评分返回固定值；两个接口的响应都带 `model: rule-mock-v0` 字段，`/health` 自报 `mode: rule-mock`——服务在协议层就诚实声明自己是假的（第 6 章"诚实的 Mock"范式）。其文件头注释写明了设计意图：真实模型到位后替换实现即可，主平台通过 `hip.integration.ai-url` 指向本服务，**接口契约不变**。
 
 ## A.2 边界设计：为什么 AI 能力放平台外
@@ -17,7 +19,24 @@ ai-service 是全平台唯一的 Python 组件（Java 主体之外），且是�
 3. **资源形态不同**。推理需要 GPU 的那天，独立服务可以单独换机器，平台不动；
 4. **供应商现实**。医院的 AI 能力多为外采成品（影像 AI 一体机、商用 CDSS），本来就是外部系统——平台内建 AI 反而是少数派。
 
-平台侧的调用代码（[MedTechController.java](../../modules/medtech/src/main/java/cn/hip/medtech/web/MedTechController.java) 的 `/api/ai/lab-advice`）体现了对"可缺席"的完整处理：连接超时 2 秒、请求超时 5 秒，任何异常不报错，而是返回 `source: fallback` 与一条建议——"AI 子服务不可用，请人工判读"。**优雅降级**的要点在语义：AI 建议是增强项，缺席时业务照常，医生看到的是"此路暂不可用"而非系统故障。
+整体结构如图 A-1：
+
+```mermaid
+flowchart LR
+    subgraph HIP[HIP 平台（Java 单体）]
+        MT["/api/ai/lab-advice<br/>（medtech 模块）"]
+        CFG["hip.integration.ai-url<br/>（配置键，默认 127.0.0.1:8100）"]
+    end
+    subgraph AI[ai-service（Python/FastAPI，可选部署）]
+        LAB["/analyze/lab 检验解读"]
+        IMG["/analyze/image 影像评分"]
+        IMPL["当前实现：rule-mock-v0<br/>（真实模型到位后替换）"]
+    end
+    MT -- "HTTP，超时 2s/5s" --> LAB
+    MT -. "不可达 → source=fallback<br/>『请人工判读』" .-> MT
+```
+
+平台侧的调用代码（[MedTechController.java](../../modules/medtech/src/main/java/cn/hip/medtech/web/MedTechController.java) 的 `/api/ai/lab-advice`）体现了对"可缺席"的完整处理：连接超时 2 秒、请求超时 5 秒，任何异常不报错，而是返回 `source: fallback` 与一条建议——"AI 子服务不可用，请人工判读"。**优雅降级**的要点在语义：AI 建议是增强项，缺席时业务照常，医生看到的是"此路暂不可用"而非系统故障；返回体里的 `source` 字段让前端能标注建议来源，也让排障者一眼分清"AI 说的"与"兜底说的"。
 
 ## A.3 医院 AI 应用的接入形态谱系
 
