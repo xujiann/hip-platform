@@ -2,6 +2,24 @@
 
 版本纪律：语义化版本；平台迁移段 V1–V999，实施段 V10000+；升级 = 停服→备份→换产物→自动前滚→回归抽查（多医院部署操作指南 §三）。
 
+## 1.0.2（2026-08-07）
+
+安全与并发修复版（两条独立修复分支合并，均为教材撰写抽查发现的缺陷）：
+
+**安全（platform/core）**
+- 停用账号的未过期令牌即时失效：JwtAuthenticationFilter 校验 `isEnabled()`，停用即 401
+- `GET /api/config/public` 由返回 sys_config 全表改为白名单四键（院名/简称/票据抬头/咨询电话），
+  医保比例、审核阈值、模块开关等敏感配置不再出库
+
+**并发（modules/outpatient，V45）**
+- 处方/申请单组号弃用内存 AtomicLong（重启种子回绕可撞号），改数据库序列 `outp_order_group_seq`，
+  跨实例、跨重启唯一；前缀仍走 `billno_prefix_rx/req` 配置（与 1.0.1 合并）
+- 退药库存回补由读-改-写改为原子 `update stock = stock + ?`，并发不丢更新
+- 急诊留观占床加部分唯一索引（status='IN' 的 triage_id/bed_no），占床冲突映射 4561/4562
+
+测试 67（新增 DisabledAccountToken/PublicConfigWhitelist/ConcurrencyFix×6/StockRestoreConcurrency）；
+e2e-1821 消除套件间数据顺序依赖（挑带结构化结果的检验文档）。
+
 ## 1.0.1（2026-08-07）
 
 快赢包：部分响应 152 条中筛出的 8 条一句话增强（docs/验收/部分响应筛选.md），升为正偏离：

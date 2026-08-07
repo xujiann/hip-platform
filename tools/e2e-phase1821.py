@@ -46,7 +46,8 @@ print('[十九-3] CDA XML 输出 OK（ClinicalDocument 结构完整）')
 
 # 二十期：AI 子服务 + PACS 配置
 labs = ok(call('GET', '/cdr/patients/2/documents?docType=LAB_REPORT', token=t), '检验文档')
-order_id = labs[0]['refId']
+# 医技执行站文本报告的 LAB 医嘱无结构化结果行，挑第一篇带 results 的文档（避免依赖套件执行顺序）
+order_id = next(d['refId'] for d in labs if json.loads(d['content']).get('results'))
 ai = ok(call('GET', f'/api/ai/lab-advice?orderId={order_id}'.replace('/api', '', 1), token=t), 'AI解读')
 assert ai['source'] == 'ai-service', ai
 assert len(ai['advice']) > 0
