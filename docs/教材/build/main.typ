@@ -3,7 +3,7 @@
 #let heiti = ((name: "Arial", covers: "latin-in-cjk"), "Microsoft YaHei")
 #let codefont = ("Consolas", "Microsoft YaHei")
 
-#set document(title: "医院信息化：原理、架构与工程实践（送审稿 v0.1）")
+#set document(title: "医院信息化：原理、架构与工程实践（送审稿 v0.1）", author: "徐剑")
 
 // pandoc 片段所需的分隔线
 #let horizontalrule = align(center, v(4pt) + line(length: 34%, stroke: 0.5pt + luma(170)) + v(4pt))
@@ -93,6 +93,8 @@
     #line(length: 42%, stroke: 0.8pt + rgb("#2F5496"))
     #v(0.8cm)
     #text(font: songti, size: 12pt)[以 HIP 平台为贯穿案例]
+    #v(0.9cm)
+    #text(font: heiti, size: 13pt)[徐剑　著]
     #v(0.4cm)
     #text(font: songti, size: 11pt, fill: luma(90))[送审稿 · v0.1]
     #v(0.3cm)

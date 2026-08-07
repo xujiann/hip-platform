@@ -25,6 +25,7 @@ ORDER = [
     "附录A-AI在医院信息化中的应用.md",
     "附录B-实训环境搭建指南.md",
     "附录C-术语表.md",
+    "后记.md",
 ]
 
 PAGEBREAK = '\n\n```{=openxml}\n<w:p><w:r><w:br w:type="page"/></w:r></w:p>\n```\n\n'
