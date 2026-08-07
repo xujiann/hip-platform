@@ -15,7 +15,6 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicLong;
 
 @Service
 @RequiredArgsConstructor
@@ -32,7 +31,12 @@ public class DoctorStationService {
     private final CdssService cdssService;
     private final cn.hip.platform.core.service.ConfigReader configReader;
 
-    private final AtomicLong groupSeq = new AtomicLong(System.currentTimeMillis() % 100000);
+    /** 组号取数据库序列：跨实例、跨重启唯一 */
+    private long nextGroupSeq() {
+        return ((Number) entityManager
+                .createNativeQuery("select nextval('outp_order_group_seq')")
+                .getSingleResult()).longValue();
+    }
 
     /** 接诊：挂号状态置为 VISITED */
     @Transactional
@@ -94,7 +98,7 @@ public class DoctorStationService {
             throw new BizException(4003, "请先接诊后再开单");
         }
         String stamp = LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE);
-        String drugGroupNo = configReader.get("billno_prefix_rx", "CF") + stamp + "-" + groupSeq.incrementAndGet();
+        String drugGroupNo = configReader.get("billno_prefix_rx", "CF") + stamp + "-" + nextGroupSeq();
 
         // 合理用药前置拦截（过敏禁忌 / 同诊重复用药 / 抗菌药分级处方权）
         List<CdssService.DrugLine> newDrugs = new java.util.ArrayList<>();
@@ -134,7 +138,7 @@ public class DoctorStationService {
             } else {
                 ChargeItem item = chargeItemRepository.findById(line.itemId())
                         .orElseThrow(() -> new BizException(4005, "收费项目不存在: " + line.itemId()));
-                o.setGroupNo(configReader.get("billno_prefix_req", "SQ") + stamp + "-" + groupSeq.incrementAndGet());
+                o.setGroupNo(configReader.get("billno_prefix_req", "SQ") + stamp + "-" + nextGroupSeq());
                 o.setItemId(item.getId());
                 o.setItemCode(item.getCode());
                 o.setItemName(item.getName());

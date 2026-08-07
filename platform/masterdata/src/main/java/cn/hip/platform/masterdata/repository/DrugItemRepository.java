@@ -16,4 +16,9 @@ public interface DrugItemRepository extends JpaRepository<DrugItem, Long> {
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("update DrugItem d set d.stock = d.stock - :qty where d.id = :id and d.stock >= :qty")
     int deductStock(@Param("id") Long id, @Param("qty") int qty);
+
+    /** 并发安全回补库存（退药），返回受影响行数 */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("update DrugItem d set d.stock = d.stock + :qty where d.id = :id")
+    int restoreStock(@Param("id") Long id, @Param("qty") int qty);
 }
