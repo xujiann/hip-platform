@@ -93,4 +93,35 @@ public class MedRecordStatsController {
                 """, Double.class));
         return R.ok(m);
     }
+
+    // ---- 1.0.1（1028）：死亡登记卡 ----
+    public record DeathCardReq(Long patientId, Long admissionId, String diedAt, String directCause,
+                               String directCauseIcd, String chainB, String chainC, String chainD,
+                               String place, String registrar) {}
+
+    @PostMapping("/death-cards")
+    public R<Void> createDeathCard(@RequestBody DeathCardReq req) {
+        if (req.patientId() == null || req.diedAt() == null || req.directCause() == null
+                || req.directCause().isBlank()) {
+            return R.fail(9950, "患者、死亡时间与直接死因必填");
+        }
+        jdbc.update("""
+                insert into mr_death_card(patient_id, admission_id, died_at, direct_cause, direct_cause_icd,
+                                          chain_b, chain_c, chain_d, place, registrar)
+                values (?,?,?::timestamptz,?,?,?,?,?,?,?)
+                """, req.patientId(), req.admissionId(), req.diedAt(), req.directCause(), req.directCauseIcd(),
+                req.chainB(), req.chainC(), req.chainD(), req.place(), req.registrar());
+        return R.ok();
+    }
+
+    @GetMapping("/death-cards")
+    public R<List<Map<String, Object>>> deathCards() {
+        return R.ok(jdbc.queryForList("""
+                select d.*, p.name as patient_name, p.patient_no, a.admission_no
+                from mr_death_card d
+                join empi_patient p on p.id = d.patient_id
+                left join inp_admission a on a.id = d.admission_id
+                order by d.id desc limit 200
+                """));
+    }
 }

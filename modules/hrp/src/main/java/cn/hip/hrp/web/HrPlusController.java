@@ -124,20 +124,35 @@ public class HrPlusController {
                 "select * from as_asset_doc where asset_id = ? order by id desc", assetId));
     }
 
-    // ---- 门诊结账明细检索 ----
+    // ---- 门诊结账明细检索（1.0.1/1227：加 orderType 即切明细行模式，按项目类型过滤） ----
     @GetMapping("/api/finance/charge-search")
     public R<List<Map<String, Object>>> chargeSearch(@RequestParam String from, @RequestParam String to,
-                                                     @RequestParam(required = false) String payMethod) {
-        StringBuilder sql = new StringBuilder("""
-                select c.charge_no, c.total_amount, c.pay_method, c.status, c.created_at,
-                       p.name as patient_name, coalesce(u.real_name, u.username) as cashier
-                from outp_charge c
-                join outp_registration r on r.id = c.registration_id
-                join empi_patient p on p.id = r.patient_id
-                left join sys_user u on u.id = c.cashier_id
-                where c.created_at::date between ?::date and ?::date
-                """);
+                                                     @RequestParam(required = false) String payMethod,
+                                                     @RequestParam(required = false) String orderType) {
         var args = new java.util.ArrayList<Object>(List.of(from, to));
+        StringBuilder sql;
+        if (orderType != null && !orderType.isBlank()) {
+            sql = new StringBuilder("""
+                    select c.charge_no, c.pay_method, c.status, o.item_name, o.order_type,
+                           o.qty, o.amount, c.created_at, p.name as patient_name
+                    from outp_order o
+                    join outp_charge c on c.id = o.charge_id
+                    join outp_registration r on r.id = c.registration_id
+                    join empi_patient p on p.id = r.patient_id
+                    where c.created_at::date between ?::date and ?::date and o.order_type = ?
+                    """);
+            args.add(orderType);
+        } else {
+            sql = new StringBuilder("""
+                    select c.charge_no, c.total_amount, c.pay_method, c.status, c.created_at,
+                           p.name as patient_name, coalesce(u.real_name, u.username) as cashier
+                    from outp_charge c
+                    join outp_registration r on r.id = c.registration_id
+                    join empi_patient p on p.id = r.patient_id
+                    left join sys_user u on u.id = c.cashier_id
+                    where c.created_at::date between ?::date and ?::date
+                    """);
+        }
         if (payMethod != null && !payMethod.isBlank()) {
             sql.append(" and c.pay_method = ? ");
             args.add(payMethod);

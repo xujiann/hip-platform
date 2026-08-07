@@ -30,6 +30,7 @@ public class DoctorStationService {
     private final cn.hip.platform.empi.repository.PatientRepository patientRepository;
     private final jakarta.persistence.EntityManager entityManager;
     private final CdssService cdssService;
+    private final cn.hip.platform.core.service.ConfigReader configReader;
 
     private final AtomicLong groupSeq = new AtomicLong(System.currentTimeMillis() % 100000);
 
@@ -93,7 +94,7 @@ public class DoctorStationService {
             throw new BizException(4003, "请先接诊后再开单");
         }
         String stamp = LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE);
-        String drugGroupNo = "CF" + stamp + "-" + groupSeq.incrementAndGet();
+        String drugGroupNo = configReader.get("billno_prefix_rx", "CF") + stamp + "-" + groupSeq.incrementAndGet();
 
         // 合理用药前置拦截（过敏禁忌 / 同诊重复用药 / 抗菌药分级处方权）
         List<CdssService.DrugLine> newDrugs = new java.util.ArrayList<>();
@@ -133,7 +134,7 @@ public class DoctorStationService {
             } else {
                 ChargeItem item = chargeItemRepository.findById(line.itemId())
                         .orElseThrow(() -> new BizException(4005, "收费项目不存在: " + line.itemId()));
-                o.setGroupNo("SQ" + stamp + "-" + groupSeq.incrementAndGet());
+                o.setGroupNo(configReader.get("billno_prefix_req", "SQ") + stamp + "-" + groupSeq.incrementAndGet());
                 o.setItemId(item.getId());
                 o.setItemCode(item.getCode());
                 o.setItemName(item.getName());

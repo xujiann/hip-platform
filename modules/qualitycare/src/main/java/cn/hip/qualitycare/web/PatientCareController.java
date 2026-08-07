@@ -201,12 +201,13 @@ public class PatientCareController {
     }
 
     // ---- 健康体检 ----
-    public record PackageReq(String name, java.math.BigDecimal price, String items) {}
+    public record PackageReq(String name, java.math.BigDecimal price, String items, String hiddenItems) {}
 
     @PostMapping("/api/exam/packages")
     public R<Void> createPackage(@RequestBody PackageReq req) {
-        jdbc.update("insert into pe_exam_package(name, price, items) values (?,?,?)",
-                req.name(), req.price(), req.items());
+        // 1.0.1（1938）：hiddenItems 为不进入总检结果的项目（逗号分隔），须为套餐项目子集
+        jdbc.update("insert into pe_exam_package(name, price, items, hidden_items) values (?,?,?,?)",
+                req.name(), req.price(), req.items(), req.hiddenItems() == null ? "" : req.hiddenItems());
         return R.ok();
     }
 

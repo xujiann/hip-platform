@@ -32,6 +32,22 @@ public class InpatientController {
     private final PatientRepository patientRepository;
     private final SysDeptRepository deptRepository;
     private final CurrentUserService currentUserService;
+    private final org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
+
+    /** 1.0.1（2067）：住院每日费用清单——按执行日期检索医嘱费用明细与合计 */
+    @GetMapping("/admissions/{id}/daily-fees")
+    public R<Map<String, Object>> dailyFees(@PathVariable Long id, @RequestParam String date) {
+        var rows = jdbcTemplate.queryForList("""
+                select item_name, spec, qty, unit_price, amount, order_type, executed_at
+                from inp_order
+                where admission_id = ? and status = 'EXECUTED' and executed_at::date = ?::date
+                order by executed_at
+                """, id, date);
+        var total = rows.stream()
+                .map(r -> (java.math.BigDecimal) r.get("amount"))
+                .reduce(java.math.BigDecimal.ZERO, java.math.BigDecimal::add);
+        return R.ok(Map.of("date", date, "rows", rows, "total", total));
+    }
 
     public record CreateBedsRequest(Long wardId, Integer count) {}
 

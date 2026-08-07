@@ -56,12 +56,20 @@ public class BloodController {
     }
 
     @PutMapping("/applies/{id}/transfuse")
-    public R<Void> transfuse(@PathVariable Long id, @RequestParam String note) {
+    public R<Void> transfuse(@PathVariable Long id, @RequestParam String note,
+                             @RequestParam(required = false) String reactionPlan) {
+        // 1.0.1（1814）：不良反应处置方案从字典选择留痕
         int n = jdbc.update("""
-                update blood_apply set status = 'TRANSFUSED', transfusion_note = ?, transfused_at = now()
+                update blood_apply set status = 'TRANSFUSED', transfusion_note = ?, reaction_plan = ?, transfused_at = now()
                 where id = ? and status = 'ISSUED'
-                """, note, id);
+                """, note, reactionPlan, id);
         return n == 0 ? R.fail(4533, "须发血后方可记录输血") : R.ok();
+    }
+
+    /** 1.0.1（1814）：输血不良反应处置方案字典 */
+    @GetMapping("/reaction-plans")
+    public R<List<Map<String, Object>>> reactionPlans() {
+        return R.ok(jdbc.queryForList("select id, name from blood_reaction_plan where enabled order by id"));
     }
 
     @GetMapping("/applies")

@@ -3,7 +3,9 @@
     <div class="toolbar">
       <h3>医生排班</h3>
       <div class="filters">
+        <el-button size="small" @click="shiftWeek(-7)">上一周</el-button>
         <el-date-picker v-model="date" type="date" value-format="YYYY-MM-DD" :clearable="false" @change="load" />
+        <el-button size="small" @click="shiftWeek(7)">下一周</el-button>
         <el-select v-model="deptId" placeholder="全部科室" clearable style="width: 160px" @change="load">
           <el-option v-for="d in clinicalDepts" :key="d.id" :label="d.name" :value="d.id" />
         </el-select>
@@ -85,6 +87,14 @@ const shiftNames: Record<string, string> = { AM: '上午', PM: '下午', FULL: '
 
 const today = new Date().toISOString().slice(0, 10)
 const date = ref(today)
+
+/** 1.0.1（893）：按周快捷切换（本地日期拼串，避免 toISOString 的 UTC 偏移跨日） */
+function shiftWeek(days: number) {
+  const d = new Date(date.value + 'T00:00:00')
+  d.setDate(d.getDate() + days)
+  date.value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  load()
+}
 const deptId = ref<number | null>(null)
 const records = ref<Record<string, unknown>[]>([])
 const depts = ref<{ id: number; name: string; type: string }[]>([])

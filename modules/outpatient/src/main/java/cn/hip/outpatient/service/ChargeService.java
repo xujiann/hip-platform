@@ -26,6 +26,7 @@ public class ChargeService {
     private final OutpRegistrationRepository registrationRepository;
     private final InsuranceAdapter insuranceAdapter;
     private final InsuranceSplitService insuranceSplitService;
+    private final cn.hip.platform.core.service.ConfigReader configReader;
 
     /** 结算：全部未收费订单一次结清 */
     @Transactional
@@ -43,7 +44,8 @@ public class ChargeService {
         charge.setCashierId(cashierId);
         charge.setChargeNo("TEMP");
         charge = chargeRepository.save(charge);
-        charge.setChargeNo("SJ%s-%06d".formatted(
+        charge.setChargeNo("%s%s-%06d".formatted(
+                configReader.get("billno_prefix_charge", "SJ"),
                 LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE), charge.getId()));
         charge = chargeRepository.save(charge);
 

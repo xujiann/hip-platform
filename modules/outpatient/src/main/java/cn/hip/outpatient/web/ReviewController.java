@@ -25,10 +25,17 @@ public class ReviewController {
     private final OutpRegistrationRepository registrationRepository;
     private final PatientRepository patientRepository;
     private final CurrentUserService currentUserService;
+    private final cn.hip.platform.core.service.ConfigReader configReader;
 
     @GetMapping("/pending")
     public R<List<Map<String, Object>>> pending() {
-        return R.ok(orderRepository.findPendingReviewDrugs().stream().map(o -> {
+        // 1.0.1（505）：单次待审列表上限（review_pending_limit，0=不限）——避免药师积压领取
+        int limit = configReader.getInt("review_pending_limit", 0);
+        var drugs = orderRepository.findPendingReviewDrugs();
+        if (limit > 0 && drugs.size() > limit) {
+            drugs = drugs.subList(0, limit);
+        }
+        return R.ok(drugs.stream().map(o -> {
             var m = new LinkedHashMap<String, Object>();
             m.put("orderId", o.getId());
             m.put("groupNo", o.getGroupNo());

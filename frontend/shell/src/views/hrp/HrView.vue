@@ -241,15 +241,24 @@
             <el-option label="现金" value="CASH" /><el-option label="微信" value="WECHAT" />
             <el-option label="支付宝" value="ALIPAY" /><el-option label="医保" value="YB" />
           </el-select>
+          <el-select v-model="searchType" size="small" clearable placeholder="全部类型(汇总)"
+                     style="width: 130px; margin-left: 4px">
+            <el-option label="药品" value="DRUG" /><el-option label="检验" value="LAB" />
+            <el-option label="检查" value="EXAM" /><el-option label="治疗" value="TREAT" />
+            <el-option label="挂号费" value="REG" />
+          </el-select>
           <el-button type="primary" size="small" style="margin-left: 4px" @click="searchCharges">检索</el-button>
         </h4>
         <el-table v-if="chargeHits.length" :data="chargeHits" size="small" border max-height="300">
           <el-table-column prop="charge_no" label="结算单号" width="170" />
           <el-table-column prop="patient_name" label="患者" width="90" />
-          <el-table-column prop="total_amount" label="金额" width="90" />
+          <el-table-column v-if="searchType" prop="item_name" label="项目" show-overflow-tooltip />
+          <el-table-column v-if="searchType" prop="order_type" label="类型" width="70" />
+          <el-table-column v-if="searchType" prop="qty" label="量" width="55" />
+          <el-table-column :prop="searchType ? 'amount' : 'total_amount'" label="金额" width="90" />
           <el-table-column prop="pay_method" label="方式" width="90" />
           <el-table-column prop="status" label="状态" width="100" />
-          <el-table-column prop="cashier" label="收款员" width="100" />
+          <el-table-column v-if="!searchType" prop="cashier" label="收款员" width="100" />
           <el-table-column prop="created_at" label="时间" width="170" />
         </el-table>
         <h4>异常明细（退费/作废支付单）</h4>
@@ -307,6 +316,7 @@ const attDate = ref(today)
 const searchFrom = ref(today)
 const searchTo = ref(today)
 const searchPay = ref('')
+const searchType = ref('') // 1.0.1（1227）：按项目类型切明细行模式
 const cme = reactive({ employeeId: '', projectName: '', credit: 5, cmeYear: today.slice(0, 4) })
 
 async function loadCme() {
@@ -351,7 +361,8 @@ async function addAssetDoc() {
 }
 async function searchCharges() {
   chargeHits.value = (await client.get('/finance/charge-search',
-    { params: { from: searchFrom.value, to: searchTo.value, payMethod: searchPay.value || undefined } })).data.data
+    { params: { from: searchFrom.value, to: searchTo.value, payMethod: searchPay.value || undefined,
+                orderType: searchType.value || undefined } })).data.data
 }
 
 async function loadEmps() {

@@ -40,6 +40,23 @@
         </template>
       </el-table-column>
     </el-table>
+
+    <el-dialog v-model="transfuseDlg.visible" title="输血记录" width="480px">
+      <el-form label-width="90px">
+        <el-form-item label="过程记录">
+          <el-input v-model="transfuseDlg.note" type="textarea" :rows="2" />
+        </el-form-item>
+        <el-form-item label="处置方案">
+          <el-select v-model="transfuseDlg.reactionPlan" clearable placeholder="无不良反应可不选" style="width: 100%">
+            <el-option v-for="p in reactionPlans" :key="p.id" :label="p.name" :value="p.name" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="transfuseDlg.visible = false">取消</el-button>
+        <el-button type="primary" @click="submitTransfuse">保存</el-button>
+      </template>
+    </el-dialog>
   </el-card>
 </template>
 
@@ -75,9 +92,24 @@ async function issue(row: Record<string, unknown>) {
   await client.put(`/inpatient/blood/applies/${row.id}/issue`)
   await load()
 }
+// 1.0.1（1814）：输血记录带不良反应处置方案字典
+const reactionPlans = ref<{ id: number; name: string }[]>([])
+const transfuseDlg = reactive({ visible: false, id: 0, note: '输注顺利，无不良反应', reactionPlan: '' })
+
 async function transfuse(row: Record<string, unknown>) {
-  const { value } = await ElMessageBox.prompt('输血过程记录（含不良反应）', '输血记录', { inputValue: '输注顺利，无不良反应' })
-  await client.put(`/inpatient/blood/applies/${row.id}/transfuse`, null, { params: { note: value } })
+  if (!reactionPlans.value.length) {
+    reactionPlans.value = (await client.get('/inpatient/blood/reaction-plans')).data.data
+  }
+  transfuseDlg.id = Number(row.id)
+  transfuseDlg.note = '输注顺利，无不良反应'
+  transfuseDlg.reactionPlan = ''
+  transfuseDlg.visible = true
+}
+async function submitTransfuse() {
+  await client.put(`/inpatient/blood/applies/${transfuseDlg.id}/transfuse`, null,
+    { params: { note: transfuseDlg.note, reactionPlan: transfuseDlg.reactionPlan || undefined } })
+  transfuseDlg.visible = false
+  ElMessage.success('已记录')
   await load()
 }
 

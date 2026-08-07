@@ -65,6 +65,19 @@ public class PrintReportController {
         return R.ok(report);
     }
 
+    /** 1.0.1（1028）：死亡登记卡打印数据集 */
+    @GetMapping("/api/print/death-card/{id}")
+    public R<Map<String, Object>> deathCard(@PathVariable Long id) {
+        var rows = jdbc.queryForList("""
+                select d.*, p.name as patient_name, p.patient_no, p.sex, p.birth_date, a.admission_no
+                from mr_death_card d
+                join empi_patient p on p.id = d.patient_id
+                left join inp_admission a on a.id = d.admission_id
+                where d.id = ?
+                """, id);
+        return rows.isEmpty() ? R.fail(9951, "死亡登记卡不存在") : R.ok(rows.get(0));
+    }
+
     /** 日结报表：按收费方式与状态汇总当日结算 */
     @GetMapping("/api/reports/daily-settlement")
     public R<Map<String, Object>> dailySettlement(@RequestParam(required = false) String date) {

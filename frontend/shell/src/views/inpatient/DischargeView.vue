@@ -38,6 +38,19 @@
           </template>
         </el-table-column>
       </el-table>
+
+      <div style="margin-top: 12px; display: flex; gap: 8px; align-items: center;">
+        <b style="font-size: 13px;">每日清单</b>
+        <el-date-picker v-model="dailyDate" type="date" value-format="YYYY-MM-DD" size="small"
+                        style="width: 140px" @change="loadDaily" />
+        <span v-if="daily" style="font-size: 13px; color: #909399;">当日合计 ¥{{ daily.total }}</span>
+      </div>
+      <el-table v-if="daily" :data="daily.rows" size="small" height="180" style="margin-top: 6px">
+        <el-table-column prop="item_name" label="项目" />
+        <el-table-column prop="qty" label="量" width="50" />
+        <el-table-column prop="amount" label="金额" width="80" />
+        <el-table-column prop="order_type" label="类型" width="70" />
+      </el-table>
     </el-card>
   </div>
 </template>
@@ -54,6 +67,15 @@ const extraDeposit = ref(0)
 const payMethod = ref('CASH')
 const discharging = ref(false)
 
+// 1.0.1（2067）：每日费用清单
+const dailyDate = ref(new Date().toISOString().slice(0, 10))
+const daily = ref<{ total: string; rows: Record<string, unknown>[] } | null>(null)
+async function loadDaily() {
+  if (!current.value) return
+  daily.value = (await client.get(`/inpatient/admissions/${current.value.id}/daily-fees`,
+    { params: { date: dailyDate.value } })).data.data
+}
+
 const balance = computed(() =>
   detail.value ? (Number(detail.value.depositAmount) - Number(detail.value.totalAmount)).toFixed(2) : '0')
 
@@ -66,9 +88,11 @@ async function load() {
 
 async function open(row: Record<string, unknown> | null) {
   current.value = row
+  daily.value = null
   if (!row) return
   const resp = await client.get(`/inpatient/admissions/${row.id}/workspace`)
   detail.value = resp.data.data
+  await loadDaily()
 }
 
 async function addDeposit() {

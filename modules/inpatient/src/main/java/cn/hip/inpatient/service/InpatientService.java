@@ -33,6 +33,7 @@ public class InpatientService {
     private final InventoryService inventoryService;
     private final cn.hip.platform.integration.insurance.InsuranceAdapter insuranceAdapter;
     private final cn.hip.insurance.service.InsuranceSplitService insuranceSplitService;
+    private final cn.hip.platform.core.service.ConfigReader configReader;
 
     private final AtomicLong groupSeq = new AtomicLong(System.currentTimeMillis() % 100000);
 
@@ -61,7 +62,8 @@ public class InpatientService {
         adm.setAdmitDiagIcd(diagIcd);
         adm.setAdmitDiagName(diagName);
         adm = admissionRepo.save(adm);
-        adm.setAdmissionNo("ZY%s-%06d".formatted(
+        adm.setAdmissionNo("%s%s-%06d".formatted(
+                configReader.get("billno_prefix_admission", "ZY"),
                 LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE), adm.getId()));
         adm = admissionRepo.save(adm);
 
@@ -215,7 +217,8 @@ public class InpatientService {
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         InpSettlement s = new InpSettlement();
-        s.setSettleNo("CY%s-%06d".formatted(
+        s.setSettleNo("%s%s-%06d".formatted(
+                configReader.get("billno_prefix_settle", "CY"),
                 LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE), admissionId));
         s.setAdmissionId(admissionId);
         s.setTotalAmount(total);

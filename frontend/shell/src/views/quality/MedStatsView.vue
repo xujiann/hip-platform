@@ -36,6 +36,32 @@
         </el-table>
       </el-tab-pane>
 
+      <el-tab-pane label="死亡登记" name="death">
+        <el-form inline size="small">
+          <el-form-item><el-input v-model="deathForm.patientId" placeholder="患者ID" style="width: 90px" /></el-form-item>
+          <el-form-item><el-input v-model="deathForm.admissionId" placeholder="住院ID(选填)" style="width: 110px" /></el-form-item>
+          <el-form-item>
+            <el-date-picker v-model="deathForm.diedAt" type="datetime" value-format="YYYY-MM-DDTHH:mm:ssZ"
+                            placeholder="死亡时间" style="width: 180px" />
+          </el-form-item>
+          <el-form-item><el-input v-model="deathForm.directCause" placeholder="直接死因(a)" style="width: 160px" /></el-form-item>
+          <el-form-item><el-input v-model="deathForm.directCauseIcd" placeholder="ICD" style="width: 90px" /></el-form-item>
+          <el-form-item><el-input v-model="deathForm.chainB" placeholder="死因链(b)" style="width: 140px" /></el-form-item>
+          <el-form-item><el-input v-model="deathForm.chainC" placeholder="死因链(c)" style="width: 140px" /></el-form-item>
+          <el-form-item><el-input v-model="deathForm.place" placeholder="死亡地点" style="width: 100px" /></el-form-item>
+          <el-button type="primary" size="small" @click="saveDeathCard">登记</el-button>
+        </el-form>
+        <el-table :data="deathCards" size="small" border max-height="420">
+          <el-table-column prop="patient_name" label="患者" width="90" />
+          <el-table-column prop="patient_no" label="病案号" width="110" />
+          <el-table-column prop="admission_no" label="住院号" width="150" />
+          <el-table-column prop="died_at" label="死亡时间" width="170" />
+          <el-table-column prop="direct_cause" label="直接死因" show-overflow-tooltip />
+          <el-table-column prop="direct_cause_icd" label="ICD" width="80" />
+          <el-table-column prop="place" label="地点" width="90" />
+        </el-table>
+      </el-tab-pane>
+
       <el-tab-pane label="ICD 章节构成" name="icd">
         <el-table :data="icdComposition" size="small" border>
           <el-table-column prop="chapter" label="章节（首字母）" width="130" />
@@ -62,10 +88,28 @@ async function load() {
   overview.value = (await client.get('/mrstats/overview')).data.data
   diseaseTop.value = (await client.get('/mrstats/disease-top')).data.data
 }
+// 1.0.1（1028）：死亡登记卡
+import { reactive } from 'vue'
+import { ElMessage } from 'element-plus'
+const deathCards = ref<Record<string, unknown>[]>([])
+const deathForm = reactive({ patientId: '', admissionId: '', diedAt: '', directCause: '',
+  directCauseIcd: '', chainB: '', chainC: '', place: '' })
+async function loadDeathCards() { deathCards.value = (await client.get('/mrstats/death-cards')).data.data }
+async function saveDeathCard() {
+  await client.post('/mrstats/death-cards', {
+    ...deathForm,
+    patientId: Number(deathForm.patientId) || null,
+    admissionId: deathForm.admissionId ? Number(deathForm.admissionId) : null,
+  })
+  ElMessage.success('已登记')
+  await loadDeathCards()
+}
+
 watch(tab, async (t) => {
   if (t === 'surgery') surgeryStats.value = (await client.get('/mrstats/surgery-stats')).data.data
   if (t === 'dept') deptDischarge.value = (await client.get('/mrstats/dept-discharge')).data.data
   if (t === 'icd') icdComposition.value = (await client.get('/mrstats/icd-composition')).data.data
+  if (t === 'death') await loadDeathCards()
 })
 onMounted(load)
 </script>
