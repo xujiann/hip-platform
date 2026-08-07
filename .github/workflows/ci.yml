@@ -122,12 +122,24 @@ jobs:
           assert p2['data']['patientNo'] == 'P00000002', p2
           EOF
 
-      - name: 运行核心 E2E 套件
+      - name: 启动 ai-service（phase1821 AI 建议依赖）
+        run: |
+          pip3 install -q -r ai-service/requirements.txt
+          (cd ai-service && nohup python3 -m uvicorn main:app --port 8100 > ../ai.log 2>&1 &)
+          for i in $(seq 1 15); do curl -sf http://localhost:8100/docs > /dev/null && break; sleep 1; done
+
+      - name: 运行全部 E2E 套件（20 套）
         run: |
           python3 tools/e2e-outpatient.py
           python3 tools/e2e-inpatient.py
           python3 tools/e2e-integration.py
           python3 tools/e2e-mllp.py
+          python3 tools/e2e-phase3.py
+          python3 tools/e2e-phase48.py
+          python3 tools/e2e-emr-stats.py
+          python3 tools/e2e-phase912.py
+          python3 tools/e2e-phase1316.py
+          python3 tools/e2e-phase1821.py
           python3 tools/e2e-phase2226.py
           python3 tools/e2e-insurance.py
           python3 tools/e2e-drg-cdss.py

@@ -65,8 +65,14 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import * as echarts from 'echarts'
+// echarts/core 按需注册（仅折线/柱状 + 网格/提示框 + Canvas，全量引入曾占 1.1MB chunk）
+import * as echarts from 'echarts/core'
+import { BarChart, LineChart } from 'echarts/charts'
+import { GridComponent, TitleComponent, TooltipComponent } from 'echarts/components'
+import { CanvasRenderer } from 'echarts/renderers'
 import client from '../api/client'
+
+echarts.use([BarChart, LineChart, GridComponent, TitleComponent, TooltipComponent, CanvasRenderer])
 
 const overview = ref<Record<string, unknown>>({})
 const daily = ref<Record<string, unknown>[]>([])
@@ -91,7 +97,7 @@ function baseAxis(days: string[]) {
   }
 }
 
-const chartInstances: echarts.ECharts[] = []
+const chartInstances: ReturnType<typeof echarts.init>[] = []
 function initChart(el: HTMLElement) {
   const existing = echarts.getInstanceByDom(el)
   if (existing) return existing
