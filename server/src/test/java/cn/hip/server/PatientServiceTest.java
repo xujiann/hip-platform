@@ -27,8 +27,8 @@ class PatientServiceTest {
 
     @Test
     void idCardDerivesBirthDateAndSex() {
-        // 第 17 位 5 为奇数 → 男
-        var p = patientService.register(withIdCard("单测甲", "510181198812150512"));
+        // 顺序码末位 1 为奇数 → 男（校验位 5 合法，1.0.3 起建档强校验）
+        var p = patientService.register(withIdCard("单测甲", "510181198812150515"));
         assertEquals(LocalDate.of(1988, 12, 15), p.getBirthDate());
         assertEquals("M", p.getSex());
         assertTrue(p.getPatientNo().startsWith("P"));
@@ -36,8 +36,8 @@ class PatientServiceTest {
 
     @Test
     void sameIdCardIsIdempotent() {
-        var first = patientService.register(withIdCard("单测乙", "510181199505054520"));
-        var second = patientService.register(withIdCard("单测乙", "510181199505054520"));
+        var first = patientService.register(withIdCard("单测乙", "510181199505054528"));
+        var second = patientService.register(withIdCard("单测乙", "510181199505054528"));
         assertEquals(first.getId(), second.getId());
         assertEquals("F", first.getSex()); // 第 17 位 2 为偶数 → 女
     }

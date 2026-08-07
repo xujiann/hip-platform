@@ -14,6 +14,15 @@ import java.util.Map;
 public class PatientController {
 
     private final PatientService patientService;
+    private final cn.hip.platform.core.service.ConfigReader configReader;
+
+    /** 身份证校验位校验（empi_idcard_checksum=0 可关，供存量迁移含历史假号的医院） */
+    private String idCardError(Patient p) {
+        if (p.getIdNo() == null || p.getIdNo().isBlank()) return null;
+        if (p.getIdType() != null && !"ID_CARD".equals(p.getIdType())) return null;
+        if (!"1".equals(configReader.get("empi_idcard_checksum", "1"))) return null;
+        return PatientService.idCardChecksumOk(p.getIdNo()) ? null : "身份证号校验位不符";
+    }
 
     @GetMapping
     public R<Map<String, Object>> search(@RequestParam(defaultValue = "") String keyword,
@@ -47,12 +56,16 @@ public class PatientController {
         if (patient.getName() == null || patient.getName().isBlank()) {
             return R.fail(2001, "患者姓名不能为空");
         }
+        String idErr = idCardError(patient);
+        if (idErr != null) return R.fail(2003, idErr);
         if (patient.getSex() == null) patient.setSex("U");
         return R.ok(toDto(patientService.register(patient)));
     }
 
     @PutMapping("/{id}")
     public R<Map<String, Object>> update(@PathVariable Long id, @RequestBody Patient patient) {
+        String idErr = idCardError(patient);
+        if (idErr != null) return R.fail(2003, idErr);
         return R.ok(toDto(patientService.update(id, patient)));
     }
 

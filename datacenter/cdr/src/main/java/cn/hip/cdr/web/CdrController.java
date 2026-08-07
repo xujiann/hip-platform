@@ -44,10 +44,13 @@ public class CdrController {
         return R.ok(syncService.syncIncremental());
     }
 
-    /** CDA 样式 XML 输出（WS/T 500 结构骨架，字段映射简化版） */
+    /** CDA 样式 XML 输出（WS/T 500 结构骨架，字段映射简化版）；证件号仅 ADMIN 明文（EMPI 同口径） */
     @GetMapping(value = "/documents/{id}/cda", produces = "application/xml;charset=UTF-8")
-    public String cda(@PathVariable Long id) {
-        return syncService.toCda(id);
+    @PreAuthorize("hasAnyRole('ADMIN','QUALITY')")
+    public String cda(@PathVariable Long id, org.springframework.security.core.Authentication auth) {
+        boolean admin = auth != null && auth.getAuthorities().stream()
+                .anyMatch(a -> "ROLE_ADMIN".equals(a.getAuthority()));
+        return syncService.toCda(id, admin);
     }
 
     @GetMapping("/stats")

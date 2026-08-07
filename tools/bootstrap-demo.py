@@ -29,7 +29,7 @@ patients = call('GET', '/patients?keyword=&page=0&size=5', t=t)['data']['records
 if not any(p.get('patientNo') == 'P00000002' for p in patients):
     call('POST', '/patients', {'name': 'Test', 'sex': 'U', 'idType': 'OTHER'}, t)
     call('POST', '/patients', {'name': '张三', 'sex': 'M', 'idType': 'ID_CARD',
-                               'idNo': '510181199003078514', 'phone': '13800138000',
+                               'idNo': '510181199003078511', 'phone': '13800138000',
                                'insuranceType': 'YB_RESIDENT'}, t)
     print('基础患者：已创建 Test / 张三')
 else:

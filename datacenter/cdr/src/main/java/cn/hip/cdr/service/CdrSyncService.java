@@ -56,11 +56,15 @@ public class CdrSyncService {
     }
 
     /** CDA 样式 XML（WS/T 500 结构骨架） */
-    public String toCda(Long docId) {
+    public String toCda(Long docId, boolean plainIdNo) {
         CdrDocument doc = docRepository.findById(docId).orElseThrow();
         var patient = jdbc.queryForList(
                 "select name, sex, birth_date, id_no from empi_patient where id = ?", doc.getPatientId());
         var p = patient.isEmpty() ? Map.<String, Object>of() : patient.get(0);
+        String idNo = String.valueOf(p.getOrDefault("id_no", ""));
+        if (!plainIdNo && idNo.length() > 7) {
+            idNo = idNo.substring(0, 4) + "*".repeat(idNo.length() - 7) + idNo.substring(idNo.length() - 3);
+        }
         return """
                 <?xml version="1.0" encoding="UTF-8"?>
                 <ClinicalDocument xmlns="urn:hl7-org:v3">
@@ -76,10 +80,21 @@ public class CdrSyncService {
                     <text><![CDATA[%s]]></text>
                   </section></component></structuredBody></component>
                 </ClinicalDocument>
-                """.formatted(doc.getDocType(), doc.getTitle(), doc.getDocTime(),
-                String.valueOf(p.getOrDefault("id_no", "")), String.valueOf(p.getOrDefault("name", "")),
-                String.valueOf(p.getOrDefault("sex", "U")), String.valueOf(p.getOrDefault("birth_date", "")),
-                doc.getContent());
+                """.formatted(xml(doc.getDocType()), xml(doc.getTitle()), xml(String.valueOf(doc.getDocTime())),
+                xml(idNo), xml(String.valueOf(p.getOrDefault("name", ""))),
+                xml(String.valueOf(p.getOrDefault("sex", "U"))), xml(String.valueOf(p.getOrDefault("birth_date", ""))),
+                cdata(doc.getContent()));
+    }
+
+    /** XML 文本/属性值转义 */
+    private static String xml(String s) {
+        return s == null ? "" : s.replace("&", "&amp;").replace("<", "&lt;")
+                .replace(">", "&gt;").replace("\"", "&quot;");
+    }
+
+    /** CDATA 内容防提前闭合（"]]>" 拆段） */
+    private static String cdata(String s) {
+        return s == null ? "" : s.replace("]]>", "]]]]><![CDATA[>");
     }
 
     private int syncOutpEncounters(Instant since) {

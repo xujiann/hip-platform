@@ -108,9 +108,31 @@ public class DataStdController {
                 "select * from dg_push_log where subscription_id = ? order by id desc limit 50", id));
     }
 
-    // ---- 自定义报表引擎（只读 SELECT 白名单） ----
-    private static final Set<String> FORBIDDEN = Set.of(
-            "insert", "update", "delete", "drop", "alter", "create", "truncate", "grant", "revoke", "copy", ";");
+    // ---- 自定义报表引擎（只读 SELECT + 业务表白名单 + 查询超时；1.0.3 加固） ----
+    /** 写操作与危险语句按词边界拦截（子串匹配曾误伤 updated_at） */
+    private static final java.util.regex.Pattern FORBIDDEN_KW = java.util.regex.Pattern.compile(
+            "\\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|copy|call|do|execute|vacuum|set|listen|notify)\\b");
+    /** 受保护对象在 SQL 任意位置出现即拒绝（含别名/逗号连接等绕过路径）：sys_*（sys_dept 除外）、系统目录、迁移史 */
+    private static final java.util.regex.Pattern SENSITIVE = java.util.regex.Pattern.compile(
+            "\\b(sys_(?!dept\\b)[a-z0-9_]+|pg_[a-z0-9_]+|information_schema|flyway_[a-z0-9_]+|current_setting|set_config|dblink)\\b");
+    private static final java.util.regex.Pattern TABLE_REF = java.util.regex.Pattern.compile(
+            "\\b(?:from|join)\\s+([a-z_][a-z0-9_]*)");
+    /** 业务表前缀白名单（另精确放行 sys_dept）；impl_ 为实施定制段 */
+    private static final Set<String> ALLOWED_TABLE_PREFIX = Set.of(
+            "anes_", "as_", "blood_", "cdr_", "cdss_", "cp_", "cssd_", "dg_", "drg_", "empi_", "emr_",
+            "eq_", "er_", "hr_", "hrp_", "idc_", "inf_", "inp_", "int_", "inv_", "lis_", "md_", "med_",
+            "mr_", "nur_", "oa_", "ops_", "outp_", "path_", "pay_", "pc_", "pe_", "phc_", "price_",
+            "pur_", "qc_", "queue_", "report_", "ris_", "sd_", "shift_", "sr_", "svc_", "triage_",
+            "yb_", "impl_");
+
+    /** 报表专用模板：查询超时 5 秒，防长查询拖垮业务库 */
+    private JdbcTemplate reportJdbc;
+
+    @jakarta.annotation.PostConstruct
+    void initReportJdbc() {
+        reportJdbc = new JdbcTemplate(java.util.Objects.requireNonNull(jdbc.getDataSource()));
+        reportJdbc.setQueryTimeout(5);
+    }
 
     public record ReportReq(String name, String sqlText, String remark) {}
 
@@ -136,7 +158,7 @@ public class DataStdController {
         String sql = (String) defs.get(0).get("sql_text");
         String err = validateSql(sql);
         if (err != null) return R.fail(4634, err);
-        List<Map<String, Object>> rows = jdbc.queryForList(
+        List<Map<String, Object>> rows = reportJdbc.queryForList(
                 "select * from (" + sql + ") _rpt limit 200");
         var m = new LinkedHashMap<String, Object>();
         m.put("columns", rows.isEmpty() ? List.of() : rows.get(0).keySet().stream().toList());
@@ -148,8 +170,16 @@ public class DataStdController {
         if (sql == null || sql.isBlank()) return "SQL 不能为空";
         String lower = sql.toLowerCase();
         if (!lower.trim().startsWith("select")) return "仅允许 SELECT 查询";
-        for (String kw : FORBIDDEN) {
-            if (lower.contains(kw)) return "包含禁用关键字：" + kw;
+        if (lower.contains(";")) return "不允许分号";
+        var kw = FORBIDDEN_KW.matcher(lower);
+        if (kw.find()) return "包含禁用关键字：" + kw.group(1);
+        var sens = SENSITIVE.matcher(lower);
+        if (sens.find()) return "涉及受保护对象：" + sens.group(1);
+        var tb = TABLE_REF.matcher(lower);
+        while (tb.find()) {
+            String t = tb.group(1);
+            boolean allowed = "sys_dept".equals(t) || ALLOWED_TABLE_PREFIX.stream().anyMatch(t::startsWith);
+            if (!allowed) return "表不在白名单：" + t;
         }
         return null;
     }

@@ -69,4 +69,17 @@ public class PatientService {
     public static Integer ageOf(LocalDate birthDate) {
         return birthDate == null ? null : Period.between(birthDate, LocalDate.now()).getYears();
     }
+
+    /** GB 11643 十八位身份证校验位（加权模 11） */
+    public static boolean idCardChecksumOk(String idNo) {
+        if (idNo == null || !idNo.matches("\\d{17}[0-9Xx]")) {
+            return false;
+        }
+        int[] weights = {7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2};
+        int sum = 0;
+        for (int i = 0; i < 17; i++) {
+            sum += (idNo.charAt(i) - '0') * weights[i];
+        }
+        return Character.toUpperCase(idNo.charAt(17)) == "10X98765432".charAt(sum % 11);
+    }
 }

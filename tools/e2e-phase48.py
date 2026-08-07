@@ -48,7 +48,7 @@ print(f"[四-3] 转科转床 OK（{w1['name']}→{w2['name']}，原床释放）"
 
 # ---- 第五期：合理用药拦截 ----
 # 给张三写入青霉素过敏史
-ok(call('PUT', '/patients/2', {'name': '张三', 'sex': 'M', 'idType': 'ID_CARD', 'idNo': '510181199003078514',
+ok(call('PUT', '/patients/2', {'name': '张三', 'sex': 'M', 'idType': 'ID_CARD', 'idNo': '510181199003078511',
                               'phone': '13800138000', 'insuranceType': 'YB_RESIDENT',
                               'allergyHistory': '青霉素过敏'}, t), '更新过敏史')
 amx = ok(call('GET', '/masterdata/drugs?keyword=' + q('阿莫西林'), token=t), '药')[0]
@@ -58,7 +58,7 @@ blf = ok(call('GET', '/masterdata/drugs?keyword=' + q('布洛芬'), token=t), '�
 blf_oid = ok(call('POST', f'/outpatient/doctor/{rid}/orders', {'lines': [{'orderType': 'DRUG', 'itemId': blf['id'], 'qty': 1}]}, t), '开布洛芬')[0]['id']
 r = call('POST', f'/outpatient/doctor/{rid}/orders', {'lines': [{'orderType': 'DRUG', 'itemId': blf['id'], 'qty': 1}]}, t)
 assert r['code'] == 4013, f'重复用药应拦截: {r}'
-ok(call('PUT', '/patients/2', {'name': '张三', 'sex': 'M', 'idType': 'ID_CARD', 'idNo': '510181199003078514',
+ok(call('PUT', '/patients/2', {'name': '张三', 'sex': 'M', 'idType': 'ID_CARD', 'idNo': '510181199003078511',
                               'phone': '13800138000', 'insuranceType': 'YB_RESIDENT', 'allergyHistory': ''}, t), '清过敏史')
 print('[五-1] 过敏禁忌拦截(4012) + 重复用药拦截(4013) OK')
 
