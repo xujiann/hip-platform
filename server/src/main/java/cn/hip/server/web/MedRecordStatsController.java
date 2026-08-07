@@ -91,6 +91,12 @@ public class MedRecordStatsController {
                     / nullif(count(*), 0) * 100, 1), 0)
                 from inp_admission where status = 'DISCHARGED'
                 """, Double.class));
+        // 1.0.4：真编码率=出院诊断编码填充率（原 codedRate 实为入院诊断填充率，保留兼容）
+        m.put("dischargeCodedRate", jdbc.queryForObject("""
+                select coalesce(round(count(*) filter (where discharge_diag_icd is not null)::numeric
+                    / nullif(count(*), 0) * 100, 1), 0)
+                from inp_admission where status = 'DISCHARGED'
+                """, Double.class));
         return R.ok(m);
     }
 

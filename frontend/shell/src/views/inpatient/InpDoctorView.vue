@@ -79,6 +79,9 @@
             <el-timeline-item v-for="r in records" :key="r.id as number"
                               :timestamp="`${String(r.createdAt).slice(0, 16).replace('T', ' ')} · ${recordTypeNames[r.recordType as string]}`">
               <b>{{ r.title }}</b>
+              <el-tag v-if="r.signature" size="small" type="success" style="margin-left: 6px">已签名</el-tag>
+              <el-button v-else size="small" link type="primary" style="margin-left: 6px"
+                         @click="signRecord(r)">签名</el-button>
               <p class="record-content">{{ r.content }}</p>
             </el-timeline-item>
           </el-timeline>
@@ -167,6 +170,14 @@ async function addRecord() {
   ElMessage.success('病历已保存')
   recordContent.value = ''
   recordTitle.value = ''
+  await open(current.value)
+}
+
+// 1.0.4：病历 CA 签名（签名后冻结标识）
+async function signRecord(r: Record<string, unknown>) {
+  if (!current.value) return
+  await client.post(`/inpatient/admissions/${current.value.id}/records/${r.id}/sign`)
+  ElMessage.success('已签名')
   await open(current.value)
 }
 

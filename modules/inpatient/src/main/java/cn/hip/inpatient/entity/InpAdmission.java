@@ -43,6 +43,11 @@ public class InpAdmission {
     @Column(length = 128)
     private String admitDiagName;
 
+    /** 1.0.4：出院诊断（病案编码；DRG 入组优先取此字段） */
+    private String dischargeDiagIcd;
+
+    private String dischargeDiagName;
+
     /** IN_HOSPITAL 在院 / DISCHARGED 已出院 */
     @Column(nullable = false, length = 16)
     private String status = "IN_HOSPITAL";

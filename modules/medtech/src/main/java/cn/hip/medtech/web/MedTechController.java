@@ -207,16 +207,18 @@ public class MedTechController {
 
     // ===== 手术麻醉 =====
 
-    public record SurgeryReq(Long admissionId, String procedureName, String anesthesiaType, String scheduledAt) {}
+    public record SurgeryReq(Long admissionId, String procedureName, String anesthesiaType, String scheduledAt,
+                             String opIcd) {}
 
     @PostMapping("/api/inpatient/surgeries")
     public R<Void> requestSurgery(@RequestBody SurgeryReq req, Authentication auth) {
         String status = req.scheduledAt() == null ? "REQUESTED" : "SCHEDULED";
+        // 1.0.4：op_icd 手术操作编码（ICD-9-CM-3），病案首页与 DRG 手术组入组数据基础
         jdbc.update("""
-                insert into inp_surgery(admission_id, procedure_name, anesthesia_type, scheduled_at, surgeon_id, status)
-                values (?,?,?,?::timestamptz,?,?)
+                insert into inp_surgery(admission_id, procedure_name, anesthesia_type, scheduled_at, surgeon_id, status, op_icd)
+                values (?,?,?,?::timestamptz,?,?,?)
                 """, req.admissionId(), req.procedureName(), req.anesthesiaType(),
-                req.scheduledAt(), currentUserService.idOf(auth), status);
+                req.scheduledAt(), currentUserService.idOf(auth), status, req.opIcd());
         return R.ok();
     }
 

@@ -21,6 +21,7 @@ public class InpEmrController {
     private final MedicalRecordRepo recordRepo;
     private final VitalSignRepo vitalRepo;
     private final CurrentUserService currentUserService;
+    private final cn.hip.platform.integration.signature.SignatureAdapter signatureAdapter;
 
     @GetMapping("/records")
     public R<List<InpMedicalRecord>> records(@PathVariable Long admissionId) {
@@ -42,6 +43,22 @@ public class InpEmrController {
         r.setContent(req.content());
         r.setDoctorId(currentUserService.idOf(auth));
         return R.ok(recordRepo.save(r));
+    }
+
+    /** 1.0.4：住院病历 CA 签名（SignatureAdapter，与门诊同语义；已签名不可重签） */
+    @PostMapping("/records/{recordId}/sign")
+    public R<java.util.Map<String, Object>> signRecord(@PathVariable Long admissionId,
+                                                       @PathVariable Long recordId, Authentication auth) {
+        InpMedicalRecord r = recordRepo.findById(recordId)
+                .filter(x -> x.getAdmissionId().equals(admissionId)).orElse(null);
+        if (r == null) return R.fail(9102, "病历不存在");
+        if (r.getSignature() != null) return R.fail(9103, "病历已签名");
+        var result = signatureAdapter.sign(r.getContent(), currentUserService.idOf(auth));
+        if (!result.ok()) return R.fail(9104, "签名失败: " + result.message());
+        r.setSignature(result.signature());
+        r.setSignedAt(java.time.Instant.now());
+        recordRepo.save(r);
+        return R.ok(java.util.Map.of("signature", r.getSignature(), "signedAt", r.getSignedAt()));
     }
 
     @GetMapping("/vitals")

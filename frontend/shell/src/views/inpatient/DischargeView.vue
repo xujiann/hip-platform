@@ -19,6 +19,12 @@
           <span class="balance">¥{{ Math.abs(Number(balance)).toFixed(2) }}</span>
         </el-descriptions-item>
       </el-descriptions>
+      <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
+        <b style="font-size: 13px;">出院诊断</b>
+        <el-input v-model="dischargeIcd" placeholder="ICD-10" style="width: 110px" size="small" />
+        <el-input v-model="dischargeName" placeholder="诊断名称" style="width: 200px" size="small" />
+        <el-button size="small" @click="saveDischargeDiag">保存</el-button>
+      </div>
       <div class="actions">
         <el-input-number v-model="extraDeposit" :min="0" :step="100" />
         <el-button @click="addDeposit">补交押金</el-button>
@@ -92,7 +98,24 @@ async function open(row: Record<string, unknown> | null) {
   if (!row) return
   const resp = await client.get(`/inpatient/admissions/${row.id}/workspace`)
   detail.value = resp.data.data
+  const adm = (detail.value as Record<string, unknown>)?.admission as Record<string, unknown> | undefined
+  dischargeIcd.value = String(adm?.dischargeDiagIcd ?? '')
+  dischargeName.value = String(adm?.dischargeDiagName ?? '')
   await loadDaily()
+}
+
+// 1.0.4：出院诊断补录（病案编码；DRG 入组优先取出院诊断）
+const dischargeIcd = ref('')
+const dischargeName = ref('')
+async function saveDischargeDiag() {
+  if (!current.value) return
+  if (!dischargeIcd.value) {
+    ElMessage.warning('请填写出院诊断 ICD 编码')
+    return
+  }
+  await client.put(`/inpatient/admissions/${current.value.id}/discharge-diag`,
+    { icd: dischargeIcd.value, name: dischargeName.value })
+  ElMessage.success('出院诊断已保存')
 }
 
 async function addDeposit() {

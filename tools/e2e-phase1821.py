@@ -32,8 +32,9 @@ print('[十八-2] 五个下沉模块接口全部可用（架构还债回归 OK�
 ok(call('POST', '/cdr/sync', {}, t), '全量同步')
 inc1 = ok(call('POST', '/cdr/sync-incremental', {}, t), '增量1')
 inc2 = ok(call('POST', '/cdr/sync-incremental', {}, t), '增量2')
-assert sum(inc2.values()) == 0, f'水位推进后再次增量应为 0: {inc2}'
-print(f"[十九-1] 增量同步 OK（首次 {sum(inc1.values())} 篇，水位后 0 篇）")
+# 1.0.4：updated_at 水位带 5 分钟重叠窗口（长事务防漏，upsert 幂等）——二次增量只含重叠窗口重抽，不再必为 0
+assert sum(inc2.values()) <= sum(inc1.values()), f'水位推进后增量不应扩大: {inc1} -> {inc2}'
+print(f"[十九-1] 增量同步 OK（首次 {sum(inc1.values())} 篇，水位后重叠窗口重抽 {sum(inc2.values())} 篇）")
 
 hits = ok(call('GET', '/cdr/search?keyword=' + q('血红蛋白'), token=t), '检索')
 assert len(hits) > 0

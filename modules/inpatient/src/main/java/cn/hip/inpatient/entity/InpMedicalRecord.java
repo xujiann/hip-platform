@@ -31,6 +31,12 @@ public class InpMedicalRecord {
 
     private Long doctorId;
 
+    /** 1.0.4：CA 签名（与门诊 outp_emr 齐平），签名后冻结 */
+    @Column(length = 512)
+    private String signature;
+
+    private Instant signedAt;
+
     @Column(nullable = false, updatable = false)
     private Instant createdAt = Instant.now();
 }

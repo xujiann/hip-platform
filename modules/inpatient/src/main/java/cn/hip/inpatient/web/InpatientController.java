@@ -49,6 +49,20 @@ public class InpatientController {
         return R.ok(Map.of("date", date, "rows", rows, "total", total));
     }
 
+    /** 1.0.4：出院诊断补录（病案编码，出院前后均可；DRG 入组优先取出院诊断） */
+    public record DischargeDiagReq(String icd, String name) {}
+
+    @PutMapping("/admissions/{id}/discharge-diag")
+    public R<Void> setDischargeDiag(@PathVariable Long id, @RequestBody DischargeDiagReq req) {
+        if (req.icd() == null || req.icd().isBlank()) {
+            return R.fail(9105, "出院诊断编码必填");
+        }
+        int n = jdbcTemplate.update(
+                "update inp_admission set discharge_diag_icd = ?, discharge_diag_name = ? where id = ?",
+                req.icd(), req.name(), id);
+        return n == 0 ? R.fail(9106, "住院记录不存在") : R.ok();
+    }
+
     public record CreateBedsRequest(Long wardId, Integer count) {}
 
     /** 产品化一期：病区床位批量创建（实施工具；bed_no 自增补位，重复号自动跳过） */
@@ -216,6 +230,8 @@ public class InpatientController {
         m.put("bedId", a.getBedId());
         bedRepo.findById(a.getBedId()).ifPresent(b -> m.put("bedNo", b.getBedNo()));
         m.put("admitDiagName", a.getAdmitDiagName());
+        m.put("dischargeDiagIcd", a.getDischargeDiagIcd());
+        m.put("dischargeDiagName", a.getDischargeDiagName());
         m.put("status", a.getStatus());
         m.put("admitAt", a.getAdmitAt());
         return m;

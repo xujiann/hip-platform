@@ -33,17 +33,31 @@ public class CdrSyncService {
         return doSync(Instant.EPOCH);
     }
 
-    /** 增量同步：只抽取水位之后新增/变更的业务数据，跑完推进水位 */
+    /**
+     * 增量同步（updated_at 水位）：抽取水位之后新增/变更的业务数据，跑完把水位推进到 max(updated_at)。
+     * 读取时回退 5 分钟重叠窗口——updated_at 取事务开始时刻（PG now()），长事务晚提交的行时间戳
+     * 早于已推进的水位，无重叠会永久漏失；upsert 幂等，重叠重抽无副作用（窗口内长事务为已知边界）。
+     */
+    public static final long OVERLAP_SECONDS = 300;
+
     @Transactional
     public Map<String, Integer> syncIncremental() {
         var rows = jdbc.queryForList("select cfg_value from sys_config where cfg_key = 'cdr_sync_watermark'");
-        Instant since = rows.isEmpty() ? Instant.EPOCH : Instant.parse((String) rows.get(0).get("cfg_value"));
+        Instant watermark = rows.isEmpty() ? Instant.EPOCH : Instant.parse((String) rows.get(0).get("cfg_value"));
+        Instant since = watermark.equals(Instant.EPOCH) ? watermark : watermark.minusSeconds(OVERLAP_SECONDS);
         var result = doSync(since);
-        String now = Instant.now().toString();
-        jdbc.update("""
-                insert into sys_config(cfg_key, cfg_value, remark) values ('cdr_sync_watermark', ?, 'CDR 增量水位')
-                on conflict (cfg_key) do update set cfg_value = excluded.cfg_value, updated_at = now()
-                """, now);
+        java.sql.Timestamp maxUpdated = jdbc.queryForObject("""
+                select greatest(
+                    (select max(updated_at) from outp_registration),
+                    (select max(updated_at) from outp_order),
+                    (select max(updated_at) from inp_admission))
+                """, java.sql.Timestamp.class);
+        if (maxUpdated != null) {
+            jdbc.update("""
+                    insert into sys_config(cfg_key, cfg_value, remark) values ('cdr_sync_watermark', ?, 'CDR 增量水位')
+                    on conflict (cfg_key) do update set cfg_value = excluded.cfg_value, updated_at = now()
+                    """, maxUpdated.toInstant().toString());
+        }
         return result;
     }
 
@@ -98,10 +112,11 @@ public class CdrSyncService {
     }
 
     private int syncOutpEncounters(Instant since) {
+        // 退号也同步（不再过滤 CANCELLED）——否则退号后 CDR 文档状态永久停留在退号前
         var regs = jdbc.queryForList("""
                 select r.id, r.patient_id, r.visit_date, r.status, r.created_at, d.name as dept_name
                 from outp_registration r join sys_dept d on d.id = r.dept_id
-                where r.status <> 'CANCELLED' and r.created_at > ?
+                where r.updated_at > ?
                 """, java.sql.Timestamp.from(since));
         for (var r : regs) {
             Long regId = ((Number) r.get("id")).longValue();
@@ -125,7 +140,7 @@ public class CdrSyncService {
         var orders = jdbc.queryForList("""
                 select o.id, o.item_name, o.group_no, o.created_at, r.patient_id
                 from outp_order o join outp_registration r on r.id = o.registration_id
-                where o.order_type = 'LAB' and o.status = 'EXECUTED' and o.created_at > ?
+                where o.order_type = 'LAB' and o.status = 'EXECUTED' and o.updated_at > ?
                 """, java.sql.Timestamp.from(since));
         int n = 0;
         for (var o : orders) {
@@ -147,9 +162,9 @@ public class CdrSyncService {
     private int syncInpSummaries(Instant since) {
         var adms = jdbc.queryForList("""
                 select a.id, a.patient_id, a.admission_no, a.status, a.admit_at, a.discharged_at,
-                       a.admit_diag_name, d.name as dept_name
+                       a.admit_diag_name, a.discharge_diag_name, d.name as dept_name
                 from inp_admission a join sys_dept d on d.id = a.dept_id
-                where a.admit_at > ?
+                where a.updated_at > ?
                 """, java.sql.Timestamp.from(since));
         for (var a : adms) {
             Long admId = ((Number) a.get("id")).longValue();
@@ -158,6 +173,7 @@ public class CdrSyncService {
             doc.put("dept", a.get("dept_name"));
             doc.put("status", a.get("status"));
             doc.put("admitDiagnosis", a.get("admit_diag_name"));
+            doc.put("dischargeDiagnosis", a.get("discharge_diag_name"));
             doc.put("dischargedAt", String.valueOf(a.get("discharged_at")));
             doc.put("records", jdbc.queryForList(
                     "select record_type, title, content, created_at from inp_medical_record where admission_id = ? order by id", admId));

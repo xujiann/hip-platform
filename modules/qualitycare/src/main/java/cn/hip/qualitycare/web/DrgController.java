@@ -56,7 +56,7 @@ public class DrgController {
 
     private Map<String, Object> doGroup() {
         var pending = jdbc.queryForList("""
-                select a.id, a.admit_diag_icd,
+                select a.id, coalesce(a.discharge_diag_icd, a.admit_diag_icd) as admit_diag_icd,
                        coalesce(s.total_amount, 0) as total_cost,
                        round((extract(epoch from (a.discharged_at - a.admit_at)) / 86400)::numeric, 1) as inp_days,
                        exists (select 1 from inp_surgery g where g.admission_id = a.id and g.status <> 'CANCELLED') as has_surgery
