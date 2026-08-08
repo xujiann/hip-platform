@@ -49,10 +49,10 @@ public class ChargeService {
                 LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE), charge.getId()));
         charge = chargeRepository.save(charge);
 
-        for (OutpOrder o : unpaid) {
-            o.setStatus("CHARGED");
-            o.setChargeId(charge.getId());
-            orderRepository.save(o);
+        // 条件更新 + 判定行数：读-判-写会让窗口结算与患者端扫码各出一张 PAID 单（双倍扣款）
+        var unpaidIds = unpaid.stream().map(OutpOrder::getId).toList();
+        if (orderRepository.claimCharge(unpaidIds, charge.getId()) != unpaidIds.size()) {
+            throw new BizException(5008, "费用明细已变化（可能已被结算或作废），请刷新后重试");
         }
         if ("YB".equals(charge.getPayMethod())) {
             Long patientId = registrationRepository.findById(registrationId).orElseThrow().getPatientId();
@@ -90,10 +90,10 @@ public class ChargeService {
                 throw new BizException(5005, "已执行项目不可退费: " + o.getItemName());
             }
         }
-        for (OutpOrder o : orders) {
-            o.setStatus("CREATED");
-            o.setChargeId(null);
-            orderRepository.save(o);
+        // 条件更新：并发发药会把行改成 DISPENSED，此时行数不足即整单回滚（防"钱已退、药也发了"）
+        var ids = orders.stream().map(OutpOrder::getId).toList();
+        if (orderRepository.claimRefund(ids) != ids.size()) {
+            throw new BizException(5009, "项目状态已变化（可能正在发药或执行），退费终止");
         }
         if ("YB".equals(charge.getPayMethod())) {
             var res = insuranceAdapter.uploadRefund(charge.getChargeNo());
@@ -104,6 +104,7 @@ public class ChargeService {
             insuranceSplitService.reverse(charge.getChargeNo());
         }
         charge.setStatus("REFUNDED");
+        charge.setRefundedAt(java.time.Instant.now());   // 日结按退费日归集，不再改写历史日报表
         return chargeRepository.save(charge);
     }
 }

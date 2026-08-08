@@ -33,6 +33,7 @@ public class RegistrationService {
     public OutpRegistration register(Long patientId, Long scheduleId) {
         OutpSchedule schedule = scheduleRepository.findById(scheduleId)
                 .orElseThrow(() -> new BizException(3001, "号源不存在"));
+        // 查重仅为友好提示；真正的防线是 uq_outp_reg_active 唯一索引（并发下 find-then-insert 会双挂）
         registrationRepository.findByScheduleIdAndPatientIdAndStatus(scheduleId, patientId, "REGISTERED")
                 .ifPresent(r -> { throw new BizException(3002, "该患者已挂此号，勿重复挂号"); });
         if (scheduleRepository.occupySlot(scheduleId) == 0) {
@@ -48,7 +49,11 @@ public class RegistrationService {
         reg.setDoctorId(schedule.getDoctorId());
         reg.setVisitDate(schedule.getScheduleDate());
         reg.setFee(schedule.getFee());
-        reg = registrationRepository.save(reg);
+        try {
+            reg = registrationRepository.saveAndFlush(reg);
+        } catch (org.springframework.dao.DataIntegrityViolationException e) {
+            throw new BizException(3002, "该患者已挂此号，勿重复挂号");
+        }
 
         // 挂号费作为一条订单行进入统一收费队列（费用不落两处账）
         if (reg.getFee() != null && reg.getFee().compareTo(BigDecimal.ZERO) > 0) {

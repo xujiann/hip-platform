@@ -108,9 +108,11 @@ public class InsuranceSplitService {
     /** 退费冲销：回退该结算单占用的年度起付线/统筹额度（分割留痕保留，汇总口径按单据状态排除） */
     @Transactional
     public void reverse(String billNo) {
+        // 抢占 reversed 标记：并发退费（重复点击/重试）会各冲销一次，患者凭空多出年度统筹额度
         var rows = jdbc.queryForList("""
-                select patient_id, fund_pay, deductible_pay, extract(year from created_at)::int as y
-                from yb_settle_split where charge_no = ?
+                update yb_settle_split set reversed = true
+                where charge_no = ? and not reversed
+                returning patient_id, fund_pay, deductible_pay, extract(year from created_at)::int as y
                 """, billNo);
         if (rows.isEmpty() || rows.get(0).get("patient_id") == null) return;
         var r = rows.get(0);

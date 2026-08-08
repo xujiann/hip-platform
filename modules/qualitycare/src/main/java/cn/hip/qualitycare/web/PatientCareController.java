@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.SneakyThrows;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
@@ -127,19 +128,20 @@ public class PatientCareController {
     /** 入径：按模板批量开立住院医嘱 */
     @PostMapping("/api/pathways/{id}/apply/{admissionId}")
     @SneakyThrows
+    @Transactional
     public R<Object> applyPathway(@PathVariable Long id, @PathVariable Long admissionId, Authentication auth) {
         var rows = jdbc.queryForList("select items from cp_pathway_template where id = ?", id);
         if (rows.isEmpty()) return R.fail(9904, "路径模板不存在");
-        Integer dup = jdbc.queryForObject(
-                "select count(*) from cp_enrollment where admission_id = ? and template_id = ?",
-                Integer.class, admissionId, id);
-        if (dup != null && dup > 0) return R.fail(9906, "该住院已入此路径");
         List<InpatientService.OrderLine> lines = objectMapper.readValue(
                 (String) rows.get(0).get("items"), new TypeReference<>() {});
         try {
-            var orders = inpatientService.createOrders(admissionId, lines, currentUserService.idOf(auth));
+            // 先占入径记录（借 uq_cp_enroll 唯一约束当锁）再开医嘱：
+            // 反序会让双击的两次请求都把路径医嘱计了费，第二次才在约束上失败
             jdbc.update("insert into cp_enrollment(admission_id, template_id) values (?,?)", admissionId, id);
+            var orders = inpatientService.createOrders(admissionId, lines, currentUserService.idOf(auth));
             return R.ok(Map.of("orders", orders.size()));
+        } catch (org.springframework.dao.DuplicateKeyException e) {
+            return R.fail(9906, "该住院已入此路径");
         } catch (InpatientService.InpException e) {
             return R.fail(e.code, e.getMessage());
         }
@@ -236,14 +238,16 @@ public class PatientCareController {
 
     /** 单位团检建档：批量建患者 + 体检记录 */
     @PostMapping("/api/exam/groups")
+    @Transactional
     public R<Map<String, Object>> createGroup(@RequestBody GroupReq req) {
         if (req.memberNames() == null || req.memberNames().isEmpty()) return R.fail(9909, "团检人员名单不能为空");
         Integer pkg = jdbc.queryForObject("select count(*) from pe_exam_package where id = ? and enabled",
                 Integer.class, req.packageId());
-        if (pkg == null || pkg == 0) return R.fail(9910, "体检套餐不存在");
-        jdbc.update("insert into pe_group(unit_name, contact, package_id) values (?,?,?)",
-                req.unitName(), req.contact(), req.packageId());
-        Long groupId = jdbc.queryForObject("select max(id) from pe_group", Long.class);
+        if (pkg == null || pkg == 0) return R.fail(9911, "体检套餐不存在");
+        // returning id 取主键：max(id) 在并发建档时会拿到别人的团检号，成员挂错单位
+        Long groupId = jdbc.queryForObject("""
+                insert into pe_group(unit_name, contact, package_id) values (?,?,?) returning id
+                """, Long.class, req.unitName(), req.contact(), req.packageId());
         for (String name : req.memberNames()) {
             var p = new cn.hip.platform.empi.entity.Patient();
             p.setName(name);

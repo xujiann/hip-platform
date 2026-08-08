@@ -21,6 +21,7 @@ public class InventoryService {
     private final DrugItemRepository drugRepository;
     private final InvStockInRepository stockInRepository;
     private final InvTransactionRepository transactionRepository;
+    private final jakarta.persistence.EntityManager entityManager;
 
     public static class InventoryException extends RuntimeException {
         public final int code;
@@ -37,11 +38,11 @@ public class InventoryService {
         if (qty <= 0) throw new InventoryException(8001, "入库数量必须大于 0");
         DrugItem drug = drugRepository.findById(drugId)
                 .orElseThrow(() -> new InventoryException(8002, "药品不存在"));
-        drug.setStock(drug.getStock() + qty);
-        drugRepository.save(drug);
+        // 原子加：读-改-写会覆盖期间并发发药的扣减，导致库存虚增、账实不符
+        drugRepository.restoreStock(drugId, qty);
 
         InvStockIn in = new InvStockIn();
-        in.setInNo("RK" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + "-" + System.nanoTime() % 1000000);
+        in.setInNo("RK" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + "-" + nextInSeq());
         in.setDrugId(drugId);
         in.setQty(qty);
         in.setBatchNo(batchNo);
@@ -49,7 +50,8 @@ public class InventoryService {
         in.setSupplier(supplier);
         in.setOperatorId(operatorId);
         in = stockInRepository.save(in);
-        log(drugId, "IN", qty, drug.getStock(), in.getInNo(), operatorId);
+        int stockAfter = drugRepository.findById(drugId).map(DrugItem::getStock).orElse(0);
+        log(drugId, "IN", qty, stockAfter, in.getInNo(), operatorId);
         return in;
     }
 
@@ -73,16 +75,23 @@ public class InventoryService {
         if (newStock < 0) throw new InventoryException(8003, "库存不能为负");
         DrugItem drug = drugRepository.findById(drugId)
                 .orElseThrow(() -> new InventoryException(8002, "药品不存在"));
-        int delta = newStock - drug.getStock();
-        drug.setStock(newStock);
-        drugRepository.save(drug);
+        int expected = drug.getStock();
+        int delta = newStock - expected;
+        // 条件更新：盘点提交与并发发药交叠时，整行写会把发药的扣减覆盖掉
+        if (drugRepository.adjustStock(drugId, expected, newStock) == 0) {
+            throw new InventoryException(8004, "库存已变化（期间有发药或入库），请重新盘点");
+        }
         log(drugId, "ADJ", delta, newStock, reason, operatorId);
     }
 
     public List<DrugItem> lowStock(int threshold) {
-        return drugRepository.findAll().stream()
-                .filter(d -> d.getEnabled() && d.getStock() < threshold)
-                .toList();
+        return drugRepository.findByEnabledTrueAndStockLessThan(threshold);
+    }
+
+    /** 入库单号取序列：nanoTime%1e6 会碰撞唯一约束（裸 500） */
+    private long nextInSeq() {
+        return ((Number) entityManager.createNativeQuery("select nextval('inv_stock_in_seq')")
+                .getSingleResult()).longValue();
     }
 
     private void log(Long drugId, String type, int qty, int stockAfter, String refNo, Long operatorId) {

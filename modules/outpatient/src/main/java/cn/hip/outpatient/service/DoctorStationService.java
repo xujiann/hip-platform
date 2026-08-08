@@ -102,6 +102,15 @@ public class DoctorStationService {
 
         // 合理用药前置拦截（过敏禁忌 / 同诊重复用药 / 抗菌药分级处方权）
         List<CdssService.DrugLine> newDrugs = new java.util.ArrayList<>();
+        // 同一次提交内的重复药品：查重只看已持久化订单，同请求两行会双双放行（重复用药门失效）
+        var seenItemIds = new java.util.HashSet<Long>();
+        for (OrderLine line : lines) {
+            if ("DRUG".equals(line.orderType()) && !seenItemIds.add(line.itemId())) {
+                String name = drugRepository.findById(line.itemId())
+                        .map(DrugItem::getName).orElse(String.valueOf(line.itemId()));
+                throw new BizException(4013, "同一处方内重复开药: " + name);
+            }
+        }
         for (OrderLine line : lines) {
             if ("DRUG".equals(line.orderType())) {
                 drugRepository.findById(line.itemId())

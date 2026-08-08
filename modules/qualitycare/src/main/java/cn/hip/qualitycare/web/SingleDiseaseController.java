@@ -26,10 +26,10 @@ public class SingleDiseaseController {
     public R<List<Map<String, Object>>> candidates() {
         return R.ok(jdbc.queryForList("""
                 select a.id as admission_id, a.admission_no, p.name as patient_name,
-                       a.admit_diag_icd, a.admit_diag_name, d.code as disease_code, d.name as disease_name
+                       coalesce(a.discharge_diag_icd, a.admit_diag_icd) as admit_diag_icd, a.admit_diag_name, d.code as disease_code, d.name as disease_name
                 from inp_admission a
                 join empi_patient p on p.id = a.patient_id
-                join sd_disease_def d on a.admit_diag_icd like d.icd_prefix || '%'
+                join sd_disease_def d on coalesce(a.discharge_diag_icd, a.admit_diag_icd) like d.icd_prefix || '%'
                 where not exists (select 1 from sd_case_report c
                                   where c.admission_id = a.id and c.disease_code = d.code)
                 order by a.id desc limit 100

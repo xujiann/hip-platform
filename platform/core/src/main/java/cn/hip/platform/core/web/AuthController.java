@@ -34,6 +34,7 @@ public class AuthController {
     private static final java.time.Duration LOCK_DURATION = java.time.Duration.ofMinutes(15);
 
     @PostMapping("/login")
+    @org.springframework.transaction.annotation.Transactional
     public R<Map<String, Object>> login(@RequestBody LoginRequest req) {
         var userOpt = userRepository.findByUsername(req.username());
         if (userOpt.isPresent()) {
@@ -45,16 +46,15 @@ public class AuthController {
         try {
             authenticationManager.authenticate(
                     new UsernamePasswordAuthenticationToken(req.username(), req.password()));
+        } catch (org.springframework.security.authentication.DisabledException
+                 | org.springframework.security.authentication.LockedException e) {
+            // 停用/锁定账号在校验密码前就被 Provider 拒绝——原先只捕获 BadCredentials，异常逃逸成 500
+            return R.fail(1004, "账号已停用，请联系管理员");
         } catch (BadCredentialsException e) {
-            // 防爆破：连续失败 5 次锁定 15 分钟
-            userOpt.ifPresent(u -> {
-                u.setFailedAttempts(u.getFailedAttempts() + 1);
-                if (u.getFailedAttempts() >= MAX_FAILED) {
-                    u.setLockedUntil(java.time.Instant.now().plus(LOCK_DURATION));
-                    u.setFailedAttempts(0);
-                }
-                userRepository.save(u);
-            });
+            // 防爆破：连续失败 5 次锁定 15 分钟。
+            // 必须原子累加——读-判-写在并发猜测下会让计数恒停在 1，锁定形同虚设。
+            userRepository.bumpFailedAttempts(req.username(), MAX_FAILED,
+                    java.time.Instant.now().plus(LOCK_DURATION));
             return R.fail(1001, "用户名或密码错误");
         }
         userOpt.ifPresent(u -> {

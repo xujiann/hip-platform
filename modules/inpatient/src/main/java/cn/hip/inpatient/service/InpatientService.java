@@ -16,7 +16,6 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicLong;
 
 @Service
 @RequiredArgsConstructor
@@ -35,7 +34,14 @@ public class InpatientService {
     private final cn.hip.insurance.service.InsuranceSplitService insuranceSplitService;
     private final cn.hip.platform.core.service.ConfigReader configReader;
 
-    private final AtomicLong groupSeq = new AtomicLong(System.currentTimeMillis() % 100000);
+    private final jakarta.persistence.EntityManager entityManager;
+
+    /** 组号取数据库序列：内存 AtomicLong 的毫秒种子每 100 秒回绕，重启即与已发组号撞号 */
+    private long nextGroupSeq() {
+        return ((Number) entityManager
+                .createNativeQuery("select nextval('inp_order_group_seq')")
+                .getSingleResult()).longValue();
+    }
 
     public static class InpException extends RuntimeException {
         public final int code;
@@ -83,6 +89,9 @@ public class InpatientService {
         if (!"IN_HOSPITAL".equals(adm.getStatus())) {
             throw new InpException(9004, "已出院不能缴押金");
         }
+        if (amount == null || amount.signum() <= 0) {
+            throw new InpException(9017, "押金金额须大于 0");
+        }
         InpDeposit d = new InpDeposit();
         d.setAdmissionId(admissionId);
         d.setAmount(amount);
@@ -109,7 +118,7 @@ public class InpatientService {
             o.setOrderType(line.orderType());
             o.setQty(line.qty() == null || line.qty() <= 0 ? 1 : line.qty());
             o.setDoctorId(doctorId);
-            o.setGroupNo("YZ" + stamp + "-" + groupSeq.incrementAndGet());
+            o.setGroupNo("YZ" + stamp + "-" + nextGroupSeq());
             if ("DRUG".equals(line.orderType())) {
                 DrugItem drug = drugRepository.findById(line.itemId())
                         .orElseThrow(() -> new InpException(9006, "药品不存在"));
@@ -140,7 +149,8 @@ public class InpatientService {
     @Transactional
     public InpOrder execute(Long orderId, Long executorId) {
         InpOrder o = orderRepo.findById(orderId).orElseThrow(() -> new InpException(9008, "医嘱不存在"));
-        if (!"CREATED".equals(o.getStatus())) {
+        // 先抢占状态再扣库存：读-判-写会让两名护士各扣一次库存、各记一条出库流水
+        if (orderRepo.claimExecute(orderId, executorId, Instant.now()) == 0) {
             throw new InpException(9009, "仅未执行医嘱可执行");
         }
         if ("DRUG".equals(o.getOrderType())) {
@@ -149,10 +159,21 @@ public class InpatientService {
             }
             inventoryService.logOut(o.getItemId(), o.getQty(), o.getGroupNo(), executorId);
         }
-        o.setStatus("EXECUTED");
-        o.setExecutorId(executorId);
-        o.setExecutedAt(Instant.now());
-        return orderRepo.save(o);
+        return orderRepo.findById(orderId).orElseThrow();
+    }
+
+    /** 作废未执行医嘱：出院前清理误开医嘱的唯一正确路径（执行掉会多计费并白扣库存） */
+    @Transactional
+    public void cancelOrder(Long orderId) {
+        InpOrder o = orderRepo.findById(orderId).orElseThrow(() -> new InpException(9008, "医嘱不存在"));
+        InpAdmission adm = admissionRepo.findById(o.getAdmissionId())
+                .orElseThrow(() -> new InpException(9003, "住院记录不存在"));
+        if (!"IN_HOSPITAL".equals(adm.getStatus())) {
+            throw new InpException(9015, "已出院不能作废医嘱");
+        }
+        if (orderRepo.cancelIfCreated(orderId) == 0) {
+            throw new InpException(9016, "仅未执行医嘱可作废");
+        }
     }
 
     /** 转科转床：原子占新床成功后才释放旧床，全程留痕 */
@@ -172,7 +193,7 @@ public class InpatientService {
         }
         Long fromBedId = adm.getBedId();
         Long fromDeptId = adm.getDeptId();
-        bedRepo.release(fromBedId);
+        bedRepo.release(fromBedId, admissionId);
 
         InpTransferLog log = new InpTransferLog();
         log.setAdmissionId(admissionId);
@@ -200,12 +221,15 @@ public class InpatientService {
     public InpSettlement discharge(Long admissionId, Long cashierId, String payMethod) {
         InpAdmission adm = admissionRepo.findById(admissionId)
                 .orElseThrow(() -> new InpException(9003, "住院记录不存在"));
-        if (!"IN_HOSPITAL".equals(adm.getStatus())) {
+        // 先抢占 DISCHARGED 再汇总：否则"读快照→置位"之间并发缴的押金既不进结算也不退还，
+        // 并发开的医嘱则永不计费。抢占失败即他人已结算。
+        if (admissionRepo.claimDischarge(admissionId, Instant.now()) == 0) {
             throw new InpException(9011, "该患者已出院结算");
         }
         List<InpOrder> orders = orderRepo.findByAdmissionIdOrderByIdAsc(admissionId);
         boolean hasPending = orders.stream().anyMatch(o -> "CREATED".equals(o.getStatus()));
         if (hasPending) {
+            // 抛出即回滚，DISCHARGED 抢占一并撤销
             throw new InpException(9012, "存在未执行医嘱，请先执行或作废");
         }
         BigDecimal total = orders.stream()
@@ -242,10 +266,7 @@ public class InpatientService {
             s = settlementRepo.save(s);
         }
 
-        adm.setStatus("DISCHARGED");
-        adm.setDischargedAt(Instant.now());
-        admissionRepo.save(adm);
-        bedRepo.release(adm.getBedId());
+        bedRepo.release(adm.getBedId(), admissionId);   // 状态已在入口抢占
         return s;
     }
 }

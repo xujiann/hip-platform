@@ -36,6 +36,9 @@ public class OutpCharge {
     @Column(nullable = false, length = 16)
     private String status = "PAID";
 
+    /** 退费时刻：日结/对账按退费日归集，避免改写历史日报表口径 */
+    private java.time.Instant refundedAt;
+
     /** 收费员 */
     private Long cashierId;
 

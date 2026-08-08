@@ -59,7 +59,7 @@ public class DrgController {
                 select a.id, coalesce(a.discharge_diag_icd, a.admit_diag_icd) as admit_diag_icd,
                        coalesce(s.total_amount, 0) as total_cost,
                        round((extract(epoch from (a.discharged_at - a.admit_at)) / 86400)::numeric, 1) as inp_days,
-                       exists (select 1 from inp_surgery g where g.admission_id = a.id and g.status <> 'CANCELLED') as has_surgery
+                       exists (select 1 from inp_surgery g where g.admission_id = a.id and g.status = 'DONE') as has_surgery
                 from inp_admission a
                 left join inp_settlement s on s.admission_id = a.id
                 where a.status = 'DISCHARGED'

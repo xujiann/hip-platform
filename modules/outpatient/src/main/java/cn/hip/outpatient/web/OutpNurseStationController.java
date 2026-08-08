@@ -96,13 +96,15 @@ public class OutpNurseStationController {
         var row = rows.get(0);
         if (!"PENDING".equals(row.get("status"))) return R.fail(4501, "输液单状态不允许开始");
         String itemName = (String) row.get("item_name");
-        if (SKIN_TEST_REQUIRED.stream().anyMatch(itemName::contains)) {
+        // 皮试须按药名匹配：只看"本次就诊有任一阴性皮试"会让头孢皮试放行青霉素（用药安全门失效）
+        String required = SKIN_TEST_REQUIRED.stream().filter(itemName::contains).findFirst().orElse(null);
+        if (required != null) {
             Integer neg = jdbc.queryForObject("""
                     select count(*) from outp_skin_test
-                    where registration_id = ? and result = 'NEG'
-                    """, Integer.class, row.get("registration_id"));
+                    where registration_id = ? and result = 'NEG' and drug_name like ?
+                    """, Integer.class, row.get("registration_id"), "%" + required + "%");
             if (neg == null || neg == 0) {
-                return R.fail(4502, "皮试拦截：" + itemName + " 需阴性皮试结果后方可输液");
+                return R.fail(4502, "皮试拦截：" + itemName + " 需该药品阴性皮试结果后方可输液");
             }
         }
         jdbc.update("update outp_infusion set status = 'RUNNING', nurse_id = ?, started_at = now() where id = ?",

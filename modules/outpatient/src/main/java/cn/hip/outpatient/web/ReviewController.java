@@ -70,15 +70,20 @@ public class ReviewController {
     private R<Void> review(Long orderId, Authentication auth, boolean approve, String reason) {
         OutpOrder o = orderRepository.findById(orderId).orElse(null);
         if (o == null || !"DRUG".equals(o.getOrderType())) return R.fail(4101, "处方不存在");
-        if (o.getReviewStatus() != null) return R.fail(4102, "该处方已审核");
-        o.setReviewStatus(approve ? "APPROVED" : "REJECTED");
-        o.setReviewNote(reason);
-        o.setReviewerId(currentUserService.idOf(auth));
-        if (!approve) {
-            if (!"CREATED".equals(o.getStatus())) return R.fail(4103, "已收费处方不能拒绝，请走退费");
-            o.setStatus("CANCELLED");
+        Long reviewerId = currentUserService.idOf(auth);
+        // 条件更新 + 判定行数：读-判-写会让并发双药师互相覆盖结论，
+        // 拒绝路径还可能与收费竞态出现"已收费却 CANCELLED"（患者为作废药付了钱）
+        if (approve) {
+            if (orderRepository.claimApprove(orderId, reviewerId, reason) == 0) {
+                return R.fail(4102, "该处方已审核");
+            }
+            return R.ok();
         }
-        orderRepository.save(o);
+        if (orderRepository.claimReject(orderId, reviewerId, reason) == 0) {
+            return "CREATED".equals(o.getStatus())
+                    ? R.fail(4102, "该处方已审核")
+                    : R.fail(4103, "已收费处方不能拒绝，请走退费");
+        }
         return R.ok();
     }
 }

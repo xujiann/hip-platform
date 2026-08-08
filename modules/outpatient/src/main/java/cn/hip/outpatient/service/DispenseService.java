@@ -43,14 +43,18 @@ public class DispenseService {
         if (charged.isEmpty()) {
             throw new BizException(6001, "没有待发药的处方");
         }
+        // 先抢占状态再扣库存：并发双发药时读-判-写会让每条医嘱被扣两次库存（药只发一次）
+        var ids = charged.stream().map(OutpOrder::getId).toList();
+        if (orderRepository.claimDispense(ids) != ids.size()) {
+            throw new BizException(6003, "处方状态已变化（可能正在退费或已发药），请刷新后重试");
+        }
         for (OutpOrder o : charged) {
             if (drugRepository.deductStock(o.getItemId(), o.getQty()) == 0) {
                 throw new BizException(6002, "库存不足: " + o.getItemName() + " x" + o.getQty());
             }
             inventoryService.logOut(o.getItemId(), o.getQty(), o.getGroupNo(), null);
-            o.setStatus("DISPENSED");
-            orderRepository.save(o);
         }
-        return charged;
+        return orderRepository.findByRegistrationIdAndOrderTypeAndStatusOrderByIdAsc(
+                registrationId, "DRUG", "DISPENSED");
     }
 }

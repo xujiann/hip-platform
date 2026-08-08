@@ -195,6 +195,17 @@ public class InpatientController {
         }).toList());
     }
 
+    /** 1.0.7：作废未执行医嘱（出院前清理误开医嘱；执行掉会多计费并白扣库存） */
+    @PutMapping("/orders/{orderId}/cancel")
+    public R<Void> cancelOrder(@PathVariable Long orderId) {
+        try {
+            inpatientService.cancelOrder(orderId);
+            return R.ok();
+        } catch (InpException e) {
+            return R.fail(e.code, e.getMessage());
+        }
+    }
+
     @PutMapping("/orders/{orderId}/execute")
     public R<Object> execute(@PathVariable Long orderId, Authentication auth) {
         try {
