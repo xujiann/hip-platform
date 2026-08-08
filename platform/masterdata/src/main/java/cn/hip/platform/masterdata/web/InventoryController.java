@@ -11,6 +11,7 @@ import cn.hip.platform.masterdata.service.InventoryService;
 import cn.hip.platform.masterdata.service.InventoryService.InventoryException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDate;
@@ -20,6 +21,7 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/api/inventory")
+@PreAuthorize("hasAnyRole('ADMIN','PHARMACIST')")   // 1.0.6：库存出入与盘点限药师
 @RequiredArgsConstructor
 public class InventoryController {
 

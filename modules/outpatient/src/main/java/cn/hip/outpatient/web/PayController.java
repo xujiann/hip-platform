@@ -7,6 +7,7 @@ import cn.hip.platform.core.security.CurrentUserService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -16,6 +17,7 @@ import java.util.Map;
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/api/pay")
+@PreAuthorize("hasAnyRole('ADMIN','CASHIER')")   // 1.0.6：院内支付台限收费员（患者端走 /api/portal）
 public class PayController {
 
     private final PayService payService;

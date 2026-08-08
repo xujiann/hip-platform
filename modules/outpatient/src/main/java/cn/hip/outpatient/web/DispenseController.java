@@ -7,6 +7,7 @@ import cn.hip.outpatient.service.RegistrationService.BizException;
 import cn.hip.platform.core.common.R;
 import cn.hip.platform.empi.repository.PatientRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.LinkedHashMap;
@@ -15,6 +16,7 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/api/outpatient/dispense")
+@PreAuthorize("hasAnyRole('ADMIN','PHARMACIST')")   // 1.0.6：发药与退药限药师
 @RequiredArgsConstructor
 public class DispenseController {
 

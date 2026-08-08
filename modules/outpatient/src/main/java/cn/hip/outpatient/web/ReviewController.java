@@ -9,6 +9,7 @@ import cn.hip.platform.empi.repository.PatientRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.LinkedHashMap;
@@ -18,6 +19,7 @@ import java.util.Map;
 /** 药师审方：未审处方队列 → 通过/拒绝（拒绝即作废该行） */
 @RestController
 @RequestMapping("/api/outpatient/review")
+@PreAuthorize("hasAnyRole('ADMIN','PHARMACIST')")   // 1.0.6：审方限药师
 @RequiredArgsConstructor
 public class ReviewController {
 

@@ -11,6 +11,7 @@ import cn.hip.platform.empi.repository.PatientRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.LinkedHashMap;
@@ -20,6 +21,7 @@ import java.util.Map;
 /** 医技执行站：检查/检验/治疗的执行与结果录入 */
 @RestController
 @RequestMapping("/api/outpatient/exec")
+@PreAuthorize("hasAnyRole('ADMIN','TECHNICIAN','NURSE')")   // 1.0.6：医技执行限技师与护士
 @RequiredArgsConstructor
 public class ExecStationController {
 

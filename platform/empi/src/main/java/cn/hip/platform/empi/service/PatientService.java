@@ -50,19 +50,25 @@ public class PatientService {
         return patientRepository.save(saved);
     }
 
+    /**
+     * 更新：**仅覆盖请求中出现（非 null）的字段**。
+     * 曾为全字段覆盖——前端少传一个字段就会静默清空过敏史/血型/医保类型，
+     * 而过敏史是合理用药过敏拦截的数据源，丢失即临床风险。
+     * 需要清空某字段时传空串（受 blank 判定的字段）或走专用接口。
+     */
     @Transactional
     public Patient update(Long id, Patient data) {
         Patient p = patientRepository.findById(id).orElseThrow();
-        p.setName(data.getName());
-        p.setSex(data.getSex());
-        p.setBirthDate(data.getBirthDate());
-        p.setIdType(data.getIdType());
-        p.setIdNo(data.getIdNo());
-        p.setPhone(data.getPhone());
-        p.setAddress(data.getAddress());
-        p.setInsuranceType(data.getInsuranceType());
-        p.setBloodType(data.getBloodType());
-        p.setAllergyHistory(data.getAllergyHistory());
+        if (data.getName() != null) p.setName(data.getName());
+        if (data.getSex() != null) p.setSex(data.getSex());
+        if (data.getBirthDate() != null) p.setBirthDate(data.getBirthDate());
+        if (data.getIdType() != null) p.setIdType(data.getIdType());
+        if (data.getIdNo() != null) p.setIdNo(data.getIdNo());
+        if (data.getPhone() != null) p.setPhone(data.getPhone());
+        if (data.getAddress() != null) p.setAddress(data.getAddress());
+        if (data.getInsuranceType() != null) p.setInsuranceType(data.getInsuranceType());
+        if (data.getBloodType() != null) p.setBloodType(data.getBloodType());
+        if (data.getAllergyHistory() != null) p.setAllergyHistory(data.getAllergyHistory());
         return patientRepository.save(p);
     }
 

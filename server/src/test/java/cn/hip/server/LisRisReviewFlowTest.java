@@ -73,6 +73,7 @@ class LisRisReviewFlowTest {
     }
 
     @Test
+    @org.springframework.security.test.context.support.WithMockUser(roles = "PHARMACIST")
     void rejectedPrescriptionIsCancelledAndCannotBeReviewedTwice() {
         Long rid = visitedRegistration();
         Long drugId = drugRepository.findTop20ByEnabledTrueAndNameContainingOrderByCode("布洛芬").get(0).getId();

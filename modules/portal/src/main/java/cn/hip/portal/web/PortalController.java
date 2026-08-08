@@ -40,16 +40,42 @@ public class PortalController {
     private final SysDeptRepository deptRepository;
     private final cn.hip.outpatient.service.PayService payService;
     private final org.springframework.jdbc.core.JdbcTemplate jdbc;
+    private final org.springframework.core.env.Environment environment;
+
+    /** 患者号是顺序号（P%08d），仅凭手机号即可枚举——按患者号计失败次数并锁定 */
+    private static final int MAX_LOGIN_FAILED = 5;
+    private static final long LOGIN_LOCK_MINUTES = 15;
 
     public record PortalLoginRequest(String patientNo, String phone) {}
 
     /** MVP 以患者号+建档手机号认证；生产环境替换为电子健康卡/微信实名 */
     @PostMapping("/login")
     public R<Map<String, Object>> login(@RequestBody PortalLoginRequest req) {
-        var patient = patientRepository.findByPatientNo(req.patientNo()).orElse(null);
-        if (patient == null || patient.getPhone() == null || !patient.getPhone().equals(req.phone())) {
+        String patientNo = req.patientNo() == null ? "" : req.patientNo().trim();
+        if (patientNo.isEmpty()) {
             return R.fail(9501, "患者号或手机号不正确");
         }
+        Integer locked = jdbc.queryForObject("""
+                select count(*) from portal_login_attempt where patient_no = ? and locked_until > now()
+                """, Integer.class, patientNo);
+        if (locked != null && locked > 0) {
+            return R.fail(9503, "尝试过于频繁，请 " + LOGIN_LOCK_MINUTES + " 分钟后再试");
+        }
+        var patient = patientRepository.findByPatientNo(patientNo).orElse(null);
+        if (patient == null || patient.getPhone() == null || !patient.getPhone().equals(req.phone())) {
+            // 原子累加失败计数：并发猜测下"读-判-写"会让计数停在 1，锁定形同虚设
+            jdbc.update("""
+                    insert into portal_login_attempt(patient_no, failed_count, last_failed_at)
+                    values (?, 1, now())
+                    on conflict (patient_no) do update set
+                        failed_count = portal_login_attempt.failed_count + 1,
+                        last_failed_at = now(),
+                        locked_until = case when portal_login_attempt.failed_count + 1 >= ?
+                                            then now() + (? || ' minutes')::interval else null end
+                    """, patientNo, MAX_LOGIN_FAILED, String.valueOf(LOGIN_LOCK_MINUTES));
+            return R.fail(9501, "患者号或手机号不正确");
+        }
+        jdbc.update("delete from portal_login_attempt where patient_no = ?", patientNo);
         String token = jwtService.issue("portal:" + patient.getId());
         return R.ok(Map.of("token", token, "patientName", patient.getName(), "patientNo", patient.getPatientNo()));
     }
@@ -151,9 +177,18 @@ public class PortalController {
         }
     }
 
-    /** 支付确认（Mock 钱包回调） */
+    /**
+     * 支付确认——**仅限非生产环境的 Mock 钱包回调**。
+     * 真实渠道下，确认必须由渠道带签名的异步通知触发（患者自调即可不付款白拿诊疗），
+     * 故此处在 pilot/prod profile 直接拒绝；患者端只保留查询支付状态。
+     */
     @PostMapping("/my/pay/{payNo}/confirm")
     public R<Object> confirmPay(@PathVariable String payNo, Authentication auth) {
+        for (String p : environment.getActiveProfiles()) {
+            if ("pilot".equals(p) || "prod".equals(p)) {
+                return R.fail(9504, "请在支付渠道完成付款，勿手动确认");
+            }
+        }
         Long pid = patientId(auth);
         Integer own = jdbc.queryForObject("""
                 select count(*) from pay_order po

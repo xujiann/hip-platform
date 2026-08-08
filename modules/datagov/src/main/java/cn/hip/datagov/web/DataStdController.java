@@ -158,8 +158,45 @@ public class DataStdController {
         String sql = (String) defs.get(0).get("sql_text");
         String err = validateSql(sql);
         if (err != null) return R.fail(4634, err);
-        List<Map<String, Object>> rows = reportJdbc.queryForList(
-                "select * from (" + sql + ") _rpt limit 200");
+        // 1.0.6（P0-7）：以只读角色执行——正则黑名单挡不住 setval()/query_to_xml() 一类绕过，
+        // 数据库授权才是真正的边界（hip_report_reader 只有业务表 SELECT）。事务结束角色自动复位。
+        // 角色缺失时拒绝执行（fail closed），不退回不安全路径。
+        Integer roleExists = jdbc.queryForObject(
+                "select count(*) from pg_roles where rolname = 'hip_report_reader'", Integer.class);
+        if (roleExists == null || roleExists == 0) {
+            return R.fail(4636, "报表只读角色 hip_report_reader 未创建，请 DBA 按部署手册授权后再运行自定义报表");
+        }
+        List<Map<String, Object>> rows;
+        try {
+            rows = reportJdbc.execute(
+                (org.springframework.jdbc.core.ConnectionCallback<List<Map<String, Object>>>) con -> {
+                    boolean auto = con.getAutoCommit();
+                    con.setAutoCommit(false);
+                    try (var st = con.createStatement()) {
+                        st.execute("set local role hip_report_reader");
+                        st.setQueryTimeout(5);
+                        try (var rs = st.executeQuery("select * from (" + sql + ") _rpt limit 200")) {
+                            var meta = rs.getMetaData();
+                            var list = new java.util.ArrayList<Map<String, Object>>();
+                            while (rs.next()) {
+                                var row = new LinkedHashMap<String, Object>();
+                                for (int i = 1; i <= meta.getColumnCount(); i++) {
+                                    row.put(meta.getColumnLabel(i), rs.getObject(i));
+                                }
+                                list.add(row);
+                            }
+                            return list;
+                        }
+                    } finally {
+                        con.rollback();          // 只读查询，回滚即复位 role
+                        con.setAutoCommit(auto);
+                    }
+                });
+        } catch (org.springframework.dao.DataAccessException e) {
+            // 权限不足（越过白名单的写操作/系统表）、超时、SQL 语法错——统一转业务码，不外泄堆栈
+            String reason = org.springframework.core.NestedExceptionUtils.getMostSpecificCause(e).getMessage();
+            return R.fail(4637, "报表执行失败：" + (reason == null ? e.getMessage() : reason.split("\n")[0]));
+        }
         var m = new LinkedHashMap<String, Object>();
         m.put("columns", rows.isEmpty() ? List.of() : rows.get(0).keySet().stream().toList());
         m.put("rows", rows);
