@@ -20,8 +20,23 @@ public class OutpNurseStationController {
     private final JdbcTemplate jdbc;
     private final CurrentUserService currentUserService;
 
-    /** 皮试药品特征：输液前必须有阴性皮试结果 */
-    private static final List<String> SKIN_TEST_REQUIRED = List.of("青霉素", "西林", "头孢");
+    /**
+     * 皮试类别：输液前必须有**同类别**阴性皮试结果。
+     * 按类别而非单一药名匹配——阿莫西林属青霉素类，临床做的就是青霉素皮试；
+     * 但头孢类皮试不能覆盖青霉素类（原实现只看"本次就诊有任一阴性皮试"，两类互相放行）。
+     */
+    private static final Map<String, List<String>> SKIN_TEST_CATEGORIES = Map.of(
+            "青霉素类", List.of("青霉素", "西林"),
+            "头孢类", List.of("头孢"));
+
+    /** 药名 → 皮试类别；不需皮试返回 null */
+    private static String skinTestCategory(String drugName) {
+        if (drugName == null) return null;
+        for (var e : SKIN_TEST_CATEGORIES.entrySet()) {
+            if (e.getValue().stream().anyMatch(drugName::contains)) return e.getKey();
+        }
+        return null;
+    }
 
     // ---- 皮试 ----
     public record SkinTestReq(Long registrationId, String drugName) {}
@@ -96,15 +111,15 @@ public class OutpNurseStationController {
         var row = rows.get(0);
         if (!"PENDING".equals(row.get("status"))) return R.fail(4501, "输液单状态不允许开始");
         String itemName = (String) row.get("item_name");
-        // 皮试须按药名匹配：只看"本次就诊有任一阴性皮试"会让头孢皮试放行青霉素（用药安全门失效）
-        String required = SKIN_TEST_REQUIRED.stream().filter(itemName::contains).findFirst().orElse(null);
-        if (required != null) {
-            Integer neg = jdbc.queryForObject("""
-                    select count(*) from outp_skin_test
-                    where registration_id = ? and result = 'NEG' and drug_name like ?
-                    """, Integer.class, row.get("registration_id"), "%" + required + "%");
-            if (neg == null || neg == 0) {
-                return R.fail(4502, "皮试拦截：" + itemName + " 需该药品阴性皮试结果后方可输液");
+        // 按皮试类别匹配：原实现只看"本次就诊有任一阴性皮试"，头孢皮试即放行青霉素（安全门失效）
+        String category = skinTestCategory(itemName);
+        if (category != null) {
+            var negatives = jdbc.queryForList("""
+                    select drug_name from outp_skin_test where registration_id = ? and result = 'NEG'
+                    """, String.class, row.get("registration_id"));
+            boolean covered = negatives.stream().anyMatch(n -> category.equals(skinTestCategory(n)));
+            if (!covered) {
+                return R.fail(4502, "皮试拦截：" + itemName + " 需" + category + "阴性皮试结果后方可输液");
             }
         }
         jdbc.update("update outp_infusion set status = 'RUNNING', nurse_id = ?, started_at = now() where id = ?",

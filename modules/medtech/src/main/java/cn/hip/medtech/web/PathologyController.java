@@ -39,7 +39,7 @@ public class PathologyController {
     @Transactional
     public R<Map<String, Object>> collect(@RequestParam Long orderId,
                                           @RequestParam(required = false) String specimenDesc) {
-        String barcode = "PB" + System.currentTimeMillis() % 1000000000L;
+        String barcode = "PB" + jdbc.queryForObject("select nextval('path_specimen_seq')", Long.class);
         int n = jdbc.update("""
                 insert into path_specimen(order_id, barcode, specimen_desc)
                 select ?, ?, ? where exists (select 1 from outp_order o where o.id = ? and o.status = 'CHARGED')

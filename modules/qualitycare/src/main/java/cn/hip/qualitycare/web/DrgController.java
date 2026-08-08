@@ -54,6 +54,22 @@ public class DrgController {
         return R.ok(doGroup());
     }
 
+    /**
+     * 单例重算：补录出院诊断/其他诊断后调用。
+     * 原先只能全量 regroup-all（丢历史入组时间且大数据量下代价高），
+     * 而 group-all 会跳过已入组病例——补录的编码永远不生效。
+     */
+    @PostMapping("/regroup/{admissionId}")
+    @Transactional
+    public R<Map<String, Object>> regroupOne(@PathVariable Long admissionId) {
+        Integer discharged = jdbc.queryForObject(
+                "select count(*) from inp_admission where id = ? and status = 'DISCHARGED'",
+                Integer.class, admissionId);
+        if (discharged == null || discharged == 0) return R.fail(9930, "住院记录不存在或未出院");
+        jdbc.update("delete from drg_case where admission_id = ?", admissionId);
+        return R.ok(doGroup());
+    }
+
     private Map<String, Object> doGroup() {
         var pending = jdbc.queryForList("""
                 select a.id, coalesce(a.discharge_diag_icd, a.admit_diag_icd) as admit_diag_icd,

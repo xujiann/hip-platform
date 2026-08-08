@@ -98,7 +98,7 @@ public class MedTechController {
                 return R.fail(4770, "本院参数已禁止替检");
             }
         }
-        String barcode = "BC" + System.currentTimeMillis() % 1000000000L;
+        String barcode = "BC" + jdbc.queryForObject("select nextval('lis_barcode_seq')", Long.class);
         int n = jdbc.update("""
                 insert into lis_sample(order_id, barcode, substitute, substitute_name)
                 select ?, ?, ?, ? where exists (select 1 from outp_order o where o.id = ? and o.order_type = 'LAB' and o.status = 'CHARGED')
@@ -145,10 +145,15 @@ public class MedTechController {
         if (rows.isEmpty()) return R.fail(9942, "标本不存在或未核收");
         if (req.results() == null || req.results().isEmpty()) return R.fail(9943, "结果不能为空");
         String groupNo = (String) rows.get(0).get("group_no");
+        // 先抢占终态再发事件：并发 publish 会双写结果行并双发危急值告警
+        if (jdbc.update("update lis_sample set status = 'PUBLISHED', published_at = now(), verifier_id = ? "
+                + "where barcode = ? and status = 'RECEIVED'", currentUserService.idOf(auth), barcode) == 0) {
+            return R.fail(9942, "标本不存在或未核收");
+        }
         eventPublisher.publishEvent(new LabResultReceivedEvent(groupNo, req.results().stream()
                 .map(x -> new LabResultReceivedEvent.Item(x.code(), x.name(), x.value(), x.unit(), x.refRange(), x.flag()))
                 .toList()));
-        jdbc.update("update lis_sample set status = 'PUBLISHED', published_at = now(), verifier_id = ? where barcode = ?",
+        jdbc.update("update lis_sample set verifier_id = ? where barcode = ?",
                 currentUserService.idOf(auth), barcode);
         return R.ok();
     }
@@ -225,8 +230,8 @@ public class MedTechController {
     @GetMapping("/api/inpatient/surgeries")
     public R<List<Map<String, Object>>> surgeries() {
         return R.ok(jdbc.queryForList("""
-                select s.id, s.procedure_name, s.anesthesia_type, s.scheduled_at, s.status,
-                       s.op_note, s.anes_note, a.admission_no, p.name as patient_name
+                select s.id, s.admission_id, s.procedure_name, s.anesthesia_type, s.scheduled_at, s.status,
+                       s.op_icd, s.op_note, s.anes_note, a.admission_no, p.name as patient_name
                 from inp_surgery s
                 join inp_admission a on a.id = s.admission_id
                 join empi_patient p on p.id = a.patient_id

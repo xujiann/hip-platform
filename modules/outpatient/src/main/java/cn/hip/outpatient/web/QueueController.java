@@ -86,8 +86,11 @@ public class QueueController {
             return R.fail(3301, "当前无候诊患者");
         }
         OutpRegistration reg = next.get();
-        reg.setStatus("CALLED");
-        registrationRepository.save(reg);
+        // 条件更新：两台叫号器并发会取到同一最小号，双写 CALLED 与两条 call_log
+        if (registrationRepository.claimCall(reg.getId()) == 0) {
+            return R.fail(3302, "该患者已被叫号，请重试");
+        }
+        reg = registrationRepository.findById(reg.getId()).orElseThrow();   // 取回更新后的状态
         entityManager.createNativeQuery(
                         "insert into outp_call_log(registration_id, dept_id, reg_no, called_at) values (?,?,?,?)")
                 .setParameter(1, reg.getId()).setParameter(2, deptId)

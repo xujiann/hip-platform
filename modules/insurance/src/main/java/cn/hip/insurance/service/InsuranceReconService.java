@@ -44,6 +44,24 @@ public class InsuranceReconService {
             boolean hasSettle = msgExists(no, "settle");
             out.add(reconRow("INP", no, s.get("total_amount"), "PAID", hasSettle, false, hasSettle));
         }
+        // 反向：通道有账、业务无账（医保侧多扣一笔）——单向遍历业务账永远发现不了
+        for (var m : jdbc.queryForList("""
+                select ref_no, payload from int_message_log
+                where channel = 'YB' and status = 'OK' and created_at::date = ?::date
+                  and payload like '%settle%' and ref_no is not null
+                group by ref_no, payload order by ref_no
+                """, date)) {
+            String no = (String) m.get("ref_no");
+            Integer inBiz = jdbc.queryForObject("""
+                    select (select count(*) from outp_charge where charge_no = ?)
+                         + (select count(*) from inp_settlement where settle_no = ?)
+                    """, Integer.class, no, no);
+            if (inBiz == null || inBiz == 0) {
+                var row = reconRow("CHANNEL_ONLY", no, null, "—", true, false, false);
+                row.put("note", "通道有结算报文但业务库无对应单据（疑似医保侧多扣）");
+                out.add(row);
+            }
+        }
         return out;
     }
 
@@ -74,7 +92,7 @@ public class InsuranceReconService {
         return n != null && n > 0;
     }
 
-    private Map<String, Object> reconRow(String bizType, String no, Object amount, String status,
+    private LinkedHashMap<String, Object> reconRow(String bizType, String no, Object amount, String status,
                                          boolean hasSettle, boolean hasRefund, boolean consistent) {
         var r = new LinkedHashMap<String, Object>();
         r.put("biz_type", bizType);

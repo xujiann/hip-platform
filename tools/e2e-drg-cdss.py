@@ -92,7 +92,13 @@ def admit_discharge(patient_id, icd, name, surgery=False):
                                                     'deposit': 0, 'payMethod': 'CASH'}, t), '入院')
     if surgery:
         ok(call('POST', '/inpatient/surgeries', {'admissionId': adm['id'], 'procedureName': '经皮冠状动脉支架植入术',
-                                                 'anesthesiaType': '局部麻醉', 'scheduledAt': None}, t), '手术')
+                                                 'anesthesiaType': '局部麻醉', 'scheduledAt': None,
+                                                 'opIcd': '36.0600'}, t), '手术申请')
+        # 1.0.7 起 DRG 只认已实施手术（原先未做的申请也计入手术组，支付模拟虚高）
+        sg = next(s for s in ok(call('GET', '/inpatient/surgeries', token=t), '手术列表')
+                  if s['admission_id'] == adm['id'])
+        ok(call('PUT', f"/inpatient/surgeries/{sg['id']}/complete",
+                {'opNote': '支架植入顺利', 'anesNote': '局麻满意'}, t), '完成手术')
     ok(call('POST', f"/inpatient/admissions/{adm['id']}/discharge", {}, t), '出院')
     return adm
 

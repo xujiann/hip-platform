@@ -75,9 +75,14 @@ def main():
                                                   'type': dept.get('type', 'CLINIC')}, t), f"建科室 {dept['name']}")
             created_depts += 1
         if dept.get('type') == 'NURSING' and dept.get('beds'):
-            r = ok(call('POST', '/inpatient/beds', {'wardId': d['id'], 'count': dept['beds']}, t),
-                   f"建床位 {dept['name']}")
-            beds_created += r['created']
+            # 只补差额：后端跳过已存在床号后会继续建满 count 张，
+            # 无条件调用会让重跑一次就多出 count 张幽灵床（可占用的真床位）
+            have = len(ok(call('GET', f"/inpatient/beds?wardId={d['id']}", token=t), '查床位'))
+            need = dept['beds'] - have
+            if need > 0:
+                r = ok(call('POST', '/inpatient/beds', {'wardId': d['id'], 'count': need}, t),
+                       f"建床位 {dept['name']}")
+                beds_created += r['created']
     print(f"[4] 科室 OK（新建 {created_depts}，补床位 {beds_created} 张）")
 
     # 5 业务账号（按用户名幂等）

@@ -13,8 +13,8 @@ sys.stdout.reconfigure(encoding='utf-8')
 
 DOCS = ['功能清单.md', '多医院部署操作指南.md', '部署手册.md', '配置手册.md', '操作手册.md', '培训脚本.md',
         'adr/ADR-0002-医保SDK实现约定.md', 'adr/ADR-0003-实施定制层规约.md']
-TOOLS = ['init-hospital.py', 'import-patients.py', 'bootstrap-demo.py', 'db-backup.ps1', 'db-restore.ps1',
-         'schedule-backup.ps1']
+TOOLS = ['init-hospital.py', 'import-patients.py', 'import-inpatients.py', 'bootstrap-demo.py',
+         'db-backup.ps1', 'db-restore.ps1', 'schedule-backup.ps1']
 TOOL_DIRS = ['init-templates', 'migrate-templates']
 
 
@@ -34,9 +34,14 @@ def main():
         run(['mvn', '-q', 'clean', 'package', '-DskipTests'], shell=True)
         run(['npm', 'run', 'build', '--prefix', 'frontend/shell'], shell=True)
 
-    jar = next((ROOT / 'server' / 'target').glob('hip-server-*.jar'))
+    # 多个 jar 时不能取 glob 第一个：会把旧版 jar 打包成新版本号发出去
+    jars = sorted((ROOT / 'server' / 'target').glob('hip-server-*.jar'))
+    if len(jars) != 1:
+        raise SystemExit(f'server/target 下有 {len(jars)} 个 jar，请先 mvn clean：{[j.name for j in jars]}')
+    jar = jars[0]
     dist = ROOT / 'frontend' / 'shell' / 'dist'
-    assert dist.exists(), '前端 dist 不存在，先构建'
+    if not dist.exists():
+        raise SystemExit('前端 dist 不存在，先构建')
 
     out = ROOT / 'release' / f'hip-platform-{version}'
     if out.exists():

@@ -88,19 +88,23 @@ public class InsuranceSplitService {
             }
         }
         BigDecimal self = totalAmount.subtract(fund);
-        jdbc.update("""
-                update yb_patient_annual set deductible_used = deductible_used + ?,
-                       fund_used = fund_used + ?, updated_at = now()
-                where patient_id = ? and year = ?
-                """, dedTake, fund, patientId, year);
-
-        jdbc.update("""
+        // 先插分割留痕，**仅当本次确实新插入**才累加年度额度：
+        // 分割行是 on conflict do nothing（预期会被重复调用），而年度累加无条件执行的话，
+        // 重试/补跑会重复吃掉起付线与统筹额度，而 reverse 只退一次 → 患者年度额度永久错账。
+        int inserted = jdbc.update("""
                 insert into yb_settle_split(charge_no, biz_type, insurance_type, patient_id, total,
                                             class_a, class_b, class_c, fund_pay, self_pay, deductible_pay, detail)
                 values (?,?,?,?,?,?,?,?,?,?,?,?)
                 on conflict (charge_no) do nothing
                 """, billNo, bizType, insuranceType, patientId, totalAmount, a, b, c, fund, self,
                 dedTake, detail.toString());
+        if (inserted > 0) {
+            jdbc.update("""
+                    update yb_patient_annual set deductible_used = deductible_used + ?,
+                           fund_used = fund_used + ?, updated_at = now()
+                    where patient_id = ? and year = ?
+                    """, dedTake, fund, patientId, year);
+        }
 
         audit(billNo, lines, c, totalAmount);
     }

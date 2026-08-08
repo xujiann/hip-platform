@@ -19,7 +19,10 @@ wsl -d Ubuntu -u root -- su postgres -c "createdb -O hip $TargetDb"
 if ($LASTEXITCODE -ne 0) { Write-Error 'createdb 失败'; exit 1 }
 
 Write-Host "[2/3] pg_restore ..."
-wsl -d Ubuntu -- sh -c "PGPASSWORD=hip123456 pg_restore -h 127.0.0.1 -U hip -d $TargetDb --no-owner '$wslPath'"
+# --exit-on-error + 退出码检查：pg_restore 默认遇错继续，部分表失败但 sys_user 恢复成功时
+# 下一步的 count>0 会误判「演练通过」
+wsl -d Ubuntu -- sh -c "PGPASSWORD=hip123456 pg_restore -h 127.0.0.1 -U hip -d $TargetDb --no-owner --exit-on-error '$wslPath'"
+if ($LASTEXITCODE -ne 0) { Write-Error 'pg_restore 失败：备份文件可能损坏或不完整，演练未通过'; exit 1 }
 
 Write-Host "[3/3] 校验关键表 ..."
 $users = wsl -d Ubuntu -- sh -c "PGPASSWORD=hip123456 psql -h 127.0.0.1 -U hip -d $TargetDb -tAc 'select count(*) from sys_user'"

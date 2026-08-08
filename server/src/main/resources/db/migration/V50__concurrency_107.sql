@@ -1,37 +1,39 @@
 -- 1.0.7 并发与数据正确性（docs/代码审阅-20260808.md P1）
 
 -- P1-A：内存自造单号 → 数据库序列（重启回绕撞号；V45 门诊处方号已用同一手法）
-create sequence inp_order_group_seq  start 1;
-create sequence inv_stock_in_seq     start 1;
-create sequence pay_order_seq        start 1;
-create sequence lis_barcode_seq      start 1;
-create sequence path_specimen_seq    start 1;
+create sequence if not exists inp_order_group_seq  start 1;
+create sequence if not exists inv_stock_in_seq     start 1;
+create sequence if not exists pay_order_seq        start 1;
+create sequence if not exists lis_barcode_seq      start 1;
+create sequence if not exists path_specimen_seq    start 1;
 
 -- 撞号静默入库的兜底：住院医嘱组号唯一性由序列保证，这里补索引便于按组检索
 create index if not exists idx_inp_order_group on inp_order(group_no);
 
 -- P1-19：重复挂号防线由 find-then-insert 改为唯一约束（并发下两条 REGISTERED、两笔挂号费）
-create unique index uq_outp_reg_active on outp_registration(schedule_id, patient_id)
+create unique index if not exists uq_outp_reg_active on outp_registration(schedule_id, patient_id)
     where status = 'REGISTERED';
 
 -- P1-3：同一挂号同时只允许一张待支付单（并发出码→两张 PENDING，两笔钱只有一笔能结算）
-create unique index uq_pay_order_pending on pay_order(registration_id)
+create unique index if not exists uq_pay_order_pending on pay_order(registration_id)
     where status = 'PENDING';
 
 -- P1-30：单病种候选改看出院诊断（入院 J06 出院 I21 的病例原本漏出）；补建卡唯一约束
 create unique index if not exists uq_sd_case_report on sd_case_report(admission_id, disease_code);
 
 -- P1-31：退费按退费日归集（原按结算单创建日：D1 收费 D2 退费 → D2 报表看不到、D1 历史报表变脸）
-alter table outp_charge add column refunded_at timestamptz;
+alter table outp_charge add column if not exists refunded_at timestamptz;
 update outp_charge set refunded_at = created_at where status = 'REFUNDED';
 
 -- P1-14/15：医保分割冲销幂等（并发退费重复冲销年度额度；补跑重复吃起付线）
-alter table yb_settle_split add column reversed boolean not null default false;
+alter table yb_settle_split add column if not exists reversed boolean not null default false;
 update yb_settle_split set reversed = true
  where charge_no in (select charge_no from outp_charge where status = 'REFUNDED');
 
 -- P1-25：押金金额非法值（负数冲减押金总额）
-alter table inp_deposit add constraint ck_inp_deposit_amount check (amount > 0);
+do $$ begin
+    alter table inp_deposit add constraint ck_inp_deposit_amount check (amount > 0);
+exception when duplicate_object then null; end $$;
 
 -- P1-29：CDR 增量水位上推链补漏
 -- ① 门诊医嘱变更须 touch 挂号（就诊文档内嵌 orders 段，追加/作废医嘱原本抓不到）
@@ -42,6 +44,7 @@ begin
     return coalesce(new, old);
 end;
 $$ language plpgsql;
+drop trigger if exists trg_outp_order_touch_reg on outp_order;
 create trigger trg_outp_order_touch_reg after insert or update or delete on outp_order
     for each row execute function hip_touch_reg_from_order();
 
@@ -85,3 +88,6 @@ create trigger trg_inp_settlement_touch after insert or update or delete on inp_
 drop trigger if exists trg_inp_diagnosis_touch on inp_diagnosis;
 create trigger trg_inp_diagnosis_touch after insert or update or delete on inp_diagnosis
     for each row execute function hip_touch_inp_admission();
+
+-- P1-5：预约顺序号唯一（max+1 读后写并发会发出相同号）
+create unique index if not exists uq_med_appt_slot_seq on med_appointment(slot_date, period, seq_no);
