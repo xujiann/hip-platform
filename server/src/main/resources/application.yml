@@ -1,4 +1,10 @@
 spring:
+  # 三个 @Scheduled 默认共用单线程：任一任务卡住（DB 锁等待）其余永久不再执行，
+  # 而巡检恰是"备份 24h 未成功"的唯一告警源——运维闸门不能与被监控任务共命运
+  task:
+    scheduling:
+      pool:
+        size: 4
   application:
     name: hip-server
   datasource:
@@ -14,6 +20,8 @@ spring:
     locations: classpath:db/migration
 
 server:
+  # 容器化部署经 nginx 反代：不设此项则审计里的 client_ip 恒为网关容器地址
+  forward-headers-strategy: framework
   port: 8080
 
 hip:

@@ -5,7 +5,7 @@ import sys
 import datetime
 import urllib.parse
 import urllib.request
-from e2elib import BASE, call, login, ok, q  # noqa: E402
+from e2elib import ensure_not_admitted, BASE, call, login, ok, q  # noqa: E402
 
 
 
@@ -37,6 +37,7 @@ wards = [d for d in ok(call('GET', '/system/depts', token=t), '科室') if d['ty
 w1 = next(w for w in wards if w['name'] == '内科病区')
 w2 = next(w for w in wards if w['name'] == '外科病区')
 b1 = next(b for b in ok(call('GET', f"/inpatient/beds?wardId={w1['id']}", token=t), '床') if b['status'] == 'FREE')
+ensure_not_admitted(t, 2)   # 1.1.0：同一患者只能一条在院记录，先清历史未收尾的
 adm = ok(call('POST', '/inpatient/admissions', {'patientId': 2, 'deptId': 1, 'bedId': b1['id'], 'deposit': 100, 'payMethod': 'CASH'}, t), '入院')
 b2 = next(b for b in ok(call('GET', f"/inpatient/beds?wardId={w2['id']}", token=t), '床2') if b['status'] == 'FREE')
 tr = ok(call('POST', f"/inpatient/admissions/{adm['id']}/transfer", {'toDeptId': 2, 'toBedId': b2['id']}, t), '转科')

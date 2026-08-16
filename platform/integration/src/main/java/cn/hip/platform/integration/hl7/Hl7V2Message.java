@@ -43,6 +43,11 @@ public class Hl7V2Message {
         return segments.stream().filter(s -> s.name().equals(name)).findFirst().orElse(null);
     }
 
+    /** 按报文原序返回全部段：多 OBR 报文需要按顺序切组，first/all 会丢失归属关系 */
+    public List<Segment> segmentsInOrder() {
+        return List.copyOf(segments);
+    }
+
     public List<Segment> all(String name) {
         return segments.stream().filter(s -> s.name().equals(name)).toList();
     }

@@ -6,7 +6,7 @@ import datetime
 import urllib.error
 import urllib.parse
 import urllib.request
-from e2elib import BASE, call, find_free_bed, login, ok, q  # noqa: E402
+from e2elib import ensure_not_admitted, BASE, call, find_free_bed, login, ok, q  # noqa: E402
 
 
 
@@ -86,6 +86,7 @@ print('[十四-2] RIS 登记→报告→审核→医嘱执行 OK')
 
 # ---- 十五期：手麻 ----
 free = find_free_bed(t)
+ensure_not_admitted(t, 2)   # 1.1.0：同一患者只能一条在院记录，先清历史未收尾的
 adm = ok(call('POST', '/inpatient/admissions', {'patientId': 2, 'deptId': 2, 'bedId': free['id'],
                                                 'deposit': 0, 'payMethod': 'CASH'}, t), '入院')
 ok(call('POST', '/inpatient/surgeries', {'admissionId': adm['id'], 'procedureName': '腹腔镜胆囊切除术',

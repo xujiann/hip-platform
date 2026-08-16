@@ -3,7 +3,7 @@
 import json
 import sys
 import urllib.request
-from e2elib import BASE, call, login, ok, q  # noqa: E402
+from e2elib import ensure_not_admitted, BASE, call, login, ok, q  # noqa: E402
 
 
 
@@ -11,6 +11,7 @@ t = login()
 
 ward = [d for d in ok(call('GET', '/system/depts', token=t), '科室') if d['type'] == 'NURSING'][0]
 free = next(b for b in ok(call('GET', f"/inpatient/beds?wardId={ward['id']}", token=t), '床位') if b['status'] == 'FREE')
+ensure_not_admitted(t, 2)   # 1.1.0：同一患者只能一条在院记录，先清历史未收尾的
 adm = ok(call('POST', '/inpatient/admissions', {'patientId': 2, 'deptId': 1, 'bedId': free['id'],
                                                 'deposit': 500, 'payMethod': 'CASH'}, t), '入院')
 aid = adm['id']

@@ -62,3 +62,19 @@ def discharge_cleanup(token, admission_id, pay_method=None):
     """收尾出院释放床位，防止 E2E 在院患者耗尽病区空床"""
     suffix = f'?payMethod={pay_method}' if pay_method else ''
     return ok(call('POST', f'/inpatient/admissions/{admission_id}/discharge{suffix}', {}, token), '收尾出院')
+
+
+def ensure_not_admitted(token, patient_id):
+    """
+    入院前自净：1.1.0 起「同一患者同时只能有一条在院记录」由唯一索引强制
+    （uq_inp_admission_active）。E2E 复用固定患者反复入院，历史未收尾的在院记录
+    会让后续脚本全部挂在入院这一步，故先把该患者的在院记录出院掉。
+    """
+    for a in ok(call('GET', '/inpatient/admissions', token=token), '在院列表'):
+        if a.get('patientId') == patient_id:
+            # 先执行掉未执行医嘱，否则出院会被 9012 拦
+            ws = ok(call('GET', f"/inpatient/admissions/{a['id']}/workspace", token=token), '工作区')
+            for o in ws.get('orders', []):
+                if o.get('status') == 'CREATED':
+                    call('PUT', f"/inpatient/orders/{o['id']}/cancel", token=token)
+            call('POST', f"/inpatient/admissions/{a['id']}/discharge", {'payMethod': 'CASH'}, token)
