@@ -165,13 +165,14 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { todayLocal } from '../../utils/date'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
 
 interface Recon { rows: Record<string, unknown>[]; total: number; matched: number; diff: number }
 
 const tab = ref('summary')
-const today = new Date().toISOString().slice(0, 10)
+const today = todayLocal()
 const summary = ref<Record<string, any> | null>(null)
 const mapped = ref<Record<string, unknown>[]>([])
 const unmappedRaw = ref<{ drugs: Record<string, unknown>[]; items: Record<string, unknown>[] }>({ drugs: [], items: [] })
@@ -212,8 +213,8 @@ async function importCsv(e: Event) {
   const r = (await client.post('/insurance/catalog/import', text,
     { headers: { 'Content-Type': 'text/plain' } })).data.data
   if (r.errorCount > 0) {
-    ElMessageBox.alert(r.errors.join('<br>'), `导入 ${r.imported} 条，${r.errorCount} 行有误`,
-      { dangerouslyUseHTMLString: true })
+    // 纯文本渲染：导入错误信息可能回显用户提交的内容，不能走 HTML
+    ElMessageBox.alert(r.errors.join('\n'), `导入 ${r.imported} 条，${r.errorCount} 行有误`)
   } else {
     ElMessage.success(`导入 ${r.imported} 条`)
   }
@@ -234,10 +235,12 @@ function showDetail(row: Record<string, unknown>) {
   // 批次二起明细含 eligible（可报销基数，统筹在账单级计算）；旧数据仍是行级 fund
   const items = JSON.parse(String(row.detail || '[]')) as
     { item: string; class: string; amount: number; eligible?: number; fund?: number }[]
+  // i.item 来自收费项目/药品名称（CSV 导入的自由文本）：拼进 HTML 即存储型 XSS，
+  // 任何收费员打开分割明细就会执行，localStorage 里的 token 直接被盗
   ElMessageBox.alert(
     items.map((i) => `${i.item}（${i.class}类）￥${i.amount} → ${
-      i.eligible !== undefined ? `可报销 ￥${i.eligible}` : `统筹 ￥${i.fund}`}`).join('<br>'),
-    `分割明细 ${row.charge_no}`, { dangerouslyUseHTMLString: true })
+      i.eligible !== undefined ? `可报销 ￥${i.eligible}` : `统筹 ￥${i.fund}`}`).join('\n'),
+    `分割明细 ${row.charge_no}`)
 }
 async function runRecon() { recon.value = (await client.get('/insurance/reconcile', { params: { date: reconDate.value } })).data.data }
 async function saveRecon() {

@@ -63,6 +63,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { todayLocal } from '../../utils/date'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
 
@@ -74,7 +75,7 @@ const payMethod = ref('CASH')
 const discharging = ref(false)
 
 // 1.0.1（2067）：每日费用清单
-const dailyDate = ref(new Date().toISOString().slice(0, 10))
+const dailyDate = ref(todayLocal())
 const daily = ref<{ total: string; rows: Record<string, unknown>[] } | null>(null)
 async function loadDaily() {
   if (!current.value) return

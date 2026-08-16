@@ -70,13 +70,14 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref, watch } from 'vue'
+import { todayLocal } from '../../utils/date'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
 
 const tab = ref('appt')
 const pending = ref<Record<string, unknown>[]>([])
 const appts = ref<Record<string, unknown>[]>([])
-const queryDate = ref(new Date().toISOString().slice(0, 10))
+const queryDate = ref(todayLocal())
 const selection = ref<Record<string, unknown>[]>([])
 
 const queues = reactive([

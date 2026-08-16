@@ -48,6 +48,7 @@
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { todayLocal } from '../../utils/date'
 import { ElMessage } from 'element-plus'
 import client from '../../api/client'
 
@@ -58,7 +59,7 @@ const returnRegId = ref<number | null>(null)
 const dispensed = ref<Record<string, unknown>[]>([])
 
 async function load() {
-  const today = new Date().toISOString().slice(0, 10)
+  const today = todayLocal()
   const [wl, regs] = await Promise.all([
     client.get('/outpatient/dispense/worklist'),
     client.get('/outpatient/registrations', { params: { date: today } }),

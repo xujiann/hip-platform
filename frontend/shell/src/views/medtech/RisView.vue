@@ -75,8 +75,9 @@ async function verify(row: Record<string, unknown>) {
   // 云胶片/报告对外分享：发布即出 72h 有效短链，可发给患者
   const share = (await client.post(`/ris/exams/${row.id}/share`)).data.data
   await ElMessageBox.alert(
-    `<div style="word-break:break-all">匿名访问链接（72 小时有效，姓名已脱敏）：<br><b>${location.origin}${share.url}</b></div>`,
-    '报告分享', { dangerouslyUseHTMLString: true })
+    `<div style="word-break:break-all">匿名访问链接（72 小时有效，姓名已脱敏）：
+<b>${location.origin}${share.url}</b></div>`,
+    '报告分享')
   await load()
 }
 

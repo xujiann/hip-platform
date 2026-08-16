@@ -29,9 +29,10 @@
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { todayLocal } from '../../utils/date'
 import client from '../../api/client'
 
-const date = ref(new Date().toISOString().slice(0, 10))
+const date = ref(todayLocal())
 const byMethod = ref<Record<string, unknown>[]>([])
 const total = ref<Record<string, unknown>>({})
 

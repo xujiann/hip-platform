@@ -74,13 +74,14 @@
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { todayLocal } from '../../utils/date'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
 
 const statusNames: Record<string, string> = { REGISTERED: '已挂号', CANCELLED: '已退号', VISITED: '已就诊' }
 const statusTag: Record<string, string> = { REGISTERED: 'success', CANCELLED: 'info', VISITED: '' }
 
-const today = new Date().toISOString().slice(0, 10)
+const today = todayLocal()
 const date = ref(today)
 const patientKeyword = ref('')
 const patients = ref<Record<string, unknown>[]>([])

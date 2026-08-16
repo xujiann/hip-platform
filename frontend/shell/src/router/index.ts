@@ -1,3 +1,5 @@
+import { ElMessage } from 'element-plus'
+import { useAuthStore } from '../stores/auth'
 import { createRouter, createWebHistory } from 'vue-router'
 
 const router = createRouter({
@@ -72,7 +74,10 @@ const router = createRouter({
   ],
 })
 
-router.beforeEach((to) => {
+/** 不受菜单授权约束的路径：首页、登录、打印页与患者端 */
+const ALWAYS_ALLOWED = ['/', '/dashboard', '/login', '/print', '/403']
+
+router.beforeEach(async (to) => {
   // 患者端独立会话，不走院内登录
   if (to.path.startsWith('/portal')) {
     if (to.path !== '/portal' && !localStorage.getItem('hip_portal_token')) return '/portal'
@@ -81,6 +86,29 @@ router.beforeEach((to) => {
   const token = localStorage.getItem('hip_token')
   if (!token && to.path !== '/login') return '/login'
   if (token && to.path === '/login') return '/'
+  if (!token) return
+
+  // 角色守卫：以「/auth/me 返回的菜单」为准——后端已按角色过滤过，
+  // 前端跟随即可零维护。此前只判 token，医生手输 /insurance 页面照常渲染，
+  // 然后并发 5-10 个请求各弹一次 403，用户完全不知道是没权限。
+  if (ALWAYS_ALLOWED.some((p) => to.path === p || to.path.startsWith(p + '/'))) return
+  const auth = useAuthStore()
+  if (!auth.user) {
+    try {
+      await auth.fetchMe()
+    } catch {
+      return   // 拉取失败不拦路，交给接口层的 401/403 处理
+    }
+  }
+  const menus = auth.user?.menus ?? []
+  if (menus.length === 0) return   // 菜单未知时不拦，避免把人锁在门外
+  const allowed = menus.filter((m) => m.path).map((m) => m.path)
+  const hit = allowed.some((p) => to.path === p || to.path.startsWith(p + '/'))
+  if (!hit) {
+    ElMessage.error('无该功能权限，请联系管理员分配角色')
+    // 跳回首页而非 return false：整页加载（手输地址/刷新）时 return false 会停在空白页
+    return to.path === '/dashboard' ? false : '/dashboard'
+  }
 })
 
 export default router

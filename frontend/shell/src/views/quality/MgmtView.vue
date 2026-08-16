@@ -169,11 +169,12 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref, watch } from 'vue'
+import { todayLocal } from '../../utils/date'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
 
 const tab = ref('shift')
-const today = new Date().toISOString().slice(0, 10)
+const today = todayLocal()
 const shifts = ref<Record<string, unknown>[]>([])
 const scores = ref<Record<string, unknown>[]>([])
 const scoreSummary = ref<Record<string, unknown>[]>([])
@@ -253,8 +254,7 @@ async function useCssd(row: Record<string, unknown>) {
 async function showTrace(row: Record<string, unknown>) {
   const chain = (await client.get(`/cssd/packages/${row.pkg_no}/trace`)).data.data as
     { action: string; at: string }[]
-  ElMessageBox.alert(chain.map((c) => `${c.action} @ ${c.at}`).join('<br>'), `追溯链 ${row.pkg_no}`,
-    { dangerouslyUseHTMLString: true })
+  ElMessageBox.alert(chain.map((c) => `${c.action} @ ${c.at}`).join('\n'), `追溯链 ${row.pkg_no}`)
 }
 async function addPhc() {
   if (!phc.patientId || !phc.content) return

@@ -118,6 +118,7 @@
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { todayLocal } from '../../utils/date'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import axios from 'axios'
@@ -125,7 +126,7 @@ import axios from 'axios'
 const router = useRouter()
 const name = localStorage.getItem('hip_portal_name') ?? ''
 const tab = ref('book')
-const date = ref(new Date().toISOString().slice(0, 10))
+const date = ref(todayLocal())
 const schedules = ref<Record<string, unknown>[]>([])
 const regs = ref<Record<string, unknown>[]>([])
 const labs = ref<Record<string, unknown>[]>([])

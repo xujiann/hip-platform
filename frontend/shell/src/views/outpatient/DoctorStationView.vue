@@ -153,6 +153,7 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
+import { todayLocal } from '../../utils/date'
 import { ElMessage } from 'element-plus'
 import client from '../../api/client'
 
@@ -165,7 +166,7 @@ const orderStatusTag: Record<string, string> = {
   CREATED: 'warning', CHARGED: 'primary', DISPENSED: 'success', EXECUTED: 'success', CANCELLED: 'info',
 }
 
-const today = new Date().toISOString().slice(0, 10)
+const today = todayLocal()
 const worklist = ref<Record<string, unknown>[]>([])
 const current = ref<Record<string, unknown> | null>(null)
 const tab = ref('emr')

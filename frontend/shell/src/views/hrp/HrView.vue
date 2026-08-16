@@ -281,13 +281,14 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref, watch } from 'vue'
+import { todayLocal } from '../../utils/date'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
 
 interface Recon { byCashier: Record<string, unknown>[]; anomalies: Record<string, unknown>[] }
 
 const tab = ref('emp')
-const today = new Date().toISOString().slice(0, 10)
+const today = todayLocal()
 const emps = ref<Record<string, unknown>[]>([])
 const salaries = ref<Record<string, unknown>[]>([])
 const trainings = ref<Record<string, unknown>[]>([])

@@ -16,7 +16,9 @@ import java.util.Map;
 /** 运营统计（聚合层，跨模块只读查询） */
 @RestController
 @RequestMapping("/api/stats")
-@PreAuthorize("hasAnyRole('ADMIN','OPERATION','QUALITY')")   // 1.0.9：权限清点补齐
+// 驾驶舱是所有角色的登录首页：限成三个角色会让其余角色一进系统就满屏 403。
+// 这里放行全体在职员工（PORTAL 已在 SecurityConfig 整体隔离），敏感明细各自在专页限权。
+@PreAuthorize("isAuthenticated()")
 @RequiredArgsConstructor
 public class StatsController {
 

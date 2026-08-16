@@ -80,12 +80,13 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
+import { todayLocal } from '../../utils/date'
 import { ElMessage } from 'element-plus'
 import client from '../../api/client'
 
 const shiftNames: Record<string, string> = { AM: '上午', PM: '下午', FULL: '全天' }
 
-const today = new Date().toISOString().slice(0, 10)
+const today = todayLocal()
 const date = ref(today)
 
 /** 1.0.1（893）：按周快捷切换（本地日期拼串，避免 toISOString 的 UTC 偏移跨日） */
