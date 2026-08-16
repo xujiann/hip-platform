@@ -23,16 +23,19 @@ public class DispenseService {
     @Transactional
     public OutpOrder returnDrug(Long orderId, Long operatorId) {
         OutpOrder o = orderRepository.findById(orderId)
-                .orElseThrow(() -> new BizException(6003, "订单不存在"));
-        if (!"DISPENSED".equals(o.getStatus()) || !"DRUG".equals(o.getOrderType())) {
+                .orElseThrow(() -> new BizException(6006, "订单不存在"));
+        if (!"DRUG".equals(o.getOrderType())) {
+            throw new BizException(6004, "仅已发药的药品可退药");
+        }
+        // 先抢占 DISPENSED→CHARGED 再回补库存：读-判-写会让两次并发退药各回补一次（库存凭空多出）
+        if (orderRepository.claimReturn(orderId) == 0) {
             throw new BizException(6004, "仅已发药的药品可退药");
         }
         if (drugRepository.restoreStock(o.getItemId(), o.getQty()) == 0) {
             throw new BizException(6005, "药品不存在");
         }
         inventoryService.logReturn(o.getItemId(), o.getQty(), o.getGroupNo(), operatorId);
-        o.setStatus("CHARGED");
-        return orderRepository.save(o);
+        return orderRepository.findById(orderId).orElseThrow();
     }
 
     /** 发药：该挂号下全部已收费药品订单，逐一原子扣库存后标记已发药 */
@@ -54,7 +57,7 @@ public class DispenseService {
             }
             inventoryService.logOut(o.getItemId(), o.getQty(), o.getGroupNo(), null);
         }
-        return orderRepository.findByRegistrationIdAndOrderTypeAndStatusOrderByIdAsc(
-                registrationId, "DRUG", "DISPENSED");
+        // 只返回本次抢占的这批：整表回查会把上午已发的药也列进下午的发药凭条
+        return orderRepository.findAllById(ids);
     }
 }

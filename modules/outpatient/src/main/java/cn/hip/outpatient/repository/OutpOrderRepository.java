@@ -68,4 +68,9 @@ public interface OutpOrderRepository extends JpaRepository<OutpOrder, Long> {
             + "o.reviewerId = :reviewerId, o.reviewNote = :note "
             + "where o.id = :id and o.reviewStatus is null and o.status = 'CREATED'")
     int claimReject(@Param("id") Long id, @Param("reviewerId") Long reviewerId, @Param("note") String note);
+
+    /** 抢占退药：并发/重复退药只有一方拿到行，避免库存被回补两次 */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("update OutpOrder o set o.status = 'CHARGED' where o.id = :id and o.status = 'DISPENSED'")
+    int claimReturn(@Param("id") Long id);
 }

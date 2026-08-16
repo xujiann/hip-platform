@@ -245,7 +245,7 @@ public class PatientCareController {
         if (req.memberNames() == null || req.memberNames().isEmpty()) return R.fail(9909, "团检人员名单不能为空");
         Integer pkg = jdbc.queryForObject("select count(*) from pe_exam_package where id = ? and enabled",
                 Integer.class, req.packageId());
-        if (pkg == null || pkg == 0) return R.fail(9911, "体检套餐不存在");
+        if (pkg == null || pkg == 0) return R.fail(9912, "体检套餐不存在");
         // returning id 取主键：max(id) 在并发建档时会拿到别人的团检号，成员挂错单位
         Long groupId = jdbc.queryForObject("""
                 insert into pe_group(unit_name, contact, package_id) values (?,?,?) returning id

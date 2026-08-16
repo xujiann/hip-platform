@@ -22,6 +22,7 @@ import java.util.Set;
 public class PayService {
 
     private final JdbcTemplate jdbc;
+    private final PayMismatchService mismatchService;
     private final OutpOrderRepository orderRepository;
     private final ChargeService chargeService;
     private final PayAdapter payAdapter;
@@ -67,15 +68,27 @@ public class PayService {
             throw new BizException(5105, "支付单已处理");
         }
         Long registrationId = ((Number) po.get("registration_id")).longValue();
-        var charge = chargeService.settle(registrationId, (String) po.get("channel"), cashierId);
-        // 出码后医生若增删医嘱，结算额会与患者实付不符——不一致即回滚，要求重新出码
         BigDecimal paid = (BigDecimal) po.get("amount");
-        if (paid != null && paid.compareTo(charge.getTotalAmount()) != 0) {
-            throw new BizException(5106, "费用已变化（应付 " + charge.getTotalAmount()
-                    + "，支付单 " + paid + "），请作废二维码后重新出码");
+
+        // 出码后医生增删医嘱会让应结金额与患者实付不符。
+        // **不能抛异常回滚**：那样支付单退回 PENDING、结算单不存在，而渠道那边钱已经扣了，
+        // 患者按提示"重新出码"就会付第二次（1.0.7/1.0.8 的写法即如此）。
+        // 正确做法：先算出应结金额比对，不符则把支付单落到不可重复消费的终态并开人工差错单。
+        BigDecimal payable = payableAmount(registrationId);
+        if (paid != null && payable != null && paid.compareTo(payable) != 0) {
+            mismatchService.markMismatch(payNo, paid, payable, registrationId);
+            return Map.of("mismatch", true, "paidAmount", paid, "payableAmount", payable,
+                    "message", "实付与应结不符，已转人工核对并挂起该支付单，请勿重复支付");
         }
+        var charge = chargeService.settle(registrationId, (String) po.get("channel"), cashierId);
         jdbc.update("update pay_order set charge_id = ? where pay_no = ?", charge.getId(), payNo);
         return Map.of("chargeNo", charge.getChargeNo(), "amount", charge.getTotalAmount());
+    }
+
+    /** 当前待收费总额：与出码时的口径一致，用于确认前比对 */
+    private BigDecimal payableAmount(Long registrationId) {
+        return orderRepository.findByRegistrationIdAndStatusOrderByIdAsc(registrationId, "CREATED")
+                .stream().map(OutpOrder::getAmount).reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
     /** 作废未支付二维码 */

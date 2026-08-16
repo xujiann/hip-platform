@@ -80,9 +80,12 @@ public class ReviewController {
             return R.ok();
         }
         if (orderRepository.claimReject(orderId, reviewerId, reason) == 0) {
-            return "CREATED".equals(o.getStatus())
-                    ? R.fail(4102, "该处方已审核")
-                    : R.fail(4103, "已收费处方不能拒绝，请走退费");
+            // 重读：o 是抢占前的快照（claim 带 clearAutomatically），用它判会给出错误的原因提示
+            var fresh = orderRepository.findById(orderId).orElse(null);
+            if (fresh != null && fresh.getReviewStatus() == null && !"CREATED".equals(fresh.getStatus())) {
+                return R.fail(4103, "已收费处方不能拒绝，请走退费");
+            }
+            return R.fail(4102, "该处方已审核");
         }
         return R.ok();
     }

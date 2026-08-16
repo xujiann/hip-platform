@@ -98,6 +98,21 @@ public class PrintReportController {
         return R.ok(Map.of("date", d, "byMethod", byMethod, "total", total));
     }
 
+    /**
+     * CSV 字段转义：姓名含逗号会串列；以 = + - @ 开头的值在 Excel 里会被当公式执行（CSV 注入），
+     * 而姓名是建档端可写入的自由文本。
+     */
+    private static String csv(Object v) {
+        if (v == null) return "";
+        String s = String.valueOf(v);
+        if (!s.isEmpty() && "=+-@".indexOf(s.charAt(0)) >= 0) {
+            s = "'" + s;
+        }
+        return s.contains(",") || s.contains("\"") || s.contains("\n")
+                ? "\"" + s.replace("\"", "\"\"") + "\""
+                : s;
+    }
+
     /** 日结报表 CSV 导出 */
     @GetMapping(value = "/api/reports/daily-settlement.csv", produces = "text/csv;charset=UTF-8")
     public String dailySettlementCsv(@RequestParam(required = false) String date) {
@@ -111,8 +126,9 @@ public class PrintReportController {
                 """, d);
         StringBuilder sb = new StringBuilder("﻿结算单号,患者,金额,方式,状态,时间\n");
         for (var r : rows) {
-            sb.append("%s,%s,%s,%s,%s,%s\n".formatted(r.get("charge_no"), r.get("name"),
-                    r.get("total_amount"), r.get("pay_method"), r.get("status"), r.get("created_at")));
+            sb.append("%s,%s,%s,%s,%s,%s\n".formatted(csv(r.get("charge_no")), csv(r.get("name")),
+                    csv(r.get("total_amount")), csv(r.get("pay_method")), csv(r.get("status")),
+                    csv(r.get("created_at"))));
         }
         return sb.toString();
     }

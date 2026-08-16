@@ -47,22 +47,21 @@ public class AppointmentController {
         Integer booked = jdbc.queryForObject(
                 "select count(*) from med_appointment where order_id = ?", Integer.class, req.orderId());
         if (booked != null && booked > 0) return R.fail(4511, "该申请单已预约");
-        // max+1 读后写：并发预约会拿到相同顺序号（两患者同叫号序）。
-        // 用唯一约束兜底并重试，保持"当日时段内连号"的业务语义。
-        Integer seq = null;
-        for (int attempt = 0; attempt < 20; attempt++) {
-            seq = jdbc.queryForObject("""
-                    select coalesce(max(seq_no), 0) + 1 from med_appointment where slot_date = ?::date and period = ?
-                    """, Integer.class, req.slotDate(), req.period());
-            try {
-                jdbc.update("insert into med_appointment(order_id, slot_date, period, seq_no) values (?,?::date,?,?)",
-                        req.orderId(), req.slotDate(), req.period(), seq);
-                break;
-            } catch (org.springframework.dao.DuplicateKeyException e) {
-                if (attempt == 19) return R.fail(4514, "该时段预约繁忙，请重试");
-            }
+        // 单语句取号：max+1 与 insert 在同一条语句内求值，唯一索引裁决并发。
+        // **不能**用「循环 + catch DuplicateKey」——PG 在唯一冲突后会置事务为 aborted，
+        // 同一事务里的下一条语句直接报 25P02，重试永远走不到（1.0.8 的写法就栽在这）。
+        var seqRows = jdbc.queryForList("""
+                insert into med_appointment(order_id, slot_date, period, seq_no)
+                select ?, ?::date, ?,
+                       coalesce((select max(seq_no) from med_appointment
+                                 where slot_date = ?::date and period = ?), 0) + 1
+                on conflict do nothing
+                returning seq_no
+                """, Integer.class, req.orderId(), req.slotDate(), req.period(), req.slotDate(), req.period());
+        if (seqRows.isEmpty()) {
+            return R.fail(4514, "该时段预约并发繁忙，请重试");   // 唯一索引裁决落败方
         }
-        return R.ok(Map.of("seqNo", seq));
+        return R.ok(Map.of("seqNo", seqRows.get(0)));
     }
 
     /** 预约队列（按日期） */
@@ -97,20 +96,23 @@ public class AppointmentController {
         Integer exists = jdbc.queryForObject(
                 "select count(*) from med_appointment where id = ? and status = 'BOOKED'", Integer.class, id);
         if (exists == null || exists == 0) return R.fail(4513, "仅未叫号的预约可改约");
-        Integer seq = null;
-        for (int attempt = 0; attempt < 20; attempt++) {
-            seq = jdbc.queryForObject("""
-                    select coalesce(max(seq_no), 0) + 1 from med_appointment where slot_date = ?::date and period = ?
-                    """, Integer.class, req.slotDate(), req.period());
-            try {
-                jdbc.update("update med_appointment set slot_date = ?::date, period = ?, seq_no = ? where id = ?",
-                        req.slotDate(), req.period(), seq, id);
-                break;
-            } catch (org.springframework.dao.DuplicateKeyException e) {
-                if (attempt == 19) return R.fail(4514, "该时段预约繁忙，请重试");
-            }
+        // 同 book：单语句内取号并改约，避免事务 aborted 后重试失效
+        List<Integer> seqRows;
+        try {
+            seqRows = jdbc.queryForList("""
+                    update med_appointment set slot_date = ?::date, period = ?,
+                           seq_no = coalesce((select max(m.seq_no) from med_appointment m
+                                              where m.slot_date = ?::date and m.period = ?), 0) + 1
+                    where id = ?
+                    returning seq_no
+                    """, Integer.class, req.slotDate(), req.period(), req.slotDate(), req.period(), id);
+        } catch (org.springframework.dao.DuplicateKeyException e) {
+            return R.fail(4514, "该时段预约并发繁忙，请重试");
         }
-        return R.ok(Map.of("seqNo", seq));
+        if (seqRows.isEmpty()) {
+            return R.fail(4513, "仅未叫号的预约可改约");
+        }
+        return R.ok(Map.of("seqNo", seqRows.get(0)));
     }
 
     public record BatchCancelReq(List<Long> ids) {}

@@ -206,8 +206,14 @@ class Phase107ConcurrencyTest {
         doctorStationService.startVisit(rid, null);
         Long drugId = drug("布洛芬");
 
+        // 完全相同的行（同药同用法同频次同剂量）应拦
         assertThrows(RegistrationService.BizException.class, () -> doctorStationService.createOrders(rid,
                 List.of(new OrderLine("DRUG", drugId, 1, "口服", "bid", "1粒", 3),
-                        new OrderLine("DRUG", drugId, 1, "口服", "tid", "1粒", 3)), null));
+                        new OrderLine("DRUG", drugId, 1, "口服", "bid", "1粒", 3)), null));
+
+        // 1.0.9 C-8：用法/频次不同是合法医嘱（负荷量+维持量、口服+静滴），不得误拦
+        assertDoesNotThrow(() -> doctorStationService.createOrders(rid,
+                List.of(new OrderLine("DRUG", drugId, 1, "口服", "bid", "1粒", 3),
+                        new OrderLine("DRUG", drugId, 1, "静滴", "qd", "2粒", 3)), null));
     }
 }

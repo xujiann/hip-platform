@@ -155,8 +155,6 @@ public class MedTechController {
         eventPublisher.publishEvent(new LabResultReceivedEvent(groupNo, req.results().stream()
                 .map(x -> new LabResultReceivedEvent.Item(x.code(), x.name(), x.value(), x.unit(), x.refRange(), x.flag()))
                 .toList()));
-        jdbc.update("update lis_sample set verifier_id = ? where barcode = ?",
-                currentUserService.idOf(auth), barcode);
         return R.ok();
     }
 

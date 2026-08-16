@@ -115,9 +115,10 @@ class Phase106SecurityTest {
                         .content("{\"patientNo\":\"" + patientNo + "\",\"phone\":\"13900001234\"}"))
                 .andExpect(jsonPath("$.code").value(9503));
 
+        // 1.0.9 C-6：锁定键为「患者号@来源IP」，避免任何人遍历号段锁死全院患者
         Integer locked = jdbc.queryForObject(
-                "select count(*) from portal_login_attempt where patient_no = ? and locked_until > now()",
-                Integer.class, patientNo);
+                "select count(*) from portal_login_attempt where patient_no like ? and locked_until > now()",
+                Integer.class, patientNo + "@%");
         assertEquals(1, locked);
     }
 

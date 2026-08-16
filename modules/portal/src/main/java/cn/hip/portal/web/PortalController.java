@@ -50,34 +50,52 @@ public class PortalController {
 
     /** MVP 以患者号+建档手机号认证；生产环境替换为电子健康卡/微信实名 */
     @PostMapping("/login")
-    public R<Map<String, Object>> login(@RequestBody PortalLoginRequest req) {
+    public R<Map<String, Object>> login(@RequestBody PortalLoginRequest req,
+                                        jakarta.servlet.http.HttpServletRequest httpReq) {
         String patientNo = req.patientNo() == null ? "" : req.patientNo().trim();
-        if (patientNo.isEmpty()) {
+        // 格式先校验再落表：patient_no 是 varchar(32)，超长字符串会让**未认证接口**抛 22001 → 500
+        if (patientNo.isEmpty() || patientNo.length() > 32 || !patientNo.matches("[A-Za-z0-9_-]+")) {
             return R.fail(9501, "患者号或手机号不正确");
         }
+        // 锁定键 = 患者号 + 来源 IP：只按患者号锁会让任何人遍历顺序号段把全院患者锁在门外
+        String attemptKey = patientNo + "@" + clientIp(httpReq);
         Integer locked = jdbc.queryForObject("""
                 select count(*) from portal_login_attempt where patient_no = ? and locked_until > now()
-                """, Integer.class, patientNo);
+                """, Integer.class, attemptKey);
         if (locked != null && locked > 0) {
             return R.fail(9503, "尝试过于频繁，请 " + LOGIN_LOCK_MINUTES + " 分钟后再试");
         }
         var patient = patientRepository.findByPatientNo(patientNo).orElse(null);
         if (patient == null || patient.getPhone() == null || !patient.getPhone().equals(req.phone())) {
-            // 原子累加失败计数：并发猜测下"读-判-写"会让计数停在 1，锁定形同虚设
+            // 原子累加失败计数：并发猜测下"读-判-写"会让计数停在 1，锁定形同虚设。
+            // 锁定窗口过后重新计数（否则锁一次即永久：过期后再错一次立刻续锁）。
             jdbc.update("""
                     insert into portal_login_attempt(patient_no, failed_count, last_failed_at)
                     values (?, 1, now())
                     on conflict (patient_no) do update set
-                        failed_count = portal_login_attempt.failed_count + 1,
+                        failed_count = case
+                            when portal_login_attempt.last_failed_at < now() - (? || ' minutes')::interval then 1
+                            else portal_login_attempt.failed_count + 1 end,
                         last_failed_at = now(),
-                        locked_until = case when portal_login_attempt.failed_count + 1 >= ?
-                                            then now() + (? || ' minutes')::interval else null end
-                    """, patientNo, MAX_LOGIN_FAILED, String.valueOf(LOGIN_LOCK_MINUTES));
+                        locked_until = case
+                            when portal_login_attempt.last_failed_at >= now() - (? || ' minutes')::interval
+                                 and portal_login_attempt.failed_count + 1 >= ?
+                            then now() + (? || ' minutes')::interval else null end
+                    """, attemptKey, String.valueOf(LOGIN_LOCK_MINUTES), String.valueOf(LOGIN_LOCK_MINUTES),
+                    MAX_LOGIN_FAILED, String.valueOf(LOGIN_LOCK_MINUTES));
             return R.fail(9501, "患者号或手机号不正确");
         }
-        jdbc.update("delete from portal_login_attempt where patient_no = ?", patientNo);
+        jdbc.update("delete from portal_login_attempt where patient_no = ?", attemptKey);
         String token = jwtService.issue("portal:" + patient.getId());
         return R.ok(Map.of("token", token, "patientName", patient.getName(), "patientNo", patient.getPatientNo()));
+    }
+
+    /** 取真实来源 IP：容器化部署下 getRemoteAddr() 是网关地址 */
+    private String clientIp(jakarta.servlet.http.HttpServletRequest req) {
+        String xff = req.getHeader("X-Forwarded-For");
+        if (xff != null && !xff.isBlank()) return xff.split(",")[0].trim();
+        String real = req.getHeader("X-Real-IP");
+        return real != null && !real.isBlank() ? real : String.valueOf(req.getRemoteAddr());
     }
 
     private Long patientId(Authentication auth) {

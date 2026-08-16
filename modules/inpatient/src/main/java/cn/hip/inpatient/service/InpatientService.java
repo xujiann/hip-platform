@@ -266,7 +266,12 @@ public class InpatientService {
             s = settlementRepo.save(s);
         }
 
-        bedRepo.release(adm.getBedId(), admissionId);   // 状态已在入口抢占
+        // 必须用抢占**之后**重读的床位：adm 是 claim 前的快照且已被 clearAutomatically detach，
+        // 期间若发生转床，用旧 bedId 释放会影响 0 行 → 新床永久 OCCUPIED 无法再收治。
+        Long currentBedId = admissionRepo.findById(admissionId).orElseThrow().getBedId();
+        if (bedRepo.release(currentBedId, admissionId) == 0) {
+            throw new InpException(9018, "床位释放失败（床位已被改动），请联系管理员核对床位状态");
+        }
         return s;
     }
 }
