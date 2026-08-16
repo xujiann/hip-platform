@@ -18,6 +18,7 @@ public class ReportShareController {
 
     /** 生成分享链接（默认 72 小时有效） */
     @PostMapping("/api/ris/exams/{id}/share")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAnyRole('ADMIN','TECHNICIAN','DOCTOR_OUTP')")
     @Transactional
     public R<Map<String, Object>> share(@PathVariable Long id,
                                         @RequestParam(defaultValue = "4320") int expireMinutes) {

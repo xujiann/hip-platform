@@ -27,6 +27,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** 医保完善批次二：年度起付线/封顶线待遇模型、退费冲销、住院行级分割 */
 @SpringBootTest
 @Transactional
+@org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
 class InsuranceBenefitTest {
 
     @Autowired RegistrationService registrationService;

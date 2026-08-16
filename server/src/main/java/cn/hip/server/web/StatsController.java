@@ -3,6 +3,7 @@ package cn.hip.server.web;
 import cn.hip.platform.core.common.R;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -15,6 +16,7 @@ import java.util.Map;
 /** 运营统计（聚合层，跨模块只读查询） */
 @RestController
 @RequestMapping("/api/stats")
+@PreAuthorize("hasAnyRole('ADMIN','OPERATION','QUALITY')")   // 1.0.9：权限清点补齐
 @RequiredArgsConstructor
 public class StatsController {
 

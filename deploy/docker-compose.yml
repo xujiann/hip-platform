@@ -1,13 +1,18 @@
+# 开发依赖编排（仅 postgres + redis，供本机开发用）
+# 生产/试点请用 docker-compose.full.yml —— 那份强制 profile 与密钥，本份是开发口令、勿上服务器。
 services:
   postgres:
     image: postgres:16-alpine
     container_name: hip-postgres
     environment:
+      TZ: Asia/Shanghai
       POSTGRES_DB: hip
       POSTGRES_USER: hip
       POSTGRES_PASSWORD: hip123456
+    command: ["postgres", "-c", "timezone=Asia/Shanghai"]
+    # 只监听回环：开发库也不必暴露到局域网
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - hip-pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -19,8 +24,11 @@ services:
   redis:
     image: redis:7-alpine
     container_name: hip-redis
+    environment:
+      TZ: Asia/Shanghai
+    command: ["redis-server", "--requirepass", "${HIP_REDIS_PASSWORD:-hip123456}"]
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - hip-redisdata:/data
 

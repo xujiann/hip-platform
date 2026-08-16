@@ -18,6 +18,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** 三十三期：传染病报卡状态机（报卡→审核→上报，越级/类别校验） */
 @SpringBootTest
 @Transactional
+@org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
 class InfectionCardFlowTest {
 
     @Autowired NursingPlusController controller;

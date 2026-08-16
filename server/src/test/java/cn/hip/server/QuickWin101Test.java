@@ -25,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** 1.0.1 快赢包：单据前缀配置化 / 审方待审上限 / 住院每日费用清单 */
 @SpringBootTest
 @Transactional
+@org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
 class QuickWin101Test {
 
     @Autowired RegistrationService registrationService;

@@ -26,6 +26,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** 1.0.7 并发与数据正确性回归：单号序列 / 条件更新状态机 / 作废医嘱 / 冲销幂等 */
 @SpringBootTest
 @Transactional
+@org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
 class Phase107ConcurrencyTest {
 
     @Autowired InpatientService inpatientService;

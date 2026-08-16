@@ -166,7 +166,9 @@ print('[卅-4] 体检团检 OK（3 人建档→2 人完成→异常率 50%）')
 
 # 数据脱敏：非 ADMIN 用户看列表手机号打码
 opname = 'e2emask' + stamp
-ok(call('POST', '/system/users', {'username': opname, 'password': 'Abcd1234', 'realName': '脱敏测试'}, t), '建普通用户')
+# 1.0.9 起患者列表限临床/收费等角色：无角色账号本就不该看全院患者，故给护士角色（仍非 ADMIN）
+ok(call('POST', '/system/users', {'username': opname, 'password': 'Abcd1234', 'realName': '脱敏测试',
+                                  'roleCodes': ['NURSE']}, t), '建普通用户')
 t2 = ok(call('POST', '/auth/login', {'username': opname, 'password': 'Abcd1234'}), '普通登录')['token']
 masked = ok(call('GET', '/patients?keyword=' + q('患者服务' + stamp), token=t2), '脱敏列表')['records'][0]
 assert '****' in masked['phone'] and phone not in masked['phone'], masked

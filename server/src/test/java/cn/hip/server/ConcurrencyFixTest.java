@@ -29,6 +29,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** 并发缺陷修复回归：处方号序列化、退药原子回补、留观占床唯一约束 */
 @SpringBootTest
 @Transactional
+@org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
 class ConcurrencyFixTest {
 
     @Autowired RegistrationService registrationService;

@@ -4,6 +4,7 @@ import cn.hip.platform.core.common.R;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.LinkedHashMap;
@@ -15,6 +16,7 @@ import java.util.Set;
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/api/queue-center")
+@PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP','NURSE','TECHNICIAN','CASHIER','PHARMACIST')")   // 1.0.9：权限清点补齐
 public class QueueCenterController {
 
     private final JdbcTemplate jdbc;

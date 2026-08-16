@@ -32,6 +32,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** 审方状态机 + LIS 标本流转 + RIS 报告流转 */
 @SpringBootTest
 @Transactional
+@org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
 class LisRisReviewFlowTest {
 
     @Autowired DoctorStationService doctorStationService;

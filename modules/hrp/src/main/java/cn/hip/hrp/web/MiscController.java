@@ -5,6 +5,7 @@ import cn.hip.platform.core.security.CurrentUserService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
@@ -14,6 +15,7 @@ import java.util.Set;
 
 /** 三十六期：服务窗口维护、科研台账（项目/知识产权转化+审核）、OA 我发起的 */
 @RestController
+@PreAuthorize("hasAnyRole('ADMIN','OPERATION')")   // 1.0.9：权限清点补齐
 @RequiredArgsConstructor
 public class MiscController {
 

@@ -6,6 +6,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.Authentication;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -15,6 +16,7 @@ import java.util.Map;
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/api/outpatient/nurse")
+@PreAuthorize("hasAnyRole('ADMIN','NURSE')")   // 1.0.9：权限清点补齐
 public class OutpNurseStationController {
 
     private final JdbcTemplate jdbc;

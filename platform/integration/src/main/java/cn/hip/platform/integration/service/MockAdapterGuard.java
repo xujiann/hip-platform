@@ -7,14 +7,12 @@ import cn.hip.platform.integration.pay.PayAdapter;
 import cn.hip.platform.integration.signature.MockSignatureAdapter;
 import cn.hip.platform.integration.signature.SignatureAdapter;
 import lombok.RequiredArgsConstructor;
-import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.boot.context.event.ApplicationStartedEvent;
 import org.springframework.context.ApplicationListener;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
 
 /**
  * 试点/生产启动自检：任一 SPI 仍是 Mock 实现即阻断启动。
@@ -27,9 +25,7 @@ import java.util.List;
  */
 @Component
 @RequiredArgsConstructor
-public class MockAdapterGuard implements ApplicationListener<ApplicationReadyEvent> {
-
-    private static final List<String> GUARDED_PROFILES = List.of("pilot", "prod");
+public class MockAdapterGuard implements ApplicationListener<ApplicationStartedEvent> {
 
     private final InsuranceAdapter insuranceAdapter;
     private final PayAdapter payAdapter;
@@ -37,9 +33,8 @@ public class MockAdapterGuard implements ApplicationListener<ApplicationReadyEve
     private final Environment environment;
 
     @Override
-    public void onApplicationEvent(ApplicationReadyEvent event) {
-        boolean guarded = Arrays.stream(environment.getActiveProfiles()).anyMatch(GUARDED_PROFILES::contains);
-        if (!guarded) {
+    public void onApplicationEvent(ApplicationStartedEvent event) {
+        if (!cn.hip.platform.core.config.HipProfiles.isProduction(environment)) {
             return;
         }
         var mocks = new ArrayList<String>();

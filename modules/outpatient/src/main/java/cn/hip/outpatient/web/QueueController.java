@@ -8,6 +8,7 @@ import cn.hip.platform.empi.repository.PatientRepository;
 import jakarta.persistence.EntityManager;
 import lombok.RequiredArgsConstructor;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.Instant;
@@ -19,6 +20,7 @@ import java.util.Map;
 /** 候诊队列与叫号：REGISTERED 候诊 → CALLED 已叫号 → VISITED 接诊中 */
 @RestController
 @RequestMapping("/api/outpatient/queue")
+@PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP','NURSE','TECHNICIAN','CASHIER')")   // 1.0.9：权限清点补齐
 @RequiredArgsConstructor
 public class QueueController {
 

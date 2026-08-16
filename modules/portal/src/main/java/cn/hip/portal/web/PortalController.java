@@ -184,10 +184,8 @@ public class PortalController {
      */
     @PostMapping("/my/pay/{payNo}/confirm")
     public R<Object> confirmPay(@PathVariable String payNo, Authentication auth) {
-        for (String p : environment.getActiveProfiles()) {
-            if ("pilot".equals(p) || "prod".equals(p)) {
-                return R.fail(9504, "请在支付渠道完成付款，勿手动确认");
-            }
+        if (cn.hip.platform.core.config.HipProfiles.isProduction(environment)) {
+            return R.fail(9504, "请在支付渠道完成付款，勿手动确认");
         }
         Long pid = patientId(auth);
         Integer own = jdbc.queryForObject("""

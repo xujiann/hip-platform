@@ -8,6 +8,7 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.Authentication;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -15,6 +16,7 @@ import java.util.Map;
 
 /** 十四/十五期：LIS 标本流转、RIS 检查报告、手术麻醉 */
 @RestController
+@PreAuthorize("hasAnyRole('ADMIN','TECHNICIAN','DOCTOR_OUTP','NURSE')")   // 1.0.9：权限清点补齐
 @RequiredArgsConstructor
 public class MedTechController {
 

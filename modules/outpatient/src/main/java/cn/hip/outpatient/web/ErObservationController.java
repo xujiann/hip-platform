@@ -5,6 +5,7 @@ import cn.hip.platform.core.security.CurrentUserService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -15,6 +16,7 @@ import java.util.Set;
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/api/outpatient/er-observation")
+@PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP','NURSE')")   // 1.0.9：权限清点补齐
 public class ErObservationController {
 
     private final JdbcTemplate jdbc;

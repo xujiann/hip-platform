@@ -54,11 +54,16 @@ public class ModuleGate {
         return paths;
     }
 
-    /** 请求 URI 是否命中被停用模块的 API 前缀 */
+    /**
+     * 请求 URI 是否命中被停用模块的 API 前缀。
+     *
+     * <p>前缀匹配必须带路径段边界：裸 startsWith 会让 `/api/hr`（人事）连带命中
+     * `/api/hrp/**`（资产/物资/供应商/资质），关闭人事即整片 HRP 404。
+     */
     public boolean isApiDisabled(String uri) {
         for (String key : disabledModules()) {
             for (String prefix : MODULES.get(key).apiPrefixes()) {
-                if (uri.startsWith(prefix)) {
+                if (uri.equals(prefix) || uri.startsWith(prefix + "/")) {
                     return true;
                 }
             }

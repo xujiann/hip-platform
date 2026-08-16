@@ -4,6 +4,7 @@ import cn.hip.platform.core.common.R;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -12,6 +13,7 @@ import java.util.Set;
 
 /** 三十三期：护理与院感精细化——传染病报卡闭环、体温日历/术后发热、班次字典、抽检评分、交接班 */
 @RestController
+@PreAuthorize("hasAnyRole('ADMIN','NURSE','QUALITY')")   // 1.0.9：权限清点补齐
 @RequiredArgsConstructor
 public class NursingPlusController {
 

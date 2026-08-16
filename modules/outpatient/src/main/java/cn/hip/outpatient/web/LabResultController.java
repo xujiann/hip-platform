@@ -9,6 +9,7 @@ import cn.hip.platform.core.security.CurrentUserService;
 import cn.hip.platform.empi.repository.PatientRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.Instant;
@@ -19,6 +20,7 @@ import java.util.Map;
 /** 检验结果查询与危急值处理 */
 @RestController
 @RequestMapping("/api/outpatient")
+@PreAuthorize("hasAnyRole('ADMIN','TECHNICIAN')")   // 1.0.9：权限清点补齐
 @RequiredArgsConstructor
 public class LabResultController {
 

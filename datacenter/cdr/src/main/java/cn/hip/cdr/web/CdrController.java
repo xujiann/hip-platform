@@ -26,6 +26,7 @@ public class CdrController {
     }
 
     @GetMapping("/patients/{patientId}/documents")
+    @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP','QUALITY')")   // 1.0.9(A-6)：与 /search 同口径，内容含病历原文
     public R<Object> documents(@PathVariable Long patientId,
                                @RequestParam(required = false) String docType) {
         return R.ok(syncService.patientDocuments(patientId, docType));

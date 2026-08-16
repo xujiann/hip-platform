@@ -3,6 +3,7 @@ package cn.hip.qualitycare.web;
 import cn.hip.platform.core.common.R;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -12,6 +13,7 @@ import java.util.Map;
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/api/quality/single-disease")
+@PreAuthorize("hasAnyRole('ADMIN','QUALITY')")   // 1.0.9：权限清点补齐
 public class SingleDiseaseController {
 
     private final JdbcTemplate jdbc;

@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 注意：本类不加 @Transactional——各线程需各自提交事务才能形成真实并发写。
  */
 @SpringBootTest
+@org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
 class StockRestoreConcurrencyTest {
 
     private static final int THREADS = 8;

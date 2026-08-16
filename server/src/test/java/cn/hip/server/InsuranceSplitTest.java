@@ -27,6 +27,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** 二十七期：医保费用分割与审核规则 */
 @SpringBootTest
 @Transactional
+@org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
 class InsuranceSplitTest {
 
     @Autowired RegistrationService registrationService;

@@ -21,7 +21,7 @@ public class OpsHealthScheduler {
 
     private final JdbcTemplate jdbc;
 
-    @Scheduled(cron = "0 0 * * * *")
+    @Scheduled(cron = "0 0 * * * *", zone = cn.hip.platform.core.config.HipProfiles.ZONE)
     public void hourlyHealthCheck() {
         var rows = jdbc.queryForList(
                 "select cfg_value from sys_config where cfg_key = 'ops_auto_health_enabled'");

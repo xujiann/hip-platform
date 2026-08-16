@@ -6,6 +6,7 @@ import cn.hip.platform.core.common.R;
 import cn.hip.platform.core.security.CurrentUserService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -13,6 +14,7 @@ import java.util.List;
 /** 急诊预检分诊 */
 @RestController
 @RequestMapping("/api/outpatient/triage")
+@PreAuthorize("hasAnyRole('ADMIN','NURSE','DOCTOR_OUTP')")   // 1.0.9：权限清点补齐
 @RequiredArgsConstructor
 public class TriageController {
 

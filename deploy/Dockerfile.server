@@ -10,6 +10,16 @@ RUN mvn -q -DskipTests package
 
 FROM eclipse-temurin:21-jre
 WORKDIR /app
+# 时区：镜像默认 UTC 会让 ::date 归日与 @Scheduled 触发时刻整体偏 8 小时（审阅 A-7）
+ENV TZ=Asia/Shanghai
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+# 非 root 运行
+RUN useradd -r -u 10001 -m hip
 COPY --from=build /src/server/target/*.jar app.jar
-EXPOSE 8080
-ENTRYPOINT ["java", "-jar", "app.jar"]
+RUN chown hip:hip /app/app.jar
+USER hip
+EXPOSE 8080 2575
+HEALTHCHECK --interval=15s --timeout=5s --start-period=45s --retries=6 \
+    CMD wget -qO- http://localhost:8080/actuator/health | grep -q UP || exit 1
+# 容器内存限制下按 cgroup 比例分配堆，避免按宿主机推算导致 OOMKilled
+ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75", "-Duser.timezone=Asia/Shanghai", "-jar", "app.jar"]

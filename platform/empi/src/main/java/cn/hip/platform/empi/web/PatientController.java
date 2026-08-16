@@ -4,12 +4,14 @@ import cn.hip.platform.core.common.R;
 import cn.hip.platform.empi.entity.Patient;
 import cn.hip.platform.empi.service.PatientService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
 
 @RestController
 @RequestMapping("/api/patients")
+@PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP','NURSE','CASHIER','TECHNICIAN','QUALITY')")   // 1.0.9：权限清点补齐
 @RequiredArgsConstructor
 public class PatientController {
 
@@ -30,13 +32,18 @@ public class PatientController {
                                          @RequestParam(defaultValue = "20") int size,
                                          org.springframework.security.core.Authentication auth) {
         var p = patientService.search(keyword, page, size);
-        // 等保：列表场景手机号/证件号脱敏，仅 ADMIN 角色见明文
-        boolean admin = auth != null && auth.getAuthorities().stream()
-                .anyMatch(a -> "ROLE_ADMIN".equals(a.getAuthority()));
+        boolean admin = isAdmin(auth);
         return R.ok(Map.of(
                 "total", p.getTotalElements(),
                 "records", p.getContent().stream()
                         .map(x -> admin ? toDto(x) : maskSensitive(toDto(x))).toList()));
+    }
+
+    /** 等保：手机号/证件号仅 ADMIN 见明文——**所有**返回患者的出口都要过这道，
+     *  否则一个空 PUT 就能绕过列表脱敏读到明文（A-3）。 */
+    private boolean isAdmin(org.springframework.security.core.Authentication auth) {
+        return auth != null && auth.getAuthorities().stream()
+                .anyMatch(a -> "ROLE_ADMIN".equals(a.getAuthority()));
     }
 
     /** 手机号保留前3后4，证件号保留前4后3 */
@@ -51,22 +58,37 @@ public class PatientController {
         return s.substring(0, head) + "*".repeat(s.length() - head - tail) + s.substring(s.length() - tail);
     }
 
+    /** 含掩码字符的值一律拒绝入库：前端把脱敏展示值原样提交会永久覆盖真实号码 */
+    private String maskedValueError(Patient p) {
+        if (p.getPhone() != null && p.getPhone().contains("*")) return "手机号包含掩码字符，请重新输入完整号码";
+        if (p.getIdNo() != null && p.getIdNo().contains("*")) return "证件号包含掩码字符，请重新输入完整号码";
+        return null;
+    }
+
     @PostMapping
-    public R<Map<String, Object>> register(@RequestBody Patient patient) {
+    public R<Map<String, Object>> register(@RequestBody Patient patient,
+                                           org.springframework.security.core.Authentication auth) {
         if (patient.getName() == null || patient.getName().isBlank()) {
             return R.fail(2001, "患者姓名不能为空");
         }
+        String maskErr = maskedValueError(patient);
+        if (maskErr != null) return R.fail(2004, maskErr);
         String idErr = idCardError(patient);
         if (idErr != null) return R.fail(2003, idErr);
         if (patient.getSex() == null) patient.setSex("U");
-        return R.ok(toDto(patientService.register(patient)));
+        var dto = toDto(patientService.register(patient));
+        return R.ok(isAdmin(auth) ? dto : maskSensitive(dto));
     }
 
     @PutMapping("/{id}")
-    public R<Map<String, Object>> update(@PathVariable Long id, @RequestBody Patient patient) {
+    public R<Map<String, Object>> update(@PathVariable Long id, @RequestBody Patient patient,
+                                         org.springframework.security.core.Authentication auth) {
+        String maskErr = maskedValueError(patient);
+        if (maskErr != null) return R.fail(2004, maskErr);
         String idErr = idCardError(patient);
         if (idErr != null) return R.fail(2003, idErr);
-        return R.ok(toDto(patientService.update(id, patient)));
+        var dto = toDto(patientService.update(id, patient));
+        return R.ok(isAdmin(auth) ? dto : maskSensitive(dto));
     }
 
     private Map<String, Object> toDto(Patient p) {

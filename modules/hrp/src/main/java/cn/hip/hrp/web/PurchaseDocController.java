@@ -3,6 +3,7 @@ package cn.hip.hrp.web;
 import cn.hip.platform.core.common.R;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
@@ -11,6 +12,7 @@ import java.util.Map;
 
 /** 三十二期：采购单据链（备货/退货，审核→验收补发票→作废还原）+ 供应商证照 + 制度文件库 */
 @RestController
+@PreAuthorize("hasAnyRole('ADMIN','OPERATION')")   // 1.0.9：权限清点补齐
 @RequiredArgsConstructor
 public class PurchaseDocController {
 

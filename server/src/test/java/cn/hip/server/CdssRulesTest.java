@@ -26,6 +26,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** 二十八期：CDSS 处方审查规则（DDI 禁用/疗程提醒/年龄禁忌） */
 @SpringBootTest
 @Transactional
+@org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
 class CdssRulesTest {
 
     @Autowired DoctorStationService doctorStationService;

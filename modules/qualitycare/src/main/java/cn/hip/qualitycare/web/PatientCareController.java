@@ -10,6 +10,7 @@ import lombok.SneakyThrows;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -17,6 +18,7 @@ import java.util.Map;
 
 /** 十期：随访、满意度、院内会诊、临床路径、健康体检 */
 @RestController
+@PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP','NURSE','QUALITY')")   // 1.0.9：权限清点补齐
 @RequiredArgsConstructor
 public class PatientCareController {
 

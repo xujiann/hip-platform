@@ -3,6 +3,7 @@ package cn.hip.qualitycare.web;
 import cn.hip.platform.core.common.R;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -13,6 +14,7 @@ import java.util.Set;
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/api/phc")
+@PreAuthorize("hasAnyRole('ADMIN','QUALITY','NURSE')")   // 1.0.9：权限清点补齐
 public class PhcController {
 
     private final JdbcTemplate jdbc;

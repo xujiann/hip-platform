@@ -17,7 +17,7 @@ public class InsuranceAutoReconJob {
     private final InsuranceReconService reconService;
     private final JdbcTemplate jdbc;
 
-    @Scheduled(cron = "0 30 1 * * *")
+    @Scheduled(cron = "0 30 1 * * *", zone = cn.hip.platform.core.config.HipProfiles.ZONE)
     public void dailyRecon() {
         // 医保模块整体停用或自动对账开关关闭时不跑
         var flags = jdbc.queryForList(

@@ -16,6 +16,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** 三十五期：采购单据链状态机（草稿→审核→验收补发票；作废↔还原） */
 @SpringBootTest
 @Transactional
+@org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
 class PurchaseDocFlowTest {
 
     @Autowired PurchaseDocController controller;

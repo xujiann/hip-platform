@@ -12,6 +12,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 /** 1.0.5：自动巡检——异常开工单、同题未处理不重复、开关可关 */
 @SpringBootTest
 @Transactional
+@org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
 class OpsHealthSchedulerTest {
 
     @Autowired OpsHealthScheduler scheduler;

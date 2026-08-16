@@ -16,6 +16,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** 三十六期：科研台账审核流与窗口维护 */
 @SpringBootTest
 @Transactional
+@org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
 class ResearchWindowFlowTest {
 
     @Autowired MiscController controller;

@@ -5,6 +5,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
@@ -15,6 +16,7 @@ import java.util.Map;
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/api/hr")
+@PreAuthorize("hasRole('ADMIN')")   // 1.0.9：权限清点补齐
 public class HrController {
 
     private final JdbcTemplate jdbc;

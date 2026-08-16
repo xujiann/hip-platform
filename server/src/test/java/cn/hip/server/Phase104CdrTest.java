@@ -32,6 +32,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 @AutoConfigureMockMvc
 @Transactional
+@org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
 class Phase104CdrTest {
 
     @Autowired CdrSyncService cdrSyncService;

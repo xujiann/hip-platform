@@ -15,7 +15,7 @@ public class CdrSyncScheduler {
     private final CdrSyncService syncService;
     private final JdbcTemplate jdbc;
 
-    @Scheduled(cron = "0 10 2 * * *")
+    @Scheduled(cron = "0 10 2 * * *", zone = cn.hip.platform.core.config.HipProfiles.ZONE)
     public void autoIncremental() {
         var rows = jdbc.queryForList(
                 "select cfg_value from sys_config where cfg_key = 'cdr_auto_sync_enabled'");

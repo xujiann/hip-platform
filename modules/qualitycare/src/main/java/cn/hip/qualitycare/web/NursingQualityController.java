@@ -5,6 +5,7 @@ import cn.hip.platform.core.security.CurrentUserService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -12,6 +13,7 @@ import java.util.Map;
 
 /** 九期：护理白板、护理级别、病历时限质控、病案首页/归档、不良事件、院感登记 */
 @RestController
+@PreAuthorize("hasAnyRole('ADMIN','NURSE','QUALITY')")   // 1.0.9：权限清点补齐
 @RequiredArgsConstructor
 public class NursingQualityController {
 

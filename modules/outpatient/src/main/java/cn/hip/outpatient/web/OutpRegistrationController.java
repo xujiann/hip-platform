@@ -9,6 +9,7 @@ import cn.hip.platform.core.repository.SysUserRepository;
 import cn.hip.platform.empi.repository.PatientRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDate;
@@ -18,6 +19,7 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/api/outpatient/registrations")
+@PreAuthorize("hasAnyRole('ADMIN','CASHIER')")   // 1.0.9：权限清点补齐
 @RequiredArgsConstructor
 public class OutpRegistrationController {
 

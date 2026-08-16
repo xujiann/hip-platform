@@ -4,6 +4,7 @@ import cn.hip.platform.core.common.R;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -13,6 +14,7 @@ import java.util.Map;
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/api/inpatient/diagnoses")
+@PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP','QUALITY')")   // 1.0.9：权限清点补齐
 public class DiagnosisController {
 
     private final JdbcTemplate jdbc;

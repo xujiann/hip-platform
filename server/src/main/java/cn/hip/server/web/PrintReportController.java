@@ -3,6 +3,7 @@ package cn.hip.server.web;
 import cn.hip.platform.core.common.R;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDate;
@@ -11,6 +12,7 @@ import java.util.Map;
 
 /** 十三期：打印数据集与日结报表 */
 @RestController
+@PreAuthorize("hasAnyRole('ADMIN','CASHIER','DOCTOR_OUTP','NURSE','TECHNICIAN')")   // 1.0.9：权限清点补齐
 @RequiredArgsConstructor
 public class PrintReportController {
 

@@ -3,6 +3,7 @@ package cn.hip.hrp.web;
 import cn.hip.platform.core.common.R;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
@@ -11,6 +12,7 @@ import java.util.Map;
 
 /** 四十期：HR 收尾——继续教育学分台账、考勤打卡/补卡；资产价值调整与附件；结账明细检索 */
 @RestController
+@PreAuthorize("hasAnyRole('ADMIN','OPERATION')")   // 1.0.9：权限清点补齐
 @RequiredArgsConstructor
 public class HrPlusController {
 
@@ -126,6 +128,7 @@ public class HrPlusController {
 
     // ---- 门诊结账明细检索（1.0.1/1227：加 orderType 即切明细行模式，按项目类型过滤） ----
     @GetMapping("/api/finance/charge-search")
+    @PreAuthorize("hasAnyRole('ADMIN','CASHIER')")   // 财务端点，与 FinanceController 同口径
     public R<List<Map<String, Object>>> chargeSearch(@RequestParam String from, @RequestParam String to,
                                                      @RequestParam(required = false) String payMethod,
                                                      @RequestParam(required = false) String orderType) {

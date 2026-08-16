@@ -3,6 +3,7 @@ package cn.hip.platform.integration.web;
 import cn.hip.platform.core.common.R;
 import cn.hip.platform.integration.service.OruProcessingService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
@@ -12,6 +13,7 @@ import java.util.Map;
  */
 @RestController
 @RequestMapping("/api/integration/hl7")
+@PreAuthorize("hasRole('ADMIN')")   // 1.0.9：权限清点补齐
 @RequiredArgsConstructor
 public class Hl7InboundController {
 

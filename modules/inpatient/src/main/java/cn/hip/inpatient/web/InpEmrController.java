@@ -8,6 +8,7 @@ import cn.hip.platform.core.common.R;
 import cn.hip.platform.core.security.CurrentUserService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -15,6 +16,7 @@ import java.util.List;
 /** 住院病历与生命体征 */
 @RestController
 @RequestMapping("/api/inpatient/admissions/{admissionId}")
+@PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP','NURSE')")   // 1.0.9：权限清点补齐
 @RequiredArgsConstructor
 public class InpEmrController {
 

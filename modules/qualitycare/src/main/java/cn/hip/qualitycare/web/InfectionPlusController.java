@@ -4,6 +4,7 @@ import cn.hip.platform.core.common.R;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.LinkedHashMap;
@@ -15,6 +16,7 @@ import java.util.Set;
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/api/infection-plus")
+@PreAuthorize("hasAnyRole('ADMIN','QUALITY','NURSE')")   // 1.0.9：权限清点补齐
 public class InfectionPlusController {
 
     private final JdbcTemplate jdbc;
