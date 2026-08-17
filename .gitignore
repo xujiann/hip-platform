@@ -11,3 +11,6 @@ dist/
 .env.local
 __pycache__/
 release/
+
+# pilot profile 的滚动日志（application-pilot.yml logging.file.name）
+logs/
