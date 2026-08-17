@@ -27,6 +27,7 @@ import static org.junit.jupiter.api.Assertions.*;
 @org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
 class ChargeAndDispenseTest {
 
+    @Autowired cn.hip.server.support.TestSeeds seeds;
     @Autowired RegistrationService registrationService;
     @Autowired DoctorStationService doctorStationService;
     @Autowired ChargeService chargeService;
@@ -59,7 +60,7 @@ class ChargeAndDispenseTest {
         regId = registrationService.register(pid, s.getId()).getId();
         doctorStationService.startVisit(regId, null);
 
-        var drug = drugRepository.findTop20ByEnabledTrueAndNameContainingOrderByCode("阿莫西林").get(0);
+        var drug = seeds.drug("阿莫西林");
         drugId = drug.getId();
         stockBefore = drug.getStock();
         drugPrice = drug.getPrice();

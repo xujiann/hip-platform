@@ -35,6 +35,7 @@ import static org.junit.jupiter.api.Assertions.*;
 @org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
 class LisRisReviewFlowTest {
 
+    @Autowired cn.hip.server.support.TestSeeds seeds;
     @Autowired DoctorStationService doctorStationService;
     @Autowired RegistrationService registrationService;
     @Autowired ChargeService chargeService;
@@ -77,7 +78,7 @@ class LisRisReviewFlowTest {
     @org.springframework.security.test.context.support.WithMockUser(roles = "PHARMACIST")
     void rejectedPrescriptionIsCancelledAndCannotBeReviewedTwice() {
         Long rid = visitedRegistration();
-        Long drugId = drugRepository.findTop20ByEnabledTrueAndNameContainingOrderByCode("布洛芬").get(0).getId();
+        Long drugId = seeds.drug("布洛芬").getId();
         Long orderId = doctorStationService.createOrders(rid,
                 List.of(new OrderLine("DRUG", drugId, 1, "口服", "bid", "1粒", 3)), null).get(0).getId();
 
@@ -92,7 +93,7 @@ class LisRisReviewFlowTest {
     @Test
     void lisSampleFlowExecutesOrderAndRaisesCriticalAlert() {
         Long rid = visitedRegistration();
-        Long labItem = chargeItemRepository.findTop20ByEnabledTrueAndNameContainingOrderByCode("血常规").get(0).getId();
+        Long labItem = seeds.chargeItem("血常规", "LAB").getId();
         Long orderId = doctorStationService.createOrders(rid,
                 List.of(new OrderLine("LAB", labItem, 1, null, null, null, null)), null).get(0).getId();
         chargeService.settle(rid, "CASH", null);
@@ -115,7 +116,7 @@ class LisRisReviewFlowTest {
     @Test
     void risReportMustBeWrittenBeforeVerify() {
         Long rid = visitedRegistration();
-        Long examItem = chargeItemRepository.findTop20ByEnabledTrueAndNameContainingOrderByCode("心电图").get(0).getId();
+        Long examItem = seeds.chargeItem("心电图", "EXAM").getId();
         Long orderId = doctorStationService.createOrders(rid,
                 List.of(new OrderLine("EXAM", examItem, 1, null, null, null, null)), null).get(0).getId();
         chargeService.settle(rid, "CASH", null);

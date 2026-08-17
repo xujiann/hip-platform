@@ -33,7 +33,7 @@
                    layout="total, prev, pager, next" style="margin-top: 12px" @current-change="load" />
 
     <el-dialog v-model="dialogVisible" :title="form.id ? '编辑档案' : '新建档案'" width="560px">
-      <el-form :model="form" label-width="90px">
+      <el-form ref="formRef" :model="form" :rules="rules" label-width="90px">
         <el-row :gutter="12">
           <el-col :span="12">
             <el-form-item label="证件类型">
@@ -45,12 +45,12 @@
             </el-form-item>
           </el-col>
           <el-col :span="12">
-            <el-form-item label="证件号">
+            <el-form-item label="证件号" prop="idNo">
               <el-input v-model="form.idNo" placeholder="身份证可自动带出生日/性别" />
             </el-form-item>
           </el-col>
           <el-col :span="12">
-            <el-form-item label="姓名" required><el-input v-model="form.name" /></el-form-item>
+            <el-form-item label="姓名" prop="name"><el-input v-model="form.name" /></el-form-item>
           </el-col>
           <el-col :span="12">
             <el-form-item label="性别">
@@ -67,7 +67,7 @@
             </el-form-item>
           </el-col>
           <el-col :span="12">
-            <el-form-item label="手机号"><el-input v-model="form.phone" /></el-form-item>
+            <el-form-item label="手机号" prop="phone"><el-input v-model="form.phone" /></el-form-item>
           </el-col>
           <el-col :span="12">
             <el-form-item label="医保类型">
@@ -168,9 +168,33 @@ function openEdit(row: PatientRow) {
   dialogVisible.value = true
 }
 
+const formRef = ref()
+// 1.2.1：格式错误在表单内就地提示，不再等后端 2003/4000 整表打回。
+// 含 * 的脱敏值禁止提交（原样回存会把真实号码永久覆盖成掩码，1.0.9 A-2 的前端侧防线）
+const rules = {
+  name: [{ required: true, message: '请填写姓名', trigger: 'blur' }],
+  idNo: [{
+    validator: (_r: unknown, v: string, cb: (e?: Error) => void) => {
+      if (!v) return cb()
+      if (v.includes('*')) return cb(new Error('脱敏值不能提交，请重新录入完整证件号'))
+      if (form.idType === 'ID_CARD' && !/^\d{17}[\dXx]$/.test(v)) return cb(new Error('身份证须为 18 位'))
+      cb()
+    }, trigger: 'blur',
+  }],
+  phone: [{
+    validator: (_r: unknown, v: string, cb: (e?: Error) => void) => {
+      if (!v) return cb()
+      if (v.includes('*')) return cb(new Error('脱敏值不能提交，请重新录入完整手机号'))
+      if (!/^1\d{10}$/.test(v)) return cb(new Error('手机号须为 11 位数字'))
+      cb()
+    }, trigger: 'blur',
+  }],
+}
+
 async function save() {
-  if (!form.name) {
-    ElMessage.warning('请填写姓名')
+  try {
+    await formRef.value?.validate()
+  } catch {
     return
   }
   saving.value = true

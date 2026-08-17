@@ -28,6 +28,7 @@ import static org.junit.jupiter.api.Assertions.*;
 @org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
 class Phase113FinanceTest {
 
+    @Autowired cn.hip.server.support.TestSeeds seeds;
     @Autowired ChargeService chargeService;
     @Autowired RegistrationService registrationService;
     @Autowired DoctorStationService doctorStationService;
@@ -57,8 +58,7 @@ class Phase113FinanceTest {
         sch = scheduleRepository.save(sch);
         Long regId = registrationService.register(patientId, sch.getId()).getId();
         doctorStationService.startVisit(regId, null);
-        Long itemId = jdbc.queryForObject(
-                "select id from md_drug where enabled limit 1", Long.class);
+        Long itemId = seeds.anyDrug().getId();
         doctorStationService.createOrders(regId,
                 List.of(new DoctorStationService.OrderLine("DRUG", itemId, 1, "口服", "qd", "1粒", null)), null);
         entityManager.flush();
@@ -174,7 +174,7 @@ class Phase113FinanceTest {
         Long bedId = jdbc.queryForObject("select id from inp_bed where status = 'FREE' limit 1", Long.class);
         Long admId = inpatientService.admit(pid, 1L, bedId, null, "J18.9", "肺炎",
                 new BigDecimal("500"), "CASH", null).getId();
-        Long drugId = jdbc.queryForObject("select id from md_drug where enabled limit 1", Long.class);
+        Long drugId = seeds.anyDrug().getId();
         var order = inpatientService.createOrders(admId,
                 List.of(new InpatientService.OrderLine("DRUG", drugId, 1, "口服", "qd", "1粒")), null).get(0);
         inpatientService.execute(order.getId(), null);

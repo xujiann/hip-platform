@@ -77,16 +77,17 @@ import { onMounted, ref } from 'vue'
 import { todayLocal } from '../../utils/date'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
+import type { Patient, Registration, Schedule } from '../../types/domain'
 
 const statusNames: Record<string, string> = { REGISTERED: '已挂号', CANCELLED: '已退号', VISITED: '已就诊' }
 const statusTag: Record<string, string> = { REGISTERED: 'success', CANCELLED: 'info', VISITED: '' }
 
 const date = ref(todayLocal())
 const patientKeyword = ref('')
-const patients = ref<Record<string, unknown>[]>([])
-const selectedPatient = ref<Record<string, unknown> | null>(null)
-const schedules = ref<Record<string, unknown>[]>([])
-const registrations = ref<Record<string, unknown>[]>([])
+const patients = ref<Patient[]>([])
+const selectedPatient = ref<Patient | null>(null)
+const schedules = ref<Schedule[]>([])
+const registrations = ref<Registration[]>([])
 const loadingSchedules = ref(false)
 const loadingRegs = ref(false)
 
@@ -95,7 +96,7 @@ async function searchPatients() {
   patients.value = resp.data.data.records
 }
 
-function selectPatient(row: Record<string, unknown> | null) {
+function selectPatient(row: Patient | null) {
   selectedPatient.value = row
 }
 
@@ -119,7 +120,7 @@ async function loadRegistrations() {
   }
 }
 
-async function doRegister(schedule: Record<string, unknown>) {
+async function doRegister(schedule: Schedule) {
   if (!selectedPatient.value) return
   const resp = await client.post('/outpatient/registrations', {
     patientId: selectedPatient.value.id,
@@ -130,7 +131,7 @@ async function doRegister(schedule: Record<string, unknown>) {
   await Promise.all([loadSchedules(), loadRegistrations()])
 }
 
-async function doCancel(row: Record<string, unknown>) {
+async function doCancel(row: Registration) {
   try {
     await ElMessageBox.confirm(`确认为 ${row.patientName} 退号？`, '退号确认')
   } catch {

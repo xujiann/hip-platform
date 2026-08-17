@@ -38,6 +38,7 @@ import static org.junit.jupiter.api.Assertions.*;
 @org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
 class ConcurrencyFixTest {
 
+    @Autowired cn.hip.server.support.TestSeeds seeds;
     @Autowired RegistrationService registrationService;
     @Autowired DoctorStationService doctorStationService;
     @Autowired DispenseService dispenseService;
@@ -70,8 +71,7 @@ class ConcurrencyFixTest {
 
     @Test
     void groupNoComesFromDbSequenceAndNeverRepeats() {
-        Long drugId = drugRepository.findTop20ByEnabledTrueAndNameContainingOrderByCode("阿莫西林")
-                .get(0).getId();
+        Long drugId = seeds.drug("阿莫西林").getId();
         Long reg1 = newVisitedRegistration("序列测试一");
         Long reg2 = newVisitedRegistration("序列测试二");
         var line = new OrderLine("DRUG", drugId, 1, "口服", "tid", "1粒", 3);

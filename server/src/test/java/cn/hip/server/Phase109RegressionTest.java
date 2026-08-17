@@ -37,6 +37,7 @@ import static org.junit.jupiter.api.Assertions.*;
 @org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
 class Phase109RegressionTest {
 
+    @Autowired cn.hip.server.support.TestSeeds seeds;
     @Autowired AppointmentController appointmentController;
     @Autowired InpatientService inpatientService;
     @Autowired DispenseService dispenseService;
@@ -74,8 +75,7 @@ class Phase109RegressionTest {
     @Test
     void appointmentSurvivesSeqConflict() {
         Long rid = visitedRegistration("预约冲突109");
-        Long examItem = chargeItemRepository
-                .findTop20ByEnabledTrueAndNameContainingOrderByCode("心电图").get(0).getId();
+        Long examItem = seeds.chargeItem("心电图", "EXAM").getId();
         var orders = doctorStationService.createOrders(rid,
                 List.of(new OrderLine("EXAM", examItem, 1, null, null, null, null),
                         new OrderLine("EXAM", examItem, 1, null, null, null, null)), null);
@@ -132,8 +132,8 @@ class Phase109RegressionTest {
     @Test
     void dispenseReturnsOnlyThisBatch() {
         Long rid = visitedRegistration("两次发药109");
-        Long metId = drugRepository.findTop20ByEnabledTrueAndNameContainingOrderByCode("二甲双胍").get(0).getId();
-        Long ibuId = drugRepository.findTop20ByEnabledTrueAndNameContainingOrderByCode("布洛芬").get(0).getId();
+        Long metId = seeds.drug("二甲双胍").getId();
+        Long ibuId = seeds.drug("布洛芬").getId();
 
         doctorStationService.createOrders(rid,
                 List.of(new OrderLine("DRUG", metId, 1, "口服", "bid", "1片", 7)), null);
@@ -154,7 +154,7 @@ class Phase109RegressionTest {
     @Test
     void returnDrugIsIdempotent() {
         Long rid = visitedRegistration("重复退药109");
-        Long drugId = drugRepository.findTop20ByEnabledTrueAndNameContainingOrderByCode("二甲双胍").get(0).getId();
+        Long drugId = seeds.drug("二甲双胍").getId();
         var order = doctorStationService.createOrders(rid,
                 List.of(new OrderLine("DRUG", drugId, 3, "口服", "bid", "1片", 7)), null).get(0);
         chargeService.settle(rid, "CASH", null);
@@ -179,7 +179,7 @@ class Phase109RegressionTest {
     @Test
     void refundedAtIsActuallyUsedByDailyReport() {
         Long rid = visitedRegistration("退费归集109");
-        Long drugId = drugRepository.findTop20ByEnabledTrueAndNameContainingOrderByCode("布洛芬").get(0).getId();
+        Long drugId = seeds.drug("布洛芬").getId();
         doctorStationService.createOrders(rid,
                 List.of(new OrderLine("DRUG", drugId, 1, "口服", "tid", "1粒", 3)), null);
         var charge = chargeService.settle(rid, "CASH", null);

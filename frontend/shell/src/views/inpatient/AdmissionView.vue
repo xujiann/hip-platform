@@ -70,15 +70,16 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import client from '../../api/client'
+import type { Admission, Patient } from '../../types/domain'
 
-const admissions = ref<Record<string, unknown>[]>([])
+const admissions = ref<Admission[]>([])
 const loading = ref(false)
 const dialogVisible = ref(false)
 const saving = ref(false)
 const depts = ref<{ id: number; name: string; type: string }[]>([])
-const patientOptions = ref<Record<string, unknown>[]>([])
+const patientOptions = ref<Patient[]>([])
 const icdOptions = ref<{ code: string; name: string }[]>([])
-const beds = ref<Record<string, unknown>[]>([])
+const beds = ref<{ id: number; bedNo: string; status: string; patientName?: string }[]>([])
 const wardId = ref<number | null>(null)
 const diagCode = ref<string | null>(null)
 

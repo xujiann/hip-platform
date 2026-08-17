@@ -29,6 +29,7 @@ import static org.junit.jupiter.api.Assertions.*;
 @org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
 class Phase107ConcurrencyTest {
 
+    @Autowired cn.hip.server.support.TestSeeds seeds;
     @Autowired InpatientService inpatientService;
     @Autowired PatientService patientService;
     @Autowired RegistrationService registrationService;
@@ -50,7 +51,7 @@ class Phase107ConcurrencyTest {
     }
 
     private Long drug(String keyword) {
-        return drugRepository.findTop20ByEnabledTrueAndNameContainingOrderByCode(keyword).get(0).getId();
+        return seeds.drug(keyword).getId();
     }
 
     /** P1-1：住院医嘱组号取数据库序列——不再是重启即回绕的内存计数 */

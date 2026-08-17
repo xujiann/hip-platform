@@ -29,14 +29,14 @@ class StockRestoreConcurrencyTest {
 
     private static final int THREADS = 8;
 
+    @Autowired cn.hip.server.support.TestSeeds seeds;
     @Autowired DrugItemRepository drugRepository;
     @Autowired PlatformTransactionManager txManager;
 
     @Test
     void concurrentRestoreStockLosesNoUpdate() throws Exception {
         TransactionTemplate tx = new TransactionTemplate(txManager);
-        Long drugId = drugRepository.findTop20ByEnabledTrueAndNameContainingOrderByCode("阿莫西林")
-                .get(0).getId();
+        Long drugId = seeds.drug("阿莫西林").getId();
         int before = drugRepository.findById(drugId).orElseThrow().getStock();
 
         ExecutorService pool = Executors.newFixedThreadPool(THREADS);

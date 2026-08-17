@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.*;
 @org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
 class Phase110DataIntegrityTest {
 
+    @Autowired cn.hip.server.support.TestSeeds seeds;
     @Autowired InpatientService inpatientService;
     @Autowired PatientService patientService;
     @Autowired OruProcessingService oruProcessingService;
@@ -79,8 +80,7 @@ class Phase110DataIntegrityTest {
         // 造两张真实的检验申请单（各自 groupNo），再用一条多 OBR 报文同时回传
         Long ridA = visitedRegistration("多OBR-A");
         Long ridB = visitedRegistration("多OBR-B");
-        Long labItem = chargeItemRepository
-                .findTop20ByEnabledTrueAndNameContainingOrderByCode("血常规").get(0).getId();
+        Long labItem = seeds.chargeItem("血常规", "LAB").getId();
         var orderA = doctorStationService.createOrders(ridA,
                 List.of(new cn.hip.outpatient.service.DoctorStationService.OrderLine("LAB", labItem, 1, null, null, null, null)), null).get(0);
         var orderB = doctorStationService.createOrders(ridB,

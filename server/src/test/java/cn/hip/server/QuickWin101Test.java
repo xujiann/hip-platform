@@ -34,6 +34,7 @@ class QuickWin101Test {
         configReader.evictAll();
     }
 
+    @Autowired cn.hip.server.support.TestSeeds seeds;
     @Autowired RegistrationService registrationService;
     @Autowired DoctorStationService doctorStationService;
     @Autowired ChargeService chargeService;
@@ -64,7 +65,7 @@ class QuickWin101Test {
     @Test
     void chargeNoPrefixIsConfigurable() {
         Long rid = visit();
-        Long metId = drugRepository.findTop20ByEnabledTrueAndNameContainingOrderByCode("二甲双胍").get(0).getId();
+        Long metId = seeds.drug("二甲双胍").getId();
         doctorStationService.createOrders(rid, List.of(
                 new OrderLine("DRUG", metId, 1, "口服", "bid", "1片", 7)), null);
         entityManager.flush();
@@ -78,8 +79,8 @@ class QuickWin101Test {
     @Test
     void reviewPendingLimitCapsWorklist() {
         Long rid = visit();
-        Long metId = drugRepository.findTop20ByEnabledTrueAndNameContainingOrderByCode("二甲双胍").get(0).getId();
-        Long ibuId = drugRepository.findTop20ByEnabledTrueAndNameContainingOrderByCode("布洛芬").get(0).getId();
+        Long metId = seeds.drug("二甲双胍").getId();
+        Long ibuId = seeds.drug("布洛芬").getId();
         doctorStationService.createOrders(rid, List.of(
                 new OrderLine("DRUG", metId, 1, "口服", "bid", "1片", 7),
                 new OrderLine("DRUG", ibuId, 1, "口服", "bid", "1粒", 3)), null);
