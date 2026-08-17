@@ -38,6 +38,7 @@ class InsuranceSplitTest {
     @Autowired DrugItemRepository drugRepository;
     @Autowired ChargeItemRepository chargeItemRepository;
     @Autowired JdbcTemplate jdbc;
+    @Autowired cn.hip.platform.core.service.ConfigReader configReader;
     @Autowired EntityManager entityManager;
 
     private Long ybVisit(String insuranceType) {

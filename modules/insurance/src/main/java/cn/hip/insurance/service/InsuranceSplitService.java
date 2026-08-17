@@ -19,11 +19,13 @@ import java.util.stream.Collectors;
  * 待遇模型：年度起付线/封顶线（sys_config，0=不启用）；不启用时统筹按逐行舍入求和，
  * 与二十七期算法逐分一致；启用后统筹按账单级「(可报销基数-起付线扣除)×比例，封顶截断」。
  */
+@lombok.extern.slf4j.Slf4j
 @Service
 @RequiredArgsConstructor
 public class InsuranceSplitService {
 
     private final JdbcTemplate jdbc;
+    private final cn.hip.platform.core.service.ConfigReader configReader;
 
     /** 订单行的医保视角：类型（DRUG 走药品目录，其余走诊疗目录）、编码、金额、数量 */
     public record YbLine(String orderType, String itemCode, String itemName, BigDecimal amount, Integer qty) {}
@@ -153,10 +155,21 @@ public class InsuranceSplitService {
         };
     }
 
+    /**
+     * 配置读取走 ConfigReader（1.1.6 B-1）：每笔 YB 结算读 3–5 键，直查等于放弃 1.1.4 的缓存；
+     * 坏值（历史遗留/绕过校验直改库）安全解析——比例键回落 0 会让患者被静默全额自费，
+     * 故坏值一律 error 级告警，让问题在日志里可见而不是在患者账单里。
+     */
     private BigDecimal cfg(String key) {
         if (key == null) return BigDecimal.ZERO;
-        var rows = jdbc.queryForList("select cfg_value from sys_config where cfg_key = ?", String.class, key);
-        return rows.isEmpty() ? BigDecimal.ZERO : new BigDecimal(rows.get(0));
+        String v = configReader.get(key, null);
+        if (v == null) return BigDecimal.ZERO;
+        try {
+            return new BigDecimal(v.trim());
+        } catch (NumberFormatException e) {
+            log.error("sys_config 键 {} 的值 [{}] 不是数字，按 0 处理——请立即修正（医保分割正在受影响）", key, v);
+            return BigDecimal.ZERO;
+        }
     }
 
     /** 审核规则雏形（阈值走 sys_config；真实智能审核规则库接入后替换数据源）：

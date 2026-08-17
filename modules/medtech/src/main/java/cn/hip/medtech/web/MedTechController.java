@@ -97,7 +97,9 @@ public class MedTechController {
         if (substitute) {
             var allow = jdbc.queryForList(
                     "select cfg_value from sys_config where cfg_key = 'lis_allow_substitute'", String.class);
-            if (!allow.isEmpty() && "false".equalsIgnoreCase(allow.get(0))) {
+            // 双语义（1.1.6 B-1）：历史约定 true/false，全库惯例 0/1——只认字面 false 时，
+            // 管理员按惯例填 0 替检仍会放行
+            if (!allow.isEmpty() && ("false".equalsIgnoreCase(allow.get(0)) || "0".equals(allow.get(0)))) {
                 return R.fail(4770, "本院参数已禁止替检");
             }
         }

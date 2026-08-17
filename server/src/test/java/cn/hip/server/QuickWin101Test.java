@@ -28,6 +28,12 @@ import static org.junit.jupiter.api.Assertions.*;
 @org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
 class QuickWin101Test {
 
+    /** 事务内直写的配置值会被 ConfigReader 缓存，回滚后缓存带毒——测后必须移除（1.1.6） */
+    @org.junit.jupiter.api.AfterEach
+    void evictPoisonedConfigCache() {
+        configReader.evictAll();
+    }
+
     @Autowired RegistrationService registrationService;
     @Autowired DoctorStationService doctorStationService;
     @Autowired ChargeService chargeService;

@@ -30,6 +30,12 @@ import static org.junit.jupiter.api.Assertions.*;
 @org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
 class InsuranceBenefitTest {
 
+    /** 事务内直写的配置值会被 ConfigReader 缓存，回滚后缓存带毒——测后必须移除（1.1.6） */
+    @org.junit.jupiter.api.AfterEach
+    void evictPoisonedConfigCache() {
+        configReader.evictAll();
+    }
+
     @Autowired RegistrationService registrationService;
     @Autowired DoctorStationService doctorStationService;
     @Autowired ChargeService chargeService;
@@ -38,6 +44,7 @@ class InsuranceBenefitTest {
     @Autowired DrugItemRepository drugRepository;
     @Autowired InsuranceSplitService insuranceSplitService;
     @Autowired JdbcTemplate jdbc;
+    @Autowired cn.hip.platform.core.service.ConfigReader configReader;
     @Autowired EntityManager entityManager;
 
     private Long newPatient(String insuranceType) {
@@ -62,6 +69,7 @@ class InsuranceBenefitTest {
 
     private void setCfg(String key, String value) {
         jdbc.update("update sys_config set cfg_value = ? where cfg_key = ?", value, key);
+        configReader.evictAll();   // 分割引擎经 ConfigReader 缓存读取（1.1.6 B-1），直写库须手动失效
     }
 
     /** 二甲双胍（甲类 9.9）×2 的 YB 结算单 */

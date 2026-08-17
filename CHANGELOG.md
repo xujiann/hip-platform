@@ -2,6 +2,37 @@
 
 版本纪律：语义化版本；平台迁移段 V1–V999，实施段 V10000+；升级 = 停服→备份→换产物→自动前滚→回归抽查（多医院部署操作指南 §三）。
 
+## 1.1.6（2026-08-17）
+
+第四轮审阅方向 A：安全与账务正确性（V57）。
+
+- **INTERFACE 全域隔离**（A-1，P0）：安全链上 `/api/integration/**` 之外对 INTERFACE 一律拒绝——
+  不再依赖每个控制器记得写注解。此前 LIS 接口机凭据可直调无注解的入院/出院/**结算冲销**并发出
+  真实医保冲正报文（两轮修复在同一盲区互相放大）。InpatientController/RiskAssessController
+  补类级注解，冲销限 ADMIN/CASHIER
+- **配置校验对齐真实键集**（B-1）：原规则校验的 `yb_annual_limit` 是幽灵键，真实封顶线键
+  `yb_cap_*` 零校验——B-6 声称堵死的"填 abc 全院结算 500"换一半键原样复发。补齐 `yb_cap_/
+  yb_audit_*/lis_allow_substitute(双语义)/empi_idcard_checksum`；分割引擎与 DRG 费率改走
+  ConfigReader（缓存终于接到热点），坏值 error 告警而非 500 或静默全自费
+- **冲销再出院不再双入组**（B-2）：DRG/护理病历/CDR 摘要三处 join 补 `status='PAID'`
+  （1.1.4 只修了 StatsController）；`drg_case.admission_id` 先清重再建唯一索引；
+  删除隐患接口 `findByAdmissionId`
+- **渠道调用一律是事务内最后一步**（B-3）：冲销/退费的 reverse、出院的床位释放全部挪到
+  医保上传**之前**——本地失败则报文根本不发，渠道失败则本地随事务回滚。
+  新增真提交模式失败路径测试（可编程假适配器定向让冲正失败→断言全量回滚+重试安全）
+- **对账补退费侧窗口**（B-4）：异日退费/冲销按退费日复检冲正报文——"本地已退、医保未冲"
+  此前永远漏网；PAID 单存在冲正报文也标异常（反向悬账信号）
+- **MLLP**（B-5/B-6）：CIDR 前缀越界显式拒绝（`/33` 曾因 Java 移位 mod 64 静默放行全网）；
+  线程池改 SynchronousQueue + 连接数上限 `mllp-max-conn`（原队列型池让第 5–36 个长连接
+  "已握手永不被读"，LIS 等 ACK 超时反复重发）
+- **杂项**：legacy_key 校验上限对齐列宽（B-15）；9013 撞码拆分（医保上传失败→9026）；
+  `yb_settle_split/yb_audit_log` 建 created_at 索引（B-9，1.1.3 的半开区间就此真正生效）
+
+测试 136（新增 Phase116Security×5 / Phase116ChannelOrder×1）。
+测试方法论新证：`@Transactional` 测试里 ①assertThrows 接住异常后回滚不会发生——
+回滚语义必须真提交模式验证；②事务内直写的配置被 ConfigReader 缓存后回滚，缓存带毒
+污染后续测试——直写配置的测试类须 @AfterEach evictAll。
+
 ## 1.1.5（2026-08-17）
 
 试点支撑批（V56）：存量切换工具链收口 + 执行计划实证 + 巡检残项。

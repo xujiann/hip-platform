@@ -23,7 +23,7 @@ import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -70,11 +70,18 @@ public class MllpServer {
     @Value("${hip.integration.mllp-max-frame:1048576}")
     private int maxFrame;
 
+    /** 并发连接上限（每连接常驻一线程，按院内设备/中间件数量上调） */
+    @Value("${hip.integration.mllp-max-conn:16}")
+    private int maxConnections;
+
     private ServerSocket serverSocket;
     private Thread acceptorThread;
-    /** 业务处理池：核心 4 / 上限 8 / 队列 32，满即拒绝新连接——上限可估算，堆不可估算 */
-    private final ExecutorService pool = new ThreadPoolExecutor(
-            4, 8, 60, TimeUnit.SECONDS, new ArrayBlockingQueue<>(32));
+    /**
+     * 每个连接是**驻留任务**（循环收帧直至断开），队列型池会让超过核心数的连接
+     * "已握手但永不被读取"——LIS 等 ACK 超时反复重发（1.1.6 B-6）。
+     * 故用 SynchronousQueue：有空闲线程立接，无则立拒（拒绝路径关 socket，设备按重连策略退避）。
+     */
+    private ExecutorService pool;
     private volatile boolean running;
     private List<long[]> allowedCidrs;   // {network, mask} 预解析
 
@@ -92,6 +99,8 @@ public class MllpServer {
             return;
         }
         try {
+            pool = new ThreadPoolExecutor(1, Math.max(1, maxConnections),
+                    60, TimeUnit.SECONDS, new SynchronousQueue<>());
             serverSocket = new ServerSocket();
             serverSocket.bind(new InetSocketAddress(InetAddress.getByName(bindAddress), port));
             running = true;
@@ -238,6 +247,11 @@ public class MllpServer {
                     s = parts[0];
                     bits = Integer.parseInt(parts[1]);
                 }
+                if (bits < 0 || bits > 32) {
+                    // Java 移位按 mod 64：/33 会让 mask 归零 = 放行全网，且启动日志仍显示"白名单 1 条"——
+                    // 安全机制以"看似生效"的方式失效（1.1.6 B-5），必须显式拒绝
+                    throw new IllegalArgumentException("CIDR 前缀须在 0–32 之间：" + item);
+                }
                 long mask = bits == 0 ? 0 : (0xFFFFFFFFL << (32 - bits)) & 0xFFFFFFFFL;
                 long net = ipToLong(InetAddress.getByName(s).getAddress()) & mask;
                 out.add(new long[]{net, mask});
@@ -290,6 +304,6 @@ public class MllpServer {
             if (serverSocket != null) serverSocket.close();
         } catch (IOException ignored) {
         }
-        pool.shutdownNow();
+        if (pool != null) pool.shutdownNow();
     }
 }

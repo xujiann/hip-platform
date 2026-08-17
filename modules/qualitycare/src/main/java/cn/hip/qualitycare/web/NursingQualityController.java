@@ -86,7 +86,7 @@ public class NursingQualityController {
                 from inp_admission a
                 join empi_patient p on p.id = a.patient_id
                 join sys_dept d on d.id = a.dept_id
-                left join inp_settlement s on s.admission_id = a.id
+                left join inp_settlement s on s.admission_id = a.id and s.status = 'PAID'
                 where a.id = ?
                 """, id);
         if (rows.isEmpty()) return R.fail(9802, "住院记录不存在");

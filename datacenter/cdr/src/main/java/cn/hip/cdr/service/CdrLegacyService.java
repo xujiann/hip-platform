@@ -45,8 +45,10 @@ public class CdrLegacyService {
 
     @Transactional
     public Map<String, Object> importDocument(LegacyDoc req) {
-        if (req.legacyKey() == null || req.legacyKey().isBlank() || req.legacyKey().length() > 120) {
-            throw new LegacyException(4681, "老系统单号必填且不超过 120 字符（幂等键）");
+        // 上限 = 列宽 128 - 最长前缀 "LEGACY_REPORT:"(14)：校验放行而落库炸约束会让批量导入
+        // 中断在无法定位的 4091 上（1.1.6 B-15）
+        if (req.legacyKey() == null || req.legacyKey().isBlank() || req.legacyKey().length() > 114) {
+            throw new LegacyException(4681, "老系统单号必填且不超过 114 字符（幂等键）");
         }
         if (req.category() == null || !CATEGORIES.contains(req.category())) {
             throw new LegacyException(4682, "类别须为 OUTP/INP/REPORT/OTHER 之一");

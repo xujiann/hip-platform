@@ -255,6 +255,15 @@ public class InpatientService {
                 configReader.get("billno_prefix_settle", "CY"),
                 LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE), s.getId()));
         s = settlementRepo.save(s);
+        // 必须用抢占**之后**重读的床位：adm 是 claim 前的快照且已被 clearAutomatically detach，
+        // 期间若发生转床，用旧 bedId 释放会影响 0 行 → 新床永久 OCCUPIED 无法再收治。
+        // 床位释放在医保上传**之前**（1.1.6 B-3）：9018 是本方法自定义的失败路径，
+        // 若排在上传之后，触发即"医保已扣、本地整体回滚无结算单"。
+        Long currentBedId = admissionRepo.findById(admissionId).orElseThrow().getBedId();
+        if (bedRepo.release(currentBedId, admissionId) == 0) {
+            throw new InpException(9018, "床位释放失败（床位已被改动），请联系管理员核对床位状态");
+        }
+
         if ("YB".equals(s.getPayMethod())) {
             // 住院行级分割（批次二）：与门诊共用分割引擎，biz_type=INP 走住院比例
             insuranceSplitService.splitAndAudit("INP", s.getSettleNo(), adm.getPatientId(), total,
@@ -264,17 +273,11 @@ public class InpatientService {
                             .toList());
             var res = insuranceAdapter.uploadSettlement(s.getSettleNo(), total);
             if (!res.ok()) {
-                throw new InpException(9013, "医保出院结算上传失败: " + res.message());
+                throw new InpException(9026, "医保出院结算上传失败: " + res.message());   // 原 9013 与"已出院不能转科"撞码
             }
+            // 渠道成功后仅剩回填渠道结算号这一个本地写（无业务校验、无抢占），失败面可忽略
             s.setYbSettleNo(res.settleNo());
             s = settlementRepo.save(s);
-        }
-
-        // 必须用抢占**之后**重读的床位：adm 是 claim 前的快照且已被 clearAutomatically detach，
-        // 期间若发生转床，用旧 bedId 释放会影响 0 行 → 新床永久 OCCUPIED 无法再收治。
-        Long currentBedId = admissionRepo.findById(admissionId).orElseThrow().getBedId();
-        if (bedRepo.release(currentBedId, admissionId) == 0) {
-            throw new InpException(9018, "床位释放失败（床位已被改动），请联系管理员核对床位状态");
         }
         return s;
     }
@@ -308,11 +311,14 @@ public class InpatientService {
             throw new InpException(9025, "该患者不在已出院状态（可能已被召回）");
         }
         if ("YB".equals(s.getPayMethod())) {
+            // 本地额度回退在前、渠道冲正在后（1.1.6 B-3）：渠道成功后不允许再有可失败的本地步骤。
+            // reverse 可能因年度累计行锁超时失败——若排在冲正之后，本地回滚而医保已冲，
+            // 操作员重试会对同一 settleNo 二次发冲正报文
+            insuranceSplitService.reverse(s.getSettleNo());
             var res = insuranceAdapter.uploadRefund(s.getSettleNo());
             if (!res.ok()) {
                 throw new InpException(9023, "医保冲正失败，结算冲销终止: " + res.message());
             }
-            insuranceSplitService.reverse(s.getSettleNo());
         }
         return admissionRepo.findById(admissionId).orElseThrow();
     }

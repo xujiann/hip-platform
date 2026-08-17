@@ -10,6 +10,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /** 机构参数：公开配置供登录页/单据读取，修改仅管理员 */
 @RestController
@@ -44,14 +45,22 @@ public class SysConfigController {
         if (value == null || value.length() > 512) {
             return "配置值不能为空且长度不超过 512";
         }
-        if (key.startsWith("yb_ratio_")) {
+        if (key.startsWith("yb_ratio_") || key.startsWith("yb_audit_self_ratio")) {
             return numericIn(value, java.math.BigDecimal.ZERO, java.math.BigDecimal.ONE)
-                    ? null : "医保报销比例须为 0–1 之间的数字（如 0.7）";
+                    ? null : "比例须为 0–1 之间的数字（如 0.7）";
         }
-        if (key.endsWith("_enabled") || (key.startsWith("module.") && key.endsWith(".enabled"))) {
+        if (key.endsWith("_enabled") || (key.startsWith("module.") && key.endsWith(".enabled"))
+                || key.equals("empi_idcard_checksum")) {
             return "0".equals(value) || "1".equals(value) ? null : "开关值只能是 0 或 1";
         }
-        if (key.equals("drg_rate") || key.startsWith("yb_deductible") || key.startsWith("yb_annual_limit")) {
+        if (key.equals("lis_allow_substitute")) {
+            // 历史种子与 E2E 用 true/false，全库其余开关用 0/1——两种都认，读取端同双语义
+            return Set.of("0", "1", "true", "false").contains(value) ? null : "开关值须为 0/1 或 true/false";
+        }
+        // 1.1.6 B-1：原规则校验的 yb_annual_limit 是不存在的幽灵键，真实封顶线键是 yb_cap_*——
+        // 校验规则必须对着真实键集写（InsuranceSplitService.capKey/deductibleKey）
+        if (key.equals("drg_rate") || key.startsWith("yb_deductible") || key.startsWith("yb_cap_")
+                || key.startsWith("yb_audit_qty") || key.equals("review_pending_limit")) {
             return numericIn(value, java.math.BigDecimal.ZERO, new java.math.BigDecimal("100000000"))
                     ? null : "须为非负数字";
         }

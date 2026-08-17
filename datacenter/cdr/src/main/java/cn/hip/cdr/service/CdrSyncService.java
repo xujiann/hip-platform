@@ -177,7 +177,10 @@ public class CdrSyncService {
             doc.put("dischargedAt", String.valueOf(a.get("discharged_at")));
             doc.put("records", jdbc.queryForList(
                     "select record_type, title, content, created_at from inp_medical_record where admission_id = ? order by id", admId));
-            jdbc.queryForList("select total_amount, deposit_amount, balance from inp_settlement where admission_id = ?", admId)
+            jdbc.queryForList("""
+                    select total_amount, deposit_amount, balance from inp_settlement
+                    where admission_id = ? and status = 'PAID' order by id desc limit 1
+                    """, admId)
                     .stream().findFirst().ifPresent(s -> doc.put("settlement", s));
             upsert(((Number) a.get("patient_id")).longValue(), "INP_SUMMARY", admId,
                     "住院摘要 · " + a.get("dept_name"), ((java.sql.Timestamp) a.get("admit_at")).toInstant(), doc);

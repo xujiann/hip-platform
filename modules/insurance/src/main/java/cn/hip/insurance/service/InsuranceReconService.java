@@ -48,14 +48,36 @@ public class InsuranceReconService {
             boolean refunded = "REFUNDED".equals(c.get("status"));
             boolean amountOk = settle.exists() && (settle.amount() == null
                     || settle.amount().compareTo(amount) == 0);
+            // PAID 单却存在冲正报文=渠道已冲、本地未退（B-3 时序事故的产物），必须标异常
+            boolean orphanRefund = !refunded && refund.exists();
             boolean consistent = (refunded ? settle.exists() && refund.exists() : settle.exists())
-                    && amountOk;
+                    && amountOk && !orphanRefund;
             var row = reconRow("OUTP", no, amount, (String) c.get("status"),
                     settle.exists(), refund.exists(), consistent);
             row.put("channel_amount", settle.amount());
             row.put("amount_match", amountOk);
             if (settle.exists() && !amountOk) {
                 row.put("note", "金额不符：业务 %s / 通道 %s".formatted(amount, settle.amount()));
+            } else if (orphanRefund) {
+                row.put("note", "本地未退费但通道存在冲正报文（疑似渠道已冲、本地未退）");
+            }
+            out.add(row);
+        }
+        // 退费侧窗口（1.1.6 B-4）：D1 结算 D5 退费的单，created_at 窗口永远不会复检它——
+        // "本地已退、医保未冲"就此漏网。按退费日再扫一遍，只核退费动作对应的冲正报文。
+        for (var c : jdbc.queryForList("""
+                select charge_no, total_amount from outp_charge
+                where pay_method = 'YB' and status = 'REFUNDED'
+                  and refunded_at >= ?::date and refunded_at < ?::date + interval '1 day'
+                  and (created_at < ?::date or created_at >= ?::date + interval '1 day')
+                order by id
+                """, date, date, date, date)) {
+            String no = (String) c.get("charge_no");
+            ChannelMsg refund = channelMsg(no, "refund");
+            var row = reconRow("OUTP_REFUND", no, c.get("total_amount"), "REFUNDED",
+                    true, refund.exists(), refund.exists());
+            if (!refund.exists()) {
+                row.put("note", "当日退费但通道无冲正报文（本地已退、医保未冲）");
             }
             out.add(row);
         }
@@ -81,6 +103,23 @@ public class InsuranceReconService {
             row.put("amount_match", amountOk);
             if (settle.exists() && !amountOk) {
                 row.put("note", "金额不符：业务 %s / 通道 %s".formatted(amount, settle.amount()));
+            }
+            out.add(row);
+        }
+        // 住院退费侧窗口（B-4）：异日冲销的结算单按冲销日复检冲正报文
+        for (var s : jdbc.queryForList("""
+                select settle_no, total_amount from inp_settlement
+                where pay_method = 'YB' and status = 'CANCELLED'
+                  and refunded_at >= ?::date and refunded_at < ?::date + interval '1 day'
+                  and (created_at < ?::date or created_at >= ?::date + interval '1 day')
+                order by id
+                """, date, date, date, date)) {
+            String no = (String) s.get("settle_no");
+            ChannelMsg refund = channelMsg(no, "refund");
+            var row = reconRow("INP_REFUND", no, s.get("total_amount"), "CANCELLED",
+                    true, refund.exists(), refund.exists());
+            if (!refund.exists()) {
+                row.put("note", "当日冲销但通道无冲正报文（本地已冲销、医保未冲正）");
             }
             out.add(row);
         }

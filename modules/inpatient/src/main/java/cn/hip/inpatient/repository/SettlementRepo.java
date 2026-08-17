@@ -7,8 +7,8 @@ import java.util.Optional;
 
 public interface SettlementRepo extends JpaRepository<InpSettlement, Long> {
 
-    Optional<InpSettlement> findByAdmissionId(Long admissionId);
-
+    // 注意：V54 起一次入院可有多行结算（含 CANCELLED），按 admissionId 取"单条"必须带状态——
+    // 故不提供裸 findByAdmissionId（曾存在，1.1.6 B-2 删除）
     Optional<InpSettlement> findByAdmissionIdAndStatus(Long admissionId, String status);
 
     /** 抢占冲销：只有 PAID 单能被冲销一次，受影响行数即"本次是否抢到" */

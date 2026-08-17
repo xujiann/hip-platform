@@ -95,17 +95,19 @@ public class ChargeService {
         if (orderRepository.claimRefund(ids) != ids.size()) {
             throw new BizException(5009, "项目状态已变化（可能正在发药或执行），退费终止");
         }
-        if ("YB".equals(charge.getPayMethod())) {
-            var res = insuranceAdapter.uploadRefund(charge.getChargeNo());
-            if (!res.ok()) {
-                // 与结算同语义：冲正失败即回滚本地退费，杜绝「本地已退费、医保未冲正」的悬账
-                throw new BizException(5007, "医保退费冲正失败: " + res.message());
-            }
-            insuranceSplitService.reverse(charge.getChargeNo());
-        }
         charge.setStatus("REFUNDED");
         charge.setRefundedAt(java.time.Instant.now());   // 日结按退费日归集，不再改写历史日报表
         charge.setRefundBy(operatorId);                  // 甲收乙退时账各归各，交款核查才有意义
-        return chargeRepository.save(charge);
+        OutpCharge saved = chargeRepository.save(charge);
+        if ("YB".equals(charge.getPayMethod())) {
+            // 本地写全部完成后才碰渠道（1.1.6 B-3）：渠道失败→本地随事务回滚，报文未产生副作用前
+            // 单据不动；渠道成功后事务内无任何可失败步骤，杜绝「医保已冲、本地未退」
+            insuranceSplitService.reverse(charge.getChargeNo());
+            var res = insuranceAdapter.uploadRefund(charge.getChargeNo());
+            if (!res.ok()) {
+                throw new BizException(5007, "医保退费冲正失败: " + res.message());
+            }
+        }
+        return saved;
     }
 }

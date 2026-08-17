@@ -13,6 +13,7 @@ import java.util.Map;
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/api/nursing/risk-assess")
+@org.springframework.security.access.prepost.PreAuthorize("hasAnyRole('ADMIN','NURSE','QUALITY')")
 public class RiskAssessController {
 
     private final JdbcTemplate jdbc;

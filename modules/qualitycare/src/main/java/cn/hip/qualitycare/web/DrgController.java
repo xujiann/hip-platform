@@ -25,6 +25,7 @@ import java.util.Map;
 public class DrgController {
 
     private final JdbcTemplate jdbc;
+    private final cn.hip.platform.core.service.ConfigReader configReader;
 
     private static final BigDecimal MCC_FACTOR = new BigDecimal("1.30");
     private static final BigDecimal CC_FACTOR = new BigDecimal("1.15");
@@ -77,7 +78,7 @@ public class DrgController {
                        round((extract(epoch from (a.discharged_at - a.admit_at)) / 86400)::numeric, 1) as inp_days,
                        exists (select 1 from inp_surgery g where g.admission_id = a.id and g.status = 'DONE') as has_surgery
                 from inp_admission a
-                left join inp_settlement s on s.admission_id = a.id
+                left join inp_settlement s on s.admission_id = a.id and s.status = 'PAID'
                 where a.status = 'DISCHARGED'
                   and not exists (select 1 from drg_case c where c.admission_id = a.id)
                 """);
@@ -166,8 +167,11 @@ public class DrgController {
     }
 
     private BigDecimal rate() {
-        var rows = jdbc.queryForList("select cfg_value from sys_config where cfg_key = 'drg_rate'", String.class);
-        return rows.isEmpty() ? BigDecimal.ZERO : new BigDecimal(rows.get(0));
+        try {
+            return new BigDecimal(configReader.get("drg_rate", "0"));
+        } catch (NumberFormatException e) {
+            return BigDecimal.ZERO;   // 坏值不炸分析页；写入侧已有校验（1.1.6 B-1）
+        }
     }
 
     /** 病组分析：例数/权重/费用/住院日 + CMI、费用消耗指数、时间消耗指数、支付模拟（标杆/结余） */

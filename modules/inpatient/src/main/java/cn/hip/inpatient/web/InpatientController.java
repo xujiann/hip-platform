@@ -21,6 +21,9 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/api/inpatient")
+// 1.1.6 A-1：此前全类无注解，任何在职账号（含 INTERFACE 接口机）可入院/出院/开医嘱/冲销结算
+@org.springframework.security.access.prepost.PreAuthorize(
+        "hasAnyRole('ADMIN','DOCTOR_OUTP','NURSE','CASHIER')")
 @RequiredArgsConstructor
 public class InpatientController {
 
@@ -228,6 +231,7 @@ public class InpatientController {
     }
 
     /** 结算冲销（出院召回）：住院侧此前无任何退费/冲正路径，结算错误只能改库（1.1.3 B-5） */
+    @org.springframework.security.access.prepost.PreAuthorize("hasAnyRole('ADMIN','CASHIER')")
     @PostMapping("/admissions/{id}/cancel-settlement")
     public R<Object> cancelSettlement(@PathVariable Long id,
                                       @RequestParam(required = false) Long bedId,
