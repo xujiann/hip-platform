@@ -192,6 +192,10 @@ jobs:
       # 1.0.9 教训：两道安全闸门（JWT 密钥、Mock 适配器）自实现起从未被任何自动化路径执行过，
       # 因为编排与 CI 都不设 profile。这个作业就是那条缺失的覆盖。
       - name: 缺 HIP_JWT_SECRET 时必须拒绝启动
+        env:
+          HIP_DB_URL: jdbc:postgresql://localhost:5432/hip
+          HIP_DB_USER: hip
+          HIP_DB_PASSWORD: hip123456
         run: |
           set +e
           timeout 90 java -jar server/target/hip-server-*.jar --spring.profiles.active=pilot             > pilot-nokey.log 2>&1
@@ -199,12 +203,16 @@ jobs:
           if grep -q "拒绝启动" pilot-nokey.log; then
             echo "OK：占位密钥被拒绝"
           else
-            echo "FAIL：pilot profile 未拦住开发占位密钥"; tail -40 pilot-nokey.log; exit 1
+            echo "FAIL：pilot profile 未拦住开发占位密钥（若日志是别的启动错误，说明本作业环境不对）"
+            tail -60 pilot-nokey.log; exit 1
           fi
 
       - name: 带密钥但仍用 Mock 适配器时必须拒绝启动
         env:
           HIP_JWT_SECRET: ci-only-strong-secret-0123456789abcdefghijklmnop
+          HIP_DB_URL: jdbc:postgresql://localhost:5432/hip
+          HIP_DB_USER: hip
+          HIP_DB_PASSWORD: hip123456
         run: |
           set +e
           timeout 90 java -jar server/target/hip-server-*.jar --spring.profiles.active=pilot             > pilot-mock.log 2>&1
