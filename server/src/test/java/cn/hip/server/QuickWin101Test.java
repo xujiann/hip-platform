@@ -35,6 +35,7 @@ class QuickWin101Test {
     @Autowired OutpScheduleRepository scheduleRepository;
     @Autowired DrugItemRepository drugRepository;
     @Autowired JdbcTemplate jdbc;
+    @Autowired cn.hip.platform.core.service.ConfigReader configReader;
     @Autowired EntityManager entityManager;
 
     private Long visit() {
@@ -62,6 +63,7 @@ class QuickWin101Test {
                 new OrderLine("DRUG", metId, 1, "口服", "bid", "1片", 7)), null);
         entityManager.flush();
         jdbc.update("update sys_config set cfg_value = 'JS' where cfg_key = 'billno_prefix_charge'");
+        configReader.evictAll();   // 测试直写库，须手动失效 30 秒缓存（生产路径由 SysConfigController 失效）
         var charge = chargeService.settle(rid, "CASH", null);
         assertTrue(charge.getChargeNo().startsWith("JS"), charge.getChargeNo());
     }
@@ -84,6 +86,7 @@ class QuickWin101Test {
         assertTrue(pendingAll >= 2);
         // 上限逻辑为列表截断（ReviewController.pending）；此处校验配置键存在且可解析
         jdbc.update("update sys_config set cfg_value = '1' where cfg_key = 'review_pending_limit'");
+        configReader.evictAll();
         String v = jdbc.queryForObject(
                 "select cfg_value from sys_config where cfg_key = 'review_pending_limit'", String.class);
         assertEquals("1", v);

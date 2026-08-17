@@ -131,18 +131,21 @@ public class MllpServer {
         try (socket; InputStream in = socket.getInputStream(); OutputStream out = socket.getOutputStream()) {
             socket.setSoTimeout(30000);
             while (true) {
-                String raw;
+                byte[] frameBytes;
                 try {
-                    raw = readFrame(in);
+                    frameBytes = readFrame(in);
                 } catch (FrameTooLargeException e) {
                     // AE 应答必须在 socket 关闭前发出，故在循环内处理而非外层 catch
                     log.warn("MLLP 单帧超过上限 {} 字节，断开 {}", maxFrame,
                             socket.getInetAddress().getHostAddress());
-                    out.write(frame(buildAck("", false, "报文超长")));
+                    out.write(frame(buildAck("", false, "报文超长"), StandardCharsets.UTF_8));
                     out.flush();
                     break;
                 }
-                if (raw == null) break;
+                if (frameBytes == null) break;
+                // 字符集按 MSH-18 声明解码（国产 LIS 常发 GBK，硬编码 UTF-8 会让中文结果乱码入库）
+                var charset = declaredCharset(frameBytes);
+                String raw = new String(frameBytes, charset);
                 // 业务异常不能逃逸：不回 ACK 会让 LIS 中间件反复重发同一条报文
                 boolean ok;
                 String message;
@@ -155,7 +158,7 @@ public class MllpServer {
                     ok = false;
                     message = "内部处理异常";
                 }
-                out.write(frame(buildAck(raw, ok, message)));
+                out.write(frame(buildAck(raw, ok, message), charset));
                 out.flush();
             }
         } catch (IOException e) {
@@ -166,8 +169,8 @@ public class MllpServer {
     private static final class FrameTooLargeException extends IOException {
     }
 
-    /** 读取一帧；流结束返回 null；超过 maxFrame 抛 FrameTooLargeException（原实现无限缓冲） */
-    private String readFrame(InputStream in) throws IOException {
+    /** 读取一帧原始字节；流结束返回 null；超过 maxFrame 抛 FrameTooLargeException（原实现无限缓冲） */
+    private byte[] readFrame(InputStream in) throws IOException {
         int b;
         // 寻找帧头
         do {
@@ -179,7 +182,7 @@ public class MllpServer {
         while ((b = in.read()) != -1) {
             if (prev == EB && b == CR) {
                 byte[] bytes = buf.toByteArray();
-                return new String(bytes, 0, bytes.length - 1, StandardCharsets.UTF_8);
+                return java.util.Arrays.copyOf(bytes, bytes.length - 1);   // 去掉尾部 EB
             }
             if (buf.size() >= maxFrame) {
                 throw new FrameTooLargeException();
@@ -188,6 +191,24 @@ public class MllpServer {
             prev = b;
         }
         return null;
+    }
+
+    /**
+     * 按 MSH-18 取字符集：MSH 段本身 ASCII 兼容，先以 ISO-8859-1 探测字段。
+     * 国标检验线常用 GBK/GB18030；缺省按 HL7 惯例视为 UTF-8（本院内网约定）。
+     */
+    public static java.nio.charset.Charset declaredCharset(byte[] frame) {
+        try {
+            String probe = new String(frame, StandardCharsets.ISO_8859_1);
+            String[] f = probe.split("\r", 2)[0].split("\\|", -1);
+            String cs = f.length > 17 ? f[17].trim().toUpperCase() : "";
+            return switch (cs) {
+                case "GB18030", "GBK", "GB2312" -> java.nio.charset.Charset.forName("GB18030");
+                default -> StandardCharsets.UTF_8;
+            };
+        } catch (Exception e) {
+            return StandardCharsets.UTF_8;
+        }
     }
 
     // ---- 来源白名单 ----
@@ -238,8 +259,8 @@ public class MllpServer {
         }
     }
 
-    private byte[] frame(String message) {
-        byte[] body = message.getBytes(StandardCharsets.UTF_8);
+    private byte[] frame(String message, java.nio.charset.Charset charset) {
+        byte[] body = message.getBytes(charset);   // ACK 用与请求相同的字符集回包
         byte[] framed = new byte[body.length + 3];
         framed[0] = SB;
         System.arraycopy(body, 0, framed, 1, body.length);

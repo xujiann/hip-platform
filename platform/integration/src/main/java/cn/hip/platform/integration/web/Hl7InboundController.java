@@ -11,9 +11,11 @@ import java.util.Map;
 /**
  * HL7 V2 进站端点（HTTP 承载）。设备/中间件亦可走 MLLP/TCP（见 MllpServer），处理路径一致。
  */
+// 1.1.4 B-16：机器对机器端点给专用 INTERFACE 角色——1.0.9 曾统一补成 ADMIN，
+// 意味着 LIS 中间件的凭据是全院最高权限，泄漏即交出整个系统。INTERFACE 无任何菜单授权。
 @RestController
 @RequestMapping("/api/integration/hl7")
-@PreAuthorize("hasRole('ADMIN')")   // 1.0.9：权限清点补齐
+@PreAuthorize("hasAnyRole('ADMIN','INTERFACE')")
 @RequiredArgsConstructor
 public class Hl7InboundController {
 

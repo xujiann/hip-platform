@@ -16,12 +16,18 @@ public class ReportShareController {
 
     private final JdbcTemplate jdbc;
 
-    /** 生成分享链接（默认 72 小时有效） */
+    /** 有效期上限 30 天：曾可传 ?expireMinutes=52560000 造出百年外链（1.1.4 B-10） */
+    private static final int MAX_EXPIRE_MINUTES = 30 * 24 * 60;
+
+    /** 生成分享链接（默认 72 小时有效，上限 30 天） */
     @PostMapping("/api/ris/exams/{id}/share")
     @org.springframework.security.access.prepost.PreAuthorize("hasAnyRole('ADMIN','TECHNICIAN','DOCTOR_OUTP')")
     @Transactional
     public R<Map<String, Object>> share(@PathVariable Long id,
                                         @RequestParam(defaultValue = "4320") int expireMinutes) {
+        if (expireMinutes <= 0 || expireMinutes > MAX_EXPIRE_MINUTES) {
+            return R.fail(4663, "有效期须为 1 分钟至 30 天");
+        }
         Integer verified = jdbc.queryForObject(
                 "select count(*) from ris_exam where id = ? and status = 'VERIFIED'", Integer.class, id);
         if (verified == null || verified == 0) return R.fail(4660, "报告不存在或未审核发布");
@@ -31,6 +37,16 @@ public class ReportShareController {
                 values (?,?, now() + make_interval(mins => ?))
                 """, token, id, expireMinutes);
         return R.ok(Map.of("token", token, "url", "/api/share/" + token, "expireMinutes", expireMinutes));
+    }
+
+    /** 吊销：链接泄漏后的唯一回收手段——直接置为已过期（B-10，此前无任何 revoke 端点） */
+    @DeleteMapping("/api/ris/exams/{id}/share")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAnyRole('ADMIN','TECHNICIAN','DOCTOR_OUTP')")
+    @Transactional
+    public R<Map<String, Object>> revoke(@PathVariable Long id) {
+        int n = jdbc.update(
+                "update report_share set expire_at = now() where exam_id = ? and expire_at > now()", id);
+        return R.ok(Map.of("revoked", n));
     }
 
     /** 匿名访问分享报告（permitAll）：过期即失效，姓名脱敏 */

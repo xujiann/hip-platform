@@ -73,6 +73,24 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * 未匹配路径（Boot 3.x 抛 NoResourceFoundException）：这是 404 不是系统故障。
+     * 落 Exception 兜底会变成 500 + ERROR 级完整堆栈——前端一个拼错的 URL、
+     * 扫描器一次探测，都会污染错误告警（1.1.4 B-8）。
+     */
+    @ExceptionHandler(org.springframework.web.servlet.resource.NoResourceFoundException.class)
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    public R<Void> handleNoResource(org.springframework.web.servlet.resource.NoResourceFoundException e) {
+        return R.fail(4041, "接口不存在：" + e.getResourcePath());
+    }
+
+    /** 方法不支持（GET 调 POST 端点等）同理，是 405 不是 500 */
+    @ExceptionHandler(org.springframework.web.HttpRequestMethodNotSupportedException.class)
+    @ResponseStatus(HttpStatus.METHOD_NOT_ALLOWED)
+    public R<Void> handleMethodNotSupported(org.springframework.web.HttpRequestMethodNotSupportedException e) {
+        return R.fail(4050, "请求方法不支持：" + e.getMethod());
+    }
+
+    /**
      * 安全异常必须**原样抛出**，交给 ExceptionTranslationFilter → accessDeniedHandler，
      * 否则会被下面的兜底吃成 500，401/403 的语义又丢了（这正是 1.1.0 修过的坑）。
      */

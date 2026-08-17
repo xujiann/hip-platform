@@ -40,7 +40,7 @@ public class CdrDocument {
     private Instant docTime;
 
     /** 结构化内容 JSON */
-    @Column(nullable = false, length = 8000)
+    @Column(nullable = false, columnDefinition = "text")
     private String content;
 
     @Column(nullable = false)

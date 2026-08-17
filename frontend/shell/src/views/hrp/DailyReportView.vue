@@ -18,8 +18,9 @@
           {{ { CASH: '现金', WECHAT: '微信', ALIPAY: '支付宝', YB: '医保' }[row.pay_method as string] }}
         </template>
       </el-table-column>
-      <el-table-column label="状态" width="90">
-        <template #default="{ row }">{{ row.status === 'PAID' ? '已支付' : '已退费' }}</template>
+      <el-table-column label="口径" width="100">
+        <!-- 1.1.3 B-1：收款按收款日、退款按退费日各自归集（含退往日单） -->
+        <template #default="{ row }">{{ row.side === 'COLLECTED' ? '当日收款' : '当日退款' }}</template>
       </el-table-column>
       <el-table-column prop="cnt" label="笔数" width="80" />
       <el-table-column prop="amount" label="金额 ¥" />

@@ -84,24 +84,22 @@ public class InsuranceReconService {
             }
             out.add(row);
         }
-        // 反向：通道有账、业务无账（医保侧多扣一笔）——单向遍历业务账永远发现不了
+        // 反向：通道有账、业务无账（医保侧多扣一笔）——单向遍历业务账永远发现不了。
+        // 存在性检查改一条反连接（B-12：原为每个 ref_no 两次子查询的 N+1）
         for (var m : jdbc.queryForList("""
-                select ref_no from int_message_log
-                where channel = 'YB' and status = 'OK'
-                  and created_at >= ?::date and created_at < ?::date + interval '1 day'
-                  and payload like '%settle%' and ref_no is not null
-                group by ref_no order by ref_no
+                select t.ref_no from (
+                    select distinct ref_no from int_message_log
+                    where channel = 'YB' and status = 'OK'
+                      and created_at >= ?::date and created_at < ?::date + interval '1 day'
+                      and payload like '%settle%' and ref_no is not null
+                ) t
+                where not exists (select 1 from outp_charge c where c.charge_no = t.ref_no)
+                  and not exists (select 1 from inp_settlement s where s.settle_no = t.ref_no)
+                order by t.ref_no
                 """, date, date)) {
-            String no = (String) m.get("ref_no");
-            Integer inBiz = jdbc.queryForObject("""
-                    select (select count(*) from outp_charge where charge_no = ?)
-                         + (select count(*) from inp_settlement where settle_no = ?)
-                    """, Integer.class, no, no);
-            if (inBiz == null || inBiz == 0) {
-                var row = reconRow("CHANNEL_ONLY", no, null, "—", true, false, false);
-                row.put("note", "通道有结算报文但业务库无对应单据（疑似医保侧多扣）");
-                out.add(row);
-            }
+            var row = reconRow("CHANNEL_ONLY", (String) m.get("ref_no"), null, "—", true, false, false);
+            row.put("note", "通道有结算报文但业务库无对应单据（疑似医保侧多扣）");
+            out.add(row);
         }
         return out;
     }

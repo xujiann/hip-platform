@@ -12,6 +12,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -30,7 +31,27 @@ public class AuditLogFilter extends OncePerRequestFilter {
 
     private static final Set<String> AUDITED_METHODS = Set.of("POST", "PUT", "DELETE");
 
+    /**
+     * 敏感读留痕（1.1.4 B-15）：患者列表/病历调阅/CDR 检索/打印/工资全是 GET，
+     * 只审计写操作时"谁查过谁的病历"永远查不出来。按前缀圈定，避免审计表被普通读刷爆。
+     */
+    private static final List<String> AUDITED_READ_PREFIXES = List.of(
+            "/api/patients", "/api/cdr", "/api/emr", "/api/print", "/api/reports",
+            "/api/hr/salaries", "/api/datagov/reports");
+
     private final JdbcTemplate jdbc;
+
+    private static boolean auditedRead(String method, String path) {
+        if (!"GET".equals(method)) {
+            return false;
+        }
+        for (String p : AUDITED_READ_PREFIXES) {
+            if (path.equals(p) || path.startsWith(p + "/") || path.startsWith(p + "?") || path.startsWith(p + ".")) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
@@ -44,7 +65,9 @@ public class AuditLogFilter extends OncePerRequestFilter {
             throw e;
         } finally {
             String path = request.getRequestURI();
-            if (!securityDenied && AUDITED_METHODS.contains(request.getMethod()) && path.startsWith("/api/")) {
+            boolean audited = AUDITED_METHODS.contains(request.getMethod())
+                    || auditedRead(request.getMethod(), path);
+            if (!securityDenied && audited && path.startsWith("/api/")) {
                 try {
                     Authentication auth = SecurityContextHolder.getContext().getAuthentication();
                     String username = auth == null || "anonymousUser".equals(auth.getName())

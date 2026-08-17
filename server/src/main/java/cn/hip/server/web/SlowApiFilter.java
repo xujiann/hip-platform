@@ -34,8 +34,10 @@ public class SlowApiFilter extends OncePerRequestFilter {
             String path = request.getRequestURI();
             if (cost >= slowMs && path.startsWith("/api/")) {
                 try {
+                    // 参数归一化（1.1.4 B-14）：/api/patients/1、/2… 各成一行会让
+                    // 运维中心的 group by path 毫无聚合价值
                     jdbc.update("insert into ops_slow_api(method, path, cost_ms) values (?,?,?)",
-                            request.getMethod(), path, (int) cost);
+                            request.getMethod(), path.replaceAll("/\\d+", "/{id}"), (int) cost);
                 } catch (Exception ignored) {
                     // 观测失败不影响业务
                 }

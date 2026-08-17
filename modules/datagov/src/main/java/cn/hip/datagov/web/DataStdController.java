@@ -111,7 +111,8 @@ public class DataStdController {
     // ---- 自定义报表引擎（只读 SELECT + 业务表白名单 + 查询超时；1.0.3 加固） ----
     /** 写操作与危险语句按词边界拦截（子串匹配曾误伤 updated_at） */
     private static final java.util.regex.Pattern FORBIDDEN_KW = java.util.regex.Pattern.compile(
-            "\\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|copy|call|do|execute|vacuum|set|listen|notify)\\b");
+            "\\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|copy|call|do|execute|vacuum|set|listen|notify"
+                    + "|commit|rollback|begin|discard|reset)\\b");   // 事务词一旦执行会脱掉 set local role 沙箱（B-11）
     /** 受保护对象在 SQL 任意位置出现即拒绝（含别名/逗号连接等绕过路径）：sys_*（sys_dept 除外）、系统目录、迁移史 */
     private static final java.util.regex.Pattern SENSITIVE = java.util.regex.Pattern.compile(
             "\\b(sys_(?!dept\\b)[a-z0-9_]+|pg_[a-z0-9_]+|information_schema|flyway_[a-z0-9_]+|current_setting|set_config|dblink)\\b");
@@ -172,20 +173,26 @@ public class DataStdController {
                 (org.springframework.jdbc.core.ConnectionCallback<List<Map<String, Object>>>) con -> {
                     boolean auto = con.getAutoCommit();
                     con.setAutoCommit(false);
-                    try (var st = con.createStatement()) {
-                        st.execute("set local role hip_report_reader");
-                        st.setQueryTimeout(5);
-                        try (var rs = st.executeQuery("select * from (" + sql + ") _rpt limit 200")) {
-                            var meta = rs.getMetaData();
-                            var list = new java.util.ArrayList<Map<String, Object>>();
-                            while (rs.next()) {
-                                var row = new LinkedHashMap<String, Object>();
-                                for (int i = 1; i <= meta.getColumnCount(); i++) {
-                                    row.put(meta.getColumnLabel(i), rs.getObject(i));
+                    try {
+                        try (var role = con.createStatement()) {
+                            role.execute("set local role hip_report_reader");
+                        }
+                        // 用户 SQL 走 PreparedStatement（B-11）：驱动层拒绝多语句，
+                        // 分号过滤被绕过（块注释等）时事务词也无法把 set local role 沙箱脱掉
+                        try (var ps = con.prepareStatement("select * from (" + sql + ") _rpt limit 200")) {
+                            ps.setQueryTimeout(5);
+                            try (var rs = ps.executeQuery()) {
+                                var meta = rs.getMetaData();
+                                var list = new java.util.ArrayList<Map<String, Object>>();
+                                while (rs.next()) {
+                                    var row = new LinkedHashMap<String, Object>();
+                                    for (int i = 1; i <= meta.getColumnCount(); i++) {
+                                        row.put(meta.getColumnLabel(i), rs.getObject(i));
+                                    }
+                                    list.add(row);
                                 }
-                                list.add(row);
+                                return list;
                             }
-                            return list;
                         }
                     } finally {
                         con.rollback();          // 只读查询，回滚即复位 role

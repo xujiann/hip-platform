@@ -1,10 +1,6 @@
 package cn.hip.portal.web;
 
-import cn.hip.outpatient.repository.OutpChargeRepository;
-import cn.hip.outpatient.repository.OutpLabResultRepository;
-import cn.hip.outpatient.repository.OutpOrderRepository;
 import cn.hip.outpatient.repository.OutpRegistrationRepository;
-import cn.hip.outpatient.repository.OutpScheduleRepository;
 import cn.hip.outpatient.service.RegistrationService;
 import cn.hip.platform.core.common.R;
 import cn.hip.platform.core.repository.SysDeptRepository;
@@ -33,10 +29,6 @@ public class PortalController {
     private final JwtService jwtService;
     private final RegistrationService registrationService;
     private final OutpRegistrationRepository registrationRepository;
-    private final OutpScheduleRepository scheduleRepository;
-    private final OutpOrderRepository orderRepository;
-    private final OutpLabResultRepository labResultRepository;
-    private final OutpChargeRepository chargeRepository;
     private final SysDeptRepository deptRepository;
     private final cn.hip.outpatient.service.PayService payService;
     private final org.springframework.jdbc.core.JdbcTemplate jdbc;
@@ -99,49 +91,68 @@ public class PortalController {
     }
 
     private Long patientId(Authentication auth) {
-        return Long.valueOf(auth.getName().substring("portal:".length()));
+        String name = auth.getName();
+        if (!name.startsWith("portal:")) {
+            // 正常情况下院内令牌进不来（安全链已按 ROLE_PORTAL 隔离），显式拒绝防解析异常被兜底成 4000
+            throw new org.springframework.security.access.AccessDeniedException("非患者端令牌");
+        }
+        return Long.valueOf(name.substring("portal:".length()));
     }
 
+    /** 患者端并发高峰即门诊高峰：列表一律单条 SQL，不做逐行回查（1.1.4 B-13） */
     @GetMapping("/my/registrations")
     public R<List<Map<String, Object>>> myRegistrations(Authentication auth) {
         Long pid = patientId(auth);
-        return R.ok(registrationRepository.findTop50ByPatientIdOrderByIdDesc(pid).stream().map(r -> {
-            var m = new LinkedHashMap<String, Object>();
-            m.put("id", r.getId());
-            m.put("visitDate", r.getVisitDate());
-            m.put("regNo", r.getRegNo());
-            m.put("deptName", deptRepository.findById(r.getDeptId()).map(d -> d.getName()).orElse(""));
-            m.put("fee", r.getFee());
-            m.put("status", r.getStatus());
-            return (Map<String, Object>) m;
-        }).toList());
+        return R.ok(jdbc.queryForList("""
+                select r.id, r.visit_date as "visitDate", r.reg_no as "regNo",
+                       coalesce(d.name, '') as "deptName", r.fee, r.status
+                from outp_registration r
+                left join sys_dept d on d.id = r.dept_id
+                where r.patient_id = ? order by r.id desc limit 50
+                """, pid));
     }
 
     /** 检验报告：危急值不直接外显（HH/LL 结果替换为回院提示，避免患者误读延误） */
     @GetMapping("/my/lab-reports")
     public R<List<Map<String, Object>>> myLabReports(Authentication auth) {
         Long pid = patientId(auth);
-        return R.ok(registrationRepository.findTop50ByPatientIdOrderByIdDesc(pid).stream()
-                .flatMap(r -> orderRepository
-                        .findByRegistrationIdAndOrderTypeAndStatusOrderByIdAsc(r.getId(), "LAB", "EXECUTED").stream())
-                .map(o -> {
-                    var m = new LinkedHashMap<String, Object>();
-                    m.put("orderId", o.getId());
-                    m.put("itemName", o.getItemName());
-                    m.put("reportDate", o.getCreatedAt());
-                    m.put("results", labResultRepository.findByOrderIdOrderByIdAsc(o.getId()).stream()
-                            .map(x -> {
-                                var rm = new LinkedHashMap<String, Object>();
-                                boolean critical = "HH".equals(x.getAbnormalFlag()) || "LL".equals(x.getAbnormalFlag());
-                                rm.put("itemName", x.getItemName());
-                                rm.put("resultValue", critical ? "结果异常，请尽快回院复诊" : x.getResultValue());
-                                rm.put("unit", critical ? "" : x.getUnit());
-                                rm.put("refRange", x.getRefRange());
-                                rm.put("abnormalFlag", critical ? "CRIT" : x.getAbnormalFlag());
-                                return rm;
-                            }).toList());
-                    return (Map<String, Object>) m;
-                }).toList());
+        // 原实现 50 条挂号 × 每条医嘱 × 每条结果逐次查询——单患者一次刷新即数百条 SQL
+        var flat = jdbc.queryForList("""
+                select o.id as order_id, o.item_name as order_item, o.created_at,
+                       x.item_name, x.result_value, x.unit, x.ref_range, x.abnormal_flag
+                from outp_order o
+                join outp_registration r on r.id = o.registration_id
+                left join outp_lab_result x on x.order_id = o.id
+                where r.patient_id = ? and o.order_type = 'LAB' and o.status = 'EXECUTED'
+                order by o.id desc, x.id asc
+                """, pid);
+        var out = new java.util.ArrayList<Map<String, Object>>();
+        LinkedHashMap<String, Object> cur = null;
+        Object curId = null;
+        for (var row : flat) {
+            if (!row.get("order_id").equals(curId)) {
+                curId = row.get("order_id");
+                cur = new LinkedHashMap<>();
+                cur.put("orderId", row.get("order_id"));
+                cur.put("itemName", row.get("order_item"));
+                cur.put("reportDate", row.get("created_at"));
+                cur.put("results", new java.util.ArrayList<Map<String, Object>>());
+                out.add(cur);
+            }
+            if (row.get("item_name") == null) continue;   // left join 无结果行
+            String flag = (String) row.get("abnormal_flag");
+            boolean critical = "HH".equals(flag) || "LL".equals(flag);
+            var rm = new LinkedHashMap<String, Object>();
+            rm.put("itemName", row.get("item_name"));
+            rm.put("resultValue", critical ? "结果异常，请尽快回院复诊" : row.get("result_value"));
+            rm.put("unit", critical ? "" : row.get("unit"));
+            rm.put("refRange", row.get("ref_range"));
+            rm.put("abnormalFlag", critical ? "CRIT" : flag);
+            @SuppressWarnings("unchecked")
+            var results = (List<Map<String, Object>>) cur.get("results");
+            results.add(rm);
+        }
+        return R.ok(out);
     }
 
     /** 检查/病理报告（已审核发布） */
@@ -219,46 +230,40 @@ public class PortalController {
         }
     }
 
-    /** 智能导诊：症状关键词 → 科室推荐 */
+    /** 智能导诊：症状关键词 → 科室推荐（keyword 作 LIKE 模式须转义：录入含 % 的关键词会匹配一切） */
     @GetMapping("/guide")
     public R<List<Map<String, Object>>> guide(@RequestParam String symptom) {
         return R.ok(jdbc.queryForList("""
                 select keyword, dept_name, advice from triage_guide
-                where ? like '%' || keyword || '%' order by id
+                where ? like '%' || replace(replace(replace(keyword, '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%'
+                order by id
                 """, symptom));
     }
 
     @GetMapping("/my/charges")
     public R<List<Map<String, Object>>> myCharges(Authentication auth) {
         Long pid = patientId(auth);
-        return R.ok(registrationRepository.findTop50ByPatientIdOrderByIdDesc(pid).stream()
-                .flatMap(r -> chargeRepository.findByRegistrationIdOrderByIdDesc(r.getId()).stream())
-                .map(c -> {
-                    var m = new LinkedHashMap<String, Object>();
-                    m.put("chargeNo", c.getChargeNo());
-                    m.put("totalAmount", c.getTotalAmount());
-                    m.put("payMethod", c.getPayMethod());
-                    m.put("status", c.getStatus());
-                    m.put("createdAt", c.getCreatedAt());
-                    return (Map<String, Object>) m;
-                }).toList());
+        return R.ok(jdbc.queryForList("""
+                select c.charge_no as "chargeNo", c.total_amount as "totalAmount",
+                       c.pay_method as "payMethod", c.status, c.created_at as "createdAt"
+                from outp_charge c
+                join outp_registration r on r.id = c.registration_id
+                where r.patient_id = ? order by c.id desc limit 100
+                """, pid));
     }
 
     /** 可约号源（今日起） */
     @GetMapping("/schedules")
     public R<List<Map<String, Object>>> schedules(
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
-        return R.ok(scheduleRepository.findByScheduleDateAndEnabledTrueOrderByDeptIdAscIdAsc(date).stream()
-                .map(s -> {
-                    var m = new LinkedHashMap<String, Object>();
-                    m.put("id", s.getId());
-                    m.put("deptName", deptRepository.findById(s.getDeptId()).map(d -> d.getName()).orElse(""));
-                    m.put("regType", s.getRegType());
-                    m.put("shift", s.getShift());
-                    m.put("fee", s.getFee());
-                    m.put("remaining", s.getCapacity() - s.getBooked());
-                    return (Map<String, Object>) m;
-                }).toList());
+        return R.ok(jdbc.queryForList("""
+                select s.id, coalesce(d.name, '') as "deptName", s.reg_type as "regType",
+                       s.shift, s.fee, s.capacity - s.booked as remaining
+                from outp_schedule s
+                left join sys_dept d on d.id = s.dept_id
+                where s.schedule_date = ? and s.enabled
+                order by s.dept_id, s.id
+                """, date));
     }
 
     public record PortalRegisterRequest(Long scheduleId) {}

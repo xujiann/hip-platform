@@ -29,7 +29,7 @@ public class IntMessageLog {
     @Column(length = 64)
     private String refNo;
 
-    @Column(nullable = false, length = 8000)
+    @Column(nullable = false, columnDefinition = "text")
     private String payload;
 
     /** OK / FAIL */

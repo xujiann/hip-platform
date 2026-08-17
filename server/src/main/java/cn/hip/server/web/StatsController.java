@@ -30,9 +30,9 @@ public class StatsController {
         m.put("todayRegistrations", jdbc.queryForObject(
                 "select count(*) from outp_registration where visit_date = current_date and status <> 'CANCELLED'", Long.class));
         m.put("todayOutpRevenue", jdbc.queryForObject(
-                "select coalesce(sum(total_amount), 0) from outp_charge where status = 'PAID' and created_at >= current_date and created_at < current_date + 1", Double.class));
+                "select coalesce(sum(total_amount), 0) from outp_charge where status = 'PAID' and created_at >= current_date and created_at < current_date + 1", java.math.BigDecimal.class));
         m.put("todayInpRevenue", jdbc.queryForObject(
-                "select coalesce(sum(total_amount), 0) from inp_settlement where created_at >= current_date and created_at < current_date + 1", Double.class));
+                "select coalesce(sum(total_amount), 0) from inp_settlement where created_at >= current_date and created_at < current_date + 1", java.math.BigDecimal.class));
         m.put("inHospitalCount", jdbc.queryForObject(
                 "select count(*) from inp_admission where status = 'IN_HOSPITAL'", Long.class));
         m.put("bedTotal", jdbc.queryForObject("select count(*) from inp_bed", Long.class));
@@ -57,36 +57,41 @@ public class StatsController {
     @GetMapping("/operation")
     public R<Map<String, Object>> operation() {
         var m = new LinkedHashMap<String, Object>();
-        Double drugRevenue = jdbc.queryForObject("""
+        // 金额一律 BigDecimal（1.1.4 B-9）：sum(numeric(12,2)) 走 Double 会出现
+        // 12345.670000000001 一类数值，且与按 BigDecimal 计算的日结对不上账
+        var drugRevenue = jdbc.queryForObject("""
                 select coalesce(sum(amount), 0) from outp_order
                 where order_type = 'DRUG' and status in ('CHARGED','DISPENSED')
-                """, Double.class);
-        Double totalRevenue = jdbc.queryForObject("""
+                """, java.math.BigDecimal.class);
+        var totalRevenue = jdbc.queryForObject("""
                 select coalesce(sum(amount), 0) from outp_order
                 where status in ('CHARGED','DISPENSED','EXECUTED')
-                """, Double.class);
+                """, java.math.BigDecimal.class);
         m.put("drugRevenue", drugRevenue);
         m.put("outpOrderRevenue", totalRevenue);
-        m.put("drugRatio", totalRevenue == 0 ? 0 : Math.round(drugRevenue / totalRevenue * 1000) / 10.0);
+        m.put("drugRatio", totalRevenue.signum() == 0 ? java.math.BigDecimal.ZERO
+                : drugRevenue.multiply(new java.math.BigDecimal(100))
+                        .divide(totalRevenue, 1, java.math.RoundingMode.HALF_UP));
         m.put("avgOutpCost", jdbc.queryForObject("""
                 select coalesce(round(sum(total_amount) / nullif(count(distinct registration_id), 0), 2), 0)
                 from outp_charge where status = 'PAID'
-                """, Double.class));
+                """, java.math.BigDecimal.class));
         m.put("dischargedCount", jdbc.queryForObject(
                 "select count(*) from inp_admission where status = 'DISCHARGED'", Long.class));
         m.put("avgInpDays", jdbc.queryForObject("""
                 select coalesce(round(avg(extract(epoch from (discharged_at - admit_at)) / 86400)::numeric, 1), 0)
                 from inp_admission where status = 'DISCHARGED'
-                """, Double.class));
+                """, java.math.BigDecimal.class));
         m.put("avgInpCost", jdbc.queryForObject(
-                "select coalesce(round(avg(total_amount), 2), 0) from inp_settlement", Double.class));
+                "select coalesce(round(avg(total_amount), 2), 0) from inp_settlement where status = 'PAID'",
+                java.math.BigDecimal.class));
         m.put("diagnosisGroups", jdbc.queryForList("""
                 select coalesce(substring(a.admit_diag_icd, 1, 3), '未编码') as icd_group,
                        max(coalesce(a.admit_diag_name, '未填写诊断')) as sample_name,
                        count(*) as cases,
                        coalesce(round(avg(s.total_amount), 2), 0) as avg_cost
                 from inp_admission a
-                left join inp_settlement s on s.admission_id = a.id
+                left join inp_settlement s on s.admission_id = a.id and s.status = 'PAID'
                 where a.status = 'DISCHARGED'
                 group by substring(a.admit_diag_icd, 1, 3)
                 order by cases desc
@@ -95,9 +100,12 @@ public class StatsController {
         return R.ok(m);
     }
 
-    /** 近 N 日门诊挂号量与收入 */
+    /** 近 N 日门诊挂号量与收入（上限 366：generate_series 无界时可被一个参数打出上亿行，B-17） */
     @GetMapping("/daily")
     public R<List<Map<String, Object>>> daily(@RequestParam(defaultValue = "7") int days) {
+        if (days < 1 || days > 366) {
+            return R.fail(4001, "days 须在 1–366 之间");
+        }
         return R.ok(jdbc.queryForList("""
                 select d.day::date as day,
                        coalesce(r.cnt, 0)   as registrations,

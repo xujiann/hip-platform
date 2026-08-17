@@ -225,7 +225,7 @@
                           style="width: 140px; margin-left: 8px" @change="loadRecon" />
         </h4>
         <el-table :data="recon?.byCashier ?? []" size="small" border>
-          <el-table-column prop="cashier" label="收款员" width="110" />
+          <el-table-column prop="cashier" label="操作员" width="110" />
           <el-table-column prop="paid_cnt" label="收款笔数" width="90" />
           <el-table-column prop="paid_amount" label="收款金额" width="110" />
           <el-table-column prop="refund_cnt" label="退款笔数" width="90" />
@@ -265,14 +265,14 @@
         <el-table :data="recon?.anomalies ?? []" size="small" border>
           <el-table-column label="类型" width="90">
             <template #default="{ row }">
-              <el-tag size="small" :type="row.kind === 'REFUND' ? 'danger' : 'info'">
-                {{ row.kind === 'REFUND' ? '退费' : '作废支付' }}</el-tag>
+              <el-tag size="small" :type="row.kind === 'REFUND' ? 'danger' : row.kind === 'INP_CANCEL' ? 'warning' : 'info'">
+                {{ { REFUND: '退费', PAY_CANCEL: '作废支付', INP_CANCEL: '住院冲销' }[row.kind as string] }}</el-tag>
             </template>
           </el-table-column>
           <el-table-column prop="ref_no" label="单号" width="170" />
           <el-table-column prop="amount" label="金额" width="90" />
           <el-table-column prop="detail" label="方式" width="90" />
-          <el-table-column prop="created_at" label="时间" width="170" />
+          <el-table-column prop="occurred_at" label="时间" width="170" />
         </el-table>
       </el-tab-pane>
     </el-tabs>

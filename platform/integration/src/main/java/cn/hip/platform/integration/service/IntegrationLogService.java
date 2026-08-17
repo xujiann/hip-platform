@@ -30,7 +30,7 @@ public class IntegrationLogService {
             m.setDirection(truncate(direction, 8));
             m.setChannel(truncate(channel, 32));
             m.setRefNo(truncate(refNo, 64));
-            m.setPayload(truncate(payload, 7900));
+            m.setPayload(payload);   // payload 已是 text（V55）：截断的报文留痕不可用于对账举证
             m.setStatus(ok ? "OK" : "FAIL");
             m.setError(truncate(error, 512));
             repository.save(m);

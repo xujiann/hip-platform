@@ -194,7 +194,7 @@ public class CdrSyncService {
         doc.setTitle(title);
         doc.setDocTime(docTime);
         String json = objectMapper.writeValueAsString(content);
-        doc.setContent(json.length() > 7900 ? json.substring(0, 7900) : json);
+        doc.setContent(json);   // content 已是 text（V55），不再截断——截断的 CDR 文档等于残缺病历
         doc.setSyncedAt(Instant.now());
         docRepository.save(doc);
     }

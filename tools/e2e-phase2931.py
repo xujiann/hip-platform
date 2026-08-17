@@ -83,10 +83,15 @@ assert any(e['report_type'] == 'EXAM' and e['conclusion'] == '正常心电图' f
 share = ok(call('POST', f"/ris/exams/{row['id']}/share", {}, t), '分享')
 anon = ok(call('GET', f"/share/{share['token']}"), '匿名访问')
 assert anon['patientName'].endswith('**') and anon['impression'] == '正常心电图', anon
-expired = ok(call('POST', f"/ris/exams/{row['id']}/share?expireMinutes=0", {}, t), '过期分享')
-r = call('GET', f"/share/{expired['token']}")
-assert r['code'] == 4662, f'过期链接应失效: {r}'
-print('[廿九-4] 患者端检查报告 + 分享短链 OK（匿名访问姓名脱敏，过期 4662 失效）')
+# 1.1.4 B-10：有效期上限 30 天，0/超限均拒；吊销是泄漏后的唯一回收手段
+r = call('POST', f"/ris/exams/{row['id']}/share?expireMinutes=0", {}, t)
+assert r['code'] == 4663, f'expireMinutes=0 应被拒: {r}'
+r = call('POST', f"/ris/exams/{row['id']}/share?expireMinutes=52560000", {}, t)
+assert r['code'] == 4663, f'百年外链应被拒: {r}'
+ok(call('DELETE', f"/ris/exams/{row['id']}/share", token=t), '吊销分享')
+r = call('GET', f"/share/{share['token']}")
+assert r['code'] == 4662, f'吊销后链接应立即失效: {r}'
+print('[廿九-4] 患者端检查报告 + 分享短链 OK（姓名脱敏，有效期上限 4663，吊销后 4662 失效）')
 
 # 智能导诊
 g = ok(call('GET', '/portal/guide?symptom=' + q('咳嗽两周还发热'), token=pt), '导诊')
