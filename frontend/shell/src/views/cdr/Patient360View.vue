@@ -87,9 +87,12 @@ async function loadDocs() {
   docs.value = resp.data.data
 }
 
-function viewDoc(d: Record<string, unknown>) {
+async function viewDoc(d: Record<string, unknown>) {
+  // 列表已投影化不含全文（1.1.7），点开才取明细
   viewing.value = d
   docVisible.value = true
+  const resp = await client.get(`/cdr/documents/${d.id}`)
+  viewing.value = resp.data.data
 }
 
 async function syncNow() {

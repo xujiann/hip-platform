@@ -68,10 +68,15 @@ public class DrgController {
                 Integer.class, admissionId);
         if (discharged == null || discharged == 0) return R.fail(9930, "住院记录不存在或未出院");
         jdbc.update("delete from drg_case where admission_id = ?", admissionId);
-        return R.ok(doGroup());
+        // 只重算本例（1.1.7）：原先调全量 doGroup()，把所有未入组病例重算一遍
+        return R.ok(doGroup(admissionId));
     }
 
     private Map<String, Object> doGroup() {
+        return doGroup(null);
+    }
+
+    private Map<String, Object> doGroup(Long onlyAdmissionId) {
         var pending = jdbc.queryForList("""
                 select a.id, coalesce(a.discharge_diag_icd, a.admit_diag_icd) as admit_diag_icd,
                        coalesce(s.total_amount, 0) as total_cost,
@@ -80,8 +85,9 @@ public class DrgController {
                 from inp_admission a
                 left join inp_settlement s on s.admission_id = a.id and s.status = 'PAID'
                 where a.status = 'DISCHARGED'
+                  and (?::bigint is null or a.id = ?)
                   and not exists (select 1 from drg_case c where c.admission_id = a.id)
-                """);
+                """, onlyAdmissionId, onlyAdmissionId);
         var defs = jdbc.queryForList("select * from drg_group_def");
         var ccList = jdbc.queryForList("select * from drg_cc_list");
         int grouped = 0, ambiguous = 0;

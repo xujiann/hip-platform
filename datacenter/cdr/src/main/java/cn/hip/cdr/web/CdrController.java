@@ -33,6 +33,14 @@ public class CdrController {
         return R.ok(syncService.patientDocuments(patientId, docType));
     }
 
+    /** 单文档明细（含 content 全文）：列表已投影化，点开才取全文（1.1.7） */
+    @GetMapping("/documents/{id}")
+    @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP','QUALITY')")
+    public R<Object> document(@PathVariable Long id) {
+        var doc = syncService.document(id);
+        return doc == null ? R.fail(4040, "文档不存在") : R.ok(doc);
+    }
+
     /** 病历全文检索（ILIKE 起步版）；1.0.6：内容含主诉/现病史/诊断，限临床与质控角色 */
     @GetMapping("/search")
     @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP','QUALITY')")

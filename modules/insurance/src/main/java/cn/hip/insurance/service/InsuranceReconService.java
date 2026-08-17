@@ -32,19 +32,80 @@ public class InsuranceReconService {
     /** 通道报文视角：是否存在 + 报文内金额（无金额字段时为 null，按"存在但金额不可比"处理） */
     private record ChannelMsg(boolean exists, BigDecimal amount) {}
 
+    /**
+     * 报文预取（1.1.7）：把一次对账涉及的全部单号的 YB 报文一次取回、按单号建字典——
+     * 原实现每单 2 次点查，日结算 3000 笔 = 单次对账 6000+ 条 SQL（同步接口，用户点一下等数秒）。
+     */
+    private class MsgLookup {
+        private final Map<String, List<String>> payloadsByRef = new java.util.HashMap<>();
+
+        MsgLookup(java.util.Collection<String> refNos) {
+            if (refNos.isEmpty()) return;
+            var named = new org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate(jdbc);
+            for (var row : named.queryForList("""
+                    select ref_no, payload from int_message_log
+                    where channel = 'YB' and status = 'OK' and ref_no in (:nos)
+                    order by id desc
+                    """, Map.of("nos", refNos))) {
+                payloadsByRef.computeIfAbsent((String) row.get("ref_no"), k -> new ArrayList<>())
+                        .add((String) row.get("payload"));
+            }
+        }
+
+        ChannelMsg get(String refNo, String apiKeyword) {
+            var payloads = payloadsByRef.getOrDefault(refNo, List.of());
+            for (String p : payloads) {
+                if (p.contains(apiKeyword)) {
+                    Matcher m = AMOUNT.matcher(p);
+                    return new ChannelMsg(true, m.find() ? new BigDecimal(m.group(1)) : null);
+                }
+            }
+            return new ChannelMsg(false, null);
+        }
+    }
+
     public List<Map<String, Object>> reconRows(String date) {
         List<Map<String, Object>> out = new ArrayList<>();
-        // 门诊：YB 结算单 ←→ 通道 settle/refund 报文（半开区间：::date 谓词会废掉索引）
-        for (var c : jdbc.queryForList("""
+        // 四段单据清单先行取回，合并单号一次预取全部报文（1.1.7：原每单 2 次点查）
+        var outpCharges = jdbc.queryForList("""
                 select charge_no, total_amount, status from outp_charge
                 where pay_method = 'YB'
                   and created_at >= ?::date and created_at < ?::date + interval '1 day'
                 order by id
-                """, date, date)) {
+                """, date, date);
+        var outpRefunds = jdbc.queryForList("""
+                select charge_no, total_amount from outp_charge
+                where pay_method = 'YB' and status = 'REFUNDED'
+                  and refunded_at >= ?::date and refunded_at < ?::date + interval '1 day'
+                  and (created_at < ?::date or created_at >= ?::date + interval '1 day')
+                order by id
+                """, date, date, date, date);
+        var inpSettles = jdbc.queryForList("""
+                select settle_no, total_amount, status from inp_settlement
+                where pay_method = 'YB'
+                  and created_at >= ?::date and created_at < ?::date + interval '1 day'
+                order by id
+                """, date, date);
+        var inpCancels = jdbc.queryForList("""
+                select settle_no, total_amount from inp_settlement
+                where pay_method = 'YB' and status = 'CANCELLED'
+                  and refunded_at >= ?::date and refunded_at < ?::date + interval '1 day'
+                  and (created_at < ?::date or created_at >= ?::date + interval '1 day')
+                order by id
+                """, date, date, date, date);
+        var allNos = new java.util.LinkedHashSet<String>();
+        outpCharges.forEach(r -> allNos.add((String) r.get("charge_no")));
+        outpRefunds.forEach(r -> allNos.add((String) r.get("charge_no")));
+        inpSettles.forEach(r -> allNos.add((String) r.get("settle_no")));
+        inpCancels.forEach(r -> allNos.add((String) r.get("settle_no")));
+        MsgLookup msgs = new MsgLookup(allNos);
+
+        // 门诊：YB 结算单 ←→ 通道 settle/refund 报文
+        for (var c : outpCharges) {
             String no = (String) c.get("charge_no");
             BigDecimal amount = (BigDecimal) c.get("total_amount");
-            ChannelMsg settle = channelMsg(no, "settle");
-            ChannelMsg refund = channelMsg(no, "refund");
+            ChannelMsg settle = msgs.get(no, "settle");
+            ChannelMsg refund = msgs.get(no, "refund");
             boolean refunded = "REFUNDED".equals(c.get("status"));
             boolean amountOk = settle.exists() && (settle.amount() == null
                     || settle.amount().compareTo(amount) == 0);
@@ -65,15 +126,9 @@ public class InsuranceReconService {
         }
         // 退费侧窗口（1.1.6 B-4）：D1 结算 D5 退费的单，created_at 窗口永远不会复检它——
         // "本地已退、医保未冲"就此漏网。按退费日再扫一遍，只核退费动作对应的冲正报文。
-        for (var c : jdbc.queryForList("""
-                select charge_no, total_amount from outp_charge
-                where pay_method = 'YB' and status = 'REFUNDED'
-                  and refunded_at >= ?::date and refunded_at < ?::date + interval '1 day'
-                  and (created_at < ?::date or created_at >= ?::date + interval '1 day')
-                order by id
-                """, date, date, date, date)) {
+        for (var c : outpRefunds) {
             String no = (String) c.get("charge_no");
-            ChannelMsg refund = channelMsg(no, "refund");
+            ChannelMsg refund = msgs.get(no, "refund");
             var row = reconRow("OUTP_REFUND", no, c.get("total_amount"), "REFUNDED",
                     true, refund.exists(), refund.exists());
             if (!refund.exists()) {
@@ -82,16 +137,11 @@ public class InsuranceReconService {
             out.add(row);
         }
         // 住院：YB 出院结算 ←→ 通道 settle 报文；已冲销单要求成对的 settle+refund
-        for (var s : jdbc.queryForList("""
-                select settle_no, total_amount, status from inp_settlement
-                where pay_method = 'YB'
-                  and created_at >= ?::date and created_at < ?::date + interval '1 day'
-                order by id
-                """, date, date)) {
+        for (var s : inpSettles) {
             String no = (String) s.get("settle_no");
             BigDecimal amount = (BigDecimal) s.get("total_amount");
-            ChannelMsg settle = channelMsg(no, "settle");
-            ChannelMsg refund = channelMsg(no, "refund");
+            ChannelMsg settle = msgs.get(no, "settle");
+            ChannelMsg refund = msgs.get(no, "refund");
             boolean cancelled = "CANCELLED".equals(s.get("status"));
             boolean amountOk = settle.exists() && (settle.amount() == null
                     || settle.amount().compareTo(amount) == 0);
@@ -107,15 +157,9 @@ public class InsuranceReconService {
             out.add(row);
         }
         // 住院退费侧窗口（B-4）：异日冲销的结算单按冲销日复检冲正报文
-        for (var s : jdbc.queryForList("""
-                select settle_no, total_amount from inp_settlement
-                where pay_method = 'YB' and status = 'CANCELLED'
-                  and refunded_at >= ?::date and refunded_at < ?::date + interval '1 day'
-                  and (created_at < ?::date or created_at >= ?::date + interval '1 day')
-                order by id
-                """, date, date, date, date)) {
+        for (var s : inpCancels) {
             String no = (String) s.get("settle_no");
-            ChannelMsg refund = channelMsg(no, "refund");
+            ChannelMsg refund = msgs.get(no, "refund");
             var row = reconRow("INP_REFUND", no, s.get("total_amount"), "CANCELLED",
                     true, refund.exists(), refund.exists());
             if (!refund.exists()) {
@@ -162,18 +206,6 @@ public class InsuranceReconService {
         return m;
     }
 
-    private ChannelMsg channelMsg(String refNo, String apiKeyword) {
-        var payloads = jdbc.queryForList("""
-                select payload from int_message_log
-                where channel = 'YB' and status = 'OK' and ref_no = ? and payload like ?
-                order by id desc limit 1
-                """, String.class, refNo, "%" + apiKeyword + "%");
-        if (payloads.isEmpty()) {
-            return new ChannelMsg(false, null);
-        }
-        Matcher m = AMOUNT.matcher(payloads.get(0));
-        return new ChannelMsg(true, m.find() ? new BigDecimal(m.group(1)) : null);
-    }
 
     private LinkedHashMap<String, Object> reconRow(String bizType, String no, Object amount, String status,
                                          boolean hasSettle, boolean hasRefund, boolean consistent) {

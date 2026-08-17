@@ -42,11 +42,17 @@ public class InsuranceController {
         return R.ok();
     }
 
-    /** 对照表 + 未对照项目提示 + 对照率统计 */
+    /** 对照表 + 未对照项目提示 + 对照率统计（真实目录数万条：限量 500 + 关键字过滤，1.1.7） */
     @GetMapping("/catalog")
-    public R<Map<String, Object>> catalog() {
+    public R<Map<String, Object>> catalog(@RequestParam(required = false) String keyword) {
         var m = new LinkedHashMap<String, Object>();
-        m.put("mapped", jdbc.queryForList("select * from yb_catalog_map order by item_type, item_code"));
+        String like = keyword == null || keyword.isBlank() ? null : "%" + keyword.strip() + "%";
+        m.put("mapped", jdbc.queryForList("""
+                select * from yb_catalog_map
+                where ?::text is null or item_name like ? or item_code like ? or yb_code like ?
+                order by item_type, item_code limit 500
+                """, like, like, like, like));
+        m.put("mappedTotal", jdbc.queryForObject("select count(*) from yb_catalog_map", Integer.class));
         m.put("unmappedDrugs", jdbc.queryForList("""
                 select code, name from md_drug d where enabled
                   and not exists (select 1 from yb_catalog_map m where m.item_type = 'DRUG' and m.item_code = d.code)

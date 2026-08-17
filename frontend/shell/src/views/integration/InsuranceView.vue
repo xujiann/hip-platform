@@ -56,7 +56,11 @@
         </div>
         <el-row :gutter="16">
           <el-col :span="15">
-            <h4>已对照（{{ mapped.length }}）</h4>
+            <h4>
+              已对照（共 {{ mappedTotal }}，显示前 500）
+              <el-input v-model="catalogKeyword" size="small" placeholder="名称/编码检索" clearable
+                        style="width: 180px; margin-left: 8px" @change="loadCatalog" />
+            </h4>
             <el-table :data="mapped" size="small" border max-height="420">
               <el-table-column prop="item_type" label="类型" width="70" />
               <el-table-column prop="item_code" label="编码" width="90" />
@@ -175,6 +179,8 @@ const tab = ref('summary')
 const today = todayLocal()
 const summary = ref<Record<string, any> | null>(null)
 const mapped = ref<Record<string, unknown>[]>([])
+const mappedTotal = ref(0)
+const catalogKeyword = ref('')
 const unmappedRaw = ref<{ drugs: Record<string, unknown>[]; items: Record<string, unknown>[] }>({ drugs: [], items: [] })
 const splits = ref<Record<string, unknown>[]>([])
 const audits = ref<Record<string, unknown>[]>([])
@@ -200,8 +206,9 @@ const unmapped = computed(() => [
 
 async function loadSummary() { summary.value = (await client.get('/insurance/summary')).data.data }
 async function loadCatalog() {
-  const d = (await client.get('/insurance/catalog')).data.data
+  const d = (await client.get('/insurance/catalog', { params: { keyword: catalogKeyword.value || undefined } })).data.data
   mapped.value = d.mapped
+  mappedTotal.value = d.mappedTotal
   unmappedRaw.value = { drugs: d.unmappedDrugs, items: d.unmappedItems }
   catalogStats.value = d.stats
 }

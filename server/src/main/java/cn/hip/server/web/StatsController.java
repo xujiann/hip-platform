@@ -112,10 +112,16 @@ public class StatsController {
                        coalesce(c.amt, 0)   as revenue
                 from generate_series(current_date - (? - 1) * interval '1 day', current_date, interval '1 day') as d(day)
                 left join (select visit_date, count(*) cnt from outp_registration
-                           where status <> 'CANCELLED' group by visit_date) r on r.visit_date = d.day::date
+                           where status <> 'CANCELLED'
+                             and visit_date >= current_date - (? - 1) * interval '1 day'
+                           group by visit_date) r on r.visit_date = d.day::date
                 left join (select created_at::date cd, sum(total_amount) amt from outp_charge
-                           where status = 'PAID' group by created_at::date) c on c.cd = d.day::date
+                           where status = 'PAID'
+                             and created_at >= current_date - (? - 1) * interval '1 day'
+                           group by created_at::date) c on c.cd = d.day::date
                 order by d.day
-                """, days));
+                """, days, days, days));
+        // 子查询带日期下界（1.1.7）：原先要 7 天数据把整张挂号/收费表聚合一遍——
+        // 这是工作台图表端点，数据过百万行后每次数百毫秒的两次全表聚合
     }
 }

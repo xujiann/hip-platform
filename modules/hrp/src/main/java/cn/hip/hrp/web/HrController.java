@@ -107,20 +107,20 @@ public class HrController {
         if (req.month() == null || !req.month().matches("\\d{4}-\\d{2}")) return R.fail(4721, "月份格式 YYYY-MM");
         int okCnt = 0, miss = 0;
         for (SalaryRow row : req.rows()) {
-            var emp = jdbc.queryForList("select id from hr_employee where emp_no = ?", Long.class, row.empNo());
-            if (emp.isEmpty()) {
-                miss++;
-                continue;
-            }
             BigDecimal base = row.basePay() == null ? BigDecimal.ZERO : row.basePay();
             BigDecimal bonus = row.bonus() == null ? BigDecimal.ZERO : row.bonus();
             BigDecimal ded = row.deduction() == null ? BigDecimal.ZERO : row.deduction();
-            jdbc.update("""
+            // 工号解析并入 upsert（1.1.7：原先每行先查 id 再写，2N 次往返）
+            int n = jdbc.update("""
                     insert into hr_salary(employee_id, month, base_pay, bonus, deduction, total)
-                    values (?,?,?,?,?,?)
+                    select e.id, ?, ?, ?, ?, ? from hr_employee e where e.emp_no = ?
                     on conflict (employee_id, month) do update set base_pay = excluded.base_pay,
                         bonus = excluded.bonus, deduction = excluded.deduction, total = excluded.total
-                    """, emp.get(0), req.month(), base, bonus, ded, base.add(bonus).subtract(ded));
+                    """, req.month(), base, bonus, ded, base.add(bonus).subtract(ded), row.empNo());
+            if (n == 0) {
+                miss++;
+                continue;
+            }
             okCnt++;
         }
         return R.ok(Map.of("imported", okCnt, "missing", miss));

@@ -33,8 +33,12 @@ public class DoctorStationService {
 
     /** 组号取数据库序列：跨实例、跨重启唯一 */
     private long nextGroupSeq() {
+        // 空 query space（1.1.7 B-8）：未声明时 Hibernate 按"可能读任何表"处理，
+        // 每次取号都 auto-flush 整个会话并对已托管实体做脏检查——这是医生开单的热路径
         return ((Number) entityManager
                 .createNativeQuery("select nextval('outp_order_group_seq')")
+                .unwrap(org.hibernate.query.NativeQuery.class)
+                .addSynchronizedQuerySpace("")
                 .getSingleResult()).longValue();
     }
 

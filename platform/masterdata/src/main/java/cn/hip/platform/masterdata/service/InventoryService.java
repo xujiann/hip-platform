@@ -91,6 +91,8 @@ public class InventoryService {
     /** 入库单号取序列：nanoTime%1e6 会碰撞唯一约束（裸 500） */
     private long nextInSeq() {
         return ((Number) entityManager.createNativeQuery("select nextval('inv_stock_in_seq')")
+                .unwrap(org.hibernate.query.NativeQuery.class)
+                .addSynchronizedQuerySpace("")   // 取号不触发全会话 flush（1.1.7 B-8）
                 .getSingleResult()).longValue();
     }
 
