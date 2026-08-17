@@ -37,7 +37,7 @@ class RegistrationServiceTest {
     private OutpSchedule newSchedule(int capacity, String fee) {
         OutpSchedule s = new OutpSchedule();
         s.setDeptId(1L);
-        s.setScheduleDate(LocalDate.now());
+        s.setScheduleDate(cn.hip.platform.core.config.BusinessDates.today());
         s.setFee(new BigDecimal(fee));
         s.setCapacity(capacity);
         return scheduleRepository.save(s);

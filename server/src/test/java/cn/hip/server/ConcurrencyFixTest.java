@@ -56,7 +56,7 @@ class ConcurrencyFixTest {
         Long pid = patientService.register(p).getId();
         OutpSchedule s = new OutpSchedule();
         s.setDeptId(1L);
-        s.setScheduleDate(LocalDate.now());
+        s.setScheduleDate(cn.hip.platform.core.config.BusinessDates.today());
         s.setFee(BigDecimal.ZERO);
         s.setCapacity(9);
         s = scheduleRepository.save(s);
@@ -79,7 +79,7 @@ class ConcurrencyFixTest {
         String no1 = doctorStationService.createOrders(reg1, List.of(line), null).get(0).getGroupNo();
         String no2 = doctorStationService.createOrders(reg2, List.of(line), null).get(0).getGroupNo();
 
-        String stamp = LocalDate.now().format(java.time.format.DateTimeFormatter.BASIC_ISO_DATE);
+        String stamp = cn.hip.platform.core.config.BusinessDates.today().format(java.time.format.DateTimeFormatter.BASIC_ISO_DATE);
         assertTrue(no1.startsWith("CF" + stamp + "-"));
         assertNotEquals(no1, no2);
         // 序列单调递增：与服务实例内存状态无关，重启/多实例不撞号

@@ -152,7 +152,7 @@ class Phase107ConcurrencyTest {
         Long drugId = drug("阿莫西林");
         int before = drugRepository.findById(drugId).orElseThrow().getStock();
 
-        inventoryService.stockIn(drugId, 10, "B107", LocalDate.now().plusYears(1), "测试供应商", null);
+        inventoryService.stockIn(drugId, 10, "B107", cn.hip.platform.core.config.BusinessDates.today().plusYears(1), "测试供应商", null);
         entityManager.clear();
         assertEquals(before + 10, drugRepository.findById(drugId).orElseThrow().getStock());
 
@@ -178,7 +178,7 @@ class Phase107ConcurrencyTest {
         Long pid = patientService.register(p).getId();
         OutpSchedule s = new OutpSchedule();
         s.setDeptId(1L);
-        s.setScheduleDate(LocalDate.now());
+        s.setScheduleDate(cn.hip.platform.core.config.BusinessDates.today());
         s.setFee(BigDecimal.ZERO);
         s.setCapacity(10);
         s = scheduleRepository.save(s);
@@ -199,7 +199,7 @@ class Phase107ConcurrencyTest {
         Long pid = patientService.register(p).getId();
         OutpSchedule s = new OutpSchedule();
         s.setDeptId(1L);
-        s.setScheduleDate(LocalDate.now());
+        s.setScheduleDate(cn.hip.platform.core.config.BusinessDates.today());
         s.setFee(BigDecimal.ZERO);
         s.setCapacity(5);
         s = scheduleRepository.save(s);

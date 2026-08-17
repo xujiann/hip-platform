@@ -53,7 +53,7 @@ class Phase104CdrTest {
         Long pid = patientService.register(p).getId();
         OutpSchedule s = new OutpSchedule();
         s.setDeptId(1L);
-        s.setScheduleDate(LocalDate.now());
+        s.setScheduleDate(cn.hip.platform.core.config.BusinessDates.today());
         s.setFee(BigDecimal.ZERO);
         s.setCapacity(5);
         s = scheduleRepository.save(s);

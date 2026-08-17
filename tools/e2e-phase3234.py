@@ -6,12 +6,12 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from e2elib import BASE, call, discharge_cleanup, find_free_bed, new_patient, login, ok, q  # noqa: E402
+from e2elib import BASE, call, discharge_cleanup, find_free_bed, new_patient, login, ok, q, today_bj  # noqa: E402
 
 
 
 t = login()
-today = datetime.date.today().isoformat()
+today = today_bj().isoformat()
 stamp = datetime.datetime.now().strftime('%H%M%S')
 
 # ============ 三十二期：设备全生命周期与后勤 ============
@@ -37,7 +37,7 @@ assert plan['due'], '当日应标到期'
 ok(call('POST', f"/equipment/maintain-plans/{plan['id']}/execute?content=" + q('例行保养正常'), token=t), '执行保养')
 plan2 = next(p for p in ok(call('GET', '/equipment/maintain-plans', token=t), '计划2') if p['asset_id'] == aid)
 assert not plan2['due'] and plan2['next_date'] > today, '执行后应顺延'
-soon = (datetime.date.today() + datetime.timedelta(days=30)).isoformat()
+soon = (today_bj() + datetime.timedelta(days=30)).isoformat()
 ok(call('POST', '/equipment/metrology', {'assetId': aid, 'certNo': 'JD' + stamp, 'checkedAt': today,
                                          'validUntil': soon, 'agency': '市计量院'}, t), '计量')
 met = next(m for m in ok(call('GET', '/equipment/metrology', token=t), '计量台账') if m['cert_no'] == 'JD' + stamp)

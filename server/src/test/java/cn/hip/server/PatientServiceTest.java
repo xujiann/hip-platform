@@ -46,6 +46,6 @@ class PatientServiceTest {
     @Test
     void ageIsComputedFromBirthDate() {
         assertNull(PatientService.ageOf(null));
-        assertEquals(0, PatientService.ageOf(LocalDate.now()));
+        assertEquals(0, PatientService.ageOf(cn.hip.platform.core.config.BusinessDates.today()));
     }
 }

@@ -7,12 +7,12 @@ import sys
 import datetime
 import urllib.parse
 import urllib.request
-from e2elib import BASE, call, login, ok, q  # noqa: E402
+from e2elib import BASE, call, login, ok, q, today_bj  # noqa: E402
 
 
 
 t = login()
-today = datetime.date.today().isoformat()
+today = today_bj().isoformat()
 
 # 1 挂号(免挂号费)→接诊→开血常规→医保收费
 sch = ok(call('POST', '/outpatient/schedules', {'deptId': 1, 'scheduleDate': today, 'fee': 0, 'capacity': 10}, t), '排班')

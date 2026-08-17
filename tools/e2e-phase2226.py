@@ -6,7 +6,7 @@ import subprocess
 import sys
 import urllib.parse
 import urllib.request
-from e2elib import BASE, call, discharge_cleanup, find_free_bed, new_patient, login, ok, q  # noqa: E402
+from e2elib import BASE, call, discharge_cleanup, find_free_bed, new_patient, login, ok, q, today_bj  # noqa: E402
 
 
 
@@ -16,7 +16,7 @@ def wsl(cmd):
 
 
 t = login()
-today = datetime.date.today().isoformat()
+today = today_bj().isoformat()
 stamp = datetime.datetime.now().strftime('%H%M%S')
 
 # ============ 二十二期：运维保障 ============
@@ -238,7 +238,7 @@ assert len(summ) >= 1
 print('[廿五-1] 护理排班+质控评分 OK（冲突拦截 4581，科室横向对比）')
 
 # 医务台账：到期预警
-soon = (datetime.date.today() + datetime.timedelta(days=30)).isoformat()
+soon = (today_bj() + datetime.timedelta(days=30)).isoformat()
 ok(call('POST', '/hrp/credentials', {'staffName': 'E2E医师' + stamp, 'certType': '定期考核',
                                      'certNo': 'DK' + stamp, 'expireDate': soon}, t), '登记资质')
 creds = ok(call('GET', '/hrp/credentials', token=t), '台账')

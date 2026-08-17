@@ -6,13 +6,13 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from e2elib import BASE, call, discharge_cleanup, find_free_bed, login, ok, q  # noqa: E402
+from e2elib import BASE, call, discharge_cleanup, find_free_bed, login, ok, q, today_bj  # noqa: E402
 
 
 
 login_resp = call('POST', '/auth/login', {'username': 'admin', 'password': 'admin123'})
 t = ok(login_resp, '登录')['token']
-today = datetime.date.today().isoformat()
+today = today_bj().isoformat()
 stamp = datetime.datetime.now().strftime('%H%M%S')
 
 # ============ 三十一期（先验登录附加字段） ============

@@ -25,7 +25,9 @@ def call(method, path, body=None, token=None):
 
 
 token = call('POST', '/auth/login', {'username': 'admin', 'password': 'admin123'})['data']['token']
-today = datetime.date.today().isoformat()
+import sys as _s; _s.path.insert(0, 'tools')
+from e2elib import today_bj
+today = today_bj().isoformat()
 # 号源容量 = 总请求数的一半 → 一半成功一半满号，验证并发防超挂
 capacity = TOTAL // 2
 sch = call('POST', '/outpatient/schedules',

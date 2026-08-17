@@ -52,7 +52,7 @@ class Phase113FinanceTest {
     private Long regWithOrder(Long patientId) {
         var sch = new cn.hip.outpatient.entity.OutpSchedule();
         sch.setDeptId(1L);
-        sch.setScheduleDate(LocalDate.now());
+        sch.setScheduleDate(cn.hip.platform.core.config.BusinessDates.today());
         sch.setFee(BigDecimal.ZERO);
         sch.setCapacity(9);
         sch = scheduleRepository.save(sch);
@@ -87,8 +87,8 @@ class Phase113FinanceTest {
         chargeService.refund(charge.getId(), uidB);
         entityManager.flush();
 
-        String today = LocalDate.now().toString();
-        String yesterday = LocalDate.now().minusDays(1).toString();
+        String today = cn.hip.platform.core.config.BusinessDates.today().toString();
+        String yesterday = cn.hip.platform.core.config.BusinessDates.today().minusDays(1).toString();
 
         // D1 视角：甲有一笔收款、零退款（修复前这里会出现一笔退款——历史报表变脸）
         var d1 = financeController.reconciliation(yesterday).getData();
@@ -121,7 +121,7 @@ class Phase113FinanceTest {
         var charge = chargeService.settle(regId, "YB", null);
         entityManager.flush();
 
-        String today = LocalDate.now().toString();
+        String today = cn.hip.platform.core.config.BusinessDates.today().toString();
         var before = reconService.reconRows(today).stream()
                 .filter(r -> charge.getChargeNo().equals(r.get("charge_no"))).findFirst().orElseThrow();
         assertTrue((Boolean) before.get("consistent"), "金额一致时应判一致");

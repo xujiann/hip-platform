@@ -8,12 +8,12 @@ import sys
 import urllib.parse
 import urllib.request
 import datetime
-from e2elib import BASE, call, login, new_patient, ok, q  # noqa: E402
+from e2elib import BASE, call, login, new_patient, ok, q, today_bj  # noqa: E402
 
 
 
 token = login()
-today = datetime.date.today().isoformat()
+today = today_bj().isoformat()
 
 drugs = ok(call('GET', '/masterdata/drugs?keyword=' + q('阿莫西林'), token=token), '药品查询')
 amx = drugs[0]

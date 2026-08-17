@@ -5,12 +5,12 @@ import sys
 import datetime
 import urllib.parse
 import urllib.request
-from e2elib import ensure_not_admitted, BASE, call, login, ok, q  # noqa: E402
+from e2elib import ensure_not_admitted, BASE, call, login, ok, q, today_bj  # noqa: E402
 
 
 
 t = login()
-today = datetime.date.today().isoformat()
+today = today_bj().isoformat()
 
 # ---- 第四期：叫号 ----
 sch = ok(call('POST', '/outpatient/schedules', {'deptId': 1, 'scheduleDate': today, 'fee': 0, 'capacity': 10}, t), '排班')

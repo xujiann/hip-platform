@@ -7,7 +7,7 @@ import sys
 import datetime
 import urllib.parse
 import urllib.request
-from e2elib import BASE, call, login, ok, q  # noqa: E402
+from e2elib import BASE, call, login, ok, q, today_bj  # noqa: E402
 
 
 
@@ -24,7 +24,7 @@ def mllp_send(payload: str) -> str:
 
 
 t = login()
-today = datetime.date.today().isoformat()
+today = today_bj().isoformat()
 
 # 准备：挂号→接诊→开检验→收费
 sch = ok(call('POST', '/outpatient/schedules', {'deptId': 1, 'scheduleDate': today, 'fee': 0, 'capacity': 10}, t), '排班')

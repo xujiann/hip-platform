@@ -8,12 +8,12 @@ import datetime
 import urllib.error
 import urllib.parse
 import urllib.request
-from e2elib import BASE, call, ensure_not_admitted, find_free_bed, login, ok, q  # noqa: E402
+from e2elib import BASE, call, ensure_not_admitted, find_free_bed, login, ok, q, today_bj  # noqa: E402
 
 
 
 t = login()
-today = datetime.date.today().isoformat()
+today = today_bj().isoformat()
 
 # 0 患者 2 的住院文档自给（1.2.0）：此前依赖 e2e-inpatient 恰好用患者 2 入院——
 # 跨套件隐式数据耦合，inpatient 消除硬编码改自建患者后，处女库上本套件的

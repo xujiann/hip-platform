@@ -58,7 +58,7 @@ class InsuranceBenefitTest {
     private Long ybVisit(Long patientId) {
         OutpSchedule s = new OutpSchedule();
         s.setDeptId(1L);
-        s.setScheduleDate(LocalDate.now());
+        s.setScheduleDate(cn.hip.platform.core.config.BusinessDates.today());
         s.setFee(BigDecimal.ZERO);
         s.setCapacity(5);
         s = scheduleRepository.save(s);
@@ -97,7 +97,7 @@ class InsuranceBenefitTest {
 
         Map<String, Object> annual = jdbc.queryForMap(
                 "select * from yb_patient_annual where patient_id = ? and year = ?",
-                pid, LocalDate.now().getYear());
+                pid, cn.hip.platform.core.config.BusinessDates.today().getYear());
         assertEquals(0, new BigDecimal("10.00").compareTo((BigDecimal) annual.get("deductible_used")));
         assertEquals(0, new BigDecimal("8.33").compareTo((BigDecimal) annual.get("fund_used")));
 
@@ -133,7 +133,7 @@ class InsuranceBenefitTest {
 
         Map<String, Object> annual = jdbc.queryForMap(
                 "select * from yb_patient_annual where patient_id = ? and year = ?",
-                pid, LocalDate.now().getYear());
+                pid, cn.hip.platform.core.config.BusinessDates.today().getYear());
         assertEquals(0, BigDecimal.ZERO.compareTo((BigDecimal) annual.get("deductible_used")));
         assertEquals(0, BigDecimal.ZERO.compareTo((BigDecimal) annual.get("fund_used")));
     }

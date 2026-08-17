@@ -8,6 +8,12 @@ spring:
   application:
     name: hip-server
   datasource:
+    hikari:
+      # 会话时区钉死业务时区（1.2.2）：PGJDBC 默认把 JVM 时区设为会话时区，
+      # 宿主/容器时区漂移时 `?::date`/`current_date` 的日窗口会偏移 8 小时，
+      # 与 BusinessDates 的北京"今天"错位（UTC runner 的 CI 在北京 0-8 点实测现形）。
+      # 有此设置后应用对宿主时区免疫，UTC 的 CI 即是常驻回归金丝雀。
+      connection-init-sql: set time zone 'Asia/Shanghai'
     url: jdbc:postgresql://127.0.0.1:5432/hip
     username: hip
     password: hip123456

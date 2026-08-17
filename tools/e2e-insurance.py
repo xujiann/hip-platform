@@ -5,7 +5,7 @@ import json
 import sys
 import urllib.parse
 import urllib.request
-from e2elib import BASE, call, find_free_bed, login, ok, q  # noqa: E402
+from e2elib import BASE, call, find_free_bed, login, ok, q, today_bj  # noqa: E402
 
 
 
@@ -14,7 +14,7 @@ def close(a, b, step):
 
 
 t = login()
-today = datetime.date.today().isoformat()
+today = today_bj().isoformat()
 stamp = datetime.datetime.now().strftime('%H%M%S')
 
 # 基线：雾化吸入按丙类（保证可重复运行），统筹比例确认

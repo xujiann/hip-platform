@@ -45,7 +45,7 @@ class Phase110DataIntegrityTest {
         Long pid = patientService.register(p).getId();
         var sch = new cn.hip.outpatient.entity.OutpSchedule();
         sch.setDeptId(1L);
-        sch.setScheduleDate(java.time.LocalDate.now());
+        sch.setScheduleDate(cn.hip.platform.core.config.BusinessDates.today());
         sch.setFee(BigDecimal.ZERO);
         sch.setCapacity(5);
         sch = scheduleRepository.save(sch);

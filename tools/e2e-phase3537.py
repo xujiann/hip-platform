@@ -8,12 +8,12 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from e2elib import BASE, call, discharge_cleanup, find_free_bed, new_patient, login, ok, q  # noqa: E402
+from e2elib import BASE, call, discharge_cleanup, find_free_bed, new_patient, login, ok, q, today_bj  # noqa: E402
 
 
 
 t = login()
-today = datetime.date.today().isoformat()
+today = today_bj().isoformat()
 month = today[:7]
 stamp = datetime.datetime.now().strftime('%H%M%S')
 

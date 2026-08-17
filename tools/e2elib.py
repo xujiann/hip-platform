@@ -38,6 +38,14 @@ def ok(r, step):
     return r['data']
 
 
+def today_bj():
+    """业务"今天"= 北京时区（1.2.1 修）：后端 BusinessDates 统一 Asia/Shanghai，
+    CI runner 是 UTC——本地 date.today() 在 UTC 16:00–24:00（北京 0–8 点）与后端差一天，
+    排班/挂号/叫号全部错位。E2E 一律用本函数取日期。"""
+    import datetime as _dt
+    return (_dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(hours=8)).date()
+
+
 def login(username='admin', password='admin123'):
     return ok(call('POST', '/auth/login', {'username': username, 'password': password}), f'登录 {username}')['token']
 

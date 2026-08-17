@@ -58,7 +58,7 @@ class Phase109RegressionTest {
         Long pid = patientService.register(p).getId();
         OutpSchedule s = new OutpSchedule();
         s.setDeptId(1L);
-        s.setScheduleDate(LocalDate.now());
+        s.setScheduleDate(cn.hip.platform.core.config.BusinessDates.today());
         s.setFee(BigDecimal.ZERO);
         s.setCapacity(5);
         s = scheduleRepository.save(s);
@@ -82,7 +82,7 @@ class Phase109RegressionTest {
         chargeService.settle(rid, "CASH", null);
         entityManager.flush();
 
-        String slot = LocalDate.now().plusDays(30).toString();
+        String slot = cn.hip.platform.core.config.BusinessDates.today().plusDays(30).toString();
         // 先占掉该时段的 1 号，制造后续取号必然撞唯一索引的场景
         jdbc.update("""
                 insert into med_appointment(order_id, slot_date, period, seq_no)

@@ -2,10 +2,10 @@
 """1.0.1 快赢包 E2E：每日清单/明细类型检索/审方上限/编号前缀/输血处置字典/死亡登记卡/体检总检配置"""
 import datetime
 import urllib.error
-from e2elib import BASE, call, discharge_cleanup, find_free_bed, login, new_patient, ok, q  # noqa: E402
+from e2elib import BASE, call, discharge_cleanup, find_free_bed, login, new_patient, ok, q, today_bj  # noqa: E402
 
 t = login()
-today = datetime.date.today().isoformat()
+today = today_bj().isoformat()
 stamp = datetime.datetime.now().strftime('%H%M%S')
 
 # 1 编号前缀配置化（1749）：改前缀→新结算单生效→还原

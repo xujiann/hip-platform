@@ -54,7 +54,7 @@ class CdssRulesTest {
         Long pid = patientService.register(p).getId();
         OutpSchedule s = new OutpSchedule();
         s.setDeptId(1L);
-        s.setScheduleDate(LocalDate.now());
+        s.setScheduleDate(cn.hip.platform.core.config.BusinessDates.today());
         s.setFee(BigDecimal.ZERO);
         s.setCapacity(5);
         s = scheduleRepository.save(s);
@@ -94,12 +94,12 @@ class CdssRulesTest {
     /** 未成年人开喹诺酮 → AGE 4017 拦截；成人放行 */
     @Test
     void quinoloneBlockedForMinorAllowedForAdult() {
-        Long minor = visit(LocalDate.now().minusYears(10));
+        Long minor = visit(cn.hip.platform.core.config.BusinessDates.today().minusYears(10));
         var e = assertThrows(BizException.class, () -> doctorStationService.createOrders(minor, List.of(
                 new OrderLine("DRUG", drugId("左氧氟沙星"), 1, "口服", "qd", "1片", 7)), 1L));
         assertEquals(4017, e.code);
 
-        Long adult = visit(LocalDate.now().minusYears(30));
+        Long adult = visit(cn.hip.platform.core.config.BusinessDates.today().minusYears(30));
         assertDoesNotThrow(() -> doctorStationService.createOrders(adult, List.of(
                 new OrderLine("DRUG", drugId("左氧氟沙星"), 1, "口服", "qd", "1片", 7)), 1L));
     }

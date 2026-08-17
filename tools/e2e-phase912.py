@@ -6,12 +6,12 @@ import sys
 import datetime
 import urllib.parse
 import urllib.request
-from e2elib import ensure_not_admitted, BASE, call, login, new_patient, ok, q  # noqa: E402
+from e2elib import ensure_not_admitted, BASE, call, login, new_patient, ok, q, today_bj  # noqa: E402
 
 
 
 t = login()
-today = datetime.date.today().isoformat()
+today = today_bj().isoformat()
 
 # 准备一个在院患者
 wards = [d for d in ok(call('GET', '/system/depts', token=t), '科室') if d['type'] == 'NURSING']
