@@ -22,6 +22,10 @@ public class OpsHealthScheduler {
     private final JdbcTemplate jdbc;
     private final cn.hip.platform.core.service.JobLockService jobLock;
 
+    /** 磁盘告警监测路径（逗号分隔多卷）；缺省查工作目录——试点应配数据库卷与备份卷所在分区 */
+    @org.springframework.beans.factory.annotation.Value("${hip.ops.disk-paths:}")
+    private String diskPaths;
+
     @Scheduled(cron = "0 0 * * * *", zone = cn.hip.platform.core.config.HipProfiles.ZONE)
     public void hourlyHealthCheck() {
         jobLock.runExclusively("ops-health-check", () -> {
@@ -43,8 +47,14 @@ public class OpsHealthScheduler {
                             "select count(*) from ops_slow_api where occurred_at >= current_date and occurred_at < current_date + 1", Integer.class);
                     return n != null && n > 50;
                 });
-                check("磁盘可用空间不足 10GB", "HIGH", () ->
-                        new File(System.getProperty("user.dir")).getFreeSpace() / 1024 / 1024 / 1024 < 10);
+                String paths = diskPaths == null || diskPaths.isBlank()
+                        ? System.getProperty("user.dir") : diskPaths;
+                for (String p : paths.split(",")) {
+                    File vol = new File(p.trim());
+                    check("磁盘可用空间不足 10GB：" + p.trim(), "HIGH", () ->
+                            vol.exists() && vol.getFreeSpace() / 1024 / 1024 / 1024 < 10);
+                    check("磁盘监测路径不存在（配置错误）：" + p.trim(), "MEDIUM", () -> !vol.exists());
+                }
                 // 观测表归档：三张只增不减的表若无清理，ops_slow_api 还会自我放大
                 // （DB 慢 → 更多请求超阈值 → 每个都同步 insert → 更慢）。
                 // 小时判断必须与 cron 同时区：LocalTime.now() 用 JVM 默认时区，

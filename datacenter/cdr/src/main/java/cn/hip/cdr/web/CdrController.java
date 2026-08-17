@@ -18,6 +18,7 @@ public class CdrController {
 
     private final CdrSyncService syncService;
     private final CdrDocumentRepository docRepository;
+    private final cn.hip.cdr.service.CdrLegacyService legacyService;
 
     @PostMapping("/sync")
     @PreAuthorize("hasRole('ADMIN')")
@@ -60,6 +61,18 @@ public class CdrController {
         return R.ok(Map.of(
                 "OUTP_ENCOUNTER", docRepository.countByDocType("OUTP_ENCOUNTER"),
                 "LAB_REPORT", docRepository.countByDocType("LAB_REPORT"),
-                "INP_SUMMARY", docRepository.countByDocType("INP_SUMMARY")));
+                "INP_SUMMARY", docRepository.countByDocType("INP_SUMMARY"),
+                "LEGACY", docRepository.countByDocTypeStartingWith("LEGACY_")));
+    }
+
+    /** 存量切换：老 HIS 历史文书导入（幂等，键=类别+老单号；tools/import-documents.py 调用，1.1.5） */
+    @PostMapping("/legacy-documents")
+    @PreAuthorize("hasRole('ADMIN')")
+    public R<Map<String, Object>> importLegacy(@RequestBody cn.hip.cdr.service.CdrLegacyService.LegacyDoc req) {
+        try {
+            return R.ok(legacyService.importDocument(req));
+        } catch (cn.hip.cdr.service.CdrLegacyService.LegacyException e) {
+            return R.fail(e.code, e.getMessage());
+        }
     }
 }

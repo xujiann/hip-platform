@@ -16,6 +16,8 @@ public interface CdrDocumentRepository extends JpaRepository<CdrDocument, Long> 
 
     long countByDocType(String docType);
 
+    long countByDocTypeStartingWith(String docTypePrefix);
+
     /** 全文检索起步版：ILIKE 匹配标题与内容（中文子串可用；数据量大后迁 OpenSearch） */
     @org.springframework.data.jpa.repository.Query("""
             from CdrDocument d where d.title like concat('%', :kw, '%')
