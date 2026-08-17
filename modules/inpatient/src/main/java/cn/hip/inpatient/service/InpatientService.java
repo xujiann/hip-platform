@@ -255,7 +255,10 @@ public class InpatientService {
         s.setCashierId(cashierId);
         s.setPayMethod(payMethod == null ? "CASH" : payMethod);
         s = settlementRepo.save(s);
-        s.setSettleNo("%s%s-%06d".formatted(
+        // 后缀带方案区分符 S（1.1.8 实测回归）：V54 前的旧号含 admissionId、纯数字后缀，
+        // 同日升级后新结算 id 追上旧行的 admissionId 值即撞 settle_no 唯一约束——
+        // 旧号永远是纯数字，"S"+id 与其永不相等
+        s.setSettleNo("%s%s-S%06d".formatted(
                 configReader.get("billno_prefix_settle", "CY"),
                 LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE), s.getId()));
         s = settlementRepo.save(s);

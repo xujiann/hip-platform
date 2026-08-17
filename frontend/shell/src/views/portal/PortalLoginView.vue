@@ -30,15 +30,21 @@ const loading = ref(false)
 const hospitalName = ref('')
 
 onMounted(async () => {
-  const resp = await axios.get('/api/config/public')
-  hospitalName.value = resp.data.data.hospital_name ?? ''
+  // 失败不留未处理 rejection：院名取不到就静默用默认标题（弱网/后端未启时登录页仍可用）
+  try {
+    const resp = await axios.get('/api/config/public', { timeout: 8000 })
+    hospitalName.value = resp.data.data.hospital_name ?? ''
+  } catch {
+    hospitalName.value = ''
+  }
 })
 
 async function onLogin() {
   if (!patientNo.value || !phone.value) return
   loading.value = true
   try {
-    const resp = await axios.post('/api/portal/login', { patientNo: patientNo.value, phone: phone.value })
+    const resp = await axios.post('/api/portal/login',
+        { patientNo: patientNo.value, phone: phone.value }, { timeout: 15000 })
     if (resp.data.code !== 0) {
       ElMessage.error(resp.data.message)
       return
@@ -46,6 +52,9 @@ async function onLogin() {
     localStorage.setItem('hip_portal_token', resp.data.data.token)
     localStorage.setItem('hip_portal_name', resp.data.data.patientName)
     router.push('/portal/home')
+  } catch {
+    // 网络错误/超时曾零提示——患者看到按钮转一下然后毫无反应，于是反复重试
+    ElMessage.error('网络异常，请稍后重试')
   } finally {
     loading.value = false
   }

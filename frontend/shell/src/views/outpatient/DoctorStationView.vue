@@ -166,7 +166,8 @@ const orderStatusTag: Record<string, string> = {
   CREATED: 'warning', CHARGED: 'primary', DISPENSED: 'success', EXECUTED: 'success', CANCELLED: 'info',
 }
 
-const today = todayLocal()
+// 每次取值（1.1.8）：常量固化在页面加载时，急诊夜班跨 0 点后刷新仍查昨天的队列
+const today = ref(todayLocal())
 const worklist = ref<Record<string, unknown>[]>([])
 const current = ref<Record<string, unknown> | null>(null)
 const tab = ref('emr')
@@ -195,7 +196,8 @@ const labLines = ref<Record<string, unknown>[]>([])
 const orders = ref<Record<string, unknown>[]>([])
 
 async function loadWorklist() {
-  const resp = await client.get('/outpatient/doctor/worklist', { params: { date: today } })
+  today.value = todayLocal()
+  const resp = await client.get('/outpatient/doctor/worklist', { params: { date: today.value } })
   worklist.value = resp.data.data
 }
 

@@ -130,7 +130,11 @@ async function addDeposit() {
 
 async function discharge() {
   if (!current.value) return
-  await ElMessageBox.confirm(`确认为 ${current.value.patientName} 办理出院结算？`, '出院确认')
+  try {
+    await ElMessageBox.confirm(`确认为 ${current.value.patientName} 办理出院结算？`, '出院确认')
+  } catch {
+    return   // 用户取消
+  }
   discharging.value = true
   try {
     const resp = await client.post(`/inpatient/admissions/${current.value.id}/discharge`, null,

@@ -81,8 +81,7 @@ import client from '../../api/client'
 const statusNames: Record<string, string> = { REGISTERED: '已挂号', CANCELLED: '已退号', VISITED: '已就诊' }
 const statusTag: Record<string, string> = { REGISTERED: 'success', CANCELLED: 'info', VISITED: '' }
 
-const today = todayLocal()
-const date = ref(today)
+const date = ref(todayLocal())
 const patientKeyword = ref('')
 const patients = ref<Record<string, unknown>[]>([])
 const selectedPatient = ref<Record<string, unknown> | null>(null)
@@ -113,7 +112,7 @@ async function loadSchedules() {
 async function loadRegistrations() {
   loadingRegs.value = true
   try {
-    const resp = await client.get('/outpatient/registrations', { params: { date: today } })
+    const resp = await client.get('/outpatient/registrations', { params: { date: todayLocal() } })
     registrations.value = resp.data.data
   } finally {
     loadingRegs.value = false
@@ -132,7 +131,11 @@ async function doRegister(schedule: Record<string, unknown>) {
 }
 
 async function doCancel(row: Record<string, unknown>) {
-  await ElMessageBox.confirm(`确认为 ${row.patientName} 退号？`, '退号确认')
+  try {
+    await ElMessageBox.confirm(`确认为 ${row.patientName} 退号？`, '退号确认')
+  } catch {
+    return   // 用户取消
+  }
   await client.put(`/outpatient/registrations/${row.id}/cancel`)
   ElMessage.success('已退号')
   await Promise.all([loadSchedules(), loadRegistrations()])

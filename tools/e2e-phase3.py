@@ -24,7 +24,16 @@ print(f"[1] CDR 同步：门诊 {s['outpEncounters']}，检验 {s['labReports']}
 docs = ok(call('GET', '/cdr/patients/2/documents', token=t), '360文档')
 types = {d['docType'] for d in docs}
 assert {'OUTP_ENCOUNTER', 'LAB_REPORT', 'INP_SUMMARY'} <= types, types
-lab_doc = next(d for d in docs if d['docType'] == 'LAB_REPORT' and '血红蛋白' in d['content'])
+# 列表已投影化不含 content（1.1.7）——逐个取明细找带血红蛋白的检验文档
+lab_doc = None
+for d in docs:
+    if d['docType'] != 'LAB_REPORT':
+        continue
+    detail = ok(call('GET', f"/cdr/documents/{d['id']}", token=t), '文档明细')
+    if '血红蛋白' in detail['content']:
+        lab_doc = detail
+        break
+assert lab_doc, '未找到含血红蛋白的检验文档'
 content = json.loads(lab_doc['content'])
 assert any(r['abnormal_flag'] == 'LL' for r in content['results'])
 print(f"[2] 患者360：{len(docs)} 份文档覆盖三类，检验文档含 LL 结果 ✓")

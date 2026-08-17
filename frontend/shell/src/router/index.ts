@@ -7,6 +7,8 @@ const router = createRouter({
   routes: [
     { path: '/login', component: () => import('../views/LoginView.vue') },
     { path: '/portal', component: () => import('../views/portal/PortalLoginView.vue') },
+  // 员工移动端独立布局（1.1.8）：曾套在桌面 MainLayout 里，PDA 上侧边栏占掉半屏
+  { path: '/m', component: () => import('../views/inpatient/MobileWorkView.vue') },
     { path: '/portal/home', component: () => import('../views/portal/PortalHomeView.vue') },
     {
       path: '/',
@@ -61,7 +63,6 @@ const router = createRouter({
         { path: 'cdss', component: () => import('../views/outpatient/CdssView.vue') },
         { path: 'pay', component: () => import('../views/outpatient/PayView.vue') },
         { path: 'mrstats', component: () => import('../views/quality/MedStatsView.vue') },
-        { path: 'm', component: () => import('../views/inpatient/MobileWorkView.vue') },
         { path: 'hrp/equipment', component: () => import('../views/hrp/EquipmentView.vue') },
         { path: 'nursing-plus', component: () => import('../views/quality/NursingPlusView.vue') },
         { path: 'drug-analysis', component: () => import('../views/hrp/DrugAnalysisView.vue') },
@@ -75,7 +76,7 @@ const router = createRouter({
 })
 
 /** 不受菜单授权约束的路径：首页、登录、打印页与患者端 */
-const ALWAYS_ALLOWED = ['/', '/dashboard', '/login', '/print', '/403']
+const ALWAYS_ALLOWED = ['/', '/dashboard', '/login', '/print']   // '/403' 曾是无对应路由的死条目
 
 router.beforeEach(async (to) => {
   // 患者端独立会话，不走院内登录

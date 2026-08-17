@@ -111,7 +111,11 @@ async function loadRecent() {
 }
 
 async function refund(row: Record<string, unknown>) {
-  await ElMessageBox.confirm(`确认退费 ${row.chargeNo}（¥${row.totalAmount}）？`, '退费确认')
+  try {
+    await ElMessageBox.confirm(`确认退费 ${row.chargeNo}（¥${row.totalAmount}）？`, '退费确认')
+  } catch {
+    return   // 用户取消
+  }
   await client.post(`/outpatient/charges/${row.chargeId}/refund`)
   ElMessage.success('已退费，相关项目回到待收费')
   await Promise.all([loadWorklist(), loadRecent()])

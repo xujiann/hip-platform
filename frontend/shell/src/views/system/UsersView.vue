@@ -139,6 +139,19 @@ function openEdit(row: UserRow) {
 }
 
 async function save() {
+  // 前端先拦（1.1.8）：required/占位文案曾只是展示，空密码或 3 位照样提交、整表填完才收到后端 4000
+  if (!form.username.trim() || !form.realName.trim()) {
+    ElMessage.error('用户名与姓名必填')
+    return
+  }
+  if (!form.id && form.password.length < 6) {
+    ElMessage.error('初始密码至少 6 位')
+    return
+  }
+  if (form.id && form.password && form.password.length < 6) {
+    ElMessage.error('重置密码至少 6 位（留空则不修改）')
+    return
+  }
   saving.value = true
   try {
     if (form.id) {

@@ -43,7 +43,7 @@
           </el-select>
         </el-form-item>
         <el-form-item label="排台时间">
-          <el-date-picker v-model="form.scheduledAt" type="datetime" value-format="YYYY-MM-DDTHH:mm:ss+08:00" style="width: 100%" />
+          <el-date-picker v-model="form.scheduledAt" type="datetime" value-format="YYYY-MM-DDTHH:mm:ssZ" style="width: 100%" />
         </el-form-item>
       </el-form>
       <template #footer>

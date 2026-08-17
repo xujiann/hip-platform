@@ -64,7 +64,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 // echarts/core 按需注册（仅折线/柱状 + 网格/提示框 + Canvas，全量引入曾占 1.1MB chunk）
 import * as echarts from 'echarts/core'
 import { BarChart, LineChart } from 'echarts/charts'
@@ -105,7 +105,20 @@ function initChart(el: HTMLElement) {
   chartInstances.push(inst)
   return inst
 }
-window.addEventListener('resize', () => chartInstances.forEach((c) => c.resize()))
+// 具名 handler + 卸载清理（1.1.8 B-11）：原写法每次进入 /dashboard 都新增一个匿名监听
+// 且实例永不 dispose——这是所有角色的登录默认页，一天切换几十次即线性泄漏
+const onResize = () => chartInstances.forEach((c) => c.resize())
+window.addEventListener('resize', onResize)
+
+function disposeCharts() {
+  chartInstances.forEach((c) => c.dispose())
+  chartInstances.length = 0
+}
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', onResize)
+  disposeCharts()
+})
 
 function renderCharts() {
   if (showTable.value || !daily.value.length) return
@@ -149,7 +162,9 @@ function renderCharts() {
 }
 
 watch(showTable, async (v) => {
-  if (!v) {
+  if (v) {
+    disposeCharts()   // v-if 销毁图表 DOM 后旧实例必须同步清掉，否则反复切换线性累积
+  } else {
     await nextTick()
     renderCharts()
   }

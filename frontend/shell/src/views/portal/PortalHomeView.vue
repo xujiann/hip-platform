@@ -121,7 +121,7 @@ import { onMounted, ref } from 'vue'
 import { todayLocal } from '../../utils/date'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import axios from 'axios'
+import { portalClient as portal } from '../../api/client'
 
 const router = useRouter()
 const name = localStorage.getItem('hip_portal_name') ?? ''
@@ -140,22 +140,6 @@ const guided = ref(false)
 
 const regNames: Record<string, string> = { REGISTERED: '已挂号', CANCELLED: '已退号', VISITED: '已就诊' }
 const regTag: Record<string, string> = { REGISTERED: 'success', CANCELLED: 'info', VISITED: '' }
-
-const portal = axios.create({ baseURL: '/api/portal' })
-portal.interceptors.request.use((cfg) => {
-  cfg.headers.Authorization = `Bearer ${localStorage.getItem('hip_portal_token')}`
-  return cfg
-})
-portal.interceptors.response.use((resp) => {
-  if (resp.data.code !== 0) {
-    ElMessage.error(resp.data.message)
-    return Promise.reject(new Error(resp.data.message))
-  }
-  return resp
-}, (err) => {
-  if (err.response?.status === 401) router.push('/portal')
-  return Promise.reject(err)
-})
 
 async function loadSchedules() {
   schedules.value = (await portal.get('/schedules', { params: { date: date.value } })).data.data

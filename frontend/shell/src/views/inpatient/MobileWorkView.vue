@@ -78,13 +78,37 @@ async function open(a: Record<string, unknown>) {
   records.value = (await client.get(`/inpatient/admissions/${a.id}/records`)).data.data
 }
 
+/** 体征数值校验（1.1.8 B-12）：护士输 "36。5"（中文句号）曾变 NaN→null 静默丢失但成功提示照弹——临床数据 */
+const VITAL_RANGES: Record<string, [number, number, string]> = {
+  temperature: [30, 45, '体温(℃)'], pulse: [20, 250, '脉搏'], respiration: [5, 60, '呼吸'],
+  sbp: [40, 300, '收缩压'], dbp: [20, 200, '舒张压'], spo2: [50, 100, '血氧'],
+}
+
+function parseVital(field: string, v: string): number | null {
+  if (v === '') return null
+  const n = Number(v.replace('。', '.').trim())
+  const [min, max, label] = VITAL_RANGES[field]
+  if (Number.isNaN(n)) throw new Error(`${label} 不是有效数字：${v}`)
+  if (n < min || n > max) throw new Error(`${label} 超出合理范围（${min}–${max}）：${v}`)
+  return n
+}
+
 async function saveVital() {
   if (!current.value) return
-  const num = (v: string) => (v === '' ? null : Number(v))
-  await client.post(`/inpatient/admissions/${current.value.id}/vitals`, {
-    temperature: num(vital.temperature), pulse: num(vital.pulse), respiration: num(vital.respiration),
-    sbp: num(vital.sbp), dbp: num(vital.dbp), spo2: num(vital.spo2),
-  })
+  let payload: Record<string, number | null>
+  try {
+    payload = {
+      temperature: parseVital('temperature', vital.temperature),
+      pulse: parseVital('pulse', vital.pulse),
+      respiration: parseVital('respiration', vital.respiration),
+      sbp: parseVital('sbp', vital.sbp), dbp: parseVital('dbp', vital.dbp),
+      spo2: parseVital('spo2', vital.spo2),
+    }
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+    return
+  }
+  await client.post(`/inpatient/admissions/${current.value.id}/vitals`, payload)
   ElMessage.success('已录入')
   vitals.value = (await client.get(`/inpatient/admissions/${current.value.id}/vitals`)).data.data
 }
