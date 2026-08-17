@@ -7,7 +7,7 @@ import json
 import sys
 import urllib.parse
 import urllib.request
-from e2elib import ensure_not_admitted, BASE, call, login, ok, q  # noqa: E402
+from e2elib import ensure_not_admitted, BASE, call, login, new_patient, ok, q  # noqa: E402
 
 
 
@@ -31,15 +31,16 @@ ward = next(w for w in wards if w['name'] == '内科病区')
 beds = ok(call('GET', f"/inpatient/beds?wardId={ward['id']}", token=token), '床位')
 free = next(b for b in beds if b['status'] == 'FREE')
 icds = ok(call('GET', '/masterdata/icd10?keyword=' + q('糖尿病'), token=token), 'ICD')
-ensure_not_admitted(token, 2)   # 1.1.0：同一患者只能一条在院记录，先清历史未收尾的
+pa = new_patient(token, '住院E2E甲', sex='M')   # 自建患者（1.2.0 消除种子 id 硬编码）
+pb = new_patient(token, '住院E2E乙')
 adm = ok(call('POST', '/inpatient/admissions', {
-    'patientId': 2, 'deptId': 1, 'bedId': free['id'], 'diagIcd': icds[0]['code'], 'diagName': icds[0]['name'],
+    'patientId': pa['id'], 'deptId': 1, 'bedId': free['id'], 'diagIcd': icds[0]['code'], 'diagName': icds[0]['name'],
     'deposit': 1000, 'payMethod': 'CASH'}, token), '入院')
 aid = adm['id']
 print(f"[2] 入院 {adm['admissionNo']}：{adm['patientName']} {adm['wardName']}{adm['bedNo']}床，押金 ¥1000")
 
 # 3 同床再入院应被拦截
-r = call('POST', '/inpatient/admissions', {'patientId': 1, 'deptId': 1, 'bedId': free['id'],
+r = call('POST', '/inpatient/admissions', {'patientId': pb['id'], 'deptId': 1, 'bedId': free['id'],
                                            'deposit': 0, 'payMethod': 'CASH'}, token)
 assert r['code'] == 9002, f'重复占床应被拦截: {r}'
 print('[3] 重复占床拦截 OK')

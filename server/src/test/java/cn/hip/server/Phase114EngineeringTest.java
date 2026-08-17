@@ -139,8 +139,14 @@ class Phase114EngineeringTest {
                 .andExpect(status().isOk());
         Integer n = jdbc.queryForObject("""
                 select count(*) from sys_audit_log
-                where username = 'eng114admin5' and method = 'GET' and path = '/api/patients'
+                where username = 'eng114admin5' and method = 'GET' and path like '/api/patients%'
                 """, Integer.class);
         assertTrue(n != null && n >= 1, "患者检索是敏感读，必须留痕（修复前只审计写操作）");
+        // 1.2.0：敏感读要记"查的是谁"——query string 必须入痕
+        Integer withQs = jdbc.queryForObject("""
+                select count(*) from sys_audit_log
+                where username = 'eng114admin5' and path like '/api/patients?keyword=%'
+                """, Integer.class);
+        assertTrue(withQs != null && withQs >= 1, "审计必须包含查询串（此前只剩路径，'查了谁'丢失）");
     }
 }

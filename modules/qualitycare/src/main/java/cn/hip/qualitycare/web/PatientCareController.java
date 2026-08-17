@@ -238,11 +238,18 @@ public class PatientCareController {
     // ---- 三十期：团检 ----
     public record GroupReq(String unitName, String contact, Long packageId, List<String> memberNames) {}
 
-    /** 单位团检建档：批量建患者 + 体检记录 */
+    /**
+     * 单位团检建档：批量建患者 + 体检记录。
+     *
+     * <p>有意保持单事务（1.2.0 审阅裁决）：成员无证件号、建档不幂等，
+     * 分批部分提交会让"中断重跑"产生重复患者档案；全回滚则整批重试安全。
+     * 单事务代价可控（2000 人约数千条简单 insert），风险只在超大名单——上限拦截。
+     */
     @PostMapping("/api/exam/groups")
     @Transactional
     public R<Map<String, Object>> createGroup(@RequestBody GroupReq req) {
         if (req.memberNames() == null || req.memberNames().isEmpty()) return R.fail(9909, "团检人员名单不能为空");
+        if (req.memberNames().size() > 2000) return R.fail(9915, "单批团检不超过 2000 人，请拆分名单分次提交");
         Integer pkg = jdbc.queryForObject("select count(*) from pe_exam_package where id = ? and enabled",
                 Integer.class, req.packageId());
         if (pkg == null || pkg == 0) return R.fail(9912, "体检套餐不存在");

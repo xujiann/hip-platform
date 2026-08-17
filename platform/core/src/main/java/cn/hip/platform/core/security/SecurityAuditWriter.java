@@ -23,10 +23,29 @@ public class SecurityAuditWriter {
 
     private final JdbcTemplate jdbc;
 
+    /** 匿名 401 节流窗口：token 过期后的前端轮询、扫描器探测都会以请求速率写审计表（1.2.0）；测试置 0 */
+    @org.springframework.beans.factory.annotation.Value("${hip.audit.anon-throttle-ms:10000}")
+    private long anonThrottleMs;
+    private final java.util.concurrent.ConcurrentHashMap<String, Long> anonLastWrite =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
     public void recordDenied(HttpServletRequest request, int httpStatus) {
         try {
             Authentication auth = SecurityContextHolder.getContext().getAuthentication();
             String username = auth == null || "anonymousUser".equals(auth.getName()) ? null : auth.getName();
+            // 带身份的拒绝（403/过期 token 的 401）全量留痕；匿名 401 按 IP 每 10 秒一条
+            if (username == null && httpStatus == 401) {
+                String ip = request.getRemoteAddr();
+                long now = System.currentTimeMillis();
+                Long last = anonLastWrite.get(ip);
+                if (anonThrottleMs > 0 && last != null && now - last < anonThrottleMs) {
+                    return;
+                }
+                anonLastWrite.put(ip, now);
+                if (anonLastWrite.size() > 10_000) {
+                    anonLastWrite.clear();   // 简单防膨胀：清空后最多多记一轮
+                }
+            }
             jdbc.update("""
                     insert into sys_audit_log(username, method, path, http_status, client_ip)
                     values (?,?,?,?,?)

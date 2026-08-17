@@ -8,7 +8,7 @@ import sys
 import urllib.parse
 import urllib.request
 import datetime
-from e2elib import BASE, call, login, ok, q  # noqa: E402
+from e2elib import BASE, call, login, new_patient, ok, q  # noqa: E402
 
 
 
@@ -21,9 +21,12 @@ stock0 = amx['stock']
 labs = ok(call('GET', '/masterdata/charge-items?keyword=' + q('血常规'), token=token), '项目查询')
 lab = labs[0]
 
-# 1 排班 + 挂号（自动生成挂号费订单行）
+# 1 排班 + 挂号（自动生成挂号费订单行）。患者一律本套件自建：
+# patientId 1/2 只在 CI 处女库存在，实施替换种子/本地复跑都会 404（种子契约，1.2.0 消除）
+pa = new_patient(token, '门诊E2E甲', sex='M')
+pb = new_patient(token, '门诊E2E乙')
 sch = ok(call('POST', '/outpatient/schedules', {'deptId': 1, 'scheduleDate': today, 'fee': 10, 'capacity': 30}, token), '排班')
-reg = ok(call('POST', '/outpatient/registrations', {'patientId': 2, 'scheduleId': sch['id']}, token), '挂号')
+reg = ok(call('POST', '/outpatient/registrations', {'patientId': pa['id'], 'scheduleId': sch['id']}, token), '挂号')
 rid = reg['id']
 unpaid = ok(call('GET', f'/outpatient/charges/unpaid?registrationId={rid}', token=token), '待收明细')
 assert any(o['orderType'] == 'REG' for o in unpaid['orders']), '应有挂号费订单行'
@@ -38,7 +41,7 @@ c2 = ok(call('POST', '/outpatient/charges/settle', {'registrationId': rid, 'payM
 print(f"[2] 收费 {c1['chargeNo']} → 退费 → 重新收费 {c2['chargeNo']} OK")
 
 # 3 已收费的挂号退号应被拦截
-reg2 = ok(call('POST', '/outpatient/registrations', {'patientId': 1, 'scheduleId': sch['id']}, token), '第二个挂号')
+reg2 = ok(call('POST', '/outpatient/registrations', {'patientId': pb['id'], 'scheduleId': sch['id']}, token), '第二个挂号')
 c3 = ok(call('POST', '/outpatient/charges/settle', {'registrationId': reg2['id'], 'payMethod': 'CASH'}, token), '收第二单挂号费')
 r = call('PUT', f"/outpatient/registrations/{reg2['id']}/cancel", token=token)
 assert r['code'] == 3006, f'已收费退号应被拦截: {r}'

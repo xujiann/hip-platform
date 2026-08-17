@@ -17,6 +17,8 @@ server:
   port: 0
 
 hip:
+  audit:
+    anon-throttle-ms: 0
   security:
     jwt-secret: test-only-secret-hip-platform-0123456789abcdef
     jwt-expiry-hours: 1

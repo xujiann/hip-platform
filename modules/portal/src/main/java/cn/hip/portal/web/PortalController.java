@@ -1,6 +1,5 @@
 package cn.hip.portal.web;
 
-import cn.hip.outpatient.repository.OutpRegistrationRepository;
 import cn.hip.outpatient.service.RegistrationService;
 import cn.hip.platform.core.common.R;
 import cn.hip.platform.core.repository.SysDeptRepository;
@@ -28,7 +27,6 @@ public class PortalController {
     private final PatientRepository patientRepository;
     private final JwtService jwtService;
     private final RegistrationService registrationService;
-    private final OutpRegistrationRepository registrationRepository;
     private final SysDeptRepository deptRepository;
     private final cn.hip.outpatient.service.PayService payService;
     private final org.springframework.jdbc.core.JdbcTemplate jdbc;
@@ -197,8 +195,11 @@ public class PortalController {
     @PostMapping("/my/pay")
     public R<Object> pay(@RequestBody PortalPayRequest req, Authentication auth) {
         Long pid = patientId(auth);
-        var reg = registrationRepository.findById(req.registrationId()).orElse(null);
-        if (reg == null || !reg.getPatientId().equals(pid)) return R.fail(9502, "挂号记录不存在或非本人");
+        // 归属校验走 SQL（1.2.0）：跨模块直引 outpatient Repository 违反 ADR-0001 的模块边界
+        Integer own = jdbc.queryForObject(
+                "select count(*) from outp_registration where id = ? and patient_id = ?",
+                Integer.class, req.registrationId(), pid);
+        if (own == null || own == 0) return R.fail(9502, "挂号记录不存在或非本人");
         try {
             return R.ok(payService.createPayOrder(req.registrationId(), req.channel()));
         } catch (RegistrationService.BizException e) {

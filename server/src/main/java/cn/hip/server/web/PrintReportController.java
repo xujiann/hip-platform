@@ -88,7 +88,9 @@ public class PrintReportController {
      */
     @GetMapping("/api/reports/daily-settlement")
     public R<Map<String, Object>> dailySettlement(@RequestParam(required = false) String date) {
-        String d = date == null ? BusinessDates.today().toString() : date;
+        // 预校验（1.2.0）：非法日期直接 ?::date 会 500 + ERROR 堆栈污染告警；
+        // DateTimeParseException 由全局处理器转 4000
+        String d = date == null ? BusinessDates.today().toString() : LocalDate.parse(date).toString();
         List<Map<String, Object>> byMethod = jdbc.queryForList("""
                 select pay_method, side, count(*) as cnt, sum(total_amount) as amount
                 from (
@@ -128,26 +130,38 @@ public class PrintReportController {
                 : s;
     }
 
-    /** 日结报表 CSV 导出 */
+    /**
+     * 日结报表 CSV 导出（1.2.0 口径可复算）：收款/退款各成一行、退款金额取负——
+     * 原先一张"当日新建且当日退费"的单只出一行且无符号，按金额列求和既不等于收款也不等于净额；
+     * 历史日期重导时后来才退费的单 status 显示 REFUNDED，快照"事后变脸"。
+     * 现在：金额列求和 = 当日净额；按口径列分组求和 = 日结报表两侧合计；重导历史日期结果稳定。
+     */
     @GetMapping(value = "/api/reports/daily-settlement.csv", produces = "text/csv;charset=UTF-8")
     public String dailySettlementCsv(@RequestParam(required = false) String date) {
-        String d = date == null ? BusinessDates.today().toString() : date;
-        // 当日新单 + 当日发生的退费（含退往日单）——与日结报表同口径
+        String d = date == null ? BusinessDates.today().toString() : LocalDate.parse(date).toString();
         var rows = jdbc.queryForList("""
-                select c.charge_no, p.name, c.total_amount, c.pay_method, c.status, c.created_at
-                from outp_charge c
-                join outp_registration r on r.id = c.registration_id
+                select t.side, t.charge_no, p.name, t.amount, t.pay_method, t.occurred_at
+                from (
+                    select '收款' as side, charge_no, registration_id, total_amount as amount,
+                           pay_method, created_at as occurred_at, id
+                    from outp_charge
+                    where created_at >= ?::date and created_at < ?::date + interval '1 day'
+                    union all
+                    select '退款', charge_no, registration_id, -total_amount,
+                           pay_method, refunded_at, id
+                    from outp_charge
+                    where status = 'REFUNDED'
+                      and refunded_at >= ?::date and refunded_at < ?::date + interval '1 day'
+                ) t
+                join outp_registration r on r.id = t.registration_id
                 join empi_patient p on p.id = r.patient_id
-                where (c.created_at >= ?::date and c.created_at < ?::date + interval '1 day')
-                   or (c.status = 'REFUNDED'
-                       and c.refunded_at >= ?::date and c.refunded_at < ?::date + interval '1 day')
-                order by c.id
+                order by t.occurred_at, t.id
                 """, d, d, d, d);
-        StringBuilder sb = new StringBuilder("﻿结算单号,患者,金额,方式,状态,时间\n");
+        StringBuilder sb = new StringBuilder("﻿口径,结算单号,患者,金额,方式,发生时间\n");
         for (var r : rows) {
-            sb.append("%s,%s,%s,%s,%s,%s\n".formatted(csv(r.get("charge_no")), csv(r.get("name")),
-                    csv(r.get("total_amount")), csv(r.get("pay_method")), csv(r.get("status")),
-                    csv(r.get("created_at"))));
+            sb.append("%s,%s,%s,%s,%s,%s\n".formatted(csv(r.get("side")), csv(r.get("charge_no")),
+                    csv(r.get("name")), csv(r.get("amount")), csv(r.get("pay_method")),
+                    csv(r.get("occurred_at"))));
         }
         return sb.toString();
     }

@@ -37,7 +37,8 @@ public class AuditLogFilter extends OncePerRequestFilter {
      */
     private static final List<String> AUDITED_READ_PREFIXES = List.of(
             "/api/patients", "/api/cdr", "/api/emr", "/api/print", "/api/reports",
-            "/api/hr/salaries", "/api/datagov/reports");
+            "/api/hr/salaries", "/api/datagov/reports",
+            "/api/finance/charge-search");   // 按患者姓名/单号查费用，同为敏感读（1.2.0）
 
     private final JdbcTemplate jdbc;
 
@@ -72,10 +73,17 @@ public class AuditLogFilter extends OncePerRequestFilter {
                     Authentication auth = SecurityContextHolder.getContext().getAuthentication();
                     String username = auth == null || "anonymousUser".equals(auth.getName())
                             ? null : auth.getName();
+                    // 敏感读要能回答"查的是谁"：/api/patients?keyword=张 丢掉 query string 就只剩
+                    // "他查过患者列表"（1.2.0）。列宽 255，超长截断
+                    String qs = request.getQueryString();
+                    String recorded = qs == null || qs.isBlank() ? path : path + "?" + qs;
+                    if (recorded.length() > 255) {
+                        recorded = recorded.substring(0, 255);
+                    }
                     jdbc.update("""
                             insert into sys_audit_log(username, method, path, http_status, client_ip)
                             values (?,?,?,?,?)
-                            """, username, request.getMethod(), path, response.getStatus(),
+                            """, username, request.getMethod(), recorded, response.getStatus(),
                             request.getRemoteAddr());
                 } catch (Exception ignored) {
                     // 审计失败不影响业务

@@ -28,10 +28,16 @@ public class ChargeService {
     private final InsuranceAdapter insuranceAdapter;
     private final InsuranceSplitService insuranceSplitService;
     private final cn.hip.platform.core.service.ConfigReader configReader;
+    private final cn.hip.platform.core.config.ModuleGate moduleGate;
 
     /** 结算：全部未收费订单一次结清 */
     @Transactional
     public OutpCharge settle(Long registrationId, String payMethod, Long cashierId) {
+        // 模块开关须挡横向调用（1.2.0）：关掉 insurance 只挡菜单与 /api/insurance 路由时，
+        // 收费传 payMethod=YB 仍会完整走分割写 yb_* 表——未采购医保的医院对账时无从解释
+        if ("YB".equals(payMethod) && !moduleGate.isEnabled("insurance")) {
+            throw new BizException(5010, "医保模块未启用，不能以医保方式结算");
+        }
         List<OutpOrder> unpaid = orderRepository.findByRegistrationIdAndStatusOrderByIdAsc(registrationId, "CREATED");
         if (unpaid.isEmpty()) {
             throw new BizException(5001, "没有待收费项目");

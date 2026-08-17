@@ -6,7 +6,7 @@ import sys
 import datetime
 import urllib.parse
 import urllib.request
-from e2elib import ensure_not_admitted, BASE, call, login, ok, q  # noqa: E402
+from e2elib import ensure_not_admitted, BASE, call, login, new_patient, ok, q  # noqa: E402
 
 
 
@@ -18,8 +18,9 @@ wards = [d for d in ok(call('GET', '/system/depts', token=t), '科室') if d['ty
 free = next(b for b in ok(call('GET', f"/inpatient/beds?wardId={wards[0]['id']}", token=t), '床')
             if b['status'] == 'FREE')
 icds = ok(call('GET', '/masterdata/icd10?keyword=' + q('糖尿病'), token=t), 'ICD')
-ensure_not_admitted(t, 2)   # 1.1.0：同一患者只能一条在院记录，先清历史未收尾的
-adm = ok(call('POST', '/inpatient/admissions', {'patientId': 2, 'deptId': 1, 'bedId': free['id'],
+ensure_not_admitted(t, 2)   # 兜底清理其他套件留下的 2 号在院残留（本套件已自建患者，不再依赖）
+p912 = new_patient(t, '九十二期E2E', sex='M')   # 自建患者（1.2.0 消除种子 id 硬编码）
+adm = ok(call('POST', '/inpatient/admissions', {'patientId': p912['id'], 'deptId': 1, 'bedId': free['id'],
                                                 'diagIcd': icds[0]['code'], 'diagName': icds[0]['name'],
                                                 'deposit': 300, 'payMethod': 'CASH'}, t), '入院')
 aid = adm['id']
@@ -50,13 +51,13 @@ assert any(c['admission_no'] == adm['admissionNo'] for c in inf['cases'])
 print(f"[九-4] 院感登记 OK（抗菌药物已执行 {inf['antibioticOrderCount']} 条）")
 
 # ---- 十期 ----
-ok(call('POST', '/patientcare/followups', {'patientId': 2, 'topic': '出院一周复诊提醒', 'dueDate': today}, t), '随访计划')
+ok(call('POST', '/patientcare/followups', {'patientId': p912['id'], 'topic': '出院一周复诊提醒', 'dueDate': today}, t), '随访计划')
 fus = ok(call('GET', '/patientcare/followups', token=t), '随访队列')
 mine = next(f for f in fus if f['topic'] == '出院一周复诊提醒')
 ok(call('PUT', f"/patientcare/followups/{mine['id']}/done?note=" + q('电话随访，恢复良好'), token=t), '完成随访')
 print('[十-1] 随访计划→执行 OK')
 
-ok(call('POST', '/patientcare/satisfaction', {'patientId': 2, 'source': 'PORTAL', 'score': 5, 'comment': '服务很好'}, t), '满意度')
+ok(call('POST', '/patientcare/satisfaction', {'patientId': p912['id'], 'source': 'PORTAL', 'score': 5, 'comment': '服务很好'}, t), '满意度')
 stats = ok(call('GET', '/patientcare/satisfaction/stats', token=t), '满意度统计')
 assert stats['count'] >= 1 and stats['avgScore'] > 0
 print(f"[十-2] 满意度 OK（{stats['count']} 份，均分 {stats['avgScore']}）")
@@ -79,7 +80,7 @@ print('[十-4] 临床路径模板→入径批量开嘱 OK')
 
 ok(call('POST', '/exam/packages', {'name': '入职体检套餐', 'price': 280, 'items': '血常规+尿常规+胸片+心电图'}, t), '套餐')
 pk = ok(call('GET', '/exam/packages', token=t), '套餐列表')[0]
-ok(call('POST', f"/exam/records?patientId=2&packageId={pk['id']}", {}, t), '体检登记')
+ok(call('POST', f"/exam/records?patientId={p912['id']}&packageId={pk['id']}", {}, t), '体检登记')
 er = ok(call('GET', '/exam/records', token=t), '体检记录')[0]
 ok(call('PUT', f"/exam/records/{er['id']}/complete?summary=" + q('各项指标正常'), token=t), '总检')
 print('[十-5] 体检套餐→登记→总检 OK')

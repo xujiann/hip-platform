@@ -34,6 +34,7 @@ public class InpatientService {
     private final cn.hip.platform.integration.insurance.InsuranceAdapter insuranceAdapter;
     private final cn.hip.insurance.service.InsuranceSplitService insuranceSplitService;
     private final cn.hip.platform.core.service.ConfigReader configReader;
+    private final cn.hip.platform.core.config.ModuleGate moduleGate;
 
     private final jakarta.persistence.EntityManager entityManager;
 
@@ -272,6 +273,10 @@ public class InpatientService {
         }
 
         if ("YB".equals(s.getPayMethod())) {
+            // 模块开关须挡横向调用（1.2.0，与门诊 5010 同理）
+            if (!moduleGate.isEnabled("insurance")) {
+                throw new InpException(9027, "医保模块未启用，不能以医保方式结算");
+            }
             // 住院行级分割（批次二）：与门诊共用分割引擎，biz_type=INP 走住院比例
             insuranceSplitService.splitAndAudit("INP", s.getSettleNo(), adm.getPatientId(), total,
                     orders.stream().filter(o -> "EXECUTED".equals(o.getStatus()))
@@ -317,6 +322,8 @@ public class InpatientService {
         if (admissionRepo.claimReadmit(admissionId, targetBed) == 0) {
             throw new InpException(9025, "该患者不在已出院状态（可能已被召回）");
         }
+        // 冲销侧有意不设模块开关（1.2.0）：既存 YB 结算必须始终可纠正，
+        // 否则中途关闭医保模块的医院会有永远无法冲销的历史单据
         if ("YB".equals(s.getPayMethod())) {
             // 本地额度回退在前、渠道冲正在后（1.1.6 B-3）：渠道成功后不允许再有可失败的本地步骤。
             // reverse 可能因年度累计行锁超时失败——若排在冲正之后，本地回滚而医保已冲，

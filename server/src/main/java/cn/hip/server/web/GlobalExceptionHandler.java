@@ -56,7 +56,8 @@ public class GlobalExceptionHandler {
     /** 请求体/参数格式问题：非法日期、类型不匹配、缺参 */
     @ExceptionHandler({HttpMessageNotReadableException.class, MethodArgumentTypeMismatchException.class,
             MissingServletRequestParameterException.class, MethodArgumentNotValidException.class,
-            IllegalArgumentException.class, NumberFormatException.class})
+            IllegalArgumentException.class, NumberFormatException.class,
+            java.time.format.DateTimeParseException.class})
     public R<Void> handleBadRequest(Exception e) {
         log.warn("请求参数错误: {}", e.getMessage());
         return R.fail(4000, "请求参数不正确：" + shortMessage(e));

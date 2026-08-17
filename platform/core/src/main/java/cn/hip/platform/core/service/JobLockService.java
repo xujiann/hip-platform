@@ -26,9 +26,23 @@ public class JobLockService {
 
     private final JdbcTemplate jdbc;
 
+    /**
+     * 锁键取 SHA-256 前 8 字节（1.2.0）：String.hashCode 只有 32 位且分布弱，
+     * 两个任务名碰撞即互相误判"其他实例正在执行"静默跳过——正是本类要防的静默停摆换了个成因。
+     */
+    public static long lockKey(String jobName) {
+        try {
+            byte[] d = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(jobName.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return java.nio.ByteBuffer.wrap(d).getLong();
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);   // JVM 必带 SHA-256
+        }
+    }
+
     /** 以任务名取锁并执行；未取到锁返回 false（说明其他实例已在执行） */
     public boolean runExclusively(String jobName, Runnable body) {
-        long key = jobName.hashCode();
+        long key = lockKey(jobName);
         Boolean ran = jdbc.execute((ConnectionCallback<Boolean>) con -> {
             boolean locked = false;
             try (var lock = con.prepareStatement("select pg_try_advisory_lock(?)")) {

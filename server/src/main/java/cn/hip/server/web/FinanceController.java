@@ -27,6 +27,7 @@ public class FinanceController {
     /** 按操作员核对：收款侧（当日经手收款）与退款侧（当日经手退款）各自归集后合并 */
     @GetMapping("/api/finance/reconciliation")
     public R<Map<String, Object>> reconciliation(@RequestParam String date) {
+        date = java.time.LocalDate.parse(date).toString();   // 预校验：非法日期转 4000 而非 500（1.2.0）
         var m = new LinkedHashMap<String, Object>();
         m.put("byCashier", jdbc.queryForList("""
                 select cashier,
@@ -35,25 +36,28 @@ public class FinanceController {
                        sum(refund_cnt)    as refund_cnt,
                        sum(refund_amount) as refund_amount
                 from (
-                    select coalesce(u.real_name, u.username, '未记录') as cashier,
+                    -- 归并键用 user id 而非显示名（1.2.0）：两位"张伟"会被并成一行，
+                    -- 与本接口"账各归各"的目的相悖；展示列另取
+                    select u.id as uid,
+                           coalesce(u.real_name, u.username, '未记录') as cashier,
                            count(*) as paid_cnt, coalesce(sum(c.total_amount), 0) as paid_amount,
                            0 as refund_cnt, 0::numeric as refund_amount
                     from outp_charge c
                     left join sys_user u on u.id = c.cashier_id
                     where c.created_at >= ?::date and c.created_at < ?::date + interval '1 day'
-                    group by 1
+                    group by u.id, 2
                     union all
-                    select coalesce(u.real_name, u.username, '未记录'),
+                    select u.id, coalesce(u.real_name, u.username, '未记录'),
                            0, 0::numeric,
                            count(*), coalesce(sum(c.total_amount), 0)
                     from outp_charge c
                     left join sys_user u on u.id = c.refund_by
                     where c.status = 'REFUNDED'
                       and c.refunded_at >= ?::date and c.refunded_at < ?::date + interval '1 day'
-                    group by 1
+                    group by u.id, 2
                 ) t
-                group by cashier
-                order by cashier
+                group by t.uid, t.cashier
+                order by t.cashier
                 """, date, date, date, date));
         m.put("anomalies", jdbc.queryForList("""
                 select 'REFUND' as kind, c.charge_no as ref_no, c.total_amount as amount,
