@@ -7,6 +7,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDate;
+import cn.hip.platform.core.config.BusinessDates;
 
 /** 医保每日自动对账：01:30 跑前一日，差异>0 自动开运维工单（sys_config yb_auto_recon_enabled 可停用） */
 @Slf4j
@@ -32,7 +33,7 @@ public class InsuranceAutoReconJob {
             if (flags.stream().noneMatch(f -> "yb_auto_recon_enabled".equals(f.get("cfg_key")))) {
                 return;
             }
-            String date = LocalDate.now().minusDays(1).toString();
+            String date = BusinessDates.today().minusDays(1).toString();
             var result = reconService.reconcileAndSave(date);
             long diff = ((Number) result.get("diff")).longValue();
             log.info("医保自动对账 {}：共 {} 笔，差异 {} 笔", date, result.get("total"), diff);

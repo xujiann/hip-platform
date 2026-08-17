@@ -13,6 +13,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import cn.hip.platform.core.config.BusinessDates;
 
 /** 二十七期：医保管理——目录对照维护、结算分割查询、审核提醒、对账、汇总；批次三补 CSV 导入与对照率 */
 @RestController
@@ -127,7 +128,7 @@ public class InsuranceController {
     @GetMapping("/splits")
     public R<List<Map<String, Object>>> splits(@RequestParam(required = false) String date) {
         // 半开区间（B-4）：s.created_at::date = ? 不可 sarg，分割表按日查询走全表扫
-        String d = date == null ? java.time.LocalDate.now().toString() : date;
+        String d = date == null ? cn.hip.platform.core.config.BusinessDates.today().toString() : date;
         return R.ok(jdbc.queryForList("""
                 select s.*, coalesce(p.name, '-') as patient_name
                 from yb_settle_split s

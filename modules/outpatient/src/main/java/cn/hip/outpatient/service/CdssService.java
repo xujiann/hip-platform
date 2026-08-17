@@ -12,6 +12,7 @@ import java.time.LocalDate;
 import java.time.Period;
 import java.util.ArrayList;
 import java.util.List;
+import cn.hip.platform.core.config.BusinessDates;
 
 /** 二十八期：CDSS 处方前置审查——药物相互作用(DDI)/疗程上限/年龄限制；FORBID 拦截、CAUTION 留痕提醒 */
 @Service
@@ -70,7 +71,7 @@ public class CdssService {
         LocalDate birth = patientRepository.findById(patientId)
                 .map(p -> p.getBirthDate()).orElse(null);
         if (birth != null) {
-            int age = Period.between(birth, LocalDate.now()).getYears();
+            int age = Period.between(birth, BusinessDates.today()).getYears();
             var ageRules = jdbc.queryForList("select * from cdss_age_rule");
             for (DrugLine nd : newDrugs) {
                 for (var r : ageRules) {

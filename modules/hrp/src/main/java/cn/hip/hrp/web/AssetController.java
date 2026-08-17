@@ -13,6 +13,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import cn.hip.platform.core.config.BusinessDates;
 
 @RestController
 @RequestMapping("/api/hrp/assets")
@@ -47,7 +48,7 @@ public class AssetController {
             return R.fail(9601, "名称、价格、购置日期为必填");
         }
         asset.setId(null);
-        asset.setAssetNo("ZC" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE)
+        asset.setAssetNo("ZC" + BusinessDates.today().format(DateTimeFormatter.BASIC_ISO_DATE)
                 + "-" + System.nanoTime() % 100000);
         return R.ok(assetRepo.save(asset));
     }

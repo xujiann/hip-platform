@@ -79,8 +79,8 @@ public class CdrSyncService {
                 "select name, sex, birth_date, id_no from empi_patient where id = ?", doc.getPatientId());
         var p = patient.isEmpty() ? Map.<String, Object>of() : patient.get(0);
         String idNo = String.valueOf(p.getOrDefault("id_no", ""));
-        if (!plainIdNo && idNo.length() > 7) {
-            idNo = idNo.substring(0, 4) + "*".repeat(idNo.length() - 7) + idNo.substring(idNo.length() - 3);
+        if (!plainIdNo) {
+            idNo = cn.hip.platform.core.common.Masking.idNo(idNo);   // 规则统一在 Masking（1.1.9）
         }
         return """
                 <?xml version="1.0" encoding="UTF-8"?>

@@ -16,6 +16,7 @@ import java.time.LocalDate;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import cn.hip.platform.core.config.BusinessDates;
 
 /** 候诊队列与叫号：REGISTERED 候诊 → CALLED 已叫号 → VISITED 接诊中 */
 @RestController
@@ -32,7 +33,7 @@ public class QueueController {
     /** 大屏队列：某科室今日候诊+已叫号+过号 */
     @GetMapping
     public R<Map<String, Object>> queue(@RequestParam Long deptId) {
-        var today = registrationRepository.findByVisitDateOrderByIdDesc(LocalDate.now()).stream()
+        var today = registrationRepository.findByVisitDateOrderByIdDesc(BusinessDates.today()).stream()
                 .filter(r -> r.getDeptId().equals(deptId))
                 .toList();
         var m = new LinkedHashMap<String, Object>();
@@ -81,7 +82,7 @@ public class QueueController {
     @PostMapping("/call-next")
     @Transactional
     public R<Map<String, Object>> callNext(@RequestParam Long deptId) {
-        var next = registrationRepository.findByVisitDateOrderByIdDesc(LocalDate.now()).stream()
+        var next = registrationRepository.findByVisitDateOrderByIdDesc(BusinessDates.today()).stream()
                 .filter(r -> r.getDeptId().equals(deptId) && "REGISTERED".equals(r.getStatus()))
                 .min((a, b) -> a.getRegNo() - b.getRegNo());
         if (next.isEmpty()) {

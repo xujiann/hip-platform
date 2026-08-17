@@ -9,6 +9,7 @@ import org.springframework.web.bind.annotation.*;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
+import cn.hip.platform.core.config.BusinessDates;
 
 /** 十三期：打印数据集与日结报表 */
 @RestController
@@ -87,7 +88,7 @@ public class PrintReportController {
      */
     @GetMapping("/api/reports/daily-settlement")
     public R<Map<String, Object>> dailySettlement(@RequestParam(required = false) String date) {
-        String d = date == null ? LocalDate.now().toString() : date;
+        String d = date == null ? BusinessDates.today().toString() : date;
         List<Map<String, Object>> byMethod = jdbc.queryForList("""
                 select pay_method, side, count(*) as cnt, sum(total_amount) as amount
                 from (
@@ -130,7 +131,7 @@ public class PrintReportController {
     /** 日结报表 CSV 导出 */
     @GetMapping(value = "/api/reports/daily-settlement.csv", produces = "text/csv;charset=UTF-8")
     public String dailySettlementCsv(@RequestParam(required = false) String date) {
-        String d = date == null ? LocalDate.now().toString() : date;
+        String d = date == null ? BusinessDates.today().toString() : date;
         // 当日新单 + 当日发生的退费（含退往日单）——与日结报表同口径
         var rows = jdbc.queryForList("""
                 select c.charge_no, p.name, c.total_amount, c.pay_method, c.status, c.created_at

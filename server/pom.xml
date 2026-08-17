@@ -105,6 +105,9 @@
                     <execution>
                         <goals>
                             <goal>repackage</goal>
+                            <!-- 版本自证（1.1.9）：/actuator/info 暴露构建版本与时间——
+                                 pom 恒 0.1.0-SNAPSHOT 时，"这台医院跑的到底是哪版"只能看文件名 -->
+                            <goal>build-info</goal>
                         </goals>
                     </execution>
                 </executions>

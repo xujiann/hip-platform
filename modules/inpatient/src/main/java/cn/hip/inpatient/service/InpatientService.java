@@ -16,6 +16,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import cn.hip.platform.core.config.BusinessDates;
 
 @Service
 @RequiredArgsConstructor
@@ -47,11 +48,10 @@ public class InpatientService {
                 .getSingleResult()).longValue();
     }
 
-    public static class InpException extends RuntimeException {
-        public final int code;
+    /** 域内保留类型（现有 catch/测试不动），实质语义在基类（1.1.9） */
+    public static class InpException extends cn.hip.platform.core.common.HipBizException {
         public InpException(int code, String message) {
-            super(message);
-            this.code = code;
+            super(code, message);
         }
     }
 
@@ -74,7 +74,7 @@ public class InpatientService {
         adm = admissionRepo.save(adm);
         adm.setAdmissionNo("%s%s-%06d".formatted(
                 configReader.get("billno_prefix_admission", "ZY"),
-                LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE), adm.getId()));
+                BusinessDates.today().format(DateTimeFormatter.BASIC_ISO_DATE), adm.getId()));
         adm = admissionRepo.save(adm);
 
         if (bedRepo.occupy(bedId, adm.getId()) == 0) {
@@ -115,7 +115,7 @@ public class InpatientService {
         if (!"IN_HOSPITAL".equals(adm.getStatus())) {
             throw new InpException(9005, "已出院不能开医嘱");
         }
-        String stamp = LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE);
+        String stamp = BusinessDates.today().format(DateTimeFormatter.BASIC_ISO_DATE);
         return lines.stream().map(line -> {
             InpOrder o = new InpOrder();
             o.setAdmissionId(admissionId);
@@ -260,7 +260,7 @@ public class InpatientService {
         // 旧号永远是纯数字，"S"+id 与其永不相等
         s.setSettleNo("%s%s-S%06d".formatted(
                 configReader.get("billno_prefix_settle", "CY"),
-                LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE), s.getId()));
+                BusinessDates.today().format(DateTimeFormatter.BASIC_ISO_DATE), s.getId()));
         s = settlementRepo.save(s);
         // 必须用抢占**之后**重读的床位：adm 是 claim 前的快照且已被 clearAutomatically detach，
         // 期间若发生转床，用旧 bedId 释放会影响 0 行 → 新床永久 OCCUPIED 无法再收治。

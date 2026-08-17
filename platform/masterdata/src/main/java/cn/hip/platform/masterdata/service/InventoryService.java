@@ -13,6 +13,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import cn.hip.platform.core.config.BusinessDates;
 
 @Service
 @RequiredArgsConstructor
@@ -42,7 +43,7 @@ public class InventoryService {
         drugRepository.restoreStock(drugId, qty);
 
         InvStockIn in = new InvStockIn();
-        in.setInNo("RK" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + "-" + nextInSeq());
+        in.setInNo("RK" + BusinessDates.today().format(DateTimeFormatter.BASIC_ISO_DATE) + "-" + nextInSeq());
         in.setDrugId(drugId);
         in.setQty(qty);
         in.setBatchNo(batchNo);

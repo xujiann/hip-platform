@@ -48,15 +48,11 @@ public class PatientController {
 
     /** 手机号保留前3后4，证件号保留前4后3 */
     private Map<String, Object> maskSensitive(Map<String, Object> dto) {
-        dto.computeIfPresent("phone", (k, v) -> mask(String.valueOf(v), 3, 4));
-        dto.computeIfPresent("idNo", (k, v) -> mask(String.valueOf(v), 4, 3));
+        dto.computeIfPresent("phone", (k, v) -> cn.hip.platform.core.common.Masking.phone(String.valueOf(v)));
+        dto.computeIfPresent("idNo", (k, v) -> cn.hip.platform.core.common.Masking.idNo(String.valueOf(v)));
         return dto;
     }
 
-    private String mask(String s, int head, int tail) {
-        if (s == null || s.isBlank() || "null".equals(s) || s.length() <= head + tail) return s;
-        return s.substring(0, head) + "*".repeat(s.length() - head - tail) + s.substring(s.length() - tail);
-    }
 
     /** 含掩码字符的值一律拒绝入库：前端把脱敏展示值原样提交会永久覆盖真实号码 */
     private String maskedValueError(Patient p) {

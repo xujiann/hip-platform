@@ -27,6 +27,12 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** 并发缺陷修复回归：处方号序列化、退药原子回补、留观占床唯一约束 */
+/**
+ * ⚠ 名不副实警示（1.1.9）：本类是 @Transactional **单线程**测试，断言的是"单号来自 DB 序列
+ * 且单调"——这是并发安全的必要非充分证据。**不要模仿本类在 @Transactional 里写并发测试**：
+ * 事务参与者语义下回滚/提交时序全被掩盖。真并发/真提交范式见 StockRestoreConcurrencyTest
+ * 与 Phase116ChannelOrderTest（多线程各自提交 / 有意不加 @Transactional）。
+ */
 @SpringBootTest
 @Transactional
 @org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")

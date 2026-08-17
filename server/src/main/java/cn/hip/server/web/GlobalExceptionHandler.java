@@ -1,7 +1,5 @@
 package cn.hip.server.web;
 
-import cn.hip.inpatient.service.InpatientService.InpException;
-import cn.hip.outpatient.service.RegistrationService.BizException;
 import cn.hip.platform.core.common.R;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -32,15 +30,13 @@ import java.util.NoSuchElementException;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
-    /** 门诊/挂号/收费/发药域的业务异常 */
-    @ExceptionHandler(BizException.class)
-    public R<Void> handleBiz(BizException e) {
-        return R.fail(e.code, e.getMessage());
-    }
-
-    /** 住院域的业务异常 */
-    @ExceptionHandler(InpException.class)
-    public R<Void> handleInp(InpException e) {
+    /**
+     * 业务异常统一按基类处理（1.1.9）：三套域内异常（BizException/InpException/LegacyException）
+     * 均已继承 HipBizException——新模块抛基类或自建子类都自动被这里接住，
+     * 本类不再随模块数量增长 import
+     */
+    @ExceptionHandler(cn.hip.platform.core.common.HipBizException.class)
+    public R<Void> handleBiz(cn.hip.platform.core.common.HipBizException e) {
         return R.fail(e.code, e.getMessage());
     }
 

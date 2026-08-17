@@ -15,6 +15,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import cn.hip.platform.core.config.BusinessDates;
 
 @Service
 @RequiredArgsConstructor
@@ -101,7 +102,7 @@ public class DoctorStationService {
         if (!"VISITED".equals(reg.getStatus())) {
             throw new BizException(4003, "请先接诊后再开单");
         }
-        String stamp = LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE);
+        String stamp = BusinessDates.today().format(DateTimeFormatter.BASIC_ISO_DATE);
         String drugGroupNo = configReader.get("billno_prefix_rx", "CF") + stamp + "-" + nextGroupSeq();
 
         // 合理用药前置拦截（过敏禁忌 / 同诊重复用药 / 抗菌药分级处方权）

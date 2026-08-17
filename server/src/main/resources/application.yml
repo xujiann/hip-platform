@@ -18,6 +18,9 @@ spring:
   flyway:
     enabled: true
     locations: classpath:db/migration
+    # 实施段 V10000+ 落库后，平台下一版的 V59 会被默认 outOfOrder=false 判为乱序而拒绝启动——
+    # "已实施医院第一次平台升级即卡死在停服窗口"（1.1.9 B-13）。两段版本号不相交，风险可控。
+    out-of-order: true
 
 server:
   # 容器化部署经 nginx 反代：不设此项则审计里的 client_ip 恒为网关容器地址

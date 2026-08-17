@@ -35,11 +35,10 @@ public class CdrLegacyService {
     public record LegacyDoc(String idNo, String patientNo, String category, String legacyKey,
                             String title, String docDate, String content) {}
 
-    public static class LegacyException extends RuntimeException {
-        public final int code;
+    /** 域内保留类型（现有 catch 不动），实质语义在基类（1.1.9） */
+    public static class LegacyException extends cn.hip.platform.core.common.HipBizException {
         public LegacyException(int code, String message) {
-            super(message);
-            this.code = code;
+            super(code, message);
         }
     }
 

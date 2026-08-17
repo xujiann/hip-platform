@@ -20,11 +20,10 @@ public class RegistrationService {
     private final OutpRegistrationRepository registrationRepository;
     private final OutpOrderRepository orderRepository;
 
-    public static class BizException extends RuntimeException {
-        public final int code;
+    /** 域内保留类型（现有 catch/测试不动），实质语义在基类（1.1.9） */
+    public static class BizException extends cn.hip.platform.core.common.HipBizException {
         public BizException(int code, String message) {
-            super(message);
-            this.code = code;
+            super(code, message);
         }
     }
 

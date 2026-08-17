@@ -9,6 +9,7 @@ import java.math.RoundingMode;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
+import cn.hip.platform.core.config.BusinessDates;
 
 /** 固定资产台账 */
 @Getter
@@ -56,7 +57,7 @@ public class HrpAsset {
     /** 直线折旧后净值（残值率 5%） */
     @Transient
     public BigDecimal getNetValue() {
-        long months = ChronoUnit.MONTHS.between(purchaseDate, LocalDate.now());
+        long months = ChronoUnit.MONTHS.between(purchaseDate, BusinessDates.today());
         BigDecimal salvage = price.multiply(new BigDecimal("0.05"));
         BigDecimal monthly = price.subtract(salvage)
                 .divide(BigDecimal.valueOf(usefulYears * 12L), 2, RoundingMode.HALF_UP);

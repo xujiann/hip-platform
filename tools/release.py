@@ -13,8 +13,8 @@ sys.stdout.reconfigure(encoding='utf-8')
 
 DOCS = ['功能清单.md', '多医院部署操作指南.md', '部署手册.md', '配置手册.md', '操作手册.md', '培训脚本.md',
         'adr/ADR-0002-医保SDK实现约定.md', 'adr/ADR-0003-实施定制层规约.md']
-TOOLS = ['init-hospital.py', 'import-patients.py', 'import-inpatients.py', 'bootstrap-demo.py',
-         'db-backup.ps1', 'db-restore.ps1', 'schedule-backup.ps1']
+TOOLS = ['init-hospital.py', 'import-patients.py', 'import-inpatients.py', 'import-documents.py',
+         'bootstrap-demo.py', 'db-backup.ps1', 'db-restore.ps1', 'schedule-backup.ps1']
 TOOL_DIRS = ['init-templates', 'migrate-templates']
 
 
@@ -23,7 +23,22 @@ def run(cmd, **kw):
     subprocess.run(cmd, check=True, cwd=ROOT, **kw)
 
 
+def check_manifest():
+    """CHANGELOG 提到的 tools 脚本必须都在打包清单——1.1.5 的存量文书导入工具曾被漏掉，
+    用发布包实施的医院第一天就拿不到它（1.1.9 B-14）。"""
+    import re
+    changelog = (ROOT / 'CHANGELOG.md').read_text(encoding='utf-8')
+    mentioned = set(re.findall(r'(?:tools/)?([\w-]+\.py)', changelog))
+    mentioned &= {p.name for p in (ROOT / 'tools').glob('*.py')}
+    packaged = set(TOOLS)
+    missing = {m for m in mentioned if m.endswith('.py') and not m.startswith('e2e')
+               and m not in packaged and not m.startswith(('matrix', 'release', 'export'))}
+    if missing:
+        raise SystemExit(f'CHANGELOG 提到但未打包的工具：{sorted(missing)}——补入 TOOLS 或说明豁免')
+
+
 def main():
+    check_manifest()
     if len(sys.argv) < 2:
         print(__doc__)
         sys.exit(1)

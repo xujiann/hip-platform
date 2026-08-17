@@ -11,6 +11,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
 import java.time.Period;
+import cn.hip.platform.core.config.BusinessDates;
 
 @Service
 @RequiredArgsConstructor
@@ -73,7 +74,7 @@ public class PatientService {
     }
 
     public static Integer ageOf(LocalDate birthDate) {
-        return birthDate == null ? null : Period.between(birthDate, LocalDate.now()).getYears();
+        return birthDate == null ? null : Period.between(birthDate, BusinessDates.today()).getYears();
     }
 
     /** GB 11643 十八位身份证校验位（加权模 11） */

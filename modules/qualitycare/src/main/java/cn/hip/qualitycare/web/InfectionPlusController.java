@@ -11,6 +11,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import cn.hip.platform.core.config.BusinessDates;
 
 /** 三十六期：院感专项——三管监测（置管→日评估→拔管/感染）与千日感染率、现患率调查 */
 @RestController
@@ -131,7 +132,7 @@ public class InfectionPlusController {
                 """);
         long infected = rows.stream().filter(r -> Boolean.TRUE.equals(r.get("infected"))).count();
         var m = new LinkedHashMap<String, Object>();
-        m.put("surveyDate", java.time.LocalDate.now().toString());
+        m.put("surveyDate", cn.hip.platform.core.config.BusinessDates.today().toString());
         m.put("inHospital", rows.size());
         m.put("infected", infected);
         m.put("prevalenceRate", rows.isEmpty() ? 0

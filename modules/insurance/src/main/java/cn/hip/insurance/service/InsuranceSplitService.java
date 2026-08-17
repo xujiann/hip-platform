@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.StringJoiner;
 import java.util.stream.Collectors;
+import cn.hip.platform.core.config.BusinessDates;
 
 /**
  * 医保费用分割与审核（门诊/住院共用，自 outpatient 泛化下沉）。
@@ -66,7 +67,7 @@ public class InsuranceSplitService {
         }
 
         // 年度待遇：起付线/封顶线（行级锁保证同患者并发结算下累计正确）
-        int year = LocalDate.now().getYear();
+        int year = BusinessDates.today().getYear();
         jdbc.update("insert into yb_patient_annual(patient_id, year) values (?,?) on conflict (patient_id, year) do nothing",
                 patientId, year);
         Map<String, Object> annual = jdbc.queryForMap(

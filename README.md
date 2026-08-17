@@ -36,6 +36,17 @@ cd frontend/shell && npm install && npm run dev
 # 打开 http://localhost:5173 ，用 admin/admin123 登录
 ```
 
+## 跑测试（需 hip_test 测试库）
+
+```bash
+# 首次准备测试库（测试硬性要求 127.0.0.1:5432/hip_test，账号 hip/hip123456）
+wsl -d Ubuntu -u postgres -- psql -c "create database hip_test owner hip;"
+mvn test          # 130+ 单元/集成测试；E2E 见 tools/e2e-*.py（需后端运行）
+```
+
+> 注意：部分测试依赖 B 类种子数据（药名/科室），清单见 docs/种子数据分层清单.md「测试契约」节；
+> 错误码分配纪律见 docs/错误码分段.md。
+
 ## 当前进度（门诊 MVP 闭环已通）
 
 - [x] 骨架：Maven 多模块 + 前端外壳 + 登录认证（JWT）+ RBAC + 服务端菜单下发

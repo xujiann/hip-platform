@@ -69,7 +69,7 @@ public class ReportShareController {
         jdbc.update("update report_share set access_cnt = access_cnt + 1 where id = ?", row.get("share_id"));
         String name = (String) row.get("patient_name");
         return R.ok(Map.of(
-                "patientName", name == null || name.isEmpty() ? "" : name.charAt(0) + "**",
+                "patientName", cn.hip.platform.core.common.Masking.name(name),
                 "itemName", row.get("item_name"),
                 "modality", row.get("modality"),
                 "findings", row.get("findings"),

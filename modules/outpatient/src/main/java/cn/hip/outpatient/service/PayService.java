@@ -15,6 +15,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import cn.hip.platform.core.config.BusinessDates;
 
 /** 二十九期：扫码支付——出码 → （Mock 回调）确认 → 自动结算，全流程留痕 */
 @Service
@@ -42,7 +43,7 @@ public class PayService {
         BigDecimal total = unpaid.stream().map(OutpOrder::getAmount).reduce(BigDecimal.ZERO, BigDecimal::add);
         // 单号取序列：millis%1e9 同毫秒并发即撞唯一约束，且约 11.6 天回绕撞历史单
         Long seq = jdbc.queryForObject("select nextval('pay_order_seq')", Long.class);
-        String payNo = "ZF" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + "-" + seq;
+        String payNo = "ZF" + BusinessDates.today().format(DateTimeFormatter.BASIC_ISO_DATE) + "-" + seq;
         var res = payAdapter.createPayment(payNo, total, channel);
         if (!res.ok()) throw new BizException(5103, "支付下单失败: " + res.message());
         try {

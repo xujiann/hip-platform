@@ -16,6 +16,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import cn.hip.platform.core.config.BusinessDates;
 
 @Service
 @RequiredArgsConstructor
@@ -46,7 +47,7 @@ public class ChargeService {
         charge = chargeRepository.save(charge);
         charge.setChargeNo("%s%s-%06d".formatted(
                 configReader.get("billno_prefix_charge", "SJ"),
-                LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE), charge.getId()));
+                BusinessDates.today().format(DateTimeFormatter.BASIC_ISO_DATE), charge.getId()));
         charge = chargeRepository.save(charge);
 
         // 条件更新 + 判定行数：读-判-写会让窗口结算与患者端扫码各出一张 PAID 单（双倍扣款）
