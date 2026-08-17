@@ -184,7 +184,7 @@ class Phase109RegressionTest {
                 List.of(new OrderLine("DRUG", drugId, 1, "口服", "tid", "1粒", 3)), null);
         var charge = chargeService.settle(rid, "CASH", null);
         entityManager.flush();
-        chargeService.refund(charge.getId());
+        chargeService.refund(charge.getId(), null);
         entityManager.flush();
 
         assertNotNull(jdbc.queryForObject(

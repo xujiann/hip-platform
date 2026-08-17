@@ -241,15 +241,19 @@ public class InpatientService {
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         InpSettlement s = new InpSettlement();
-        s.setSettleNo("%s%s-%06d".formatted(
-                configReader.get("billno_prefix_settle", "CY"),
-                LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE), admissionId));
+        // 先存后编号（与门诊 ChargeService 同法）：单号含 admissionId 会在「冲销后当日重结」时
+        // 与已作废单撞唯一约束；TEMP 占位含 admissionId 保证并发下不互撞
+        s.setSettleNo("TEMP-" + admissionId);
         s.setAdmissionId(admissionId);
         s.setTotalAmount(total);
         s.setDepositAmount(deposit);
         s.setBalance(deposit.subtract(total));
         s.setCashierId(cashierId);
         s.setPayMethod(payMethod == null ? "CASH" : payMethod);
+        s = settlementRepo.save(s);
+        s.setSettleNo("%s%s-%06d".formatted(
+                configReader.get("billno_prefix_settle", "CY"),
+                LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE), s.getId()));
         s = settlementRepo.save(s);
         if ("YB".equals(s.getPayMethod())) {
             // 住院行级分割（批次二）：与门诊共用分割引擎，biz_type=INP 走住院比例
@@ -273,5 +277,43 @@ public class InpatientService {
             throw new InpException(9018, "床位释放失败（床位已被改动），请联系管理员核对床位状态");
         }
         return s;
+    }
+
+    /**
+     * 结算冲销（出院召回）：结算错误的唯一系统内纠正路径——此前只能改库，
+     * 且住院医保年度起付线/统筹额度永不回退（reverse 全仓仅门诊一个调用点，1.1.3 审阅 B-5）。
+     *
+     * <p>动作序：抢占冲销 → 占床 → 恢复在院 → **最后**才医保冲正+额度回退。
+     * 渠道冲正一旦成功就不允许再有任何可失败的本地步骤——否则渠道已冲、本地回滚，
+     * 悬空的是医保基金账（C-2 支付悬空同款时序，教训复用）。任何本地步骤失败则整体回滚，
+     * 冲正报文根本不会发出。
+     *
+     * @param bedId 召回后的床位；null 则回原床。原床已被新患者占用时须显式指定空床
+     */
+    @Transactional
+    public InpAdmission cancelSettlement(Long admissionId, Long operatorId, Long bedId) {
+        InpSettlement s = settlementRepo.findByAdmissionIdAndStatus(admissionId, "PAID")
+                .orElseThrow(() -> new InpException(9021, "该患者无有效出院结算单"));
+        // 条件更新抢占：并发双击/两窗口同时冲销，只有一方成功
+        if (settlementRepo.claimCancel(s.getId(), Instant.now(), operatorId) == 0) {
+            throw new InpException(9022, "该结算单已被冲销");
+        }
+        InpAdmission adm = admissionRepo.findById(admissionId)
+                .orElseThrow(() -> new InpException(9003, "住院记录不存在"));
+        Long targetBed = bedId != null ? bedId : adm.getBedId();
+        if (bedRepo.occupy(targetBed, admissionId) == 0) {
+            throw new InpException(9024, "召回床位已被占用，请指定一张空床后重试");
+        }
+        if (admissionRepo.claimReadmit(admissionId, targetBed) == 0) {
+            throw new InpException(9025, "该患者不在已出院状态（可能已被召回）");
+        }
+        if ("YB".equals(s.getPayMethod())) {
+            var res = insuranceAdapter.uploadRefund(s.getSettleNo());
+            if (!res.ok()) {
+                throw new InpException(9023, "医保冲正失败，结算冲销终止: " + res.message());
+            }
+            insuranceSplitService.reverse(s.getSettleNo());
+        }
+        return admissionRepo.findById(admissionId).orElseThrow();
     }
 }

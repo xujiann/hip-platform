@@ -40,9 +40,10 @@ public class InpatientController {
         var rows = jdbcTemplate.queryForList("""
                 select item_name, spec, qty, unit_price, amount, order_type, executed_at
                 from inp_order
-                where admission_id = ? and status = 'EXECUTED' and executed_at::date = ?::date
+                where admission_id = ? and status = 'EXECUTED'
+                  and executed_at >= ?::date and executed_at < ?::date + interval '1 day'
                 order by executed_at
-                """, id, date);
+                """, id, date, date);
         var total = rows.stream()
                 .map(r -> (java.math.BigDecimal) r.get("amount"))
                 .reduce(java.math.BigDecimal.ZERO, java.math.BigDecimal::add);
@@ -221,6 +222,18 @@ public class InpatientController {
                                Authentication auth) {
         try {
             return R.ok(inpatientService.discharge(id, currentUserService.idOf(auth), payMethod));
+        } catch (InpException e) {
+            return R.fail(e.code, e.getMessage());
+        }
+    }
+
+    /** 结算冲销（出院召回）：住院侧此前无任何退费/冲正路径，结算错误只能改库（1.1.3 B-5） */
+    @PostMapping("/admissions/{id}/cancel-settlement")
+    public R<Object> cancelSettlement(@PathVariable Long id,
+                                      @RequestParam(required = false) Long bedId,
+                                      Authentication auth) {
+        try {
+            return R.ok(toDto(inpatientService.cancelSettlement(id, currentUserService.idOf(auth), bedId)));
         } catch (InpException e) {
             return R.fail(e.code, e.getMessage());
         }

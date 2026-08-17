@@ -31,7 +31,7 @@ public class QueueCenterController {
         m.put("waiting", waiting(type));
         m.put("called", jdbc.queryForList("""
                 select biz_key, patient_name, called_at from queue_call_log
-                where biz_type = ? and called_at::date = current_date
+                where biz_type = ? and called_at >= current_date and called_at < current_date + 1
                 order by id desc limit 10
                 """, type));
         return R.ok(m);
@@ -66,7 +66,7 @@ public class QueueCenterController {
                     where o.order_type = 'DRUG' and o.status = 'CHARGED'
                       and not exists (select 1 from queue_call_log q
                                       where q.biz_type = 'PHARMACY' and q.biz_key = o.group_no
-                                        and q.called_at::date = current_date)
+                                        and q.called_at >= current_date and q.called_at < current_date + 1)
                     group by o.group_no order by o.group_no limit 50
                     """);
         }

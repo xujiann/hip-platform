@@ -80,21 +80,35 @@ public class PrintReportController {
         return rows.isEmpty() ? R.fail(9951, "死亡登记卡不存在") : R.ok(rows.get(0));
     }
 
-    /** 日结报表：按收费方式与状态汇总当日结算 */
+    /**
+     * 日结报表：收款按收款日、退款按退费日各自归集（1.1.3 B-1）。
+     * 原口径把 D2 的退费算进 D1 的报表——D1 历史日结事后变脸，D2 当天的实际出账看不到。
+     * 日期一律半开区间：`created_at::date = ?` 会废掉索引（B-4）。
+     */
     @GetMapping("/api/reports/daily-settlement")
     public R<Map<String, Object>> dailySettlement(@RequestParam(required = false) String date) {
         String d = date == null ? LocalDate.now().toString() : date;
         List<Map<String, Object>> byMethod = jdbc.queryForList("""
-                select pay_method, status, count(*) as cnt, sum(total_amount) as amount
-                from outp_charge where created_at::date = ?::date
-                group by pay_method, status order by pay_method
-                """, d);
+                select pay_method, side, count(*) as cnt, sum(total_amount) as amount
+                from (
+                    select pay_method, 'COLLECTED' as side, total_amount from outp_charge
+                    where created_at >= ?::date and created_at < ?::date + interval '1 day'
+                    union all
+                    select pay_method, 'REFUNDED', total_amount from outp_charge
+                    where status = 'REFUNDED'
+                      and refunded_at >= ?::date and refunded_at < ?::date + interval '1 day'
+                ) t
+                group by pay_method, side order by pay_method, side
+                """, d, d, d, d);
         var total = jdbc.queryForList("""
-                select coalesce(sum(total_amount) filter (where status = 'PAID'), 0) as paid,
-                       coalesce(sum(total_amount) filter (where status = 'REFUNDED'), 0) as refunded,
-                       count(*) as bills
-                from outp_charge where created_at::date = ?::date
-                """, d).get(0);
+                select (select coalesce(sum(total_amount), 0) from outp_charge
+                        where created_at >= ?::date and created_at < ?::date + interval '1 day') as paid,
+                       (select coalesce(sum(total_amount), 0) from outp_charge
+                        where status = 'REFUNDED'
+                          and refunded_at >= ?::date and refunded_at < ?::date + interval '1 day') as refunded,
+                       (select count(*) from outp_charge
+                        where created_at >= ?::date and created_at < ?::date + interval '1 day') as bills
+                """, d, d, d, d, d, d).get(0);
         return R.ok(Map.of("date", d, "byMethod", byMethod, "total", total));
     }
 
@@ -117,13 +131,17 @@ public class PrintReportController {
     @GetMapping(value = "/api/reports/daily-settlement.csv", produces = "text/csv;charset=UTF-8")
     public String dailySettlementCsv(@RequestParam(required = false) String date) {
         String d = date == null ? LocalDate.now().toString() : date;
+        // 当日新单 + 当日发生的退费（含退往日单）——与日结报表同口径
         var rows = jdbc.queryForList("""
                 select c.charge_no, p.name, c.total_amount, c.pay_method, c.status, c.created_at
                 from outp_charge c
                 join outp_registration r on r.id = c.registration_id
                 join empi_patient p on p.id = r.patient_id
-                where c.created_at::date = ?::date order by c.id
-                """, d);
+                where (c.created_at >= ?::date and c.created_at < ?::date + interval '1 day')
+                   or (c.status = 'REFUNDED'
+                       and c.refunded_at >= ?::date and c.refunded_at < ?::date + interval '1 day')
+                order by c.id
+                """, d, d, d, d);
         StringBuilder sb = new StringBuilder("﻿结算单号,患者,金额,方式,状态,时间\n");
         for (var r : rows) {
             sb.append("%s,%s,%s,%s,%s,%s\n".formatted(csv(r.get("charge_no")), csv(r.get("name")),

@@ -19,4 +19,12 @@ public interface AdmissionRepo extends JpaRepository<InpAdmission, Long> {
                     + "where a.id = :id and a.status = 'IN_HOSPITAL'")
     int claimDischarge(@org.springframework.data.repository.query.Param("id") Long id,
                        @org.springframework.data.repository.query.Param("now") java.time.Instant now);
+
+    /** 出院召回：结算冲销后把 DISCHARGED 恢复为 IN_HOSPITAL（同族条件更新，防并发重复召回） */
+    @org.springframework.data.jpa.repository.Modifying(clearAutomatically = true, flushAutomatically = true)
+    @org.springframework.data.jpa.repository.Query(
+            "update InpAdmission a set a.status = 'IN_HOSPITAL', a.dischargedAt = null, a.bedId = :bedId "
+                    + "where a.id = :id and a.status = 'DISCHARGED'")
+    int claimReadmit(@org.springframework.data.repository.query.Param("id") Long id,
+                     @org.springframework.data.repository.query.Param("bedId") Long bedId);
 }

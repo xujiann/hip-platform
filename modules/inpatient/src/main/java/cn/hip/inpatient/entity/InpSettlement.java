@@ -21,7 +21,8 @@ public class InpSettlement {
     @Column(nullable = false, unique = true, length = 32)
     private String settleNo;
 
-    @Column(nullable = false, unique = true)
+    /** 唯一性由部分索引 uq_inp_settlement_active 保证（status<>'CANCELLED'）——冲销后可重新结算 */
+    @Column(nullable = false)
     private Long admissionId;
 
     /** 费用总额 */
@@ -45,6 +46,16 @@ public class InpSettlement {
     /** 医保结算号（YB 单，通道返回后回填） */
     @Column(length = 64)
     private String ybSettleNo;
+
+    /** PAID 有效 / CANCELLED 已冲销（出院召回） */
+    @Column(nullable = false, length = 16)
+    private String status = "PAID";
+
+    /** 冲销时间（账务按冲销日归集，不改写结算日历史报表） */
+    private Instant refundedAt;
+
+    /** 冲销操作员 */
+    private Long refundBy;
 
     @Column(nullable = false, updatable = false)
     private Instant createdAt = Instant.now();

@@ -75,7 +75,7 @@ public class ChargeService {
 
     /** 退费：单内订单均未发药/未执行才可退；订单退回已开立（退号单的挂号费直接作废） */
     @Transactional
-    public OutpCharge refund(Long chargeId) {
+    public OutpCharge refund(Long chargeId, Long operatorId) {
         OutpCharge charge = chargeRepository.findById(chargeId)
                 .orElseThrow(() -> new BizException(5002, "结算单不存在"));
         if (!"PAID".equals(charge.getStatus())) {
@@ -105,6 +105,7 @@ public class ChargeService {
         }
         charge.setStatus("REFUNDED");
         charge.setRefundedAt(java.time.Instant.now());   // 日结按退费日归集，不再改写历史日报表
+        charge.setRefundBy(operatorId);                  // 甲收乙退时账各归各，交款核查才有意义
         return chargeRepository.save(charge);
     }
 }

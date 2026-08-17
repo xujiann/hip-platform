@@ -5,14 +5,21 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * 医保对账：业务账（门诊结算/住院结算的 YB 单）↔ 通道账（int_message_log 结算/冲正报文）逐单核对。
- * 匹配约定：channel='YB' + status='OK' + ref_no=单号 + payload 含 api 关键字（真实适配器实现须保持该约定，见 ADR-0002）。
+ * 匹配约定：channel='YB' + status='OK' + ref_no=单号 + payload 含 api 关键字与 `"amount":<金额>`
+ * （真实适配器实现须保持该约定，见 ADR-0002——**留痕里必须有金额，对账才能比金额**）。
+ *
+ * <p>1.1.3（审阅 B-3）：consistent 不再只看报文存在性——金额不符是最常见的对账差异形态，
+ * 原实现带着 amount 字段却从不比较，金额差异 100% 判为"一致"。
  */
 @Service
 @RequiredArgsConstructor
@@ -20,37 +27,71 @@ public class InsuranceReconService {
 
     private final JdbcTemplate jdbc;
 
+    private static final Pattern AMOUNT = Pattern.compile("\"amount\"\\s*:\\s*([0-9]+(?:\\.[0-9]+)?)");
+
+    /** 通道报文视角：是否存在 + 报文内金额（无金额字段时为 null，按"存在但金额不可比"处理） */
+    private record ChannelMsg(boolean exists, BigDecimal amount) {}
+
     public List<Map<String, Object>> reconRows(String date) {
         List<Map<String, Object>> out = new ArrayList<>();
-        // 门诊：YB 结算单 ←→ 通道 settle/refund 报文
+        // 门诊：YB 结算单 ←→ 通道 settle/refund 报文（半开区间：::date 谓词会废掉索引）
         for (var c : jdbc.queryForList("""
                 select charge_no, total_amount, status from outp_charge
-                where pay_method = 'YB' and created_at::date = ?::date order by id
-                """, date)) {
+                where pay_method = 'YB'
+                  and created_at >= ?::date and created_at < ?::date + interval '1 day'
+                order by id
+                """, date, date)) {
             String no = (String) c.get("charge_no");
-            boolean hasSettle = msgExists(no, "outpatient.settle") || msgExists(no, "inpatient.settle");
-            boolean hasRefund = msgExists(no, "outpatient.refund");
+            BigDecimal amount = (BigDecimal) c.get("total_amount");
+            ChannelMsg settle = channelMsg(no, "settle");
+            ChannelMsg refund = channelMsg(no, "refund");
             boolean refunded = "REFUNDED".equals(c.get("status"));
-            boolean consistent = refunded ? hasSettle && hasRefund : hasSettle;
-            out.add(reconRow("OUTP", no, c.get("total_amount"), (String) c.get("status"),
-                    hasSettle, hasRefund, consistent));
+            boolean amountOk = settle.exists() && (settle.amount() == null
+                    || settle.amount().compareTo(amount) == 0);
+            boolean consistent = (refunded ? settle.exists() && refund.exists() : settle.exists())
+                    && amountOk;
+            var row = reconRow("OUTP", no, amount, (String) c.get("status"),
+                    settle.exists(), refund.exists(), consistent);
+            row.put("channel_amount", settle.amount());
+            row.put("amount_match", amountOk);
+            if (settle.exists() && !amountOk) {
+                row.put("note", "金额不符：业务 %s / 通道 %s".formatted(amount, settle.amount()));
+            }
+            out.add(row);
         }
-        // 住院：YB 出院结算 ←→ 通道 settle 报文
+        // 住院：YB 出院结算 ←→ 通道 settle 报文；已冲销单要求成对的 settle+refund
         for (var s : jdbc.queryForList("""
-                select settle_no, total_amount from inp_settlement
-                where pay_method = 'YB' and created_at::date = ?::date order by id
-                """, date)) {
+                select settle_no, total_amount, status from inp_settlement
+                where pay_method = 'YB'
+                  and created_at >= ?::date and created_at < ?::date + interval '1 day'
+                order by id
+                """, date, date)) {
             String no = (String) s.get("settle_no");
-            boolean hasSettle = msgExists(no, "settle");
-            out.add(reconRow("INP", no, s.get("total_amount"), "PAID", hasSettle, false, hasSettle));
+            BigDecimal amount = (BigDecimal) s.get("total_amount");
+            ChannelMsg settle = channelMsg(no, "settle");
+            ChannelMsg refund = channelMsg(no, "refund");
+            boolean cancelled = "CANCELLED".equals(s.get("status"));
+            boolean amountOk = settle.exists() && (settle.amount() == null
+                    || settle.amount().compareTo(amount) == 0);
+            boolean consistent = (cancelled ? settle.exists() && refund.exists() : settle.exists())
+                    && amountOk;
+            var row = reconRow("INP", no, amount, (String) s.get("status"),
+                    settle.exists(), refund.exists(), consistent);
+            row.put("channel_amount", settle.amount());
+            row.put("amount_match", amountOk);
+            if (settle.exists() && !amountOk) {
+                row.put("note", "金额不符：业务 %s / 通道 %s".formatted(amount, settle.amount()));
+            }
+            out.add(row);
         }
         // 反向：通道有账、业务无账（医保侧多扣一笔）——单向遍历业务账永远发现不了
         for (var m : jdbc.queryForList("""
-                select ref_no, payload from int_message_log
-                where channel = 'YB' and status = 'OK' and created_at::date = ?::date
+                select ref_no from int_message_log
+                where channel = 'YB' and status = 'OK'
+                  and created_at >= ?::date and created_at < ?::date + interval '1 day'
                   and payload like '%settle%' and ref_no is not null
-                group by ref_no, payload order by ref_no
-                """, date)) {
+                group by ref_no order by ref_no
+                """, date, date)) {
             String no = (String) m.get("ref_no");
             Integer inBiz = jdbc.queryForObject("""
                     select (select count(*) from outp_charge where charge_no = ?)
@@ -84,12 +125,17 @@ public class InsuranceReconService {
         return m;
     }
 
-    private boolean msgExists(String refNo, String apiKeyword) {
-        Integer n = jdbc.queryForObject("""
-                select count(*) from int_message_log
+    private ChannelMsg channelMsg(String refNo, String apiKeyword) {
+        var payloads = jdbc.queryForList("""
+                select payload from int_message_log
                 where channel = 'YB' and status = 'OK' and ref_no = ? and payload like ?
-                """, Integer.class, refNo, "%" + apiKeyword + "%");
-        return n != null && n > 0;
+                order by id desc limit 1
+                """, String.class, refNo, "%" + apiKeyword + "%");
+        if (payloads.isEmpty()) {
+            return new ChannelMsg(false, null);
+        }
+        Matcher m = AMOUNT.matcher(payloads.get(0));
+        return new ChannelMsg(true, m.find() ? new BigDecimal(m.group(1)) : null);
     }
 
     private LinkedHashMap<String, Object> reconRow(String bizType, String no, Object amount, String status,

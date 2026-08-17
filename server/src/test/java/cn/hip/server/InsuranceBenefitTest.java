@@ -120,7 +120,7 @@ class InsuranceBenefitTest {
         String chargeNo = settleMetformin(rid);
         Long chargeId = jdbc.queryForObject("select id from outp_charge where charge_no = ?", Long.class, chargeNo);
         entityManager.clear(); // JDBC→JPA 可见
-        chargeService.refund(chargeId);
+        chargeService.refund(chargeId, null);
         entityManager.flush();
 
         Map<String, Object> annual = jdbc.queryForMap(

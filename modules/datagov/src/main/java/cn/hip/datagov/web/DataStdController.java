@@ -229,9 +229,14 @@ public class DataStdController {
                 "select count(*) from outp_registration where visit_date = current_date and status <> 'CANCELLED'", Integer.class));
         m.put("inHospital", jdbc.queryForObject(
                 "select count(*) from inp_admission where status = 'IN_HOSPITAL'", Integer.class));
-        m.put("revenueToday", jdbc.queryForObject(
-                "select coalesce(sum(total_amount), 0) from outp_charge where status = 'PAID' and created_at::date = current_date",
-                java.math.BigDecimal.class));
+        // 今日净收入 = 今日收款 − 今日退款（退款按退费日归集，B-1：往日单今日退也要体现为今日出账）
+        m.put("revenueToday", jdbc.queryForObject("""
+                select (select coalesce(sum(total_amount), 0) from outp_charge
+                        where created_at >= current_date and created_at < current_date + 1)
+                     - (select coalesce(sum(total_amount), 0) from outp_charge
+                        where status = 'REFUNDED'
+                          and refunded_at >= current_date and refunded_at < current_date + 1)
+                """, java.math.BigDecimal.class));
         m.put("labPending", jdbc.queryForObject(
                 "select count(*) from lis_sample where status <> 'PUBLISHED'", Integer.class));
         m.put("examPending", jdbc.queryForObject(

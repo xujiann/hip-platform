@@ -62,9 +62,9 @@ public class ChargeController {
     }
 
     @PostMapping("/{chargeId}/refund")
-    public R<Object> refund(@PathVariable Long chargeId) {
+    public R<Object> refund(@PathVariable Long chargeId, Authentication auth) {
         try {
-            return R.ok(chargeService.refund(chargeId));
+            return R.ok(chargeService.refund(chargeId, currentUserService.idOf(auth)));
         } catch (BizException e) {
             return R.fail(e.code, e.getMessage());
         }

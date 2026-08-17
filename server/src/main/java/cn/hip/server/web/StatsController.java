@@ -30,9 +30,9 @@ public class StatsController {
         m.put("todayRegistrations", jdbc.queryForObject(
                 "select count(*) from outp_registration where visit_date = current_date and status <> 'CANCELLED'", Long.class));
         m.put("todayOutpRevenue", jdbc.queryForObject(
-                "select coalesce(sum(total_amount), 0) from outp_charge where status = 'PAID' and created_at::date = current_date", Double.class));
+                "select coalesce(sum(total_amount), 0) from outp_charge where status = 'PAID' and created_at >= current_date and created_at < current_date + 1", Double.class));
         m.put("todayInpRevenue", jdbc.queryForObject(
-                "select coalesce(sum(total_amount), 0) from inp_settlement where created_at::date = current_date", Double.class));
+                "select coalesce(sum(total_amount), 0) from inp_settlement where created_at >= current_date and created_at < current_date + 1", Double.class));
         m.put("inHospitalCount", jdbc.queryForObject(
                 "select count(*) from inp_admission where status = 'IN_HOSPITAL'", Long.class));
         m.put("bedTotal", jdbc.queryForObject("select count(*) from inp_bed", Long.class));

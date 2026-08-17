@@ -40,14 +40,17 @@ public class OpsHealthScheduler {
                 });
                 check("今日慢接口超过阈值 50", "MEDIUM", () -> {
                     Integer n = jdbc.queryForObject(
-                            "select count(*) from ops_slow_api where occurred_at::date = current_date", Integer.class);
+                            "select count(*) from ops_slow_api where occurred_at >= current_date and occurred_at < current_date + 1", Integer.class);
                     return n != null && n > 50;
                 });
                 check("磁盘可用空间不足 10GB", "HIGH", () ->
                         new File(System.getProperty("user.dir")).getFreeSpace() / 1024 / 1024 / 1024 < 10);
                 // 观测表归档：三张只增不减的表若无清理，ops_slow_api 还会自我放大
-                // （DB 慢 → 更多请求超阈值 → 每个都同步 insert → 更慢）
-                if (java.time.LocalTime.now().getHour() == 3) {
+                // （DB 慢 → 更多请求超阈值 → 每个都同步 insert → 更慢）。
+                // 小时判断必须与 cron 同时区：LocalTime.now() 用 JVM 默认时区，
+                // 容器 TZ 未生效时与 cron 的 Asia/Shanghai 永不相交，归档一次都不会执行（B-7）
+                if (java.time.LocalTime.now(java.time.ZoneId.of(
+                        cn.hip.platform.core.config.HipProfiles.ZONE)).getHour() == 3) {
                     jdbc.execute("select hip_purge_observability()");
                 }
             } catch (Exception e) {

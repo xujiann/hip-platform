@@ -39,6 +39,9 @@ public class OutpCharge {
     /** 退费时刻：日结/对账按退费日归集，避免改写历史日报表口径 */
     private java.time.Instant refundedAt;
 
+    /** 退费操作员：甲收乙退时账各归各（交款核查按此列拆分退款侧） */
+    private Long refundBy;
+
     /** 收费员 */
     private Long cashierId;
 

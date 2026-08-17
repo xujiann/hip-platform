@@ -142,7 +142,7 @@ public class HrPlusController {
                     join outp_charge c on c.id = o.charge_id
                     join outp_registration r on r.id = c.registration_id
                     join empi_patient p on p.id = r.patient_id
-                    where c.created_at::date between ?::date and ?::date and o.order_type = ?
+                    where c.created_at >= ?::date and c.created_at < ?::date + interval '1 day' and o.order_type = ?
                     """);
             args.add(orderType);
         } else {
@@ -153,7 +153,7 @@ public class HrPlusController {
                     join outp_registration r on r.id = c.registration_id
                     join empi_patient p on p.id = r.patient_id
                     left join sys_user u on u.id = c.cashier_id
-                    where c.created_at::date between ?::date and ?::date
+                    where c.created_at >= ?::date and c.created_at < ?::date + interval '1 day'
                     """);
         }
         if (payMethod != null && !payMethod.isBlank()) {

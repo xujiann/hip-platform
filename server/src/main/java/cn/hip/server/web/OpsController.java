@@ -50,7 +50,7 @@ public class OpsController {
                 Integer.class);
         if (recentBackup == null || recentBackup == 0) alerts.add("24 小时内无成功备份");
         Integer slowToday = jdbc.queryForObject(
-                "select count(*) from ops_slow_api where occurred_at::date = current_date", Integer.class);
+                "select count(*) from ops_slow_api where occurred_at >= current_date and occurred_at < current_date + 1", Integer.class);
         if (slowToday != null && slowToday > 50) alerts.add("今日慢接口 " + slowToday + " 次，超过阈值 50");
         m.put("slowApiToday", slowToday);
         m.put("openFaults", jdbc.queryForObject("select count(*) from ops_fault_ticket where status = 'OPEN'", Integer.class));

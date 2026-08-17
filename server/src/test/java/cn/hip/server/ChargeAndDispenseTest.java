@@ -85,14 +85,14 @@ class ChargeAndDispenseTest {
         assertEquals(stockBefore - 2, drugRepository.findById(drugId).orElseThrow().getStock());
 
         // 已发药 → 退费拦截
-        var e = assertThrows(BizException.class, () -> chargeService.refund(charge.getId()));
+        var e = assertThrows(BizException.class, () -> chargeService.refund(charge.getId(), null));
         assertEquals(5004, e.code);
 
         // 退药回补库存 → 退费放行，订单回到已开立
         Long orderId = orderRepository.findByRegistrationIdOrderByIdAsc(regId).get(0).getId();
         dispenseService.returnDrug(orderId, null);
         assertEquals(stockBefore, drugRepository.findById(drugId).orElseThrow().getStock());
-        var refunded = chargeService.refund(charge.getId());
+        var refunded = chargeService.refund(charge.getId(), null);
         assertEquals("REFUNDED", refunded.getStatus());
         assertEquals("CREATED", orderRepository.findById(orderId).orElseThrow().getStatus());
     }

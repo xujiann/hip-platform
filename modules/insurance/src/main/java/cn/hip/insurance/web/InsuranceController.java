@@ -120,16 +120,17 @@ public class InsuranceController {
     // ---- 结算分割 ----
     @GetMapping("/splits")
     public R<List<Map<String, Object>>> splits(@RequestParam(required = false) String date) {
-        String d = date == null ? "current_date" : "?::date";
-        String sql = """
+        // 半开区间（B-4）：s.created_at::date = ? 不可 sarg，分割表按日查询走全表扫
+        String d = date == null ? java.time.LocalDate.now().toString() : date;
+        return R.ok(jdbc.queryForList("""
                 select s.*, coalesce(p.name, '-') as patient_name
                 from yb_settle_split s
                 left join outp_charge c on c.charge_no = s.charge_no
                 left join outp_registration r on r.id = c.registration_id
                 left join empi_patient p on p.id = r.patient_id
-                where s.created_at::date = %s order by s.id desc limit 200
-                """.formatted(d);
-        return R.ok(date == null ? jdbc.queryForList(sql) : jdbc.queryForList(sql, date));
+                where s.created_at >= ?::date and s.created_at < ?::date + interval '1 day'
+                order by s.id desc limit 200
+                """, d, d));
     }
 
     // ---- 审核提醒 ----
@@ -168,17 +169,19 @@ public class InsuranceController {
         var m = new LinkedHashMap<String, Object>();
         m.put("outpToday", jdbc.queryForMap("""
                 select count(*) as cnt, coalesce(sum(total_amount), 0) as amount
-                from outp_charge where pay_method = 'YB' and status = 'PAID' and created_at::date = current_date
+                from outp_charge where pay_method = 'YB' and status = 'PAID'
+                  and created_at >= current_date and created_at < current_date + 1
                 """));
         m.put("splitToday", jdbc.queryForMap("""
                 select coalesce(sum(s.fund_pay), 0) as fund_pay, coalesce(sum(s.self_pay), 0) as self_pay
                 from yb_settle_split s
                 left join outp_charge c on s.biz_type = 'OUTP' and c.charge_no = s.charge_no
-                where s.created_at::date = current_date
+                where s.created_at >= current_date and s.created_at < current_date + 1
                   and (s.biz_type <> 'OUTP' or c.status = 'PAID')
                 """));
         m.put("auditWarns", jdbc.queryForObject(
-                "select count(*) from yb_audit_log where created_at::date = current_date", Integer.class));
+                "select count(*) from yb_audit_log where created_at >= current_date and created_at < current_date + 1",
+                Integer.class));
         m.put("mappedCount", jdbc.queryForObject("select count(*) from yb_catalog_map", Integer.class));
         m.put("lastRecon", jdbc.queryForList(
                 "select * from yb_recon_batch order by id desc limit 1"));

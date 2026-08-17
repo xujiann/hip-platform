@@ -35,9 +35,47 @@ public class SysConfigController {
         return R.ok(m);
     }
 
+    /**
+     * 按键类型校验（1.1.3 B-6）：改配置是管理员日常操作，此前零校验——
+     * `yb_ratio_staff` 填 1.5 医院倒贴；填 "abc" 则全院医保结算 500。保存即拦截并说明取值域。
+     */
+    private static String validate(String key, String value) {
+        if (value == null || value.length() > 512) {
+            return "配置值不能为空且长度不超过 512";
+        }
+        if (key.startsWith("yb_ratio_")) {
+            return numericIn(value, java.math.BigDecimal.ZERO, java.math.BigDecimal.ONE)
+                    ? null : "医保报销比例须为 0–1 之间的数字（如 0.7）";
+        }
+        if (key.endsWith("_enabled") || (key.startsWith("module.") && key.endsWith(".enabled"))) {
+            return "0".equals(value) || "1".equals(value) ? null : "开关值只能是 0 或 1";
+        }
+        if (key.equals("drg_rate") || key.startsWith("yb_deductible") || key.startsWith("yb_annual_limit")) {
+            return numericIn(value, java.math.BigDecimal.ZERO, new java.math.BigDecimal("100000000"))
+                    ? null : "须为非负数字";
+        }
+        if (key.startsWith("billno_prefix_")) {
+            return value.matches("[A-Za-z0-9]{1,8}") ? null : "单号前缀须为 1–8 位字母数字";
+        }
+        return null;
+    }
+
+    private static boolean numericIn(String v, java.math.BigDecimal min, java.math.BigDecimal max) {
+        try {
+            var d = new java.math.BigDecimal(v);
+            return d.compareTo(min) >= 0 && d.compareTo(max) <= 0;
+        } catch (NumberFormatException e) {
+            return false;
+        }
+    }
+
     @PutMapping("/{key}")
     @PreAuthorize("hasRole('ADMIN')")
     public R<Void> update(@PathVariable String key, @RequestParam String value) {
+        String err = validate(key, value);
+        if (err != null) {
+            return R.fail(1402, err);
+        }
         int n = jdbc.update("update sys_config set cfg_value = ?, updated_at = now() where cfg_key = ?", value, key);
         if (n > 0 && key.startsWith("module.")) {
             moduleGate.evictCache();   // 模块开关须立即生效，不能等缓存 TTL
