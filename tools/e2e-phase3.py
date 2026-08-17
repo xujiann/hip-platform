@@ -8,12 +8,21 @@ import datetime
 import urllib.error
 import urllib.parse
 import urllib.request
-from e2elib import BASE, call, login, ok, q  # noqa: E402
+from e2elib import BASE, call, ensure_not_admitted, find_free_bed, login, ok, q  # noqa: E402
 
 
 
 t = login()
 today = datetime.date.today().isoformat()
+
+# 0 患者 2 的住院文档自给（1.2.0）：此前依赖 e2e-inpatient 恰好用患者 2 入院——
+# 跨套件隐式数据耦合，inpatient 消除硬编码改自建患者后，处女库上本套件的
+# INP_SUMMARY 断言即断裂（本地带历史数据的库测不出来，CI 处女库现形）
+ensure_not_admitted(t, 2)
+free = find_free_bed(t)
+adm0 = ok(call('POST', '/inpatient/admissions', {'patientId': 2, 'deptId': 1, 'bedId': free['id'],
+               'diagIcd': 'J18.9', 'diagName': '急性肺炎', 'deposit': 0, 'payMethod': 'CASH'}, t), '入院(自给)')
+ok(call('POST', f"/inpatient/admissions/{adm0['id']}/discharge", token=t), '出院(自给)')
 
 # 1 CDR 全量同步
 s = ok(call('POST', '/cdr/sync', {}, t), 'CDR同步')
