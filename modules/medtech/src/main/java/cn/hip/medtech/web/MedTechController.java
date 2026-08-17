@@ -46,7 +46,8 @@ public class MedTechController {
                 select item_name as name, result_value as value, abnormal_flag as flag
                 from outp_lab_result where order_id = ? order by id
                 """, orderId);
-        if (results.isEmpty()) return cn.hip.platform.core.common.R.fail(9950, "该申请暂无结果");
+        // 9952：原 9950 与故障工单幂等、死亡登记必填两处撞车（三义），排障时无法按码定位（P2）
+        if (results.isEmpty()) return cn.hip.platform.core.common.R.fail(9952, "该申请暂无结果");
         try {
             var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
             var client = java.net.http.HttpClient.newBuilder()
