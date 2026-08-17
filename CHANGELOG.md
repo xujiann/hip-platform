@@ -2,6 +2,32 @@
 
 版本纪律：语义化版本；平台迁移段 V1–V999，实施段 V10000+；升级 = 停服→备份→换产物→自动前滚→回归抽查（多医院部署操作指南 §三）。
 
+## 1.1.1（2026-08-16）
+
+工程基线（第二轮审阅方向 C / P2，V53）：
+
+- **全局异常处理器**：此前全仓无 `@RestControllerAdvice`，BizException/InpException 只在各 Controller
+  逐个 try/catch，漏掉的路径与 DataIntegrityViolation/NumberFormat/非法日期一律 500 + Spring 默认错误体，
+  前端只能显示"网络请求失败"——这是历次审阅中多条问题严重度的共同放大器。
+  安全异常原样重抛给 accessDeniedHandler（否则 403 会被兜底吃成 500，语义又丢）
+- **状态列长度与 CHECK**：9 张表的状态列 varchar(8)→16（`'REPORTED'` 正好 8 字符，
+  再加 `'CANCELLED'` 就复现历史事故）；关键枚举加 CHECK——
+  `insurance_type` 无白名单曾让未知值使分割比例取 0，**患者被静默全额自费且无告警**
+- **索引批 14 个**：`outp_order(order_type,status)`（20 处 WHERE）、`inp_admission` 状态与四个连接键、
+  `outp_charge(created_at)` 与 `(status,created_at)`（日结/对账/打印六处此前全表扫）等
+- **观测表归档**：`hip_purge_observability()`（慢接口/集成报文 90 天、审计 180 天），
+  每日 03 点随巡检执行——三张只增不减的表此前无任何清理，`ops_slow_api` 还会自我放大
+- **过滤器顺序显式化**：Audit(30) → SlowApi(40) → ModuleGate(50)，此前三者同为 LOWEST_PRECEDENCE
+  靠 Bean 名排序，ModuleGate 若排前面，停用模块的写请求就不入审计
+- **ModuleGate 缓存与失败放行**：每请求查一次 sys_config；DB 抖动时异常直落 Tomcat 错误页，
+  连报告 dbUp=false 的运维健康页自己都打不开。改 30 秒缓存 + 查询失败沿用上次结果，配置变更即时失效
+- **CI**：新增 `pilot-guard` 作业冒烟两道生产闸门（缺密钥必须拒启、带 Mock 必须拒启）——
+  这正是 1.0.9 暴露的"闸门从未被自动化执行过"的补课；E2E 加 30 分钟超时、
+  ai-service 就绪失败即报错（原真因被后续断言掩盖）、失败时输出 ai.log
+- CSV 导出转义与公式注入防护（姓名含逗号串列、以 `=+-@` 开头被 Excel 当公式执行）
+
+测试 114；20 套 E2E 全通过。
+
 ## 1.1.0（2026-08-16）
 
 第二轮审阅方向 B：迁移安全、数据完整性、集成正确性、前端质量（V52）。

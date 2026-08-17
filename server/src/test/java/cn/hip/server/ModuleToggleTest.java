@@ -32,6 +32,7 @@ class ModuleToggleTest {
 
     private void setModule(String key, String value) {
         jdbc.update("update sys_config set cfg_value = ? where cfg_key = ?", value, "module." + key + ".enabled");
+        moduleGate.evictCache();   // 1.1.1 起 ModuleGate 有 30s 缓存，直改库须显式失效
     }
 
     /** 默认全部启用：注册表 6 模块均可访问 */

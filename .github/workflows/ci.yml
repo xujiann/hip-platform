@@ -58,6 +58,7 @@ jobs:
   e2e:
     name: 端到端回归（完整后端）
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:16-alpine
@@ -127,6 +128,7 @@ jobs:
           pip3 install -q -r ai-service/requirements.txt
           (cd ai-service && nohup python3 -m uvicorn main:app --port 8100 > ../ai.log 2>&1 &)
           for i in $(seq 1 15); do curl -sf http://localhost:8100/docs > /dev/null && break; sleep 1; done
+          curl -sf http://localhost:8100/docs > /dev/null || { echo "ai-service 未就绪："; cat ../ai.log || cat ai.log; exit 1; }
 
       - name: 运行全部 E2E 套件（20 套）
         run: |
@@ -153,4 +155,62 @@ jobs:
 
       - name: 失败时输出服务端日志
         if: failure()
-        run: tail -100 server.log
+        run: |
+          echo "===== server.log ====="; tail -150 server.log
+          echo "===== ai.log ====="; tail -50 ai.log 2>/dev/null || echo "(无 ai.log)"
+
+  pilot-guard:
+    name: 生产闸门冒烟（pilot profile）
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: hip
+          POSTGRES_USER: hip
+          POSTGRES_PASSWORD: hip123456
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hip -d hip"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: 构建
+        run: mvn -B --no-transfer-progress -DskipTests package
+
+      # 1.0.9 教训：两道安全闸门（JWT 密钥、Mock 适配器）自实现起从未被任何自动化路径执行过，
+      # 因为编排与 CI 都不设 profile。这个作业就是那条缺失的覆盖。
+      - name: 缺 HIP_JWT_SECRET 时必须拒绝启动
+        run: |
+          set +e
+          timeout 90 java -jar server/target/hip-server-*.jar --spring.profiles.active=pilot             > pilot-nokey.log 2>&1
+          set -e
+          if grep -q "拒绝启动" pilot-nokey.log; then
+            echo "OK：占位密钥被拒绝"
+          else
+            echo "FAIL：pilot profile 未拦住开发占位密钥"; tail -40 pilot-nokey.log; exit 1
+          fi
+
+      - name: 带密钥但仍用 Mock 适配器时必须拒绝启动
+        env:
+          HIP_JWT_SECRET: ci-only-strong-secret-0123456789abcdefghijklmnop
+        run: |
+          set +e
+          timeout 90 java -jar server/target/hip-server-*.jar --spring.profiles.active=pilot             > pilot-mock.log 2>&1
+          set -e
+          if grep -q "拒绝在 pilot/prod 运行 Mock 适配器" pilot-mock.log; then
+            echo "OK：Mock 适配器被拒绝"
+          else
+            echo "FAIL：pilot profile 未拦住 Mock 适配器"; tail -40 pilot-mock.log; exit 1
+          fi

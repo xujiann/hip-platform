@@ -18,6 +18,7 @@ import java.util.Map;
 public class SysConfigController {
 
     private final JdbcTemplate jdbc;
+    private final cn.hip.platform.core.config.ModuleGate moduleGate;
 
     /** 公开键白名单：仅机构展示信息；医保比例(yb_*)、模块开关等业务参数不得经此外泄 */
     private static final List<String> PUBLIC_KEYS =
@@ -38,6 +39,9 @@ public class SysConfigController {
     @PreAuthorize("hasRole('ADMIN')")
     public R<Void> update(@PathVariable String key, @RequestParam String value) {
         int n = jdbc.update("update sys_config set cfg_value = ?, updated_at = now() where cfg_key = ?", value, key);
+        if (n > 0 && key.startsWith("module.")) {
+            moduleGate.evictCache();   // 模块开关须立即生效，不能等缓存 TTL
+        }
         return n == 0 ? R.fail(1401, "配置项不存在") : R.ok();
     }
 }

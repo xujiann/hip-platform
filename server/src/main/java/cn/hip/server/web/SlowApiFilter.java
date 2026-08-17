@@ -13,6 +13,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import java.io.IOException;
 
 /** 二十二期：慢接口观测——超过阈值的 API 调用落台账，供运维中心分析 */
+@org.springframework.core.annotation.Order(40)   // 慢接口观测在审计之内
 @Component
 @RequiredArgsConstructor
 public class SlowApiFilter extends OncePerRequestFilter {

@@ -32,18 +32,45 @@ public class ModuleGate {
 
     private final JdbcTemplate jdbc;
 
-    /** 当前被停用的模块 key 集合（配置缺省视为启用） */
+    /** 30 秒本地缓存：过滤器每个请求都会问一次，无缓存等于给每次调用加一次 DB 往返 */
+    private volatile Set<String> cachedDisabled = Set.of();
+    private volatile long cachedAt = 0L;
+    private static final long CACHE_TTL_MS = 30_000;
+
+    /**
+     * 当前被停用的模块 key 集合（配置缺省视为启用）。
+     *
+     * <p>查询失败时返回**上一次的结果**而非抛异常：该方法由过滤器在 DispatcherServlet 之外调用，
+     * 抛出的异常会直落 Tomcat 错误页——客户端拿到 HTML 而不是 {code,message}，
+     * 连专门用来报告 dbUp=false 的运维健康页自己都打不开。
+     */
     public Set<String> disabledModules() {
-        var disabled = new HashSet<String>();
-        for (var row : jdbc.queryForList(
-                "select cfg_key, cfg_value from sys_config where cfg_key like 'module.%.enabled'")) {
-            String key = (String) row.get("cfg_key");
-            if (!"1".equals(row.get("cfg_value"))) {
-                disabled.add(key.substring("module.".length(), key.length() - ".enabled".length()));
-            }
+        long now = System.currentTimeMillis();
+        if (now - cachedAt < CACHE_TTL_MS) {
+            return cachedDisabled;
         }
-        disabled.retainAll(MODULES.keySet());
-        return disabled;
+        try {
+            var disabled = new HashSet<String>();
+            for (var row : jdbc.queryForList(
+                    "select cfg_key, cfg_value from sys_config where cfg_key like 'module.%.enabled'")) {
+                String key = (String) row.get("cfg_key");
+                if (!"1".equals(row.get("cfg_value"))) {
+                    disabled.add(key.substring("module.".length(), key.length() - ".enabled".length()));
+                }
+            }
+            disabled.retainAll(MODULES.keySet());
+            cachedDisabled = Set.copyOf(disabled);
+            cachedAt = now;
+        } catch (Exception e) {
+            // 保持上次结果（初始为空=全部启用），让请求继续走到能正常报错的业务层
+            cachedAt = now;
+        }
+        return cachedDisabled;
+    }
+
+    /** 配置变更后立即生效（模块开关改动走 sys_config 更新，调用方可主动失效缓存） */
+    public void evictCache() {
+        cachedAt = 0L;
     }
 
     public Set<String> disabledMenuPaths() {

@@ -45,6 +45,11 @@ public class OpsHealthScheduler {
                 });
                 check("磁盘可用空间不足 10GB", "HIGH", () ->
                         new File(System.getProperty("user.dir")).getFreeSpace() / 1024 / 1024 / 1024 < 10);
+                // 观测表归档：三张只增不减的表若无清理，ops_slow_api 还会自我放大
+                // （DB 慢 → 更多请求超阈值 → 每个都同步 insert → 更慢）
+                if (java.time.LocalTime.now().getHour() == 3) {
+                    jdbc.execute("select hip_purge_observability()");
+                }
             } catch (Exception e) {
                 log.error("自动巡检失败", e);
             }

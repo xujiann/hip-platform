@@ -11,6 +11,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import java.io.IOException;
 
 /** 模块开关 API 拦截：被停用模块的接口统一 404（只藏菜单不拦接口是伪关闭） */
+@org.springframework.core.annotation.Order(50)   // 模块开关最内层：被它拒绝的请求仍要入审计
 @Component
 @RequiredArgsConstructor
 public class ModuleGateFilter extends OncePerRequestFilter {

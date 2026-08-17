@@ -15,6 +15,7 @@ import java.io.IOException;
 import java.util.Set;
 
 /** 等保审计：记录全部写操作与登录行为（谁/何时/何接口/结果） */
+@org.springframework.core.annotation.Order(30)   // 审计最外层：请求进出都要留痕
 @Component
 @RequiredArgsConstructor
 public class AuditLogFilter extends OncePerRequestFilter {
