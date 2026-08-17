@@ -23,6 +23,7 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
+    private final SecurityAuditWriter securityAuditWriter;
 
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
@@ -35,18 +36,20 @@ public class SecurityConfig {
                         .requestMatchers("/api/portal/**").hasRole("PORTAL")
                         .anyRequest().access(new WebExpressionAuthorizationManager(
                                 "isAuthenticated() and !hasRole('PORTAL')")))
-                // 必须区分「未认证」与「已认证但无权」：
-                // 只配 entryPoint 时，方法级 @PreAuthorize 拒绝也会落到它上面变成 401，
-                // 前端据此判定"登录过期"→ 清 token 跳登录页 → 有权使用系统的角色被直接踢出去。
                 // 必须区分「未认证」与「已认证但无权」：只配 entryPoint 时，方法级 @PreAuthorize
                 // 拒绝也会变成 401，前端据此判定"登录过期"→清 token 跳登录页→有权用系统的角色被踢出去。
                 // 另：不能用 sendError——它会转发到 /error，而 /error 同样匹配 anyRequest 被安全链
                 // 二次拦截，结果又变回 401。直接写响应体即可。
+                // 401/403 留痕在此（而非审计过滤器）：安全链在审计过滤器之前，被拦下的请求到不了它。
                 .exceptionHandling(eh -> eh
-                        .authenticationEntryPoint((req, res, e) ->
-                                writeJson(res, HttpStatus.UNAUTHORIZED.value(), 1000, "未登录或登录已过期"))
-                        .accessDeniedHandler((req, res, e) ->
-                                writeJson(res, HttpStatus.FORBIDDEN.value(), 1005, "无该功能权限")))
+                        .authenticationEntryPoint((req, res, e) -> {
+                            securityAuditWriter.recordDenied(req, HttpStatus.UNAUTHORIZED.value());
+                            writeJson(res, HttpStatus.UNAUTHORIZED.value(), 1000, "未登录或登录已过期");
+                        })
+                        .accessDeniedHandler((req, res, e) -> {
+                            securityAuditWriter.recordDenied(req, HttpStatus.FORBIDDEN.value());
+                            writeJson(res, HttpStatus.FORBIDDEN.value(), 1005, "无该功能权限");
+                        }))
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
         return http.build();
     }

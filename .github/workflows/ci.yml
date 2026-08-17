@@ -200,7 +200,8 @@ jobs:
           set +e
           timeout 90 java -jar server/target/hip-server-*.jar --spring.profiles.active=pilot             > pilot-nokey.log 2>&1
           set -e
-          if grep -q "拒绝启动" pilot-nokey.log; then
+          # 匹配 JWT 闸门的完整文案：裸 grep "拒绝启动" 会被 MLLP 白名单闸门的同前缀日志误命中
+          if grep -q "拒绝启动：pilot/prod profile 必须注入 HIP_JWT_SECRET" pilot-nokey.log; then
             echo "OK：占位密钥被拒绝"
           else
             echo "FAIL：pilot profile 未拦住开发占位密钥（若日志是别的启动错误，说明本作业环境不对）"

@@ -33,6 +33,9 @@ hip:
   integration:
     mllp-enabled: true
     mllp-port: 2575
+    # 来源白名单（逗号分隔，支持 CIDR）；pilot/prod 下留空则拒绝启动监听（fail closed）
+    mllp-allow: ${HIP_MLLP_ALLOW:}
+    mllp-bind: ${HIP_MLLP_BIND:0.0.0.0}
     pacs-url: http://127.0.0.1:8042
     ai-url: http://127.0.0.1:8100
 

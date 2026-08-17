@@ -1,5 +1,6 @@
 package cn.hip.platform.integration.mllp;
 
+import cn.hip.platform.core.config.HipProfiles;
 import cn.hip.platform.integration.hl7.Hl7V2Message;
 import cn.hip.platform.integration.service.OruProcessingService;
 import jakarta.annotation.PreDestroy;
@@ -8,21 +9,36 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
+import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 /**
  * MLLP/TCP 监听：LIS 设备/中间件的标准 HL7 传输承载。
  * 帧格式：0x0B <报文> 0x1C 0x0D；应答 ACK（MSA|AA/AE）。
+ *
+ * <p>1.1.2 加固（审阅 A-2/A-3）：该端口写入的是检验结果并能触发危急值流程，
+ * 而 MLLP 协议本身无鉴权——同功能的 HTTP 端点要求 ADMIN，此处却对任何能连通的主机开放。
+ * 故：①来源 IP 白名单（回环恒放行）；②可配绑定地址（默认全网卡以兼容容器端口映射，
+ * 生产应绑内网接口卡）；③pilot/prod 未配置白名单则拒绝启动监听（fail closed，与 Mock 门禁同理）；
+ * ④帧长上限——readFrame 原本无限缓冲，一个不发结束符的连接即可持续吃堆；
+ * ⑤固定线程池 + 有界队列——原 cachedThreadPool 每连接一线程无上限。
  */
 @Slf4j
 @Component
@@ -34,6 +50,7 @@ public class MllpServer {
     private static final byte CR = 0x0D;
 
     private final OruProcessingService oruProcessingService;
+    private final Environment environment;
 
     @Value("${hip.integration.mllp-enabled:true}")
     private boolean enabled;
@@ -41,9 +58,25 @@ public class MllpServer {
     @Value("${hip.integration.mllp-port:2575}")
     private int port;
 
+    /** 监听绑定地址：生产应绑内网接口卡；默认 0.0.0.0 以兼容容器端口映射（配合白名单使用） */
+    @Value("${hip.integration.mllp-bind:0.0.0.0}")
+    private String bindAddress;
+
+    /** 允许来源（逗号分隔，支持精确 IP 与 CIDR 如 192.168.10.0/24）；回环地址恒放行 */
+    @Value("${hip.integration.mllp-allow:}")
+    private String allowList;
+
+    /** 单帧上限（字节）：超限即回 AE 并断连 */
+    @Value("${hip.integration.mllp-max-frame:1048576}")
+    private int maxFrame;
+
     private ServerSocket serverSocket;
-    private final ExecutorService pool = Executors.newCachedThreadPool();
+    private Thread acceptorThread;
+    /** 业务处理池：核心 4 / 上限 8 / 队列 32，满即拒绝新连接——上限可估算，堆不可估算 */
+    private final ExecutorService pool = new ThreadPoolExecutor(
+            4, 8, 60, TimeUnit.SECONDS, new ArrayBlockingQueue<>(32));
     private volatile boolean running;
+    private List<long[]> allowedCidrs;   // {network, mask} 预解析
 
     @EventListener(ApplicationReadyEvent.class)
     public void start() {
@@ -51,11 +84,23 @@ public class MllpServer {
             log.info("MLLP 监听未启用");
             return;
         }
+        allowedCidrs = parseAllowList(allowList);
+        if (HipProfiles.isProduction(environment) && allowedCidrs.isEmpty()) {
+            // 与 Mock 适配器门禁同理：生产环境宁可拒绝服务，不可静默开放无鉴权写入
+            log.error("拒绝启动 MLLP 监听：pilot/prod 必须配置 hip.integration.mllp-allow 来源白名单"
+                    + "（或设 hip.integration.mllp-enabled=false 显式关闭）");
+            return;
+        }
         try {
-            serverSocket = new ServerSocket(port);
+            serverSocket = new ServerSocket();
+            serverSocket.bind(new InetSocketAddress(InetAddress.getByName(bindAddress), port));
             running = true;
-            pool.submit(this::acceptLoop);
-            log.info("MLLP 监听已启动，端口 {}", port);
+            // accept 独占一个线程，不与业务处理争池——池满时 accept 仍在收，逐个拒绝
+            acceptorThread = new Thread(this::acceptLoop, "mllp-acceptor");
+            acceptorThread.setDaemon(true);
+            acceptorThread.start();
+            log.info("MLLP 监听已启动，绑定 {}:{}，白名单 {} 条{}", bindAddress, port, allowedCidrs.size(),
+                    allowedCidrs.isEmpty() ? "（未配置：仅回环放行以外全部放行，生产不允许此状态）" : "");
         } catch (IOException e) {
             log.error("MLLP 监听启动失败，端口 {}: {}", port, e.getMessage());
         }
@@ -65,7 +110,17 @@ public class MllpServer {
         while (running) {
             try {
                 Socket socket = serverSocket.accept();
-                pool.submit(() -> handle(socket));
+                if (!allowed(socket.getInetAddress())) {
+                    log.warn("MLLP 拒绝来源 {}（不在白名单）", socket.getInetAddress().getHostAddress());
+                    closeQuietly(socket);
+                    continue;
+                }
+                try {
+                    pool.submit(() -> handle(socket));
+                } catch (RejectedExecutionException e) {
+                    log.warn("MLLP 处理池已满，拒绝连接 {}", socket.getInetAddress().getHostAddress());
+                    closeQuietly(socket);
+                }
             } catch (IOException e) {
                 if (running) log.warn("MLLP accept 异常: {}", e.getMessage());
             }
@@ -75,10 +130,32 @@ public class MllpServer {
     private void handle(Socket socket) {
         try (socket; InputStream in = socket.getInputStream(); OutputStream out = socket.getOutputStream()) {
             socket.setSoTimeout(30000);
-            String raw;
-            while ((raw = readFrame(in)) != null) {
-                var result = oruProcessingService.process(raw);
-                out.write(frame(buildAck(raw, result.ok(), result.message())));
+            while (true) {
+                String raw;
+                try {
+                    raw = readFrame(in);
+                } catch (FrameTooLargeException e) {
+                    // AE 应答必须在 socket 关闭前发出，故在循环内处理而非外层 catch
+                    log.warn("MLLP 单帧超过上限 {} 字节，断开 {}", maxFrame,
+                            socket.getInetAddress().getHostAddress());
+                    out.write(frame(buildAck("", false, "报文超长")));
+                    out.flush();
+                    break;
+                }
+                if (raw == null) break;
+                // 业务异常不能逃逸：不回 ACK 会让 LIS 中间件反复重发同一条报文
+                boolean ok;
+                String message;
+                try {
+                    var result = oruProcessingService.process(raw);
+                    ok = result.ok();
+                    message = result.message();
+                } catch (Exception e) {
+                    log.error("MLLP 报文处理异常", e);
+                    ok = false;
+                    message = "内部处理异常";
+                }
+                out.write(frame(buildAck(raw, ok, message)));
                 out.flush();
             }
         } catch (IOException e) {
@@ -86,7 +163,10 @@ public class MllpServer {
         }
     }
 
-    /** 读取一帧；流结束返回 null */
+    private static final class FrameTooLargeException extends IOException {
+    }
+
+    /** 读取一帧；流结束返回 null；超过 maxFrame 抛 FrameTooLargeException（原实现无限缓冲） */
     private String readFrame(InputStream in) throws IOException {
         int b;
         // 寻找帧头
@@ -101,10 +181,61 @@ public class MllpServer {
                 byte[] bytes = buf.toByteArray();
                 return new String(bytes, 0, bytes.length - 1, StandardCharsets.UTF_8);
             }
+            if (buf.size() >= maxFrame) {
+                throw new FrameTooLargeException();
+            }
             buf.write(b);
             prev = b;
         }
         return null;
+    }
+
+    // ---- 来源白名单 ----
+
+    private boolean allowed(InetAddress addr) {
+        if (addr.isLoopbackAddress()) return true;
+        if (allowedCidrs.isEmpty()) return true;   // 未配置=不启用白名单（生产在 start 已拦截）
+        byte[] a = addr.getAddress();
+        if (a.length != 4) return false;           // 白名单仅定义 IPv4；IPv6 来源一律拒绝
+        long ip = ipToLong(a);
+        for (long[] cidr : allowedCidrs) {
+            if ((ip & cidr[1]) == cidr[0]) return true;
+        }
+        return false;
+    }
+
+    public static List<long[]> parseAllowList(String spec) {
+        var out = new ArrayList<long[]>();
+        if (spec == null || spec.isBlank()) return out;
+        for (String item : spec.split(",")) {
+            String s = item.trim();
+            if (s.isEmpty()) continue;
+            try {
+                int bits = 32;
+                if (s.contains("/")) {
+                    String[] parts = s.split("/");
+                    s = parts[0];
+                    bits = Integer.parseInt(parts[1]);
+                }
+                long mask = bits == 0 ? 0 : (0xFFFFFFFFL << (32 - bits)) & 0xFFFFFFFFL;
+                long net = ipToLong(InetAddress.getByName(s).getAddress()) & mask;
+                out.add(new long[]{net, mask});
+            } catch (Exception e) {
+                throw new IllegalArgumentException("hip.integration.mllp-allow 配置非法：" + item, e);
+            }
+        }
+        return out;
+    }
+
+    private static long ipToLong(byte[] a) {
+        return ((a[0] & 0xFFL) << 24) | ((a[1] & 0xFFL) << 16) | ((a[2] & 0xFFL) << 8) | (a[3] & 0xFFL);
+    }
+
+    private static void closeQuietly(Socket s) {
+        try {
+            s.close();
+        } catch (IOException ignored) {
+        }
     }
 
     private byte[] frame(String message) {

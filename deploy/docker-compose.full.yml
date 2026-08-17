@@ -64,6 +64,9 @@ services:
       SPRING_DATA_REDIS_PASSWORD: ${HIP_REDIS_PASSWORD:?必须设置 HIP_REDIS_PASSWORD}
       HIP_AI_URL: http://ai-service:8100
       HIP_MLLP_ENABLED: ${HIP_MLLP_ENABLED:-false}
+      # MLLP 无协议级鉴权：开启时必须同时给出 LIS/中间件的来源 IP 白名单（支持 CIDR），
+      # pilot/prod 下留空会拒绝启动监听（fail closed）
+      HIP_MLLP_ALLOW: ${HIP_MLLP_ALLOW:-}
     depends_on:
       postgres:
         condition: service_healthy
