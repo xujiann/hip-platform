@@ -48,19 +48,16 @@ public class CdrSyncService {
         var rows = jdbc.queryForList("select cfg_value from sys_config where cfg_key = 'cdr_sync_watermark'");
         Instant watermark = rows.isEmpty() ? Instant.EPOCH : Instant.parse((String) rows.get(0).get("cfg_value"));
         Instant since = watermark.equals(Instant.EPOCH) ? watermark : watermark.minusSeconds(OVERLAP_SECONDS);
+        // 新水位 = **抽取开始时刻**的 DB now()（1.2.3 五轮 P1-2）：原先跑完取三表 max(updated_at)——
+        // 同步期间被更新的行（时间戳在抽取之后、结束之前）会被推进的水位盖过，
+        // 一旦同步时长超过 5 分钟重叠窗（存量首次全量必超），该变更永不重抽。
+        // 以开始时刻为界：期间的一切变更都留在下次窗口内，重叠窗只需兜"长事务晚提交"。
+        Instant syncStartedAt = jdbc.queryForObject("select now()", java.sql.Timestamp.class).toInstant();
         var result = doSync(since);
-        java.sql.Timestamp maxUpdated = jdbc.queryForObject("""
-                select greatest(
-                    (select max(updated_at) from outp_registration),
-                    (select max(updated_at) from outp_order),
-                    (select max(updated_at) from inp_admission))
-                """, java.sql.Timestamp.class);
-        if (maxUpdated != null) {
-            jdbc.update("""
-                    insert into sys_config(cfg_key, cfg_value, remark) values ('cdr_sync_watermark', ?, 'CDR 增量水位')
-                    on conflict (cfg_key) do update set cfg_value = excluded.cfg_value, updated_at = now()
-                    """, maxUpdated.toInstant().toString());
-        }
+        jdbc.update("""
+                insert into sys_config(cfg_key, cfg_value, remark) values ('cdr_sync_watermark', ?, 'CDR 增量水位')
+                on conflict (cfg_key) do update set cfg_value = excluded.cfg_value, updated_at = now()
+                """, syncStartedAt.toString());
         return result;
     }
 

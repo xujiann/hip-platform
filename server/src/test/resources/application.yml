@@ -21,6 +21,8 @@ spring:
 
 server:
   port: 0
+  # 与生产一致（1.2.3）：缺失时 XFF 不解析，防爆破细锁的 IP 维度在测试里失真
+  forward-headers-strategy: framework
 
 hip:
   audit:

@@ -122,7 +122,9 @@ public class PrintReportController {
     private static String csv(Object v) {
         if (v == null) return "";
         String s = String.valueOf(v);
-        if (!s.isEmpty() && "=+-@".indexOf(s.charAt(0)) >= 0) {
+        // 数值不做公式守卫（1.2.3 五轮 P1-3）：退款行金额 -15.00 被加 ' 前缀后在 Excel 里
+        // 是文本，SUM 跳过——"金额列求和=当日净额"的口径被守卫自己击穿。数字无公式注入风险
+        if (!(v instanceof Number) && !s.isEmpty() && "=+-@".indexOf(s.charAt(0)) >= 0) {
             s = "'" + s;
         }
         return s.contains(",") || s.contains("\"") || s.contains("\n")

@@ -35,6 +35,13 @@ public class PortalController {
     /** 患者号是顺序号（P%08d），仅凭手机号即可枚举——按患者号计失败次数并锁定 */
     private static final int MAX_LOGIN_FAILED = 5;
     private static final long LOGIN_LOCK_MINUTES = 15;
+    /**
+     * 粗锁（1.2.3 五轮 P1-4）：细锁键含来源 IP，而 XFF 可伪造——每次换随机 IP 即绕过细锁
+     * 无限猜手机号。粗锁按纯患者号跨 IP 聚合（60 分钟 50 次），把绕过成本抬高 10 倍；
+     * 恶意锁定他人的代价同样抬高 10 倍，真实患者误锁 15 分钟可接受。
+     */
+    private static final int COARSE_MAX_FAILED = 50;
+    private static final long COARSE_WINDOW_MINUTES = 60;
 
     public record PortalLoginRequest(String patientNo, String phone) {}
 
@@ -47,11 +54,13 @@ public class PortalController {
         if (patientNo.isEmpty() || patientNo.length() > 32 || !patientNo.matches("[A-Za-z0-9_-]+")) {
             return R.fail(9501, "患者号或手机号不正确");
         }
-        // 锁定键 = 患者号 + 来源 IP：只按患者号锁会让任何人遍历顺序号段把全院患者锁在门外
+        // 细锁键 = 患者号 + 来源 IP（只按患者号锁会让遍历号段锁全院）；粗锁键 = 患者号@ANY
         String attemptKey = patientNo + "@" + clientIp(httpReq);
+        String coarseKey = patientNo + "@ANY";
         Integer locked = jdbc.queryForObject("""
-                select count(*) from portal_login_attempt where patient_no = ? and locked_until > now()
-                """, Integer.class, attemptKey);
+                select count(*) from portal_login_attempt
+                where patient_no in (?, ?) and locked_until > now()
+                """, Integer.class, attemptKey, coarseKey);
         if (locked != null && locked > 0) {
             return R.fail(9503, "尝试过于频繁，请 " + LOGIN_LOCK_MINUTES + " 分钟后再试");
         }
@@ -73,19 +82,38 @@ public class PortalController {
                             then now() + (? || ' minutes')::interval else null end
                     """, attemptKey, String.valueOf(LOGIN_LOCK_MINUTES), String.valueOf(LOGIN_LOCK_MINUTES),
                     MAX_LOGIN_FAILED, String.valueOf(LOGIN_LOCK_MINUTES));
+            // 粗锁同款 upsert：窗口 60 分钟、阈值 50，锁定时长与细锁一致
+            jdbc.update("""
+                    insert into portal_login_attempt(patient_no, failed_count, last_failed_at)
+                    values (?, 1, now())
+                    on conflict (patient_no) do update set
+                        failed_count = case
+                            when portal_login_attempt.last_failed_at < now() - (? || ' minutes')::interval then 1
+                            else portal_login_attempt.failed_count + 1 end,
+                        last_failed_at = now(),
+                        locked_until = case
+                            when portal_login_attempt.last_failed_at >= now() - (? || ' minutes')::interval
+                                 and portal_login_attempt.failed_count + 1 >= ?
+                            then now() + (? || ' minutes')::interval else null end
+                    """, coarseKey, String.valueOf(COARSE_WINDOW_MINUTES), String.valueOf(COARSE_WINDOW_MINUTES),
+                    COARSE_MAX_FAILED, String.valueOf(LOGIN_LOCK_MINUTES));
             return R.fail(9501, "患者号或手机号不正确");
         }
+        // 登录成功只清细锁行：粗锁计数保留——攻击者穿插一次正确登录不应重置跨 IP 计数
         jdbc.update("delete from portal_login_attempt where patient_no = ?", attemptKey);
         String token = jwtService.issue("portal:" + patient.getId());
         return R.ok(Map.of("token", token, "patientName", patient.getName(), "patientNo", patient.getPatientNo()));
     }
 
-    /** 取真实来源 IP：容器化部署下 getRemoteAddr() 是网关地址 */
+    /**
+     * 来源 IP 直接用 getRemoteAddr（1.2.3 五轮 P1-4）：`forward-headers-strategy: framework`
+     * 已让 Spring 解析 XFF，应用内再手工读原始头首段等于信任任意自报值。
+     * 经反代时 XFF 仍可能被伪造（细锁因此只是第一道），粗锁按纯患者号聚合兜底。
+     * 截断到 90 字符防超长头制造过宽键（列宽 128 - 患者号 32 - '@'）。
+     */
     private String clientIp(jakarta.servlet.http.HttpServletRequest req) {
-        String xff = req.getHeader("X-Forwarded-For");
-        if (xff != null && !xff.isBlank()) return xff.split(",")[0].trim();
-        String real = req.getHeader("X-Real-IP");
-        return real != null && !real.isBlank() ? real : String.valueOf(req.getRemoteAddr());
+        String addr = String.valueOf(req.getRemoteAddr());
+        return addr.length() > 90 ? addr.substring(0, 90) : addr;
     }
 
     private Long patientId(Authentication auth) {

@@ -20,8 +20,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
-import axios from 'axios'
+import { portalClient } from '../../api/client'
 
 const router = useRouter()
 const patientNo = ref('')
@@ -32,7 +31,7 @@ const hospitalName = ref('')
 onMounted(async () => {
   // 失败不留未处理 rejection：院名取不到就静默用默认标题（弱网/后端未启时登录页仍可用）
   try {
-    const resp = await axios.get('/api/config/public', { timeout: 8000 })
+    const resp = await portalClient.get('/config/public', { timeout: 8000, baseURL: '/api' })
     hospitalName.value = resp.data.data.hospital_name ?? ''
   } catch {
     hospitalName.value = ''
@@ -43,18 +42,15 @@ async function onLogin() {
   if (!patientNo.value || !phone.value) return
   loading.value = true
   try {
-    const resp = await axios.post('/api/portal/login',
-        { patientNo: patientNo.value, phone: phone.value }, { timeout: 15000 })
-    if (resp.data.code !== 0) {
-      ElMessage.error(resp.data.message)
-      return
-    }
+    // portalClient（1.2.3）：登录接口也走统一客户端——在途去重挡住 loading 渲染前的极速双击
+    // （双击=两次失败计数，弱网下更易触发锁定）
+    const resp = await portalClient.post('/login',
+        { patientNo: patientNo.value, phone: phone.value })
     localStorage.setItem('hip_portal_token', resp.data.data.token)
     localStorage.setItem('hip_portal_name', resp.data.data.patientName)
     router.push('/portal/home')
   } catch {
-    // 网络错误/超时曾零提示——患者看到按钮转一下然后毫无反应，于是反复重试
-    ElMessage.error('网络异常，请稍后重试')
+    // 统一拦截器已按失败类型提示（业务码/网络/去重各有其文案），此处再弹即双提示
   } finally {
     loading.value = false
   }

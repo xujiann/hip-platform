@@ -145,14 +145,19 @@ public class InsuranceReconService {
             boolean cancelled = "CANCELLED".equals(s.get("status"));
             boolean amountOk = settle.exists() && (settle.amount() == null
                     || settle.amount().compareTo(amount) == 0);
+            // 与门诊同口径（1.2.3 五轮 P1-1）：PAID 单却存在冲正报文=渠道已冲、本地未冲销——
+            // cancelSettlement 渠道成功后提交阶段失败会留下这个形态，此前住院侧判"一致"永不现形
+            boolean orphanRefund = !cancelled && refund.exists();
             boolean consistent = (cancelled ? settle.exists() && refund.exists() : settle.exists())
-                    && amountOk;
+                    && amountOk && !orphanRefund;
             var row = reconRow("INP", no, amount, (String) s.get("status"),
                     settle.exists(), refund.exists(), consistent);
             row.put("channel_amount", settle.amount());
             row.put("amount_match", amountOk);
             if (settle.exists() && !amountOk) {
                 row.put("note", "金额不符：业务 %s / 通道 %s".formatted(amount, settle.amount()));
+            } else if (orphanRefund) {
+                row.put("note", "本地未冲销但通道存在冲正报文（疑似渠道已冲、本地未冲销）");
             }
             out.add(row);
         }

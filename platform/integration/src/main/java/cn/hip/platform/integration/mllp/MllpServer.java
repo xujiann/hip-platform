@@ -131,7 +131,16 @@ public class MllpServer {
                     closeQuietly(socket);
                 }
             } catch (IOException e) {
-                if (running) log.warn("MLLP accept 异常: {}", e.getMessage());
+                if (running) {
+                    log.warn("MLLP accept 异常: {}", e.getMessage());
+                    // 非 stop 路径的 socket 失效（如 OOM 后被关）会让本循环变成刷日志的忙等（1.2.3）
+                    try {
+                        Thread.sleep(200);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
             }
         }
     }

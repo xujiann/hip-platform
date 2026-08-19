@@ -38,11 +38,17 @@ public class InsuranceAutoReconJob {
             long diff = ((Number) result.get("diff")).longValue();
             log.info("医保自动对账 {}：共 {} 笔，差异 {} 笔", date, result.get("total"), diff);
             if (diff > 0) {
+                // title 列 varchar(255)（1.2.3 五轮补记）：差异单号几十笔即超宽，插入抛约束错 →
+                // 工单开不出、差异告警丢失。title 只放计数，单号明细留在对账批次里按日期可查
+                String detail = String.valueOf(result.get("diffDetail"));
+                String title = "医保对账差异 %d 笔（%s），单号：%s".formatted(diff, date, detail);
+                if (title.length() > 250) {
+                    title = "医保对账差异 %d 笔（%s），单号明细见对账批次".formatted(diff, date);
+                }
                 jdbc.update("""
                         insert into ops_fault_ticket(title, level, status, reporter)
                         values (?, 'MEDIUM', 'OPEN', 'system')
-                        """, "医保对账差异 %d 笔（%s），单号：%s".formatted(
-                        diff, date, String.valueOf(result.get("diffDetail"))));
+                        """, title);
             }
         });
     }
