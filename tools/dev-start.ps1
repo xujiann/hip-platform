@@ -1,4 +1,4 @@
-# 一键启动本地开发环境（PowerShell）
+﻿# 一键启动本地开发环境（PowerShell）
 # 用法：powershell -ExecutionPolicy Bypass -File tools\dev-start.ps1
 
 $root = Split-Path $PSScriptRoot -Parent

@@ -28,6 +28,17 @@ public class OpsHealthScheduler {
 
     @Scheduled(cron = "0 0 * * * *", zone = cn.hip.platform.core.config.HipProfiles.ZONE)
     public void hourlyHealthCheck() {
+        runInspection();
+    }
+
+    /**
+     * 执行一轮巡检并返回本轮开单数（1.2.6 v24-A）。
+     * 提为 public 供运维手动触发——原先只有 cron 一条路径：
+     * 试点现场"巡检到底有没有在工作"无法当场验证，只能等一小时或翻日志。
+     */
+    public int runInspection() {
+        // 局部计数经 lambda 捕获：实例字段会在 cron 与手动触发并发时互相串扰
+        var opened = new java.util.concurrent.atomic.AtomicInteger();
         jobLock.runExclusively("ops-health-check", () -> {
             var rows = jdbc.queryForList(
                     "select cfg_value from sys_config where cfg_key = 'ops_auto_health_enabled'");
@@ -35,14 +46,14 @@ public class OpsHealthScheduler {
                 return;
             }
             try {
-                check("24 小时内无成功备份", "HIGH", () -> {
+                check(opened, "24 小时内无成功备份", "HIGH", () -> {
                     Integer n = jdbc.queryForObject("""
                             select count(*) from ops_backup_log
                             where status in ('SUCCESS','VERIFIED') and created_at > now() - interval '24 hours'
                             """, Integer.class);
                     return n == null || n == 0;
                 });
-                check("今日慢接口超过阈值 50", "MEDIUM", () -> {
+                check(opened, "今日慢接口超过阈值 50", "MEDIUM", () -> {
                     Integer n = jdbc.queryForObject(
                             "select count(*) from ops_slow_api where occurred_at >= current_date and occurred_at < current_date + 1", Integer.class);
                     return n != null && n > 50;
@@ -51,9 +62,9 @@ public class OpsHealthScheduler {
                         ? System.getProperty("user.dir") : diskPaths;
                 for (String p : paths.split(",")) {
                     File vol = new File(p.trim());
-                    check("磁盘可用空间不足 10GB：" + p.trim(), "HIGH", () ->
+                    check(opened, "磁盘可用空间不足 10GB：" + p.trim(), "HIGH", () ->
                             vol.exists() && vol.getFreeSpace() / 1024 / 1024 / 1024 < 10);
-                    check("磁盘监测路径不存在（配置错误）：" + p.trim(), "MEDIUM", () -> !vol.exists());
+                    check(opened, "磁盘监测路径不存在（配置错误）：" + p.trim(), "MEDIUM", () -> !vol.exists());
                 }
                 // 观测表归档：三张只增不减的表若无清理，ops_slow_api 还会自我放大
                 // （DB 慢 → 更多请求超阈值 → 每个都同步 insert → 更慢）。
@@ -67,9 +78,11 @@ public class OpsHealthScheduler {
                 log.error("自动巡检失败", e);
             }
         });
+        return opened.get();
     }
 
-    private void check(String issue, String level, BooleanSupplier firing) {
+    private void check(java.util.concurrent.atomic.AtomicInteger opened,
+                       String issue, String level, BooleanSupplier firing) {
         if (!firing.getAsBoolean()) {
             return;
         }
@@ -80,6 +93,7 @@ public class OpsHealthScheduler {
             return;
         }
         jdbc.update("insert into ops_fault_ticket(title, level, reporter) values (?,?,'system')", title, level);
+        opened.incrementAndGet();
         log.warn("自动巡检开单: {} ({})", title, level);
     }
 }

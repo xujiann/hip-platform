@@ -22,6 +22,19 @@ import java.util.Map;
 public class OpsController {
 
     private final JdbcTemplate jdbc;
+    private final cn.hip.server.ops.OpsHealthScheduler healthScheduler;
+
+    /**
+     * 手动触发一轮巡检（1.2.6 v24-A）：原先只有每小时 cron 一条路径——
+     * 试点现场"巡检有没有在工作"无法当场验证，只能等一小时或翻日志。
+     * 返回本轮新开工单数（同题已有 OPEN 单不重复开，故重复调用返回 0 属正常）。
+     */
+    @PostMapping("/inspections/run")
+    public R<Map<String, Object>> runInspection() {
+        int opened = healthScheduler.runInspection();
+        return R.ok(Map.of("openedTickets", opened,
+                "hint", opened == 0 ? "无新异常（或同题工单已存在且未处理）" : "已开出 " + opened + " 张工单"));
+    }
 
     /** 健康概览：数据库连通、运行时长、磁盘、告警清单 */
     @GetMapping("/health-overview")

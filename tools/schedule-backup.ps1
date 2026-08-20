@@ -1,4 +1,4 @@
-# 三十七期：注册每日自动备份任务（Windows 任务计划程序）
+﻿# 三十七期：注册每日自动备份任务（Windows 任务计划程序）
 # 用法（管理员 PowerShell 手工执行）：powershell -ExecutionPolicy Bypass -File tools\schedule-backup.ps1
 # 注销任务：Unregister-ScheduledTask -TaskName 'HIP-DailyBackup' -Confirm:$false
 

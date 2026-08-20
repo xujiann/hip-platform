@@ -1,4 +1,4 @@
-# 启动 Docker Desktop（绕过本机 Unix socket 无法删除的 bug）
+﻿# 启动 Docker Desktop（绕过本机 Unix socket 无法删除的 bug）
 # 背景：本机删除已存在的 unix socket 文件会报 "The file cannot be accessed by the system"，
 # 导致 Docker Desktop 启动时清理旧 socket 失败而崩溃。
 # 方案：启动前把含残留 socket 的目录整体改名移开（目录改名不受该 bug 影响）。

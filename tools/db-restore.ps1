@@ -1,4 +1,4 @@
-# 二十二期：数据库恢复演练（恢复到独立校验库，不动生产库）
+﻿# 二十二期：数据库恢复演练（恢复到独立校验库，不动生产库）
 # 用法：powershell -ExecutionPolicy Bypass -File tools\db-restore.ps1 -File deploy\backups\hip_xxx.dump [-TargetDb hip_restore_check]
 # 恢复到生产库请先停应用，并把 -TargetDb 指向 hip（需人工二次确认，本脚本默认拒绝）
 param(
