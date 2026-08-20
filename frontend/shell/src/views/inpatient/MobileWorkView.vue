@@ -57,6 +57,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
+import { parseVital } from '../../utils/vitals'
 
 const mode = ref('nurse')
 const admissions = ref<Record<string, unknown>[]>([])
@@ -78,20 +79,7 @@ async function open(a: Record<string, unknown>) {
   records.value = (await client.get(`/inpatient/admissions/${a.id}/records`)).data.data
 }
 
-/** 体征数值校验（1.1.8 B-12）：护士输 "36。5"（中文句号）曾变 NaN→null 静默丢失但成功提示照弹——临床数据 */
-const VITAL_RANGES: Record<string, [number, number, string]> = {
-  temperature: [30, 45, '体温(℃)'], pulse: [20, 250, '脉搏'], respiration: [5, 60, '呼吸'],
-  sbp: [40, 300, '收缩压'], dbp: [20, 200, '舒张压'], spo2: [50, 100, '血氧'],
-}
-
-function parseVital(field: string, v: string): number | null {
-  if (v === '') return null
-  const n = Number(v.replace('。', '.').trim())
-  const [min, max, label] = VITAL_RANGES[field]
-  if (Number.isNaN(n)) throw new Error(`${label} 不是有效数字：${v}`)
-  if (n < min || n > max) throw new Error(`${label} 超出合理范围（${min}–${max}）：${v}`)
-  return n
-}
+/** 体征校验统一走 utils/vitals（1.2.5）：桌面与移动端量程曾各写一套，同一患者两端结果不同 */
 
 async function saveVital() {
   if (!current.value) return

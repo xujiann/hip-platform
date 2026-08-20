@@ -94,8 +94,13 @@ def main():
         shutil.copy2(ROOT / 'tools' / t, out / 'tools' / t)
     for d in TOOL_DIRS:
         shutil.copytree(ROOT / 'tools' / d, out / 'tools' / d)
+    # E2E 全量入包（1.2.5 升级演练发现）：原先只拷 e2e-outpatient 一套，
+    # 实施方拿包只能冒烟门诊，住院/医保/集成等 19 套验收做不了
     (out / 'tools' / 'e2elib.py').write_bytes((ROOT / 'tools' / 'e2elib.py').read_bytes())
-    shutil.copy2(ROOT / 'tools' / 'e2e-outpatient.py', out / 'tools' / 'e2e-outpatient.py')
+    e2e_files = sorted((ROOT / 'tools').glob('e2e-*.py'))
+    for f in e2e_files:
+        shutil.copy2(f, out / 'tools' / f.name)
+    print(f'> E2E 套件 {len(e2e_files)} 套入包')
 
     (out / '升级说明.md').write_text(
         f"""# 升级到 {version}
@@ -104,7 +109,7 @@ def main():
 2. 备份数据库：tools/db-backup.ps1
 3. 替换 hip-server jar 与前端 dist（整目录换）
 4. 启动——Flyway 自动前滚新增迁移（配置/字典/规则库/实施段不受影响）
-5. 回归抽查：python tools/e2e-outpatient.py（指向测试库）
+5. 回归抽查：HIP_E2E_BASE=http://<host>:8080/api python tools/e2e-outpatient.py（指向测试库；tools/ 下含全部 20 套）
 6. 任一步失败：tools/db-restore.ps1 恢复备份，回退旧产物
 
 有 impl 定制模块的医院：升级前先对新版重编译定制模块（ADR-0003）。

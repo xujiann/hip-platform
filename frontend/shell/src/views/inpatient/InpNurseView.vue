@@ -9,14 +9,14 @@
                      :label="`${a.bedNo}床 ${a.patientName}`" :value="a.id as number" />
         </el-select>
       </el-form-item>
-      <el-form-item label="体温℃"><el-input-number v-model="vital.temperature" :min="34" :max="43" :precision="1" :step="0.1" style="width: 110px" /></el-form-item>
-      <el-form-item label="脉搏"><el-input-number v-model="vital.pulse" :min="20" :max="220" style="width: 100px" /></el-form-item>
-      <el-form-item label="呼吸"><el-input-number v-model="vital.respiration" :min="5" :max="60" style="width: 100px" /></el-form-item>
+      <el-form-item label="体温℃"><el-input-number v-model="vital.temperature" :min="VITAL_RANGES.temperature.min" :max="VITAL_RANGES.temperature.max" :precision="1" :step="0.1" style="width: 110px" /></el-form-item>
+      <el-form-item label="脉搏"><el-input-number v-model="vital.pulse" :min="VITAL_RANGES.pulse.min" :max="VITAL_RANGES.pulse.max" style="width: 100px" /></el-form-item>
+      <el-form-item label="呼吸"><el-input-number v-model="vital.respiration" :min="VITAL_RANGES.respiration.min" :max="VITAL_RANGES.respiration.max" style="width: 100px" /></el-form-item>
       <el-form-item label="血压">
-        <el-input-number v-model="vital.sbp" :min="50" :max="260" style="width: 100px" /> /
-        <el-input-number v-model="vital.dbp" :min="30" :max="160" style="width: 100px" />
+        <el-input-number v-model="vital.sbp" :min="VITAL_RANGES.sbp.min" :max="VITAL_RANGES.sbp.max" style="width: 100px" /> /
+        <el-input-number v-model="vital.dbp" :min="VITAL_RANGES.dbp.min" :max="VITAL_RANGES.dbp.max" style="width: 100px" />
       </el-form-item>
-      <el-form-item label="SpO₂"><el-input-number v-model="vital.spo2" :min="50" :max="100" style="width: 100px" /></el-form-item>
+      <el-form-item label="SpO₂"><el-input-number v-model="vital.spo2" :min="VITAL_RANGES.spo2.min" :max="VITAL_RANGES.spo2.max" style="width: 100px" /></el-form-item>
       <el-button type="primary" @click="saveVital">保存</el-button>
     </el-form>
   </el-card>
@@ -55,6 +55,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import client from '../../api/client'
+import { VITAL_RANGES } from '../../utils/vitals'
 
 const worklist = ref<Record<string, unknown>[]>([])
 const admissions = ref<Record<string, unknown>[]>([])
