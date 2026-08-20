@@ -9,7 +9,8 @@ import datetime
 import threading
 import urllib.request
 
-BASE = 'http://localhost:8080/api'
+import os
+BASE = os.environ.get('HIP_BASE', 'http://localhost:8080/api')
 THREADS = int(sys.argv[1]) if len(sys.argv) > 1 else 10
 TOTAL = int(sys.argv[2]) if len(sys.argv) > 2 else 100
 sys.stdout.reconfigure(encoding='utf-8')
