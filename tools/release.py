@@ -23,6 +23,24 @@ def run(cmd, **kw):
     subprocess.run(cmd, check=True, cwd=ROOT, **kw)
 
 
+def stamp_build_version(jar_path, version):
+    """把发布版本写进 jar 内 build-info.properties（1.2.4 彩排）：
+    pom 恒 0.1.0-SNAPSHOT，/actuator/info 曾自报 SNAPSHOT——发布包叫 1.2.3 而
+    实例答不出自己是哪版，升级验收的"确认响应来自新产物"就没有可比对的值。"""
+    import zipfile, re, shutil, tempfile
+    tmp = tempfile.mktemp(suffix='.jar')
+    with zipfile.ZipFile(jar_path) as zin, zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if item.filename == 'META-INF/build-info.properties':
+                text = data.decode('utf-8')
+                text = re.sub(r'build\.version=.*', 'build.version=' + version, text)
+                data = text.encode('utf-8')
+            zout.writestr(item, data)
+    shutil.move(tmp, jar_path)
+    print(f'> build-info 版本已改写为 {version}')
+
+
 def check_manifest():
     """CHANGELOG 提到的 tools 脚本必须都在打包清单——1.1.5 的存量文书导入工具曾被漏掉，
     用发布包实施的医院第一天就拿不到它（1.1.9 B-14）。"""
@@ -65,6 +83,7 @@ def main():
     (out / 'tools').mkdir()
 
     shutil.copy2(jar, out / f'hip-server-{version}.jar')
+    stamp_build_version(out / f'hip-server-{version}.jar', version)
     shutil.copytree(dist, out / 'dist')
     shutil.copytree(ROOT / 'deploy', out / 'deploy')
     shutil.copy2(ROOT / 'CHANGELOG.md', out / 'CHANGELOG.md')

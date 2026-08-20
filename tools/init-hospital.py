@@ -107,7 +107,12 @@ def main():
         p = dicts.get(path_key)
         if not p:
             continue
-        csv_text = (cfg_path.parent / p).read_text(encoding='utf-8-sig')
+        # 路径回退（1.2.4 彩排）：配置文件不放 init-templates/ 时曾直接 FileNotFound
+            _cands = [cfg_path.parent / p, Path(__file__).resolve().parent / 'init-templates' / p,
+                      Path(__file__).resolve().parent / p]
+            _hit = next((c for c in _cands if c.exists()), None)
+            assert _hit, f'字典文件不存在，已尝试：{[str(c) for c in _cands]}'
+            csv_text = _hit.read_text(encoding='utf-8-sig')
         r = ok(call('POST', endpoint, token=t, text=csv_text), f'导入{label}')
         print(f"[6] {label}导入 OK（入库 {r['imported']}，错误 {r['errorCount']}）"
               + (f" 错误示例: {r['errors'][:2]}" if r['errorCount'] else ''))

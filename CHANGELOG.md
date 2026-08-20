@@ -2,6 +2,37 @@
 
 版本纪律：语义化版本；平台迁移段 V1–V999，实施段 V10000+；升级 = 停服→备份→换产物→自动前滚→回归抽查（多医院部署操作指南 §三）。
 
+## 1.2.4（2026-08-18）
+
+v22 方向 C（零到一彩排）+ 方向 D（文档对齐）。
+
+**方向 C：用 v1.2.3 发布包（非源码）走零到一装机彩排**——init 七步、模块开关 404 实测、
+旧口令 1001、新口令登录、发布包自带 E2E 对新实例冒烟全过。彩排抓到四条并已修：
+
+- `/actuator/info` 曾被安全链拦 401——build-info"不登录查版本"的用意落空；permitAll 放行
+- init-hospital 字典 CSV 曾按配置文件所在目录解析——配置不放 init-templates/ 即
+  FileNotFound；改三级回退查找并报错列出尝试路径
+- `build.version` 曾恒 0.1.0-SNAPSHOT——发布包叫 1.2.3 而实例答不出自己是哪版；
+  release.py 打包时把发布版本改写进 jar 内 build-info（实测 /actuator/info 回 1.2.3）
+- E2E 凭据曾硬编码 admin123——无法对已改口令的实例冒烟；e2elib 支持
+  `HIP_E2E_USER/HIP_E2E_PASSWORD`（BASE 原有 `HIP_E2E_BASE`）
+
+**方向 D：三本手册对齐 v1.1.3–v1.2.3 真实行为**（16 处修订，代理核对+主审执行）：
+
+- 部署手册：MLLP 白名单 fail-closed（照旧手册部署监听起不来）、nginx 必配 X-Forwarded-For
+  （缺失时审计 IP 与门户锁定全失真）、E2E 环境变量写法与 `--base` 语义区别
+  （HIP_E2E_BASE 含 /api、init --base 不含——现场最易翻车点）、升级/回滚必查
+  /actuator/info、迁移补 import-inpatients/import-documents、版本号写死两处删除
+- 操作手册：日结双侧口径与新 CSV 列（退款负数求和=净额）、住院出院召回操作、
+  交款核对按退费操作员、患者端双层锁定说明（锁定期正确密码也被拒）、
+  建档脱敏值拒保存、/m 体征校验、INTERFACE 接口机角色授权纪律
+- 配置手册：补 HIP_MLLP_ALLOW/mllp-bind/mllp-max-conn/hip.ops.disk-paths 四键、
+  "直改库延迟 30 秒"与"保存即校验"两条边界
+- frontend/shell/nginx.conf 同步补 XFF（Spring 不读 X-Real-IP）
+- **docs/测试方法论.md**：八条方法论从会话记忆转正为文档（接手者不读 memory）
+
+无 Java 行为变更（/actuator/info permitAll 除外）；测试 145 全绿基线不变。
+
 ## 1.2.3（2026-08-18）
 
 v22 方向 A：第五轮审阅（v1.1.5..v1.2.2 七版新代码对抗回查）全部闭环（V59）。

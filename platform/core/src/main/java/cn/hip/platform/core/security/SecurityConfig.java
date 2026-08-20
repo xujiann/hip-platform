@@ -31,7 +31,9 @@ public class SecurityConfig {
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/api/auth/login", "/api/portal/login", "/api/config/public",
-                                "/api/share/*", "/actuator/health").permitAll()
+                                "/api/share/*", "/actuator/health",
+                                // build-info 版本自证：升级验收 curl 比对构建时间，不应要求登录（1.2.4 彩排）
+                                "/actuator/info").permitAll()
                         // 患者端仅能访问 portal 接口；院内接口对 PORTAL 角色完全隔离
                         .requestMatchers("/api/portal/**").hasRole("PORTAL")
                         // 接口机（LIS 中间件）只许进集成域：该角色的假想敌就是凭据泄漏，

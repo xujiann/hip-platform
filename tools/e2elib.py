@@ -46,7 +46,8 @@ def today_bj():
     return (_dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(hours=8)).date()
 
 
-def login(username='admin', password='admin123'):
+def login(username=os.environ.get('HIP_E2E_USER', 'admin'),
+          password=os.environ.get('HIP_E2E_PASSWORD', 'admin123')):
     return ok(call('POST', '/auth/login', {'username': username, 'password': password}), f'登录 {username}')['token']
 
 
