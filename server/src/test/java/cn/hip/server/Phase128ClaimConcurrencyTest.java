@@ -52,6 +52,8 @@ class Phase128ClaimConcurrencyTest {
     @Autowired cn.hip.outpatient.repository.OutpScheduleRepository scheduleRepository;
     @Autowired cn.hip.server.support.TestSeeds seeds;
     @Autowired cn.hip.outpatient.repository.OutpChargeRepository chargeRepository;
+    @Autowired cn.hip.inpatient.service.InpatientService inpatientService;
+    @Autowired cn.hip.inpatient.repository.SettlementRepo settlementRepo;
 
     /** 并发跑同一动作，返回 {成功数, 失败数}；失败必须是可读业务异常而非裸错误 */
     private int[] raceCount(Runnable action) throws Exception {
@@ -121,6 +123,56 @@ class Phase128ClaimConcurrencyTest {
         doctorStationService.createOrders(regId, List.of(new DoctorStationService.OrderLine(
                 "DRUG", seeds.drug("并发测试药").getId(), 1, "口服", "qd", "1粒", null)), null);
         return regId;
+    }
+
+    /** 造一个已出院结算的住院档，返回 admissionId */
+    private Long newDischargedAdmission(String name) {
+        Patient p = new Patient();
+        p.setName(name);
+        p.setSex("M");
+        Long pid = patientService.register(p).getId();
+        Long bedId = jdbc.queryForObject(
+                "select id from inp_bed where status = 'FREE' limit 1", Long.class);
+        Long admId = inpatientService.admit(pid, 1L, bedId, null, "J18.9", "肺炎",
+                new BigDecimal("500"), "CASH", null).getId();
+        inpatientService.discharge(admId, null, "CASH");
+        return admId;
+    }
+
+    /**
+     * claimCancel + claimReadmit：并发出院召回只成功一次（1.2.9 补）。
+     *
+     * <p>住院这两个抢占点此前**只有单线程功能测试**——而门诊退费的教训正是
+     * "单线程看起来完全正常、并发下六方全放行"。结算冲销重复执行会重复冲正医保额度，
+     * 床位召回重复执行会让一张床挂上两个住院档。
+     */
+    @Test
+    void concurrentCancelSettlementSucceedsOnce() throws Exception {
+        Long admId = newDischargedAdmission("并发召回128");
+        int[] r = raceCount(() -> inpatientService.cancelSettlement(admId, null, null));
+        assertEquals(1, r[0], "并发冲销只能有一方成功，实际成功 " + r[0]);
+        assertEquals(THREADS - 1, r[1], "其余线程必须都被抢占拦下");
+
+        assertEquals(0, jdbc.queryForObject(
+                "select count(*) from inp_settlement where admission_id = ? and status = 'PAID'",
+                Integer.class, admId), "冲销后不应残留 PAID 单");
+        assertEquals(1, jdbc.queryForObject(
+                "select count(*) from inp_settlement where admission_id = ? and status = 'CANCELLED'",
+                Integer.class, admId), "只能冲销一次（重复冲正会多次冲销医保额度）");
+        assertEquals("IN_HOSPITAL", jdbc.queryForObject(
+                "select status from inp_admission where id = ?", String.class, admId), "应恰好召回一次");
+    }
+
+    /** 抢占语义确定性证明（住院侧）：对已冲销单据再抢占必须 0 行，不依赖时序 */
+    @Test
+    void claimCancelRejectsAlreadyCancelledDeterministically() {
+        Long admId = newDischargedAdmission("召回语义128");
+        Long settleId = jdbc.queryForObject(
+                "select id from inp_settlement where admission_id = ? and status = 'PAID'", Long.class, admId);
+        inpatientService.cancelSettlement(admId, null, null);
+        int again = new TransactionTemplate(txManager).execute(
+                st -> settlementRepo.claimCancel(settleId, java.time.Instant.now(), null));
+        assertEquals(0, again, "已冲销单据再抢占必须 0 行");
     }
 
     /** claimCharge：并发结算同一就诊必须恰好出一张 PAID 单（双倍扣款是 P1-7） */
