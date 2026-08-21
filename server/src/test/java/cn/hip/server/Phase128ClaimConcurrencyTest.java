@@ -51,6 +51,7 @@ class Phase128ClaimConcurrencyTest {
     @Autowired DispenseService dispenseService;
     @Autowired cn.hip.outpatient.repository.OutpScheduleRepository scheduleRepository;
     @Autowired cn.hip.server.support.TestSeeds seeds;
+    @Autowired cn.hip.outpatient.repository.OutpChargeRepository chargeRepository;
 
     /** 并发跑同一动作，返回 {成功数, 失败数}；失败必须是可读业务异常而非裸错误 */
     private int[] raceCount(Runnable action) throws Exception {
@@ -152,17 +153,50 @@ class Phase128ClaimConcurrencyTest {
         assertEquals(1, dispensed);
     }
 
-    /** claimRefund：并发退费只成功一次（重复冲销医保额度是 P1-14） */
+    /**
+     * claimRefund：并发退费只成功一次（重复冲销医保额度是 P1-14）。
+     *
+     * <p><b>本用例是"本地绿、CI 红"的实例</b>：1.2.8 首版此处只抢占明细行，单据本身是读-判-写。
+     * 本地时序下先行线程已提交、后来者读到 REFUNDED 而被 5003 挡住，看起来完全正常；
+     * CI 上六线程同时读到 PAID，**六方全部放行**。故此处**跑三轮**——
+     * 单轮并发天然带时序侥幸，轮次是把偶发变必现的最省事手段。
+     */
     @Test
     void concurrentRefundSucceedsOnce() throws Exception {
-        Long regId = newVisitWithDrugOrder("并发退费128");
+        for (int round = 1; round <= 3; round++) {
+            Long regId = newVisitWithDrugOrder("并发退费128-" + round);
+            final var charge = chargeService.settle(regId, "CASH", null);
+            int[] r = raceCount(() -> chargeService.refund(charge.getId(), null));
+            assertEquals(1, r[0], "并发退费只能有一方成功（第 " + round + " 轮），实际成功 " + r[0]);
+            assertEquals(THREADS - 1, r[1], "其余线程必须都被抢占拦下（第 " + round + " 轮）");
+            String status = jdbc.queryForObject(
+                    "select status from outp_charge where id = ?", String.class, charge.getId());
+            assertEquals("REFUNDED", status);
+        }
+    }
+
+    /**
+     * 抢占语义的**确定性**证明（1.2.9）：不依赖时序，任何机器上恒定可复现。
+     *
+     * <p>上面几个用例靠多线程撞出竞争，而竞争强度随机器而变——退费缺陷正是
+     * 本地六线程恒绿、CI 上六方全放行。故防线本身还需要一个不靠时序的锁：
+     * 条件更新对已退单据必须返回 0 行。此断言在缺该防线的版本上根本编译不过。
+     */
+    @Test
+    void claimRefundRejectsAlreadyRefundedDeterministically() {
+        Long regId = newVisitWithDrugOrder("抢占语义128");
         var charge = chargeService.settle(regId, "CASH", null);
-        int[] r = raceCount(() -> chargeService.refund(charge.getId(), null));
-        assertEquals(1, r[0], "并发退费只能有一方成功，实际成功 " + r[0]);
-        assertEquals(THREADS - 1, r[1], "其余线程必须都被抢占拦下");
-        String status = jdbc.queryForObject(
-                "select status from outp_charge where id = ?", String.class, charge.getId());
-        assertEquals("REFUNDED", status);
+        chargeService.refund(charge.getId(), null);
+
+        // 本类刻意不带 @Transactional（各线程需各自提交），而 @Modifying 需要事务，故显式包一层
+        int again = new TransactionTemplate(txManager).execute(
+                st -> chargeRepository.claimRefund(charge.getId(), java.time.Instant.now(), null));
+        assertEquals(0, again, "已退单据再抢占必须 0 行——这是防重复冲正医保额度的根防线");
+
+        var ex = org.junit.jupiter.api.Assertions.assertThrows(RuntimeException.class,
+                () -> chargeService.refund(charge.getId(), null));
+        assertTrue(String.valueOf(ex.getMessage()).contains("已退费"),
+                "二次退费应给出可读提示，实际：" + ex.getMessage());
     }
 
     /**

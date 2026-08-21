@@ -85,10 +85,21 @@ public class ChargeService {
     public OutpCharge refund(Long chargeId, Long operatorId) {
         OutpCharge charge = chargeRepository.findById(chargeId)
                 .orElseThrow(() -> new BizException(5002, "结算单不存在"));
+        String chargeNo = charge.getChargeNo();
+        String payMethod = charge.getPayMethod();
+        // 提示层（非防线）：单据已退时直接给准确话术。少了这层，二次退费会因明细已被摘走而
+        // 落到 5009「可能正在发药」——对重复点击退费的收费员是误导。真防线是下方的条件更新
         if (!"PAID".equals(charge.getStatus())) {
             throw new BizException(5003, "该结算单已退费");
         }
         List<OutpOrder> orders = orderRepository.findByChargeId(chargeId);
+        // 空列表必须显式拒绝：明细抢占会把 chargeId 置 null，他方先退后本方查得空集，
+        // 若放任则 `0 != 0` 为假、防线在最需要它时反而放行（settle/dispense 早有 isEmpty 拦截，此处漏了）
+        if (orders.isEmpty()) {
+            throw new BizException(5009, "项目状态已变化（可能正在发药或执行），退费终止");
+        }
+        // 只读校验一律前置于抢占：校验失败不该改单据状态。
+        // 此处读到的状态可能过时（读后被发药），由下方明细抢占的行数判定兜底
         for (OutpOrder o : orders) {
             if ("DISPENSED".equals(o.getStatus())) {
                 throw new BizException(5004, "已发药项目需先退药: " + o.getItemName());
@@ -97,24 +108,28 @@ public class ChargeService {
                 throw new BizException(5005, "已执行项目不可退费: " + o.getItemName());
             }
         }
-        // 条件更新：并发发药会把行改成 DISPENSED，此时行数不足即整单回滚（防"钱已退、药也发了"）
+        // 抢占单据本身：读-判-写让并发退费各自放行一次（YB 单会重复冲正医保额度）。
+        // 本地时序下先行者已提交、后来者读到 REFUNDED 而"看起来正常"，CI 上六线程同时读到 PAID
+        // 便全部通过——1.2.9 由 CI 实证。住院 claimCancel 一直如此，门诊漏了这一层。
+        // 退费时刻（日结按退费日归集）与退费人（甲收乙退账各归各）随抢占一次写入，不再另行 save
+        if (chargeRepository.claimRefund(chargeId, java.time.Instant.now(), operatorId) == 0) {
+            throw new BizException(5003, "该结算单已退费");
+        }
+        // 明细抢占：并发发药会把行改成 DISPENSED，此时行数不足即整单回滚（防"钱已退、药也发了"）
         var ids = orders.stream().map(OutpOrder::getId).toList();
         if (orderRepository.claimRefund(ids) != ids.size()) {
             throw new BizException(5009, "项目状态已变化（可能正在发药或执行），退费终止");
         }
-        charge.setStatus("REFUNDED");
-        charge.setRefundedAt(java.time.Instant.now());   // 日结按退费日归集，不再改写历史日报表
-        charge.setRefundBy(operatorId);                  // 甲收乙退时账各归各，交款核查才有意义
-        OutpCharge saved = chargeRepository.save(charge);
-        if ("YB".equals(charge.getPayMethod())) {
+        if ("YB".equals(payMethod)) {
             // 本地写全部完成后才碰渠道（1.1.6 B-3）：渠道失败→本地随事务回滚，报文未产生副作用前
             // 单据不动；渠道成功后事务内无任何可失败步骤，杜绝「医保已冲、本地未退」
-            insuranceSplitService.reverse(charge.getChargeNo());
-            var res = insuranceAdapter.uploadRefund(charge.getChargeNo());
+            insuranceSplitService.reverse(chargeNo);
+            var res = insuranceAdapter.uploadRefund(chargeNo);
             if (!res.ok()) {
                 throw new BizException(5007, "医保退费冲正失败: " + res.message());
             }
         }
-        return saved;
+        // 条件更新 clearAutomatically 后原实体已脱管，重新读回终态（住院 cancelSettlement 同此写法）
+        return chargeRepository.findById(chargeId).orElseThrow();
     }
 }
