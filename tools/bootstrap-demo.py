@@ -3,10 +3,14 @@
 用法：python tools/bootstrap-demo.py（后端须运行）
 """
 import json
+import os
 import sys
 import urllib.request
 
-BASE = 'http://localhost:8080/api'
+BASE = os.environ.get('HIP_BASE', 'http://localhost:8080/api')
+# 口令可被环境变量覆盖：在线演示会把 admin 默认口令改掉，改掉后仍要能重灌数据
+USER = os.environ.get('HIP_USER', 'admin')
+PASSWORD = os.environ.get('HIP_PASSWORD', 'admin123')
 sys.stdout.reconfigure(encoding='utf-8')
 
 
@@ -22,7 +26,7 @@ def call(m, p, b=None, t=None):
         return {'code': e.code, 'message': e.read().decode('utf-8', 'replace')[:120]}
 
 
-t = call('POST', '/auth/login', {'username': 'admin', 'password': 'admin123'})['data']['token']
+t = call('POST', '/auth/login', {'username': USER, 'password': PASSWORD})['data']['token']
 
 # 基础患者（CI 同款：1 号 Test / 2 号 张三）
 patients = call('GET', '/patients?keyword=&page=0&size=5', t=t)['data']['records']
