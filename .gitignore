@@ -9,7 +9,8 @@ dist/
 .DS_Store
 .env
 .env.local
-.demo-env          # 在线演示环境的随机凭据，绝不入库
+# 在线演示环境的随机凭据（demo-deploy.sh 生成），绝不入库
+.demo-env
 __pycache__/
 release/
 
