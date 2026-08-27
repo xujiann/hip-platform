@@ -76,6 +76,15 @@ for username, real_name, roles in DEMO_USERS:
                                        'realName': real_name, 'roleCodes': roles}, t)
     if r['code'] == 0:
         created += 1
+        # v27-A：管理员设的初始口令首登会被强制改密（业务接口一律 1009）。
+        # 演示账号必须保持文档口令 Demo1234，故引导时替用户完成改密闭环：
+        # 改成临时口令再改回来——强制标志清除、对外口令不变。
+        ut = call('POST', '/auth/login', {'username': username, 'password': 'Demo1234'})['data']['token']
+        r1 = call('POST', '/auth/change-password', {'oldPassword': 'Demo1234', 'newPassword': 'Demo1234a'}, ut)
+        # 改密后旧 token 立即失效，须用新口令重新登录再改回
+        ut = call('POST', '/auth/login', {'username': username, 'password': 'Demo1234a'})['data']['token']
+        r2 = call('POST', '/auth/change-password', {'oldPassword': 'Demo1234a', 'newPassword': 'Demo1234'}, ut)
+        assert r1['code'] == 0 and r2['code'] == 0, f'{username} 改密闭环失败: {r1} / {r2}'
 print(f'演示账号：新建 {created} 个（统一密码 Demo1234，含医生/护士/收费/药师/医技/质控/运营）')
 
 print('演示数据引导完成 ✔')

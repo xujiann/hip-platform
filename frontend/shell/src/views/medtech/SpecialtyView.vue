@@ -185,8 +185,16 @@ const anes = reactive({ surgeryId: '', phase: 'INTRA', hr: '', sbp: '', dbp: '',
 
 async function loadAnes() {
   if (!anes.surgeryId) return
-  anesRecords.value = (await client.get('/anes/records', { params: { surgeryId: anes.surgeryId } })).data.data
-  pacu.value = (await client.get('/anes/records/pacu-status', { params: { surgeryId: anes.surgeryId } })).data.data
+  // /api/anes 归「手术麻醉」开关，而本页菜单是 /specialty 不随开关消失——
+  // 关闭手麻后此 tab 的请求会 404（v27-B：此前直接弹全局错误，这里给出可读原因）
+  try {
+    anesRecords.value = (await client.get('/anes/records', { params: { surgeryId: anes.surgeryId } })).data.data
+    pacu.value = (await client.get('/anes/records/pacu-status', { params: { surgeryId: anes.surgeryId } })).data.data
+  } catch {
+    anesRecords.value = []
+    pacu.value = null
+    ElMessage.warning('手术麻醉模块未启用或暂不可用')
+  }
 }
 async function recordAnes() {
   if (!anes.surgeryId) return

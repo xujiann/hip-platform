@@ -27,6 +27,7 @@ public class AuthController {
     private final JwtService jwtService;
     private final SysUserRepository userRepository;
     private final ModuleGate moduleGate;
+    private final org.springframework.security.crypto.password.PasswordEncoder passwordEncoder;
 
     public record LoginRequest(@NotBlank String username, @NotBlank String password) {}
 
@@ -57,19 +58,48 @@ public class AuthController {
                     java.time.Instant.now().plus(LOCK_DURATION));
             return R.fail(1001, "用户名或密码错误");
         }
-        userOpt.ifPresent(u -> {
-            u.setFailedAttempts(0);
-            u.setLockedUntil(null);
-            userRepository.save(u);
-        });
-        String token = jwtService.issue(req.username());
+        // authenticate 成功即用户必然存在
+        SysUser user = userOpt.orElseThrow();
+        user.setFailedAttempts(0);
+        user.setLockedUntil(null);
+        userRepository.save(user);
+        // v27-A：token 携带口令戳，改密后旧 token 立即失效（JwtAuthenticationFilter 比对）
+        String token = jwtService.issue(req.username(), user.getPasswordUpdatedAt().getEpochSecond());
         // 等保：口令使用时长与定期更换提醒（超过 90 天提示）
-        long pwdAgeDays = userOpt
-                .map(u -> java.time.Duration.between(u.getPasswordUpdatedAt(), java.time.Instant.now()).toDays())
-                .orElse(0L);
+        long pwdAgeDays = java.time.Duration
+                .between(user.getPasswordUpdatedAt(), java.time.Instant.now()).toDays();
         return R.ok(Map.of("token", token,
                 "passwordAgeDays", pwdAgeDays,
-                "passwordExpireWarning", pwdAgeDays >= 90));
+                "passwordExpireWarning", pwdAgeDays >= 90,
+                "mustChangePassword", user.getMustChangePassword()));
+    }
+
+    public record ChangePasswordRequest(@NotBlank String oldPassword, @NotBlank String newPassword) {}
+
+    /**
+     * 自助改密（v27-A 等保必查项）。校验顺序：旧密→强度→重复，
+     * 先证明"你是你"再谈新口令质量，避免探测者用弱口令响应差异摸库。
+     */
+    @PostMapping("/change-password")
+    @org.springframework.transaction.annotation.Transactional
+    public R<Void> changePassword(@RequestBody ChangePasswordRequest req, Authentication authentication) {
+        SysUser user = userRepository.findByUsername(authentication.getName()).orElseThrow();
+        if (!passwordEncoder.matches(req.oldPassword(), user.getPassword())) {
+            return R.fail(1006, "原密码不正确");
+        }
+        String pwdError = cn.hip.platform.core.security.PasswordPolicy.error(req.newPassword());
+        if (pwdError != null) {
+            return R.fail(1007, pwdError);
+        }
+        if (passwordEncoder.matches(req.newPassword(), user.getPassword())) {
+            return R.fail(1008, "新密码不能与原密码相同");
+        }
+        user.setPassword(passwordEncoder.encode(req.newPassword()));
+        // 口令戳一变，此前签发的所有新式 token（含本次请求所用的）随即失效——前端改完主动登出
+        user.setPasswordUpdatedAt(java.time.Instant.now());
+        user.setMustChangePassword(false);
+        userRepository.save(user);
+        return R.ok();
     }
 
     @GetMapping("/me")
@@ -103,6 +133,8 @@ public class AuthController {
                 "username", user.getUsername(),
                 "realName", user.getRealName(),
                 "roles", user.getRoles().stream().map(r -> r.getCode()).toList(),
+                // 前端刷新页面后仍需知道是否处于强制改密态（login 响应不落地）
+                "mustChangePassword", user.getMustChangePassword(),
                 "menus", menus));
     }
 }

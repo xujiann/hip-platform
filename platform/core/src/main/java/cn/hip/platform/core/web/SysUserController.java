@@ -54,13 +54,15 @@ public class SysUserController {
         if (userRepository.findByUsername(req.username()).isPresent()) {
             return R.fail(1101, "用户名已存在");
         }
-        String pwdError = passwordPolicyError(req.password());
+        String pwdError = cn.hip.platform.core.security.PasswordPolicy.error(req.password());
         if (pwdError != null) {
             return R.fail(1102, pwdError);
         }
         SysUser u = new SysUser();
         u.setUsername(req.username());
         u.setPassword(passwordEncoder.encode(req.password()));
+        // 初始口令是管理员知道的口令，本人首登必须改掉（v27-A 等保）
+        u.setMustChangePassword(true);
         applyFields(u, req);
         return R.ok(UserDto.from(userRepository.save(u)));
     }
@@ -72,10 +74,13 @@ public class SysUserController {
         if (u == null) return R.fail(1103, "用户不存在");
         applyFields(u, req);
         if (req.password() != null && !req.password().isBlank()) {
-            String pwdError = passwordPolicyError(req.password());
+            String pwdError = cn.hip.platform.core.security.PasswordPolicy.error(req.password());
             if (pwdError != null) return R.fail(1102, pwdError);
             u.setPassword(passwordEncoder.encode(req.password()));
+            // 口令戳更新会让该用户已签发的新式 token 全部失效（JwtAuthenticationFilter 校验 pwd claim）
             u.setPasswordUpdatedAt(java.time.Instant.now());
+            // 管理员重置的口令同样是"别人知道的口令"，本人下次登录必须改
+            u.setMustChangePassword(true);
         }
         return R.ok(UserDto.from(userRepository.save(u)));
     }
@@ -89,13 +94,6 @@ public class SysUserController {
         u.setEnabled(enabled);
         userRepository.save(u);
         return R.ok();
-    }
-
-    /** 等保密码策略：至少 8 位且同时含字母与数字 */
-    private String passwordPolicyError(String pwd) {
-        if (pwd == null || pwd.length() < 8) return "密码不能少于 8 位";
-        if (!pwd.matches(".*[A-Za-z].*") || !pwd.matches(".*\\d.*")) return "密码须同时包含字母和数字";
-        return null;
     }
 
     private void applyFields(SysUser u, SaveUserRequest req) {

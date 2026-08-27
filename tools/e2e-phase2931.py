@@ -175,6 +175,12 @@ opname = 'e2emask' + stamp
 ok(call('POST', '/system/users', {'username': opname, 'password': 'Abcd1234', 'realName': '脱敏测试',
                                   'roleCodes': ['NURSE']}, t), '建普通用户')
 t2 = ok(call('POST', '/auth/login', {'username': opname, 'password': 'Abcd1234'}), '普通登录')['token']
+# v27-A：初始口令未改前业务接口被 1009 兜底拦截；改密后旧 token 失效须重新登录
+r = call('GET', '/patients?keyword=x', token=t2)
+assert r['code'] == 1009, f'强制改密兜底应拦业务接口: {r}'
+ok(call('POST', '/auth/change-password', {'oldPassword': 'Abcd1234', 'newPassword': 'Abcd1235'}, t2), '首登改密')
+t2 = ok(call('POST', '/auth/login', {'username': opname, 'password': 'Abcd1235'}), '改密后登录')['token']
+print('[卅一-1.5] 首登强制改密 OK（改前业务接口 1009，改后放行）')
 masked = ok(call('GET', '/patients?keyword=' + q('患者服务' + stamp), token=t2), '脱敏列表')['records'][0]
 assert '****' in masked['phone'] and phone not in masked['phone'], masked
 plain = ok(call('GET', '/patients?keyword=' + q('患者服务' + stamp), token=t), '明文列表')['records'][0]

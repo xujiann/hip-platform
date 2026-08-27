@@ -19,17 +19,22 @@
         </el-button>
       </el-form>
     </el-card>
+    <!-- 首登/管理员重置后强制改密：不可关闭，改完自动用新密码重新登录再进系统 -->
+    <ChangePasswordDialog v-model="forcedDialogVisible" forced @success="onForcedChanged" />
   </div>
 </template>
 
 <script setup lang="ts">
 import { reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import { useAuthStore } from '../stores/auth'
+import ChangePasswordDialog from '../components/ChangePasswordDialog.vue'
 
 const router = useRouter()
 const auth = useAuthStore()
 const loading = ref(false)
+const forcedDialogVisible = ref(false)
 const form = reactive({ username: '', password: '' })
 
 async function onLogin() {
@@ -37,9 +42,26 @@ async function onLogin() {
   loading.value = true
   try {
     await auth.login(form.username, form.password)
+    if (auth.mustChangePassword) {
+      // 服务端兜底会对业务接口一律回 1009，进去也办不了事——先改密再放行
+      forcedDialogVisible.value = true
+      return
+    }
     router.push('/')
   } finally {
     loading.value = false
+  }
+}
+
+async function onForcedChanged(newPassword: string) {
+  // 改密瞬间旧 token 已失效（口令戳不匹配），用新密码自动重登再进系统
+  try {
+    await auth.login(form.username, newPassword)
+    ElMessage.success('密码修改成功')
+    router.push('/')
+  } catch {
+    // 自动重登失败（极少见）：留在登录页手工登录即可
+    auth.logout()
   }
 }
 </script>

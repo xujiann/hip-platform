@@ -26,7 +26,8 @@
           </span>
           <template #dropdown>
             <el-dropdown-menu>
-              <el-dropdown-item command="logout">退出登录</el-dropdown-item>
+              <el-dropdown-item command="changePassword">修改密码</el-dropdown-item>
+              <el-dropdown-item command="logout" divided>退出登录</el-dropdown-item>
             </el-dropdown-menu>
           </template>
         </el-dropdown>
@@ -35,26 +36,46 @@
         <router-view />
       </el-main>
     </el-container>
+    <ChangePasswordDialog v-model="pwdDialogVisible" :forced="auth.mustChangePassword"
+                          @success="onPasswordChanged" />
   </el-container>
 </template>
 
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import { useAuthStore } from '../stores/auth'
+import ChangePasswordDialog from '../components/ChangePasswordDialog.vue'
 
 const router = useRouter()
 const auth = useAuthStore()
+const pwdDialogVisible = ref(false)
 
 onMounted(() => {
   if (!auth.user) auth.fetchMe().catch(() => {})
 })
 
+// 强制改密态下刷新页面：/auth/me 会带回标志，此处补开不可关闭的改密弹窗，
+// 否则用户困在"每个接口都提示 1009"的死局里（登录页的弹窗只覆盖登录动线）
+watch(() => auth.mustChangePassword, (v) => {
+  if (v) pwdDialogVisible.value = true
+}, { immediate: true })
+
 function onCommand(cmd: string) {
   if (cmd === 'logout') {
     auth.logout()
     router.push('/login')
+  } else if (cmd === 'changePassword') {
+    pwdDialogVisible.value = true
   }
+}
+
+function onPasswordChanged() {
+  // 改密后口令戳已变，旧 token 服务端即刻失效——主动登出比等下一个请求吃 401 体验好
+  ElMessage.success('密码已修改，请重新登录')
+  auth.logout()
+  router.push('/login')
 }
 </script>
 

@@ -46,10 +46,30 @@ public class JwtService {
                 .compact();
     }
 
+    /**
+     * 带口令戳的签发（v27-A）：claim "pwd" 记录签发时刻的 passwordUpdatedAt 秒值。
+     * 改密后库里的戳变了，旧 token 的 pwd 对不上即失效——JWT 无状态撤销的最小代价方案。
+     * 不改 issue(String) 的签名：它有 16 处测试调用 + 患者端 PortalController 在用。
+     */
+    public String issue(String username, long passwordStamp) {
+        Instant now = Instant.now();
+        return Jwts.builder()
+                .subject(username)
+                .claim("pwd", passwordStamp)
+                .issuedAt(Date.from(now))
+                .expiration(Date.from(now.plus(expiry)))
+                .signWith(key)
+                .compact();
+    }
+
     /** 校验并返回用户名；无效或过期抛出 JwtException */
     public String verify(String token) {
-        Claims claims = Jwts.parser().verifyWith(key).build()
+        return verifyClaims(token).getSubject();
+    }
+
+    /** 校验并返回全部 claims（过滤器需要读 pwd 口令戳）；无效或过期抛出 JwtException */
+    public Claims verifyClaims(String token) {
+        return Jwts.parser().verifyWith(key).build()
                 .parseSignedClaims(token).getPayload();
-        return claims.getSubject();
     }
 }

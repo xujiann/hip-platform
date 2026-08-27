@@ -255,8 +255,14 @@ async function loadCdssTips() {
   cdssTips.value = []
   const primary = diagCodes.value[0]
   if (!primary) return
-  const resp = await client.get('/cdss/suggestions', { params: { icd: primary } })
-  cdssTips.value = (resp.data.data as { content: string }[]).map((s) => s.content)
+  // CDSS 可按院整体关闭（模块开关返回 404）——辅助提示拿不到就不显示，
+  // 不能让开关状态打断接诊主流程（v27-B：此前无 catch，关闭 cdss 后接诊必弹全局错误）
+  try {
+    const resp = await client.get('/cdss/suggestions', { params: { icd: primary } })
+    cdssTips.value = (resp.data.data as { content: string }[]).map((s) => s.content)
+  } catch {
+    /* 模块未启用或临时不可用：静默降级 */
+  }
 }
 
 async function searchDrugs(kw: string) {

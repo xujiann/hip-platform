@@ -19,6 +19,13 @@ BS = chr(92)
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PATTERN = re.compile(r'(?:R\.fail|new \w*Exception)\(\s*(\d{4})\s*,\s*"([^"]{2,120})"')
 
+# 消息为变量或手写 JSON 信封（过滤器层进不了 R.fail）时正则抓不到——在此手工登记。
+# 新增前先核对 docs/错误码分段.md 的号段归属
+MANUAL = {
+    '1007': ('新密码不符合强度要求（至少 8 位且含字母与数字）', '认证'),
+    '1009': ('请先修改初始密码（强制改密兜底，改密后自动恢复）', '认证'),
+}
+
 MODULE_HINTS = {
     'Charge': '门诊收费', 'Registration': '门诊挂号', 'DoctorStation': '门诊医生站',
     'Dispense': '药房', 'Review': '审方', 'Pay': '支付', 'Inpatient': '住院',
@@ -74,6 +81,8 @@ def collect():
             text = open(path, encoding='utf-8').read()
             for code, msg in PATTERN.findall(text):
                 hits[int(code)].add((msg.strip(), os.path.basename(path)))
+    for code, (msg, mod) in MANUAL.items():
+        hits[int(code)].add((msg, mod + '（手工登记）'))
     return hits
 
 

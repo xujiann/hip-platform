@@ -48,9 +48,13 @@ public class SysUser {
     /** 锁定截止时间 */
     private Instant lockedUntil;
 
-    /** 密码最近修改时间（等保：定期更换口令提醒） */
+    /** 密码最近修改时间（等保：定期更换口令提醒；v27-A 起兼作旧 token 失效的口令戳） */
     @Column(nullable = false)
     private Instant passwordUpdatedAt = Instant.now();
+
+    /** 首次登录/管理员重置口令后强制改密（v27-A 等保：初始口令不得直接办业务） */
+    @Column(nullable = false)
+    private Boolean mustChangePassword = false;
 
     @Column(nullable = false, updatable = false)
     private Instant createdAt = Instant.now();

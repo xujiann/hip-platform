@@ -72,4 +72,47 @@ class ModuleToggleTest {
         assertFalse(moduleGate.isApiDisabled("/api/inpatient/admissions"));
         setModule("surgery", "1");
     }
+
+    /**
+     * insurance 只读豁免（v27-B）：1.2.0 裁决「冲销侧不设开关」，但 /api/insurance 整段 404
+     * 连分割/审核/对账**查询**也关了——出现「能冲销、却查不到冲销依据」的自相矛盾。
+     * 停用后：查询豁免放行，其余（如目录对照维护）仍 404。
+     */
+    @Test
+    void insuranceReadOnlyExemptionsSurviveDisable() throws Exception {
+        setModule("insurance", "0");
+        assertFalse(moduleGate.isApiDisabled("/api/insurance/splits"), "分割查询是冲销依据，必须豁免");
+        assertFalse(moduleGate.isApiDisabled("/api/insurance/audits"));
+        assertFalse(moduleGate.isApiDisabled("/api/insurance/reconcile"));
+        assertFalse(moduleGate.isApiDisabled("/api/insurance/reconcile/batches"));
+        assertTrue(moduleGate.isApiDisabled("/api/insurance/catalog"), "非豁免入口（目录对照维护）仍须被拦");
+        assertTrue(moduleGate.isApiDisabled("/api/insurance"));
+
+        mockMvc.perform(get("/api/insurance/splits").header("Authorization", "Bearer " + adminToken()))
+                .andExpect(status().isOk());
+        setModule("insurance", "1");
+    }
+
+    /** v27-B 扩表：cdr / datagov 正向拦截 + 兄弟前缀反向断言（防 1.1.1 式边界误伤） */
+    @Test
+    void cdrAndDatagovTogglesWork() throws Exception {
+        setModule("cdr", "0");
+        assertTrue(moduleGate.isApiDisabled("/api/cdr/patients/1/documents"));
+        assertFalse(moduleGate.isApiDisabled("/api/cdss/suggestions"), "/api/cdr 不得连带命中 /api/cdss");
+        mockMvc.perform(get("/api/cdr/search?keyword=x").header("Authorization", "Bearer " + adminToken()))
+                .andExpect(status().isNotFound());
+        mockMvc.perform(get("/api/auth/me").header("Authorization", "Bearer " + adminToken()))
+                .andExpect(jsonPath("$.data.menus[?(@.path == '/cdr/patient360')]").doesNotExist());
+        setModule("cdr", "1");
+
+        setModule("datagov", "0");
+        assertTrue(moduleGate.isApiDisabled("/api/datagov/standards"));
+        assertFalse(moduleGate.isApiDisabled("/api/patients"), "数据治理开关不得波及患者主索引");
+        mockMvc.perform(get("/api/auth/me").header("Authorization", "Bearer " + adminToken()))
+                .andExpect(jsonPath("$.data.menus[?(@.path == '/datagov')]").doesNotExist())
+                .andExpect(jsonPath("$.data.menus[?(@.path == '/datagov/standards')]").doesNotExist());
+        setModule("datagov", "1");
+        mockMvc.perform(get("/api/auth/me").header("Authorization", "Bearer " + adminToken()))
+                .andExpect(jsonPath("$.data.menus[?(@.path == '/datagov')]").exists());
+    }
 }

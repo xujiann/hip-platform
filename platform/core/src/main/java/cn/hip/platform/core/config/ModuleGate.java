@@ -19,16 +19,35 @@ import java.util.Set;
 @RequiredArgsConstructor
 public class ModuleGate {
 
-    public record ModuleDef(String menuPath, List<String> apiPrefixes) {}
+    /**
+     * @param menuPaths      该模块的菜单 path（可多条，如 datagov 有两个入口页）
+     * @param apiPrefixes    被开关拦截的 API 前缀
+     * @param exemptPrefixes 拦截豁免：即使模块停用也放行的子前缀（须比 apiPrefixes 更具体）。
+     *                       1.2.0 裁决过「冲销侧有意不设开关」——既存 YB 单必须始终可纠正；
+     *                       但 /api/insurance 整段 404 连分割/对账**查询**也关了，
+     *                       出现「能冲销、却查不到冲销依据」的自相矛盾（v27-B 补此口子）
+     */
+    public record ModuleDef(List<String> menuPaths, List<String> apiPrefixes, List<String> exemptPrefixes) {
+        public ModuleDef(List<String> menuPaths, List<String> apiPrefixes) {
+            this(menuPaths, apiPrefixes, List.of());
+        }
+    }
 
     /** 可开关模块注册表（均为独立菜单 + 独立 API 前缀的功能域） */
     public static final Map<String, ModuleDef> MODULES = Map.of(
-            "drg",       new ModuleDef("/drg",              List.of("/api/drg")),
-            "cdss",      new ModuleDef("/cdss",             List.of("/api/cdss")),
-            "insurance", new ModuleDef("/insurance",        List.of("/api/insurance")),
-            "blood",     new ModuleDef("/inpatient/blood",  List.of("/api/inpatient/blood")),
-            "hr",        new ModuleDef("/hr",               List.of("/api/hr")),
-            "surgery",   new ModuleDef("/surgery",          List.of("/api/inpatient/surgeries", "/api/anes")));
+            "drg",       new ModuleDef(List.of("/drg"),             List.of("/api/drg")),
+            "cdss",      new ModuleDef(List.of("/cdss"),            List.of("/api/cdss")),
+            "insurance", new ModuleDef(List.of("/insurance"),       List.of("/api/insurance"),
+                    // 核查豁免：停用后历史分割/审核/对账仍可用（冲销的依据）。
+                    // POST /reconcile（重跑对账）随豁免放行是有意的——它读业务数据写对账结果，
+                    // 不产生新的医保结算，属「纠正配套」；目录对照维护等真正的写入口仍被拦
+                    List.of("/api/insurance/splits", "/api/insurance/audits", "/api/insurance/reconcile")),
+            "blood",     new ModuleDef(List.of("/inpatient/blood"), List.of("/api/inpatient/blood")),
+            "hr",        new ModuleDef(List.of("/hr"),              List.of("/api/hr")),
+            "surgery",   new ModuleDef(List.of("/surgery"),         List.of("/api/inpatient/surgeries", "/api/anes")),
+            // v27-B 扩表：独占前缀、无跨模块页面调用，经侦察确认可安全整段开关
+            "cdr",       new ModuleDef(List.of("/cdr", "/cdr/patient360"), List.of("/api/cdr")),
+            "datagov",   new ModuleDef(List.of("/datagov", "/datagov/standards"), List.of("/api/datagov")));
 
     private final JdbcTemplate jdbc;
 
@@ -76,7 +95,7 @@ public class ModuleGate {
     public Set<String> disabledMenuPaths() {
         var paths = new HashSet<String>();
         for (String key : disabledModules()) {
-            paths.add(MODULES.get(key).menuPath());
+            paths.addAll(MODULES.get(key).menuPaths());
         }
         return paths;
     }
@@ -89,13 +108,23 @@ public class ModuleGate {
      */
     public boolean isApiDisabled(String uri) {
         for (String key : disabledModules()) {
-            for (String prefix : MODULES.get(key).apiPrefixes()) {
-                if (uri.equals(prefix) || uri.startsWith(prefix + "/")) {
+            ModuleDef def = MODULES.get(key);
+            for (String exempt : def.exemptPrefixes()) {
+                if (hit(uri, exempt)) {
+                    return false;      // 豁免子前缀优先：停用不影响这部分（如 insurance 只读查询）
+                }
+            }
+            for (String prefix : def.apiPrefixes()) {
+                if (hit(uri, prefix)) {
                     return true;
                 }
             }
         }
         return false;
+    }
+
+    private static boolean hit(String uri, String prefix) {
+        return uri.equals(prefix) || uri.startsWith(prefix + "/");
     }
 
     public boolean isEnabled(String key) {
