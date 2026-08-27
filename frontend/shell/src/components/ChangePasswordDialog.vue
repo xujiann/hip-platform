@@ -64,6 +64,7 @@ const rules = {
       if (!v) return cb(new Error('请填写新密码'))
       if (v.length < 8) return cb(new Error('密码不能少于 8 位'))
       if (!/[A-Za-z]/.test(v) || !/\d/.test(v)) return cb(new Error('密码须同时包含字母和数字'))
+      if (v === form.oldPassword) return cb(new Error('新密码不能与原密码相同'))
       cb()
     }, trigger: 'blur',
   }],

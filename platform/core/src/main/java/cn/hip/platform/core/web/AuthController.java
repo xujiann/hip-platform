@@ -84,7 +84,15 @@ public class AuthController {
     @org.springframework.transaction.annotation.Transactional
     public R<Void> changePassword(@RequestBody ChangePasswordRequest req, Authentication authentication) {
         SysUser user = userRepository.findByUsername(authentication.getName()).orElseThrow();
+        // 与 /login 同一套锁定防线（第六轮审阅 F2）：旧密字段是持被盗 token 者的爆破面——
+        // 1009 闸恰好把首登态 token 限死在本端点，这条路不限速等于给爆破开了口。
+        // 锁定期间拒绝改密（口径与登录统一）；旧密错误计入同一失败计数，5 次锁 15 分钟
+        if (user.getLockedUntil() != null && user.getLockedUntil().isAfter(java.time.Instant.now())) {
+            return R.fail(1002, "账号已锁定，请 15 分钟后重试");
+        }
         if (!passwordEncoder.matches(req.oldPassword(), user.getPassword())) {
+            userRepository.bumpFailedAttempts(user.getUsername(), MAX_FAILED,
+                    java.time.Instant.now().plus(LOCK_DURATION));
             return R.fail(1006, "原密码不正确");
         }
         String pwdError = cn.hip.platform.core.security.PasswordPolicy.error(req.newPassword());

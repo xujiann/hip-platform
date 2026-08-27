@@ -95,6 +95,10 @@ export function createHipClient(opts: HipClientOptions): AxiosInstance {
       } else if (status === 403) {
         // 后端方法级权限拒绝：给出可理解的原因，而不是笼统的"网络请求失败"
         ElMessage.error('无该功能权限，请联系管理员分配角色')
+      } else if (status === 404 && error.response?.data?.message === '该功能模块未启用') {
+        // 模块开关的 404（ModuleGateFilter）不全局弹错：调用方要么已自行降级
+        // （医生站 CDSS 提示、专科页麻醉 tab），要么该页面本就该随菜单一起消失——
+        // 第六轮审阅 P2-B：此前组件 catch 了、全局红 toast 却照弹，"静默降级"不静默
       } else {
         ElMessage.error(error.response?.data?.message || '网络请求失败')
       }

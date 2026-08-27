@@ -107,23 +107,25 @@ def main():
         p = dicts.get(path_key)
         if not p:
             continue
-        # 路径回退（1.2.4 彩排）：配置文件不放 init-templates/ 时曾直接 FileNotFound
-            _cands = [cfg_path.parent / p, Path(__file__).resolve().parent / 'init-templates' / p,
-                      Path(__file__).resolve().parent / p]
-            _hit = next((c for c in _cands if c.exists()), None)
-            assert _hit, f'字典文件不存在，已尝试：{[str(c) for c in _cands]}'
-            csv_text = _hit.read_text(encoding='utf-8-sig')
+        # 路径回退（1.2.4 彩排）：配置文件不放 init-templates/ 时曾直接 FileNotFound。
+        # 第六轮审阅 P1-A：此四行曾多缩进一级落入 `if not p: continue` 之后成死代码——
+        # 配了字典 CSV 必 NameError，"修复本身从未被执行"
+        _cands = [cfg_path.parent / p, Path(__file__).resolve().parent / 'init-templates' / p,
+                  Path(__file__).resolve().parent / p]
+        _hit = next((c for c in _cands if c.exists()), None)
+        assert _hit, f'字典文件不存在，已尝试：{[str(c) for c in _cands]}'
+        csv_text = _hit.read_text(encoding='utf-8-sig')
         r = ok(call('POST', endpoint, token=t, text=csv_text), f'导入{label}')
         print(f"[6] {label}导入 OK（入库 {r['imported']}，错误 {r['errorCount']}）"
               + (f" 错误示例: {r['errors'][:2]}" if r['errorCount'] else ''))
 
-    # 7 强改 admin 口令（安全基线：生产库不留 admin123）
-    admin = next(u for u in users if u['username'] == 'admin')
-    ok(call('PUT', f"/system/users/{admin['id']}", {'username': 'admin', 'realName': admin['realName'],
-                                                    'password': new_pwd, 'roleCodes': admin['roleCodes']}, t),
-       '改 admin 口令')
+    # 7 强改 admin 口令（安全基线：生产库不留 admin123）。
+    # 走自助改密端点而非 PUT /system/users/{id}：管理员代改会置 must_change_password
+    # （"重发初始口令"语义），把本脚本设定的**最终口令**变成又要改一次的临时口令（第六轮审阅）
+    ok(call('POST', '/auth/change-password',
+            {'oldPassword': 'admin123', 'newPassword': new_pwd}, t), '改 admin 口令')
     ok(call('POST', '/auth/login', {'username': 'admin', 'password': new_pwd}), '新口令验证')
-    print('[7] admin 口令已更换并验证')
+    print('[7] admin 口令已更换并验证（自助路径，不触发首登强制改密）')
 
     print('\n=== 医院初始化完成 ===')
     print('提醒：生产部署须设置环境变量 HIP_JWT_SECRET（≥32 位随机串）；演示数据请勿在生产库运行 bootstrap-demo')

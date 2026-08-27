@@ -66,13 +66,20 @@ EOF
     # 用登录端点判就绪，而不是 /actuator/health——nginx 只代理 /api/，
     # actuator 在容器外根本不可达；登录成功还顺带验证了 nginx→后端→数据库全链路
     echo -n "      等待全链路就绪"
+    # 循环内只试默认口令：若 HIP_DEMO_ADMIN_PASSWORD 拼错，每 4 秒双试会在 3 轮内
+    # 触发 5 次失败锁定 15 分钟，最终误报"未就绪"（第六轮审阅 P3）。
+    # 服务未就绪时连接被拒不计失败次数，试默认口令是安全的
     ready=0
     for _ in $(seq 1 90); do
-        if login_ok admin admin123 || login_ok admin "$HIP_DEMO_ADMIN_PASSWORD"; then
+        if login_ok admin admin123; then
             echo " —— 就绪"; ready=1; break
         fi
         echo -n "."; sleep 4
     done
+    # 已改过密的二次部署：默认口令必然失败，此时才用目标口令**单次**判定
+    if [[ $ready -ne 1 ]] && login_ok admin "${HIP_DEMO_ADMIN_PASSWORD:-}"; then
+        echo " —— 就绪（admin 已非默认口令）"; ready=1
+    fi
     if [[ $ready -ne 1 ]]; then
         echo
         echo "错误：全链路未就绪，请查看 docker compose -f $COMPOSE logs server" >&2
@@ -121,8 +128,10 @@ fi
 # 演示环境公网可达，默认口令必须改掉；角色账号的 Demo1234 仅为只读演示保留
 if [[ -n "${HIP_DEMO_ADMIN_PASSWORD:-}" && "$ADMIN_PWD" == 'admin123' ]]; then
     echo "[4/4] 修改 admin 默认口令..."
-    # 平台没有自助改密接口，只能走管理员的用户更新端点（PUT /system/users/{id}）。
-    # 该端点会校验口令强度，弱口令会被 1102 拒绝
+    # 必须走**自助改密端点**（v27-A 新增），不能走管理员的 PUT /system/users/{id}——
+    # 后者按设计给目标账号置 must_change_password（"管理员代改=重发初始口令"语义），
+    # 会让 admin 首登被强制再改一次，HIP_DEMO_ADMIN_PASSWORD 即刻作废、
+    # --data-only 重跑也会被 1009 兜底拦死（第六轮审阅 P1-B）
     python3 - <<'PY'
 import json, os, urllib.request
 base = os.environ['HIP_BASE']
@@ -138,15 +147,10 @@ def call(m, p, b=None, t=None):
 
 
 t = call('POST', '/auth/login', {'username': 'admin', 'password': 'admin123'})['data']['token']
-me = next(u for u in call('GET', '/system/users?page=0&size=100', t=t)['data']['records']
-          if u['username'] == 'admin')
-body = {'username': 'admin', 'password': os.environ['HIP_DEMO_ADMIN_PASSWORD'],
-        'realName': me.get('realName') or '管理员', 'title': me.get('title'),
-        'deptId': me.get('deptId'), 'phone': me.get('phone'),
-        'roleCodes': me.get('roleCodes') or ['ADMIN']}
-r = call('PUT', f"/system/users/{me['id']}", body, t)
+r = call('POST', '/auth/change-password',
+         {'oldPassword': 'admin123', 'newPassword': os.environ['HIP_DEMO_ADMIN_PASSWORD']}, t)
 if r.get('code') == 0:
-    print('      admin 口令已更新')
+    print('      admin 口令已更新（自助路径，不触发首登强制改密）')
 else:
     print(f"      !! 口令更新失败：{r.get('message')}")
     raise SystemExit(1)

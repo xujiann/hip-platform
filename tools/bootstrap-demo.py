@@ -71,6 +71,16 @@ existing = {u['username'] for u in call('GET', '/system/users?page=0&size=100', 
 created = 0
 for username, real_name, roles in DEMO_USERS:
     if username in existing:
+        # 自愈（第六轮审阅 P3）：首跑若在"建号成功、闭环未完成"间崩溃，
+        # 该账号会永留强制改密标志——重跑时探测一次并补闭环，而不是跳过了事
+        probe = call('POST', '/auth/login', {'username': username, 'password': 'Demo1234'})
+        if probe.get('code') == 0 and probe['data'].get('mustChangePassword'):
+            ut = probe['data']['token']
+            call('POST', '/auth/change-password', {'oldPassword': 'Demo1234', 'newPassword': 'Demo1234a'}, ut)
+            ut = call('POST', '/auth/login', {'username': username, 'password': 'Demo1234a'})['data']['token']
+            r2 = call('POST', '/auth/change-password', {'oldPassword': 'Demo1234a', 'newPassword': 'Demo1234'}, ut)
+            assert r2['code'] == 0, f'{username} 补闭环失败: {r2}'
+            print(f'  {username}: 检出残留强制改密标志，已补闭环')
         continue
     r = call('POST', '/system/users', {'username': username, 'password': 'Demo1234',
                                        'realName': real_name, 'roleCodes': roles}, t)

@@ -45,8 +45,11 @@ public class ModuleGate {
             "blood",     new ModuleDef(List.of("/inpatient/blood"), List.of("/api/inpatient/blood")),
             "hr",        new ModuleDef(List.of("/hr"),              List.of("/api/hr")),
             "surgery",   new ModuleDef(List.of("/surgery"),         List.of("/api/inpatient/surgeries", "/api/anes")),
-            // v27-B 扩表：独占前缀、无跨模块页面调用，经侦察确认可安全整段开关
-            "cdr",       new ModuleDef(List.of("/cdr", "/cdr/patient360"), List.of("/api/cdr")),
+            // v27-B 扩表：独占前缀、无跨模块页面调用，经侦察确认可安全整段开关。
+            // 第六轮审阅 P1-C：menuPaths 不得含 "/cdr"——那是「数据中心」DIR 的 path，
+            // 质控/数据治理/DRG/病案统计等 9 个无关模块的菜单都挂它下面，
+            // 按 path 过滤 DIR 会让整个目录连同兄弟菜单从导航蒸发（API 仍通，纯 UI 断头）
+            "cdr",       new ModuleDef(List.of("/cdr/patient360"), List.of("/api/cdr")),
             "datagov",   new ModuleDef(List.of("/datagov", "/datagov/standards"), List.of("/api/datagov")));
 
     private final JdbcTemplate jdbc;
@@ -109,13 +112,16 @@ public class ModuleGate {
     public boolean isApiDisabled(String uri) {
         for (String key : disabledModules()) {
             ModuleDef def = MODULES.get(key);
-            for (String exempt : def.exemptPrefixes()) {
-                if (hit(uri, exempt)) {
-                    return false;      // 豁免子前缀优先：停用不影响这部分（如 insurance 只读查询）
-                }
-            }
             for (String prefix : def.apiPrefixes()) {
                 if (hit(uri, prefix)) {
+                    // 豁免只在命中「本模块自身前缀」时查——若把豁免放在外层对所有停用模块查，
+                    // 一旦某模块 exempt 与另一停用模块的 apiPrefix 重叠，放行与否取决于
+                    // HashSet 迭代序（第六轮审阅裁决项，当前注册表无重叠，防患于未然）
+                    for (String exempt : def.exemptPrefixes()) {
+                        if (hit(uri, exempt)) {
+                            return false;   // 豁免子前缀优先：如 insurance 停用后只读查询仍放行
+                        }
+                    }
                     return true;
                 }
             }

@@ -83,9 +83,13 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             // 见 SecurityConfig 注释），照 ModuleGateFilter 手写 R 信封。
             // 必须确认登录态已建立：token 校验失败（如管理员重置口令后的旧 token）
             // 要走 401 让前端跳登录页，而不是 1009——两个分支的用户动作完全不同。
+            // /api/integration/** 豁免（第六轮审阅 F1 防御纵深）：机器域已由
+            // hasAnyRole('ADMIN','INTERFACE') 隔离，首登改密是对"人"的约束——
+            // 即使机器账号被误置位，也不能让检验结果投递静默失败
             if (SecurityContextHolder.getContext().getAuthentication() != null
                     && user != null && Boolean.TRUE.equals(user.getMustChangePassword())
                     && request.getRequestURI().startsWith("/api/")
+                    && !request.getRequestURI().startsWith("/api/integration/")
                     && !MUST_CHANGE_ALLOWED.contains(request.getRequestURI())) {
                 response.setStatus(HttpServletResponse.SC_OK);
                 response.setContentType("application/json;charset=UTF-8");

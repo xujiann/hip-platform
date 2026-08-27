@@ -31,14 +31,19 @@ if ($Stop) {
     Stop-Port 8080
     Stop-Port 5173
     Stop-Port 8100
+    wsl -d Ubuntu -- pkill -f 'sleep infinity' 2>$null      # 收掉保活，让 WSL 可以空闲关机
     Write-Host "已停止（数据库与数据保留，下次启动即恢复现场）" -ForegroundColor Green
     exit 0
 }
 
 # ── 1. 数据库 ────────────────────────────────────────────────
 Write-Host "[1/5] 数据库..." -ForegroundColor Cyan
-# 保活进程防 WSL 空闲关机——演示中途数据库消失是最难堪的故障
-Start-Process wsl -ArgumentList '-d', 'Ubuntu', '--', 'sleep', 'infinity' -WindowStyle Hidden
+# 保活进程防 WSL 空闲关机——演示中途数据库消失是最难堪的故障。
+# 先查后起：每次启动无条件再起一个会累积泄漏，且 WSL 从此永不空闲关机（第六轮审阅 P3）
+$alive = wsl -d Ubuntu -- pgrep -f 'sleep infinity' 2>$null
+if (-not $alive) {
+    Start-Process wsl -ArgumentList '-d', 'Ubuntu', '--', 'sleep', 'infinity' -WindowStyle Hidden
+}
 wsl -d Ubuntu -u root -- service postgresql start | Out-Null
 $ready = $false
 foreach ($i in 1..20) {
@@ -60,7 +65,10 @@ if ($Fresh) {
     wsl -d Ubuntu -u postgres -- psql -c "create database $demoDb owner hip;" | Out-Null
     $left = wsl -d Ubuntu -u postgres -- psql -d $demoDb -tAc `
         "select count(*) from information_schema.tables where table_schema='public'"
-    if ([int]$left -ne 0) { throw "演示库未能重建（残留 $left 张表），请关闭占用连接后重试" }
+    # 校验器自身失败必须现形：[int]$null 与 [int]'' 都是 0，psql 报错时
+    # "空库确认"恰在最需要它的时候失明（第六轮审阅 P3）——按退出码 + 严格字符串判定
+    if ($LASTEXITCODE -ne 0) { throw "演示库校验查询失败（psql 退出码 $LASTEXITCODE），无法确认重建" }
+    if ("$left".Trim() -ne '0') { throw "演示库未能重建（残留 $("$left".Trim()) 张表），请关闭占用连接后重试" }
     Write-Host "      已重建（空库确认）" -ForegroundColor Green
 }
 else {
@@ -107,7 +115,13 @@ else { Write-Host "      AI 辅助未起，演示时将展示人工兜底路径"
 Write-Host "[3/5] 演示数据..." -ForegroundColor Cyan
 Push-Location $root
 try {
+    # 与下方 flows 循环同样的防护：python 写 stderr 即 NativeCommandError，
+    # 在 ErrorActionPreference=Stop 下会掐断整个脚本（第六轮审阅 P2-C，此前只防了 E2E 一侧）
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     python tools\bootstrap-demo.py 2>&1 | Select-Object -Last 2 | ForEach-Object { Write-Host "      $_" }
+    if ($LASTEXITCODE -ne 0) { Write-Host "      !! 演示数据引导未完成（见上），继续启动但部分页面可能无数据" -ForegroundColor Yellow }
+    $ErrorActionPreference = $prevEap
     # 跑几条真实业务链路，让驾驶舱与各工作台有流水可看——空界面是演示第一杀手。
     # 走 E2E 而不是直接灌库：数据经过真实状态机，各表状态自洽，点开任何详情都对得上
     # 按 CI 的完整顺序跑全部业务链路：既让每个模块的演示页都有数据，

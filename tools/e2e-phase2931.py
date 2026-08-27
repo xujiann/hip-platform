@@ -5,12 +5,17 @@ import json
 import sys
 import urllib.error
 import urllib.parse
+import os
 import urllib.request
 from e2elib import BASE, call, discharge_cleanup, find_free_bed, login, ok, q, today_bj  # noqa: E402
 
 
 
-login_resp = call('POST', '/auth/login', {'username': 'admin', 'password': 'admin123'})
+# 为断言 passwordAgeDays 需拿原始 login 响应，但凭据必须走 e2elib 的环境变量覆盖——
+# 硬编码 admin123 会在改密后的环境（在线演示重灌数据）恒失败并给 admin 记失败计数（第六轮审阅 P2-D）
+login_resp = call('POST', '/auth/login', {
+    'username': os.environ.get('HIP_E2E_USER', 'admin'),
+    'password': os.environ.get('HIP_E2E_PASSWORD', 'admin123')})
 t = ok(login_resp, '登录')['token']
 today = today_bj().isoformat()
 stamp = datetime.datetime.now().strftime('%H%M%S')

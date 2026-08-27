@@ -30,6 +30,12 @@ class ModuleToggleTest {
         return jwtService.issue("admin");
     }
 
+    /** 方法论 ⑤：直写配置的测试类须显式失效缓存——断言中途失败时事务回滚但 30 秒毒缓存仍在共享上下文里 */
+    @org.junit.jupiter.api.AfterEach
+    void evictAfterEach() {
+        moduleGate.evictCache();
+    }
+
     private void setModule(String key, String value) {
         jdbc.update("update sys_config set cfg_value = ? where cfg_key = ?", value, "module." + key + ".enabled");
         moduleGate.evictCache();   // 1.1.1 起 ModuleGate 有 30s 缓存，直改库须显式失效
@@ -103,6 +109,11 @@ class ModuleToggleTest {
                 .andExpect(status().isNotFound());
         mockMvc.perform(get("/api/auth/me").header("Authorization", "Bearer " + adminToken()))
                 .andExpect(jsonPath("$.data.menus[?(@.path == '/cdr/patient360')]").doesNotExist());
+        // 第六轮审阅 P1-C 回归：/cdr 是「数据中心」DIR 的 path，关 cdr 绝不能把
+        // 挂在该目录下的质控/数据治理等兄弟菜单连坐藏掉（只断言自身消失抓不到这类误伤）
+        mockMvc.perform(get("/api/auth/me").header("Authorization", "Bearer " + adminToken()))
+                .andExpect(jsonPath("$.data.menus[?(@.path == '/cdr')]").exists())
+                .andExpect(jsonPath("$.data.menus[?(@.path == '/datagov')]").exists());
         setModule("cdr", "1");
 
         setModule("datagov", "0");

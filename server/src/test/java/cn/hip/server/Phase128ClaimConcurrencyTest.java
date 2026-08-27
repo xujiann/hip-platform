@@ -78,13 +78,16 @@ class Phase128ClaimConcurrencyTest {
                         while (root.getCause() != null) {
                             root = root.getCause();
                         }
+                        // 方法论 ⑨：抢占失败必须是业务异常或锁冲突。**不收 Duplicate**——
+                        // 若 claim 防线失效、靠唯一索引兜底，6 线程 1 成功 5 个 DuplicateKey
+                        // 照样全绿，恰好掩盖防线失效（第六轮审阅 P3）。锁类异常两侧对称匹配
                         boolean biz = e instanceof cn.hip.platform.core.common.HipBizException
                                 || root instanceof cn.hip.platform.core.common.HipBizException
-                                || e.getClass().getName().contains("Duplicate")
-                                || root.getClass().getName().contains("Duplicate")
                                 || e.getClass().getName().contains("CannotAcquireLock")
+                                || root.getClass().getName().contains("CannotAcquireLock")
+                                || e.getClass().getName().contains("Deadlock")
                                 || root.getClass().getName().contains("Deadlock");
-                        assertTrue(biz, "抢占失败应为业务异常或锁冲突，实际：" + root);
+                        assertTrue(biz, "抢占失败应为业务异常或锁冲突（约束错=防线失效），实际：" + root);
                         return false;
                     }
                 }));
@@ -123,6 +126,24 @@ class Phase128ClaimConcurrencyTest {
         doctorStationService.createOrders(regId, List.of(new DoctorStationService.OrderLine(
                 "DRUG", seeds.drug("并发测试药").getId(), 1, "口服", "qd", "1粒", null)), null);
         return regId;
+    }
+
+    /**
+     * 本类不带 @Transactional，召回用例的终态是 IN_HOSPITAL 占床——种子仅 10 张床，
+     * 本地复用 hip_test 约 5 轮后就取不到空床（第六轮审阅 P3）。测后归还床位。
+     */
+    @org.junit.jupiter.api.AfterEach
+    void releaseDrillBeds() {
+        jdbc.update("""
+                update inp_bed set status = 'FREE' where id in
+                  (select bed_id from inp_admission a join empi_patient p on p.id = a.patient_id
+                   where p.name like '%128' and a.status = 'IN_HOSPITAL')
+                """);
+        jdbc.update("""
+                update inp_admission set status = 'DISCHARGED' where id in
+                  (select a.id from inp_admission a join empi_patient p on p.id = a.patient_id
+                   where p.name like '%128' and a.status = 'IN_HOSPITAL')
+                """);
     }
 
     /** 造一个已出院结算的住院档，返回 admissionId */

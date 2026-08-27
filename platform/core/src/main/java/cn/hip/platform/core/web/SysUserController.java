@@ -61,8 +61,11 @@ public class SysUserController {
         SysUser u = new SysUser();
         u.setUsername(req.username());
         u.setPassword(passwordEncoder.encode(req.password()));
-        // 初始口令是管理员知道的口令，本人首登必须改掉（v27-A 等保）
-        u.setMustChangePassword(true);
+        // 初始口令是管理员知道的口令，本人首登必须改掉（v27-A 等保）。
+        // INTERFACE 机器账号除外（第六轮审阅 F1）：机器没有"人"去走改密流程，
+        // 置位即被 1009 闸永久拦死——LIS 中间件收到 HTTP 200 + 1009，
+        // 不触发重连告警，检验结果静默投递失败，比 401 更隐蔽
+        u.setMustChangePassword(!isMachineAccount(req));
         applyFields(u, req);
         return R.ok(UserDto.from(userRepository.save(u)));
     }
@@ -79,10 +82,16 @@ public class SysUserController {
             u.setPassword(passwordEncoder.encode(req.password()));
             // 口令戳更新会让该用户已签发的新式 token 全部失效（JwtAuthenticationFilter 校验 pwd claim）
             u.setPasswordUpdatedAt(java.time.Instant.now());
-            // 管理员重置的口令同样是"别人知道的口令"，本人下次登录必须改
-            u.setMustChangePassword(true);
+            // 管理员重置的口令同样是"别人知道的口令"，本人下次登录必须改（机器账号除外，同 create）
+            u.setMustChangePassword(!isMachineAccount(req));
         }
         return R.ok(UserDto.from(userRepository.save(u)));
+    }
+
+    /** 纯机器角色（接口机）账号：无人参与登录，不适用首登改密 */
+    private static boolean isMachineAccount(SaveUserRequest req) {
+        return req.roleCodes() != null && !req.roleCodes().isEmpty()
+                && req.roleCodes().stream().allMatch("INTERFACE"::equals);
     }
 
     @PutMapping("/{id}/enabled")
