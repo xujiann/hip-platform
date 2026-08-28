@@ -6,10 +6,6 @@ spring:
     url: ${HIP_DB_URL:jdbc:postgresql://127.0.0.1:5432/hip}
     username: ${HIP_DB_USER:hip}
     password: ${HIP_DB_PASSWORD:}
-  jpa:
-    show-sql: false
-
-  datasource:
     hikari:
       # 医院门诊高峰 200 工作线程争默认 10 条连接会批量 30s 超时（v29 P2-3）。
       # 显式配池：pg 默认 max_connections=100，双实例各留余量取 25；
@@ -19,6 +15,8 @@ spring:
       connection-timeout: 20000
       max-lifetime: 540000
       leak-detection-threshold: 30000
+  jpa:
+    show-sql: false
 
 hip:
   ops:
