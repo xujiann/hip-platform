@@ -6,7 +6,7 @@ import lombok.Setter;
 
 import java.time.Instant;
 
-/** 库存流水：IN 入库 / OUT 发药或病区执行 / ADJ 盘点调整 */
+/** 库存流水：IN 入库 / OUT 发药或病区执行 / RET 退药回补 / ADJ 盘点调整 / STOCKTAKE 盘点单确认 */
 @Getter
 @Setter
 @Entity
@@ -20,7 +20,7 @@ public class InvTransaction {
     @Column(nullable = false)
     private Long drugId;
 
-    @Column(nullable = false, length = 8)
+    @Column(nullable = false, length = 16)
     private String type;
 
     /** 正数入、负数出 */

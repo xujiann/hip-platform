@@ -11,7 +11,7 @@
               <el-option label="导尿管 URINARY" value="URINARY" />
             </el-select>
           </el-form-item>
-          <el-button type="primary" size="small" @click="insertLine">置管登记</el-button>
+          <el-button type="primary" size="small" @click="insertLine" :loading="insertLineLoading">置管登记</el-button>
         </el-form>
         <el-table :data="catheters" size="small" border>
           <el-table-column prop="patient_name" label="患者" width="90" />
@@ -33,9 +33,12 @@
           <el-table-column label="操作" width="230">
             <template #default="{ row }">
               <template v-if="row.status === 'ACTIVE'">
-                <el-button link type="primary" size="small" @click="assess(row)">日评估</el-button>
-                <el-button link type="success" size="small" @click="removeLine(row)">拔管</el-button>
-                <el-button link type="danger" size="small" @click="infect(row)">判定感染</el-button>
+                <el-button link type="primary" size="small" :loading="busyId === row.id"
+                           @click="assess(row)">日评估</el-button>
+                <el-button link type="success" size="small" :loading="busyId === row.id"
+                           @click="removeLine(row)">拔管</el-button>
+                <el-button link type="danger" size="small" :loading="busyId === row.id"
+                           @click="infect(row)">判定感染</el-button>
               </template>
             </template>
           </el-table-column>
@@ -104,32 +107,50 @@ const catheters = ref<Record<string, unknown>[]>([])
 const rates = ref<Record<string, unknown>[]>([])
 const prevalence = ref<Prevalence | null>(null)
 const line = reactive({ admissionId: '', lineType: 'VENT' })
+const insertLineLoading = ref(false)
+const busyId = ref<unknown>(null)
 
 async function loadLines() { catheters.value = (await client.get('/infection-plus/catheters')).data.data }
 async function loadRates() { rates.value = (await client.get('/infection-plus/rate')).data.data }
 async function loadPrevalence() { prevalence.value = (await client.get('/infection-plus/prevalence')).data.data }
 
 async function insertLine() {
-  if (!line.admissionId) return
-  await client.post('/infection-plus/catheters', { admissionId: Number(line.admissionId), lineType: line.lineType })
-  ElMessage.success('已登记，请每日评估')
-  await loadLines()
+  if (!line.admissionId) { ElMessage.warning('请填写住院ID'); return }
+  insertLineLoading.value = true
+  try {
+    await client.post('/infection-plus/catheters', { admissionId: Number(line.admissionId), lineType: line.lineType })
+    ElMessage.success('已登记，请每日评估')
+    await loadLines()
+  } finally { insertLineLoading.value = false }
 }
 async function assess(row: Record<string, unknown>) {
-  const { value } = await ElMessageBox.prompt('评估记录（是否可拔管）', '日评估', { inputValue: '仍需留置，无感染征象' })
-  await client.post(`/infection-plus/catheters/${row.id}/assess`, null, { params: { keepLine: true, note: value } })
-  await loadLines()
+  const res = await ElMessageBox.prompt('评估记录（是否可拔管）', '日评估', { inputValue: '仍需留置，无感染征象' }).catch(() => null)
+  if (!res) return
+  const { value } = res
+  busyId.value = row.id
+  try {
+    await client.post(`/infection-plus/catheters/${row.id}/assess`, null, { params: { keepLine: true, note: value } })
+    await loadLines()
+  } finally { busyId.value = null }
 }
 async function removeLine(row: Record<string, unknown>) {
-  await client.put(`/infection-plus/catheters/${row.id}/remove`)
-  ElMessage.success('已拔管')
-  await loadLines()
+  busyId.value = row.id
+  try {
+    await client.put(`/infection-plus/catheters/${row.id}/remove`)
+    ElMessage.success('已拔管')
+    await loadLines()
+  } finally { busyId.value = null }
 }
 async function infect(row: Record<string, unknown>) {
-  const { value } = await ElMessageBox.prompt('病原体（可空）', '判定器械相关感染', { inputValue: '肺炎克雷伯菌' })
-  await client.put(`/infection-plus/catheters/${row.id}/infect`, null, { params: { pathogen: value } })
-  ElMessage.warning('已判定感染并同步登记院感病例')
-  await loadLines()
+  const res = await ElMessageBox.prompt('病原体（可空）', '判定器械相关感染', { inputValue: '肺炎克雷伯菌' }).catch(() => null)
+  if (!res) return
+  const { value } = res
+  busyId.value = row.id
+  try {
+    await client.put(`/infection-plus/catheters/${row.id}/infect`, null, { params: { pathogen: value } })
+    ElMessage.warning('已判定感染并同步登记院感病例')
+    await loadLines()
+  } finally { busyId.value = null }
 }
 
 watch(tab, (t) => {

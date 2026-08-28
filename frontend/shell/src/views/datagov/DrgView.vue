@@ -2,8 +2,8 @@
   <el-card>
     <el-tabs v-model="tab">
       <el-tab-pane label="病组分析" name="analysis">
-        <el-button type="primary" size="small" @click="groupAll">批量入组</el-button>
-        <el-button type="warning" size="small" @click="regroupAll">重新入组（规则/诊断变更后重算）</el-button>
+        <el-button type="primary" size="small" @click="groupAll" :loading="groupAllLoading">批量入组</el-button>
+        <el-button type="warning" size="small" @click="regroupAll" :loading="regroupAllLoading">重新入组（规则/诊断变更后重算）</el-button>
         <el-descriptions v-if="analysis" :column="4" border size="small" style="margin: 10px 0">
           <el-descriptions-item label="入组病例">{{ analysis.cases }} 例</el-descriptions-item>
           <el-descriptions-item label="总权重">{{ analysis.totalWeight }}</el-descriptions-item>
@@ -104,7 +104,7 @@
           <el-form-item><el-input v-model="diag.admissionId" placeholder="住院ID" style="width: 110px" /></el-form-item>
           <el-form-item><el-input v-model="diag.icd" placeholder="ICD（如 I50.9）" style="width: 130px" /></el-form-item>
           <el-form-item><el-input v-model="diag.name" placeholder="诊断名称" style="width: 180px" /></el-form-item>
-          <el-button type="primary" size="small" @click="addDiag">补录其他诊断</el-button>
+          <el-button type="primary" size="small" @click="addDiag" :loading="addDiagLoading">补录其他诊断</el-button>
           <el-button size="small" @click="loadDiags">查询</el-button>
         </el-form>
         <el-table :data="diags" size="small" border>
@@ -112,7 +112,7 @@
           <el-table-column prop="name" label="诊断" />
           <el-table-column label="操作" width="80">
             <template #default="{ row }">
-              <el-button link type="danger" size="small" @click="removeDiag(row)">删除</el-button>
+              <el-button link type="danger" size="small" :loading="busyId === row.id" @click="removeDiag(row)">删除</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -175,6 +175,10 @@ const groups = ref<Record<string, unknown>[]>([])
 const ccList = ref<Record<string, unknown>[]>([])
 const diags = ref<Record<string, unknown>[]>([])
 const diag = reactive({ admissionId: '', icd: '', name: '' })
+const groupAllLoading = ref(false)
+const regroupAllLoading = ref(false)
+const addDiagLoading = ref(false)
+const busyId = ref<unknown>(null)
 
 async function loadAnalysis() { analysis.value = (await client.get('/drg/analysis')).data.data }
 async function loadDept() { deptRows.value = (await client.get('/drg/dept-analysis')).data.data }
@@ -187,26 +191,38 @@ async function loadDiags() {
 }
 
 async function groupAll() {
-  const r = (await client.post('/drg/group-all')).data.data
-  ElMessage.success(`入组完成：${r.grouped} 例入组，${r.ambiguous} 例歧义(QY)`)
-  await loadAnalysis()
+  groupAllLoading.value = true
+  try {
+    const r = (await client.post('/drg/group-all')).data.data
+    ElMessage.success(`入组完成：${r.grouped} 例入组，${r.ambiguous} 例歧义(QY)`)
+    await loadAnalysis()
+  } finally { groupAllLoading.value = false }
 }
 async function regroupAll() {
-  const r = (await client.post('/drg/regroup-all')).data.data
-  ElMessage.success(`重算完成：${r.grouped} 例入组，${r.ambiguous} 例歧义(QY)`)
-  await loadAnalysis()
+  regroupAllLoading.value = true
+  try {
+    const r = (await client.post('/drg/regroup-all')).data.data
+    ElMessage.success(`重算完成：${r.grouped} 例入组，${r.ambiguous} 例歧义(QY)`)
+    await loadAnalysis()
+  } finally { regroupAllLoading.value = false }
 }
 async function addDiag() {
-  if (!diag.admissionId || !diag.icd || !diag.name) return
-  await client.post('/inpatient/diagnoses', { admissionId: Number(diag.admissionId), icd: diag.icd, name: diag.name })
-  ElMessage.success('已补录，重新入组后生效')
-  diag.icd = ''
-  diag.name = ''
-  await loadDiags()
+  if (!diag.admissionId || !diag.icd || !diag.name) { ElMessage.warning('请填写住院ID、ICD与诊断名称'); return }
+  addDiagLoading.value = true
+  try {
+    await client.post('/inpatient/diagnoses', { admissionId: Number(diag.admissionId), icd: diag.icd, name: diag.name })
+    ElMessage.success('已补录，重新入组后生效')
+    diag.icd = ''
+    diag.name = ''
+    await loadDiags()
+  } finally { addDiagLoading.value = false }
 }
 async function removeDiag(row: Record<string, unknown>) {
-  await client.delete(`/inpatient/diagnoses/${row.id}`)
-  await loadDiags()
+  busyId.value = row.id
+  try {
+    await client.delete(`/inpatient/diagnoses/${row.id}`)
+    await loadDiags()
+  } finally { busyId.value = null }
 }
 
 watch(tab, (t) => {

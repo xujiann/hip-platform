@@ -3,6 +3,7 @@ package cn.hip.outpatient.web;
 import cn.hip.outpatient.repository.OutpOrderRepository;
 import cn.hip.outpatient.repository.OutpRegistrationRepository;
 import cn.hip.outpatient.service.ChargeService;
+import cn.hip.outpatient.service.RefundApprovalService;
 import cn.hip.outpatient.service.RegistrationService.BizException;
 import cn.hip.platform.core.common.R;
 import cn.hip.platform.core.security.CurrentUserService;
@@ -24,6 +25,7 @@ import java.util.Map;
 public class ChargeController {
 
     private final ChargeService chargeService;
+    private final RefundApprovalService refundApprovalService;
     private final OutpOrderRepository orderRepository;
     private final OutpRegistrationRepository registrationRepository;
     private final PatientRepository patientRepository;
@@ -65,6 +67,45 @@ public class ChargeController {
     public R<Object> refund(@PathVariable Long chargeId, Authentication auth) {
         try {
             return R.ok(chargeService.refund(chargeId, currentUserService.idOf(auth)));
+        } catch (BizException e) {
+            return R.fail(e.code, e.getMessage());
+        }
+    }
+
+    // ---- 大额退费审批链（v30）：超阈值退费须先申请、授权人通过后才能执行 ----
+
+    public record RefundApplyRequest(String reason) {}
+
+    /** 收费员提交退费审批申请 */
+    @PostMapping("/{chargeId}/refund-approval")
+    public R<Object> applyRefundApproval(@PathVariable Long chargeId, @RequestBody(required = false) RefundApplyRequest req,
+                                         Authentication auth) {
+        try {
+            Long id = refundApprovalService.apply(chargeId, req == null ? null : req.reason(),
+                    currentUserService.idOf(auth));
+            return R.ok(java.util.Map.of("approvalId", id));
+        } catch (BizException e) {
+            return R.fail(e.code, e.getMessage());
+        }
+    }
+
+    /** 待审批退费列表（授权人视角） */
+    @GetMapping("/refund-approvals/pending")
+    @PreAuthorize("hasRole('ADMIN')")   // 审批权限限管理员/授权人，不能自己申请自己批
+    public R<Object> pendingRefundApprovals() {
+        return R.ok(refundApprovalService.pendingList());
+    }
+
+    public record RefundDecideRequest(boolean approved, String note) {}
+
+    /** 授权人审批：通过/驳回 */
+    @PostMapping("/refund-approvals/{approvalId}/decide")
+    @PreAuthorize("hasRole('ADMIN')")
+    public R<Object> decideRefundApproval(@PathVariable Long approvalId, @RequestBody RefundDecideRequest req,
+                                          Authentication auth) {
+        try {
+            refundApprovalService.decide(approvalId, req.approved(), req.note(), currentUserService.idOf(auth));
+            return R.ok(null);
         } catch (BizException e) {
             return R.fail(e.code, e.getMessage());
         }

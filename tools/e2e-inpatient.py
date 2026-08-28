@@ -16,11 +16,12 @@ token = login()
 amx = ok(call('GET', '/masterdata/drugs?keyword=' + q('阿莫西林'), token=token), '药品')[0]
 stock0 = amx['stock']
 
-# 1 入库 +100
+# 1 入库 +100（1.2.13 起入库先待验收、验收通过才加库存）
 si = ok(call('POST', '/inventory/stock-in', {'drugId': amx['id'], 'qty': 100, 'batchNo': 'B20260801',
                                              'expireDate': '2028-06-30', 'supplier': '四川医药股份'}, token), '入库')
+ok(call('POST', f"/inventory/stock-in/{si['id']}/accept", token=token), '入库验收')
 amx2 = ok(call('GET', '/masterdata/drugs?keyword=' + q('阿莫西林'), token=token), '药品')[0]
-assert amx2['stock'] == stock0 + 100, f"入库后库存应 +100: {stock0} -> {amx2['stock']}"
+assert amx2['stock'] == stock0 + 100, f"验收后库存应 +100: {stock0} -> {amx2['stock']}"
 txns = ok(call('GET', '/inventory/transactions?drugId=' + str(amx['id']), token=token), '流水')
 assert txns[0]['type'] == 'IN' and txns[0]['qty'] == 100
 print(f"[1] 入库 {si['inNo']} +100：{stock0} -> {amx2['stock']}，流水 OK")

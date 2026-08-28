@@ -392,6 +392,34 @@ public class InpatientController {
         }
     }
 
+    /**
+     * 住院中间结算（V90）：住院期间对当前已发生费用出一张阶段性结算单，不出院、不释放床位。
+     * 收费职能，CASHIER 方法级放行（类级已不含 CASHIER）。中间结算与出院结算口径不重复见 InpatientService。
+     */
+    @org.springframework.security.access.prepost.PreAuthorize("hasAnyRole('ADMIN','CASHIER','NURSE','DOCTOR_OUTP')")
+    @PostMapping("/admissions/{id}/interim-settle")
+    public R<Object> interimSettle(@PathVariable Long id,
+                                   @RequestParam(required = false, defaultValue = "CASH") String payMethod,
+                                   Authentication auth) {
+        try {
+            return R.ok(inpatientService.interimSettle(id, currentUserService.idOf(auth), payMethod));
+        } catch (InpException e) {
+            return R.fail(e.code, e.getMessage());
+        }
+    }
+
+    /** 某次入院的历次中间结算单（住院费用页回看，只读） */
+    @org.springframework.security.access.prepost.PreAuthorize("hasAnyRole('ADMIN','CASHIER','NURSE','DOCTOR_OUTP')")
+    @GetMapping("/admissions/{id}/interim-settlements")
+    public R<List<Map<String, Object>>> interimSettlements(@PathVariable Long id) {
+        return R.ok(jdbcTemplate.queryForList("""
+                select id, settle_no, total_amount, deposit_amount, balance, pay_method, created_at
+                from inp_settlement
+                where admission_id = ? and settle_type = 'INTERIM'
+                order by id
+                """, id));
+    }
+
     private Map<String, Object> toDto(InpAdmission a) {
         var m = new LinkedHashMap<String, Object>();
         m.put("id", a.getId());

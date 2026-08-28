@@ -2,7 +2,7 @@
   <el-card>
     <el-tabs v-model="tab">
       <el-tab-pane label="指标管理" name="metrics">
-        <el-button size="small" type="primary" @click="snapshot">生成今日快照</el-button>
+        <el-button size="small" type="primary" @click="snapshot" :loading="snapshotLoading">生成今日快照</el-button>
         <el-table :data="metrics" size="small" border style="margin-top: 10px">
           <el-table-column prop="code" label="编码" width="80" />
           <el-table-column prop="name" label="指标" width="140" />
@@ -28,7 +28,7 @@
             <el-date-picker v-model="task.dueDate" type="date" value-format="YYYY-MM-DD" placeholder="截止日期" />
           </el-form-item>
           <el-form-item><el-input v-model="task.fields" placeholder="填报字段说明" style="width: 220px" /></el-form-item>
-          <el-button type="primary" size="small" @click="createTask">下发任务</el-button>
+          <el-button type="primary" size="small" @click="createTask" :loading="createTaskLoading">下发任务</el-button>
         </el-form>
         <el-table :data="tasks" size="small" border @row-click="openTask" highlight-current-row>
           <el-table-column prop="title" label="任务" />
@@ -37,7 +37,7 @@
         </el-table>
         <template v-if="currentTask">
           <h4>「{{ currentTask.title }}」提交记录
-            <el-button link type="primary" size="small" @click="submitReport">模拟提交一条</el-button>
+            <el-button link type="primary" size="small" @click="submitReport" :loading="submitReportLoading">模拟提交一条</el-button>
           </h4>
           <el-table :data="submissions" size="small" border>
             <el-table-column prop="dept_name" label="科室" width="110" />
@@ -45,8 +45,8 @@
             <el-table-column label="状态" width="160">
               <template #default="{ row }">
                 <template v-if="row.status === 'SUBMITTED'">
-                  <el-button link type="success" size="small" @click="review(row, true)">通过</el-button>
-                  <el-button link type="danger" size="small" @click="review(row, false)">退回</el-button>
+                  <el-button link type="success" size="small" :loading="busyId === row.id" @click="review(row, true)">通过</el-button>
+                  <el-button link type="danger" size="small" :loading="busyId === row.id" @click="review(row, false)">退回</el-button>
                 </template>
                 <el-tag v-else :type="row.status === 'APPROVED' ? 'success' : 'danger'" size="small">
                   {{ row.status === 'APPROVED' ? '已通过' : '已退回' }}
@@ -85,6 +85,10 @@ const currentTask = ref<Record<string, unknown> | null>(null)
 const submissions = ref<Record<string, unknown>[]>([])
 const checks = ref<Record<string, unknown>[]>([])
 const task = reactive({ title: '', dueDate: '', fields: '' })
+const snapshotLoading = ref(false)
+const createTaskLoading = ref(false)
+const submitReportLoading = ref(false)
+const busyId = ref<unknown>(null)
 
 async function loadMetrics() {
   metrics.value = (await client.get('/datagov/metrics')).data.data
@@ -97,16 +101,22 @@ async function loadChecks() {
 }
 
 async function snapshot() {
-  const resp = await client.post('/datagov/metrics/snapshot')
-  ElMessage.success(`已生成 ${resp.data.data.snapshotted} 项指标快照`)
-  await loadMetrics()
+  snapshotLoading.value = true
+  try {
+    const resp = await client.post('/datagov/metrics/snapshot')
+    ElMessage.success(`已生成 ${resp.data.data.snapshotted} 项指标快照`)
+    await loadMetrics()
+  } finally { snapshotLoading.value = false }
 }
 
 async function createTask() {
-  if (!task.title || !task.dueDate) return
-  await client.post('/datagov/report-tasks', task)
-  ElMessage.success('任务已下发')
-  await loadTasks()
+  if (!task.title || !task.dueDate) { ElMessage.warning('请填写任务标题与截止日期'); return }
+  createTaskLoading.value = true
+  try {
+    await client.post('/datagov/report-tasks', task)
+    ElMessage.success('任务已下发')
+    await loadTasks()
+  } finally { createTaskLoading.value = false }
 }
 
 async function openTask(row: Record<string, unknown>) {
@@ -116,15 +126,23 @@ async function openTask(row: Record<string, unknown>) {
 
 async function submitReport() {
   if (!currentTask.value) return
-  const { value } = await ElMessageBox.prompt('填报内容', '提交填报')
-  await client.post('/datagov/submissions', { taskId: currentTask.value.id, deptId: 1, content: value })
-  await openTask(currentTask.value)
-  await loadTasks()
+  const res = await ElMessageBox.prompt('填报内容', '提交填报').catch(() => null)
+  if (!res) return
+  const { value } = res
+  submitReportLoading.value = true
+  try {
+    await client.post('/datagov/submissions', { taskId: currentTask.value.id, deptId: 1, content: value })
+    await openTask(currentTask.value)
+    await loadTasks()
+  } finally { submitReportLoading.value = false }
 }
 
 async function review(row: Record<string, unknown>, approve: boolean) {
-  await client.put(`/datagov/submissions/${row.id}/review`, null, { params: { approve, note: approve ? '' : '数据有误' } })
-  if (currentTask.value) await openTask(currentTask.value)
+  busyId.value = row.id
+  try {
+    await client.put(`/datagov/submissions/${row.id}/review`, null, { params: { approve, note: approve ? '' : '数据有误' } })
+    if (currentTask.value) await openTask(currentTask.value)
+  } finally { busyId.value = null }
 }
 
 onMounted(() => {

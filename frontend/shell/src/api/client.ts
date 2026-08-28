@@ -8,6 +8,22 @@ export interface R<T = unknown> {
   data: T
 }
 
+declare module 'axios' {
+  interface AxiosRequestConfig {
+    /**
+     * 调用方自行处理的业务码白名单：命中时拦截器**不弹**默认红字（但仍 reject，
+     * 并在 rejected error 的 `bizCode` 上暴露该码，供调用方分流处理，如大额退费的 5011→引导审批）。
+     * 其余业务码维持「集中红字 + reject」旧行为不变。
+     */
+    __silentCodes?: number[]
+  }
+}
+
+/** 拦截器 reject 时附带的业务码（对应后端 R.code），调用方可据此分流处理 */
+export interface BizError extends Error {
+  bizCode?: number
+}
+
 /**
  * 写操作在途去重：同一 method+url+params+body 在前一次未返回前直接拒绝第二次。
  *
@@ -79,8 +95,13 @@ export function createHipClient(opts: HipClientOptions): AxiosInstance {
       if (!isEnvelope) return resp
       const r = resp.data as R
       if (r.code !== 0) {
-        ElMessage.error(r.message || '操作失败')
-        return Promise.reject(new Error(r.message))
+        // 调用方声明自处理的业务码（如 5011 大额退费引导审批）不弹默认红字，避免「红字 + 引导框」双重打扰；
+        // 仍 reject 并在 error.bizCode 暴露码，调用方据此分流。其余码维持集中红字。
+        const silent = resp.config.__silentCodes?.includes(r.code) ?? false
+        if (!silent) ElMessage.error(r.message || '操作失败')
+        const err = new Error(r.message) as BizError
+        err.bizCode = r.code
+        return Promise.reject(err)
       }
       return resp
     },

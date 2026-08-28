@@ -23,6 +23,10 @@ spring:
   flyway:
     enabled: true
     locations: classpath:db/migration
+    # 与生产 application.yml 一致：实施段 V10000+ 与平台段版本号交错，且平台内新增的
+    # V100-V109 补丁号低于已落库的 V110，默认 outOfOrder=false 会把它们判为乱序而拒绝启动
+    # （validate 报 "Detected resolved migration not applied"）。生产早已开启，测试须同构。
+    out-of-order: true
 
 server:
   port: 0

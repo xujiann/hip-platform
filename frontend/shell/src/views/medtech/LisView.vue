@@ -8,7 +8,7 @@
           <el-table-column prop="item_name" label="项目" />
           <el-table-column label="操作" width="110">
             <template #default="{ row }">
-              <el-button link type="primary" size="small" @click="collect(row)">采样打码</el-button>
+              <el-button link type="primary" size="small" :loading="busyId === row.order_id" @click="collect(row)">采样打码</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -28,7 +28,7 @@
           </el-table-column>
           <el-table-column label="操作" width="180">
             <template #default="{ row }">
-              <el-button v-if="row.status === 'COLLECTED'" link type="primary" size="small" @click="receive(row)">核收</el-button>
+              <el-button v-if="row.status === 'COLLECTED'" link type="primary" size="small" :loading="busyId === row.id" @click="receive(row)">核收</el-button>
               <el-button v-if="row.status === 'RECEIVED'" link type="success" size="small" @click="openResult(row)">录结果并发布</el-button>
             </template>
           </el-table-column>
@@ -55,7 +55,7 @@
       </el-button>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="success" @click="publish">审核发布</el-button>
+        <el-button type="success" @click="publish" :loading="publishLoading">审核发布</el-button>
       </template>
     </el-dialog>
   </el-card>
@@ -73,6 +73,8 @@ const samples = ref<Record<string, unknown>[]>([])
 const dialogVisible = ref(false)
 const current = ref<Record<string, unknown> | null>(null)
 const results = ref<Record<string, string>[]>([])
+const busyId = ref<unknown>(null)
+const publishLoading = ref(false)
 
 async function load() {
   pending.value = (await client.get('/lis/pending')).data.data
@@ -81,17 +83,25 @@ async function load() {
 
 async function collect(row: Record<string, unknown>) {
   // 三十九期：替检参数化——留空为本人，填写则登记替检人（分检页红色醒目提示）
-  const { value } = await ElMessageBox.prompt('替检人（本人采样请留空）', '采样打码',
-    { inputValue: '', inputPlaceholder: '如：家属 张某' })
-  const resp = await client.post('/lis/samples', null,
-    { params: { orderId: row.order_id, substituteName: value || undefined } })
-  ElMessage.success(`条码 ${resp.data.data.barcode}${value ? '（替检已标识）' : ''}`)
-  await load()
+  const res = await ElMessageBox.prompt('替检人（本人采样请留空）', '采样打码',
+    { inputValue: '', inputPlaceholder: '如：家属 张某' }).catch(() => null)
+  if (!res) return
+  const { value } = res
+  busyId.value = row.order_id
+  try {
+    const resp = await client.post('/lis/samples', null,
+      { params: { orderId: row.order_id, substituteName: value || undefined } })
+    ElMessage.success(`条码 ${resp.data.data.barcode}${value ? '（替检已标识）' : ''}`)
+    await load()
+  } finally { busyId.value = null }
 }
 
 async function receive(row: Record<string, unknown>) {
-  await client.put(`/lis/samples/${row.barcode}/receive`)
-  await load()
+  busyId.value = row.id
+  try {
+    await client.put(`/lis/samples/${row.barcode}/receive`)
+    await load()
+  } finally { busyId.value = null }
 }
 
 function openResult(row: Record<string, unknown>) {
@@ -102,10 +112,13 @@ function openResult(row: Record<string, unknown>) {
 
 async function publish() {
   if (!current.value) return
-  await client.post(`/lis/samples/${current.value.barcode}/publish`, { results: results.value })
-  ElMessage.success('已发布，医嘱自动执行')
-  dialogVisible.value = false
-  await load()
+  publishLoading.value = true
+  try {
+    await client.post(`/lis/samples/${current.value.barcode}/publish`, { results: results.value })
+    ElMessage.success('已发布，医嘱自动执行')
+    dialogVisible.value = false
+    await load()
+  } finally { publishLoading.value = false }
 }
 
 onMounted(load)

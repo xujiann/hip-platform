@@ -8,8 +8,8 @@
     <el-card v-for="w in worklist" :key="w.registrationId as number" class="rx-card" shadow="never">
       <template #header>
         <b>{{ w.patientName }}</b>（{{ w.patientNo }}）
-        <el-button type="success" size="small" style="float: right" :loading="dispensing === w.registrationId"
-                   @click="dispense(w)">
+        <el-button v-if="auth.hasPerm('outp:pharmacy:dispense')" type="success" size="small" style="float: right"
+                   :loading="dispensing === w.registrationId" @click="dispense(w)">
           发 药
         </el-button>
       </template>
@@ -39,7 +39,8 @@
       <el-table-column prop="qty" label="数量" width="60" />
       <el-table-column label="操作" width="90">
         <template #default="{ row }">
-          <el-button link type="danger" @click="returnDrug(row)">退药</el-button>
+          <el-button v-if="auth.hasPerm('outp:pharmacy:return')" link type="danger"
+                     :loading="returning === row.id" @click="returnDrug(row)">退药</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -51,9 +52,12 @@ import { onMounted, ref } from 'vue'
 import { todayLocal } from '../../utils/date'
 import { ElMessage } from 'element-plus'
 import client from '../../api/client'
+import { useAuthStore } from '../../stores/auth'
 
+const auth = useAuthStore()
 const worklist = ref<Record<string, unknown>[]>([])
 const dispensing = ref<unknown>(null)
+const returning = ref<unknown>(null)
 const todayRegs = ref<Record<string, unknown>[]>([])
 const returnRegId = ref<number | null>(null)
 const dispensed = ref<Record<string, unknown>[]>([])
@@ -75,9 +79,14 @@ async function loadDispensed() {
 }
 
 async function returnDrug(row: Record<string, unknown>) {
-  await client.post(`/outpatient/dispense/orders/${row.id}/return`)
-  ElMessage.success(`已退药：${row.itemName}，库存已回补`)
-  await loadDispensed()
+  returning.value = row.id
+  try {
+    await client.post(`/outpatient/dispense/orders/${row.id}/return`)
+    ElMessage.success(`已退药：${row.itemName}，库存已回补`)
+    await loadDispensed()
+  } finally {
+    returning.value = null
+  }
 }
 
 async function dispense(w: Record<string, unknown>) {

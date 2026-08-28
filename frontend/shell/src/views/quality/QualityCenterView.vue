@@ -31,7 +31,7 @@
           <el-form-item><el-date-picker v-model="ae.occurredOn" type="date" value-format="YYYY-MM-DD" placeholder="发生日期" /></el-form-item>
           <el-form-item><el-input v-model="ae.description" placeholder="事件描述" style="width: 240px" /></el-form-item>
           <el-form-item><el-checkbox v-model="ae.anonymous">匿名</el-checkbox></el-form-item>
-          <el-button type="danger" size="small" @click="reportAe">上报</el-button>
+          <el-button type="danger" size="small" @click="reportAe" :loading="reportAeLoading">上报</el-button>
         </el-form>
         <el-table :data="aeList" size="small" border>
           <el-table-column prop="type" label="类型" width="100" />
@@ -44,7 +44,8 @@
           <el-table-column label="状态" width="130">
             <template #default="{ row }">
               <el-tag v-if="row.status === 'HANDLED'" type="success" size="small">已处理</el-tag>
-              <el-button v-else link type="primary" size="small" @click="handleAe(row)">处理</el-button>
+              <el-button v-else link type="primary" size="small" :loading="busyId === row.id"
+                         @click="handleAe(row)">处理</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -78,6 +79,8 @@ const emr = ref<Record<string, unknown>>({})
 const aeList = ref<Record<string, unknown>[]>([])
 const inf = ref<Record<string, unknown>>({})
 const ae = reactive({ type: '跌倒', level: 3, occurredOn: '', description: '', anonymous: false })
+const reportAeLoading = ref(false)
+const busyId = ref<unknown>(null)
 
 async function loadEmr() {
   emr.value = (await client.get('/quality/emr-timeliness')).data.data
@@ -94,16 +97,24 @@ async function reportAe() {
     ElMessage.warning('发生日期与描述必填')
     return
   }
-  await client.post('/quality/adverse-events', ae)
-  ElMessage.success('已上报')
-  ae.description = ''
-  await loadAe()
+  reportAeLoading.value = true
+  try {
+    await client.post('/quality/adverse-events', ae)
+    ElMessage.success('已上报')
+    ae.description = ''
+    await loadAe()
+  } finally { reportAeLoading.value = false }
 }
 
 async function handleAe(row: Record<string, unknown>) {
-  const { value } = await ElMessageBox.prompt('处理意见', '处理不良事件', { inputValue: '已核实并整改' })
-  await client.put(`/quality/adverse-events/${row.id}/handle`, null, { params: { note: value } })
-  await loadAe()
+  const res = await ElMessageBox.prompt('处理意见', '处理不良事件', { inputValue: '已核实并整改' }).catch(() => null)
+  if (!res) return
+  const { value } = res
+  busyId.value = row.id
+  try {
+    await client.put(`/quality/adverse-events/${row.id}/handle`, null, { params: { note: value } })
+    await loadAe()
+  } finally { busyId.value = null }
 }
 
 onMounted(() => {

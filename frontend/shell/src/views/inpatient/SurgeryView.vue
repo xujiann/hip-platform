@@ -18,7 +18,8 @@
       </el-table-column>
       <el-table-column label="操作" width="120">
         <template #default="{ row }">
-          <el-button v-if="row.status !== 'DONE'" link type="success" size="small" @click="complete(row)">
+          <el-button v-if="row.status !== 'DONE'" link type="success" size="small"
+                     :loading="busyId === row.id" @click="complete(row)">
             术后记录
           </el-button>
           <el-tooltip v-else :content="`术中：${row.op_note} / 麻醉：${row.anes_note}`">
@@ -48,7 +49,7 @@
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="save">提交</el-button>
+        <el-button type="primary" :loading="saveLoading" @click="save">提交</el-button>
       </template>
     </el-dialog>
   </el-card>
@@ -63,6 +64,8 @@ const records = ref<Record<string, unknown>[]>([])
 const admissions = ref<Record<string, unknown>[]>([])
 const dialogVisible = ref(false)
 const form = reactive({ admissionId: null as number | null, procedureName: '', anesthesiaType: '全身麻醉', scheduledAt: '' })
+const saveLoading = ref(false)
+const busyId = ref<unknown>(null)
 
 async function load() {
   records.value = (await client.get('/inpatient/surgeries')).data.data
@@ -74,17 +77,27 @@ async function save() {
     ElMessage.warning('患者与术式必填')
     return
   }
-  await client.post('/inpatient/surgeries', form)
-  ElMessage.success('已提交')
-  dialogVisible.value = false
-  await load()
+  saveLoading.value = true
+  try {
+    await client.post('/inpatient/surgeries', form)
+    ElMessage.success('已提交')
+    dialogVisible.value = false
+    await load()
+  } finally { saveLoading.value = false }
 }
 
 async function complete(row: Record<string, unknown>) {
-  const { value: opNote } = await ElMessageBox.prompt('术中记录', '术后记录', { inputValue: '手术顺利，出血约 50ml' })
-  const { value: anesNote } = await ElMessageBox.prompt('麻醉记录', '术后记录', { inputValue: '麻醉平稳，苏醒完全' })
-  await client.put(`/inpatient/surgeries/${row.id}/complete`, { opNote, anesNote })
-  await load()
+  const res1 = await ElMessageBox.prompt('术中记录', '术后记录', { inputValue: '手术顺利，出血约 50ml' }).catch(() => null)
+  if (!res1) return
+  const opNote = res1.value
+  const res2 = await ElMessageBox.prompt('麻醉记录', '术后记录', { inputValue: '麻醉平稳，苏醒完全' }).catch(() => null)
+  if (!res2) return
+  const anesNote = res2.value
+  busyId.value = row.id
+  try {
+    await client.put(`/inpatient/surgeries/${row.id}/complete`, { opNote, anesNote })
+    await load()
+  } finally { busyId.value = null }
 }
 
 onMounted(load)

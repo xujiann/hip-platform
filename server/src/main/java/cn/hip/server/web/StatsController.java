@@ -32,7 +32,7 @@ public class StatsController {
         m.put("todayOutpRevenue", jdbc.queryForObject(
                 "select coalesce(sum(total_amount), 0) from outp_charge where status = 'PAID' and created_at >= current_date and created_at < current_date + 1", java.math.BigDecimal.class));
         m.put("todayInpRevenue", jdbc.queryForObject(
-                "select coalesce(sum(total_amount), 0) from inp_settlement where created_at >= current_date and created_at < current_date + 1", java.math.BigDecimal.class));
+                "select coalesce(sum(total_amount), 0) from inp_settlement where settle_type = 'FINAL' and created_at >= current_date and created_at < current_date + 1", java.math.BigDecimal.class));
         m.put("inHospitalCount", jdbc.queryForObject(
                 "select count(*) from inp_admission where status = 'IN_HOSPITAL'", Long.class));
         m.put("bedTotal", jdbc.queryForObject("select count(*) from inp_bed", Long.class));
@@ -83,7 +83,7 @@ public class StatsController {
                 from inp_admission where status = 'DISCHARGED'
                 """, java.math.BigDecimal.class));
         m.put("avgInpCost", jdbc.queryForObject(
-                "select coalesce(round(avg(total_amount), 2), 0) from inp_settlement where status = 'PAID'",
+                "select coalesce(round(avg(total_amount), 2), 0) from inp_settlement where status = 'PAID' and settle_type = 'FINAL'",
                 java.math.BigDecimal.class));
         m.put("diagnosisGroups", jdbc.queryForList("""
                 select coalesce(substring(a.admit_diag_icd, 1, 3), '未编码') as icd_group,
@@ -91,7 +91,7 @@ public class StatsController {
                        count(*) as cases,
                        coalesce(round(avg(s.total_amount), 2), 0) as avg_cost
                 from inp_admission a
-                left join inp_settlement s on s.admission_id = a.id and s.status = 'PAID'
+                left join inp_settlement s on s.admission_id = a.id and s.status = 'PAID' and s.settle_type = 'FINAL'
                 where a.status = 'DISCHARGED'
                 group by substring(a.admit_diag_icd, 1, 3)
                 order by cases desc

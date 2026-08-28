@@ -37,7 +37,7 @@
               <el-option label="低" value="LOW" /><el-option label="中" value="MEDIUM" /><el-option label="高" value="HIGH" />
             </el-select>
           </el-form-item>
-          <el-button type="primary" size="small" @click="createFault">登记故障</el-button>
+          <el-button type="primary" size="small" :loading="createFaultLoading" @click="createFault">登记故障</el-button>
         </el-form>
         <el-table :data="faults" size="small" border>
           <el-table-column prop="id" label="#" width="60" />
@@ -52,7 +52,8 @@
           <el-table-column prop="created_at" label="登记时间" width="170" />
           <el-table-column label="处理" width="180">
             <template #default="{ row }">
-              <el-button v-if="row.status === 'OPEN'" link type="success" size="small" @click="resolveFault(row)">
+              <el-button v-if="row.status === 'OPEN'" link type="success" size="small"
+                         :loading="busyId === row.id" @click="resolveFault(row)">
                 标记解决</el-button>
               <span v-else>{{ row.resolve_note }}</span>
             </template>
@@ -69,7 +70,7 @@
             </el-select>
           </el-form-item>
           <el-form-item><el-input v-model="insp.note" placeholder="备注" style="width: 200px" /></el-form-item>
-          <el-button type="primary" size="small" @click="addInspection">登记巡检</el-button>
+          <el-button type="primary" size="small" :loading="addInspectionLoading" @click="addInspection">登记巡检</el-button>
         </el-form>
         <el-table :data="inspections" size="small" border>
           <el-table-column prop="item" label="巡检项" show-overflow-tooltip />
@@ -128,6 +129,9 @@ const inspections = ref<Record<string, unknown>[]>([])
 const backups = ref<Record<string, unknown>[]>([])
 const fault = reactive({ title: '', level: 'LOW' })
 const insp = reactive({ item: '', result: 'PASS', note: '' })
+const createFaultLoading = ref(false)
+const addInspectionLoading = ref(false)
+const busyId = ref<unknown>(null)
 
 async function loadHealth() { health.value = (await client.get('/ops/health-overview')).data.data }
 async function loadSlow() { slowApis.value = (await client.get('/ops/slow-apis')).data.data }
@@ -136,26 +140,37 @@ async function loadInspections() { inspections.value = (await client.get('/ops/i
 async function loadBackups() { backups.value = (await client.get('/ops/backups')).data.data }
 
 async function createFault() {
-  if (!fault.title) return
-  await client.post('/ops/faults', fault)
-  fault.title = ''
-  ElMessage.success('已登记')
-  await loadFaults()
+  if (!fault.title) { ElMessage.warning('请填写完整'); return }
+  createFaultLoading.value = true
+  try {
+    await client.post('/ops/faults', fault)
+    fault.title = ''
+    ElMessage.success('已登记')
+    await loadFaults()
+  } finally { createFaultLoading.value = false }
 }
 
 async function resolveFault(row: Record<string, unknown>) {
-  const { value } = await ElMessageBox.prompt('处理说明', '标记解决', { inputValue: '已处理' })
-  await client.put(`/ops/faults/${row.id}/resolve`, null, { params: { note: value } })
-  await loadFaults()
+  const res = await ElMessageBox.prompt('处理说明', '标记解决', { inputValue: '已处理' }).catch(() => null)
+  if (!res) return
+  const { value } = res
+  busyId.value = row.id
+  try {
+    await client.put(`/ops/faults/${row.id}/resolve`, null, { params: { note: value } })
+    await loadFaults()
+  } finally { busyId.value = null }
 }
 
 async function addInspection() {
-  if (!insp.item) return
-  await client.post('/ops/inspections', insp)
-  insp.item = ''
-  insp.note = ''
-  ElMessage.success('已登记')
-  await loadInspections()
+  if (!insp.item) { ElMessage.warning('请填写完整'); return }
+  addInspectionLoading.value = true
+  try {
+    await client.post('/ops/inspections', insp)
+    insp.item = ''
+    insp.note = ''
+    ElMessage.success('已登记')
+    await loadInspections()
+  } finally { addInspectionLoading.value = false }
 }
 
 watch(tab, (t) => {

@@ -18,8 +18,8 @@
       <el-table-column prop="qty" label="数量" width="60" />
       <el-table-column label="操作" width="150">
         <template #default="{ row }">
-          <el-button link type="success" @click="approve(row)">通过</el-button>
-          <el-button link type="danger" @click="reject(row)">拒绝</el-button>
+          <el-button link type="success" :loading="approveBusy === row.orderId" @click="approve(row)">通过</el-button>
+          <el-button link type="danger" :loading="rejectBusy === row.orderId" @click="reject(row)">拒绝</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -34,6 +34,8 @@ import client from '../../api/client'
 
 const records = ref<Record<string, unknown>[]>([])
 const loading = ref(false)
+const approveBusy = ref<unknown>(null)
+const rejectBusy = ref<unknown>(null)
 
 async function load() {
   loading.value = true
@@ -46,16 +48,28 @@ async function load() {
 }
 
 async function approve(row: Record<string, unknown>) {
-  await client.put(`/outpatient/review/${row.orderId}/approve`)
-  ElMessage.success('已通过')
-  await load()
+  approveBusy.value = row.orderId
+  try {
+    await client.put(`/outpatient/review/${row.orderId}/approve`)
+    ElMessage.success('已通过')
+    await load()
+  } finally {
+    approveBusy.value = null
+  }
 }
 
 async function reject(row: Record<string, unknown>) {
-  const { value } = await ElMessageBox.prompt('请输入拒绝原因', '拒绝处方', { inputValue: '用法用量不适宜' })
-  await client.put(`/outpatient/review/${row.orderId}/reject`, null, { params: { reason: value } })
-  ElMessage.success('已拒绝并作废')
-  await load()
+  const res = await ElMessageBox.prompt('请输入拒绝原因', '拒绝处方', { inputValue: '用法用量不适宜' }).catch(() => null)
+  if (!res) return
+  const { value } = res
+  rejectBusy.value = row.orderId
+  try {
+    await client.put(`/outpatient/review/${row.orderId}/reject`, null, { params: { reason: value } })
+    ElMessage.success('已拒绝并作废')
+    await load()
+  } finally {
+    rejectBusy.value = null
+  }
 }
 
 onMounted(load)

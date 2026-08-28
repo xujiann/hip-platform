@@ -73,7 +73,7 @@ public class FinanceController {
                 union all
                 select 'INP_CANCEL', s.settle_no, s.total_amount, s.pay_method, s.refunded_at
                 from inp_settlement s
-                where s.status = 'CANCELLED'
+                where s.status = 'CANCELLED' and s.settle_type = 'FINAL'
                   and s.refunded_at >= ?::date and s.refunded_at < ?::date + interval '1 day'
                 order by occurred_at desc
                 """, date, date, date, date, date, date));

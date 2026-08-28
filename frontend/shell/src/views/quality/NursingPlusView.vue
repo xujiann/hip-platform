@@ -10,7 +10,7 @@
               <el-option label="甲类" value="A" /><el-option label="乙类" value="B" /><el-option label="丙类" value="C" />
             </el-select>
           </el-form-item>
-          <el-button type="primary" size="small" @click="reportCard">报卡</el-button>
+          <el-button type="primary" size="small" @click="reportCard" :loading="reportCardLoading">报卡</el-button>
           <el-tag v-if="card.cardClass === 'A'" type="danger" size="small" style="margin-left: 8px">
             甲类须 2 小时内完成上报</el-tag>
         </el-form>
@@ -34,10 +34,13 @@
           <el-table-column label="操作" width="200">
             <template #default="{ row }">
               <template v-if="row.status === 'REPORTED'">
-                <el-button link type="success" size="small" @click="reviewCard(row, true)">通过</el-button>
-                <el-button link type="danger" size="small" @click="reviewCard(row, false)">退回</el-button>
+                <el-button link type="success" size="small" :loading="busyId === row.id"
+                           @click="reviewCard(row, true)">通过</el-button>
+                <el-button link type="danger" size="small" :loading="busyId === row.id"
+                           @click="reviewCard(row, false)">退回</el-button>
               </template>
-              <el-button v-if="row.status === 'REVIEWED'" link type="primary" size="small" @click="submitCard(row)">
+              <el-button v-if="row.status === 'REVIEWED'" link type="primary" size="small"
+                         :loading="busyId === row.id" @click="submitCard(row)">
                 上报</el-button>
             </template>
           </el-table-column>
@@ -73,7 +76,7 @@
           <el-form-item><el-input v-model="planForm.title" placeholder="抽检计划名" style="width: 170px" /></el-form-item>
           <el-form-item><el-input v-model="planForm.standard" placeholder="质控标准" style="width: 200px" /></el-form-item>
           <el-form-item><el-checkbox v-model="planForm.adHoc">临时表单</el-checkbox></el-form-item>
-          <el-button type="primary" size="small" @click="addPlan">建计划</el-button>
+          <el-button type="primary" size="small" @click="addPlan" :loading="addPlanLoading">建计划</el-button>
         </el-form>
         <el-table :data="plans" size="small" border @row-click="openPlan" highlight-current-row>
           <el-table-column prop="title" label="计划" width="200" />
@@ -84,7 +87,8 @@
           <el-table-column prop="scores" label="评分次数" width="90" />
           <el-table-column label="操作" width="90">
             <template #default="{ row }">
-              <el-button link type="primary" size="small" @click.stop="addScore(row)">评分</el-button>
+              <el-button link type="primary" size="small" :loading="busyId === row.id"
+                         @click.stop="addScore(row)">评分</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -114,7 +118,7 @@
             </el-select>
           </el-form-item>
           <el-form-item label="评分"><el-input-number v-model="risk.score" :min="0" :max="125" /></el-form-item>
-          <el-button type="primary" size="small" @click="doAssess">评估</el-button>
+          <el-button type="primary" size="small" @click="doAssess" :loading="doAssessLoading">评估</el-button>
           <el-button size="small" @click="loadRiskTrend">查趋势</el-button>
         </el-form>
         <el-alert title="Braden 6-23：≤12 高危 / 13-14 中危 / ≥15 低危 ｜ Morse 0-125：≥45 高危 / 25-44 中危 / <25 低危"
@@ -162,7 +166,7 @@
           </el-form-item>
           <el-form-item><el-input v-model="ho.summary" placeholder="当班情况" style="width: 240px" /></el-form-item>
           <el-form-item><el-input v-model="ho.todo" placeholder="交接待办" style="width: 180px" /></el-form-item>
-          <el-button type="primary" size="small" @click="addHandover">交班</el-button>
+          <el-button type="primary" size="small" @click="addHandover" :loading="addHandoverLoading">交班</el-button>
         </el-form>
         <el-table :data="handovers" size="small" border>
           <el-table-column prop="dept_name" label="科室" width="130" />
@@ -173,7 +177,7 @@
           <el-table-column prop="author" label="交班人" width="90" />
         </el-table>
         <h4>班次字典
-          <el-button link type="primary" size="small" @click="addShiftType">新增班次</el-button>
+          <el-button link type="primary" size="small" @click="addShiftType" :loading="addShiftTypeLoading">新增班次</el-button>
         </h4>
         <el-table :data="shiftTypes" size="small" border>
           <el-table-column prop="code" label="编码" width="90" />
@@ -207,6 +211,12 @@ const ho = reactive({ deptId: '', shiftType: 'DAY', summary: '', todo: '' })
 const riskTrend = ref<Record<string, unknown>[]>([])
 const riskAlerts = ref<Record<string, unknown>[]>([])
 const risk = reactive({ admissionId: '', assessType: 'BRADEN', score: 15 })
+const doAssessLoading = ref(false)
+const reportCardLoading = ref(false)
+const addPlanLoading = ref(false)
+const addHandoverLoading = ref(false)
+const addShiftTypeLoading = ref(false)
+const busyId = ref<unknown>(null)
 
 async function loadRiskTrend() {
   if (!risk.admissionId) return
@@ -214,11 +224,14 @@ async function loadRiskTrend() {
 }
 async function loadRiskAlerts() { riskAlerts.value = (await client.get('/nursing/risk-assess/alerts')).data.data }
 async function doAssess() {
-  if (!risk.admissionId) return
-  const r = (await client.post('/nursing/risk-assess',
-    { admissionId: Number(risk.admissionId), assessType: risk.assessType, score: risk.score })).data.data
-  ElMessage.success(`已评估：${{ HIGH: '高危', MID: '中危', LOW: '低危' }[r.riskLevel as string]}`)
-  await Promise.all([loadRiskTrend(), loadRiskAlerts()])
+  if (!risk.admissionId) { ElMessage.warning('请填写住院ID'); return }
+  doAssessLoading.value = true
+  try {
+    const r = (await client.post('/nursing/risk-assess',
+      { admissionId: Number(risk.admissionId), assessType: risk.assessType, score: risk.score })).data.data
+    ElMessage.success(`已评估：${{ HIGH: '高危', MID: '中危', LOW: '低危' }[r.riskLevel as string]}`)
+    await Promise.all([loadRiskTrend(), loadRiskAlerts()])
+  } finally { doAssessLoading.value = false }
 }
 
 async function loadCards() { cards.value = (await client.get('/infection/cards')).data.data }
@@ -234,50 +247,77 @@ async function loadShift() {
 }
 
 async function reportCard() {
-  if (!card.patientId || !card.diseaseName) return
-  await client.post('/infection/cards', { ...card, patientId: Number(card.patientId) })
-  ElMessage.success('已报卡')
-  await loadCards()
+  if (!card.patientId || !card.diseaseName) { ElMessage.warning('请填写完整'); return }
+  reportCardLoading.value = true
+  try {
+    await client.post('/infection/cards', { ...card, patientId: Number(card.patientId) })
+    ElMessage.success('已报卡')
+    await loadCards()
+  } finally { reportCardLoading.value = false }
 }
 async function reviewCard(row: Record<string, unknown>, approve: boolean) {
-  const { value } = await ElMessageBox.prompt('审核意见', approve ? '通过' : '退回', { inputValue: approve ? '属实' : '' })
-  await client.put(`/infection/cards/${row.id}/review`, null, { params: { approve, note: value } })
-  await loadCards()
+  const res = await ElMessageBox.prompt('审核意见', approve ? '通过' : '退回', { inputValue: approve ? '属实' : '' }).catch(() => null)
+  if (!res) return
+  const { value } = res
+  busyId.value = row.id
+  try {
+    await client.put(`/infection/cards/${row.id}/review`, null, { params: { approve, note: value } })
+    await loadCards()
+  } finally { busyId.value = null }
 }
 async function submitCard(row: Record<string, unknown>) {
-  await client.put(`/infection/cards/${row.id}/submit`)
-  ElMessage.success('已上报疾控')
-  await loadCards()
+  busyId.value = row.id
+  try {
+    await client.put(`/infection/cards/${row.id}/submit`)
+    ElMessage.success('已上报疾控')
+    await loadCards()
+  } finally { busyId.value = null }
 }
 async function addPlan() {
-  if (!planForm.title || !planForm.standard) return
-  await client.post('/qc-check/plans', planForm)
-  await loadPlans()
+  if (!planForm.title || !planForm.standard) { ElMessage.warning('请填写完整'); return }
+  addPlanLoading.value = true
+  try {
+    await client.post('/qc-check/plans', planForm)
+    await loadPlans()
+  } finally { addPlanLoading.value = false }
 }
 async function openPlan(row: Record<string, unknown>) {
   currentPlan.value = row
   scores.value = (await client.get('/qc-check/scores', { params: { planId: row.id } })).data.data
 }
 async function addScore(row: Record<string, unknown>) {
-  const { value } = await ElMessageBox.prompt('对象,评分（逗号分隔）', '抽检评分', { inputValue: '内科病区,92' })
+  const res = await ElMessageBox.prompt('对象,评分（逗号分隔）', '抽检评分', { inputValue: '内科病区,92' }).catch(() => null)
+  if (!res) return
+  const { value } = res
   const [target, score] = value.split(/[,，]/).map((s: string) => s.trim())
-  await client.post('/qc-check/scores', { planId: row.id, target, score: Number(score), note: '' })
-  await loadPlans()
-  await openPlan(row)
+  busyId.value = row.id
+  try {
+    await client.post('/qc-check/scores', { planId: row.id, target, score: Number(score), note: '' })
+    await loadPlans()
+    await openPlan(row)
+  } finally { busyId.value = null }
 }
 async function addHandover() {
-  if (!ho.deptId || !ho.summary) return
-  await client.post('/nursing/handovers', { ...ho, deptId: Number(ho.deptId) })
-  ho.summary = ''
-  ho.todo = ''
-  await loadShift()
+  if (!ho.deptId || !ho.summary) { ElMessage.warning('请填写完整'); return }
+  addHandoverLoading.value = true
+  try {
+    await client.post('/nursing/handovers', { ...ho, deptId: Number(ho.deptId) })
+    ho.summary = ''
+    ho.todo = ''
+    await loadShift()
+  } finally { addHandoverLoading.value = false }
 }
 async function addShiftType() {
-  const { value } = await ElMessageBox.prompt('编码,名称,开始,结束（逗号分隔）', '新增班次',
-    { inputValue: 'AM8,行政班,08:00,17:30' })
+  const res = await ElMessageBox.prompt('编码,名称,开始,结束（逗号分隔）', '新增班次',
+    { inputValue: 'AM8,行政班,08:00,17:30' }).catch(() => null)
+  if (!res) return
+  const { value } = res
   const [code, name, startTime, endTime] = value.split(/[,，]/).map((s: string) => s.trim())
-  await client.post('/nursing/shift-types', { code, name, startTime, endTime })
-  await loadShift()
+  addShiftTypeLoading.value = true
+  try {
+    await client.post('/nursing/shift-types', { code, name, startTime, endTime })
+    await loadShift()
+  } finally { addShiftTypeLoading.value = false }
 }
 
 watch(tab, (t) => {

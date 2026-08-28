@@ -10,7 +10,8 @@
           <el-table-column prop="disease_name" label="命中病种" width="140" />
           <el-table-column label="操作" width="100">
             <template #default="{ row }">
-              <el-button link type="primary" size="small" @click="createCase(row)">建上报卡</el-button>
+              <el-button link type="primary" size="small" :loading="busyId === row"
+                         @click="createCase(row)">建上报卡</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -29,7 +30,8 @@
           </el-table-column>
           <el-table-column label="操作" width="90">
             <template #default="{ row }">
-              <el-button v-if="row.status === 'DRAFT'" link type="success" size="small" @click="report(row)">
+              <el-button v-if="row.status === 'DRAFT'" link type="success" size="small"
+                         :loading="busyId === row" @click="report(row)">
                 上报</el-button>
             </template>
           </el-table-column>
@@ -56,6 +58,7 @@ const tab = ref('candidates')
 const candidates = ref<Record<string, unknown>[]>([])
 const cases = ref<Record<string, unknown>[]>([])
 const defs = ref<Record<string, unknown>[]>([])
+const busyId = ref<unknown>(null)
 
 async function loadAll() {
   const [c, k, d] = await Promise.all([
@@ -69,16 +72,24 @@ async function loadAll() {
 }
 
 async function createCase(row: Record<string, unknown>) {
-  const { value } = await ElMessageBox.prompt('上报数据集（关键指标 JSON/文本）', '建上报卡',
-    { inputValue: '{"到院至给药时间(min)": 30, "住院天数": 7}' })
-  await client.post('/quality/single-disease/cases',
-    { admissionId: row.admission_id, diseaseCode: row.disease_code, dataset: value })
-  ElMessage.success('已建卡')
-  await loadAll()
+  const res = await ElMessageBox.prompt('上报数据集（关键指标 JSON/文本）', '建上报卡',
+    { inputValue: '{"到院至给药时间(min)": 30, "住院天数": 7}' }).catch(() => null)
+  if (!res) return
+  const { value } = res
+  busyId.value = row
+  try {
+    await client.post('/quality/single-disease/cases',
+      { admissionId: row.admission_id, diseaseCode: row.disease_code, dataset: value })
+    ElMessage.success('已建卡')
+    await loadAll()
+  } finally { busyId.value = null }
 }
 async function report(row: Record<string, unknown>) {
-  await client.put(`/quality/single-disease/cases/${row.id}/report`)
-  await loadAll()
+  busyId.value = row
+  try {
+    await client.put(`/quality/single-disease/cases/${row.id}/report`)
+    await loadAll()
+  } finally { busyId.value = null }
 }
 
 onMounted(loadAll)

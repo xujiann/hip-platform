@@ -30,7 +30,7 @@
           </el-form-item>
           <el-form-item><el-input v-model="elem.format" placeholder="格式" style="width: 110px" /></el-form-item>
           <el-form-item><el-input v-model="elem.stdRef" placeholder="引用标准" style="width: 120px" /></el-form-item>
-          <el-button type="primary" size="small" @click="addElement">新增数据元</el-button>
+          <el-button type="primary" size="small" @click="addElement" :loading="addElementLoading">新增数据元</el-button>
         </el-form>
         <el-table :data="elements" size="small" border>
           <el-table-column prop="code" label="标识" width="150" />
@@ -56,7 +56,7 @@
               <el-option v-for="s in ['ICD10', 'LOINC', 'ATC', 'ICD9CM3']" :key="s" :label="s" :value="s" />
             </el-select>
           </el-form-item>
-          <el-button type="primary" size="small" @click="addTerm">新增映射</el-button>
+          <el-button type="primary" size="small" @click="addTerm" :loading="addTermLoading">新增映射</el-button>
         </el-form>
         <el-table :data="terms" size="small" border>
           <el-table-column prop="category" label="类别" width="90" />
@@ -72,7 +72,7 @@
           <el-form-item><el-input v-model="sub.eventType" placeholder="事件（如 LAB_PUBLISHED）" style="width: 190px" /></el-form-item>
           <el-form-item><el-input v-model="sub.subscriber" placeholder="订阅方" style="width: 130px" /></el-form-item>
           <el-form-item><el-input v-model="sub.targetUrl" placeholder="回调地址" style="width: 240px" /></el-form-item>
-          <el-button type="primary" size="small" @click="subscribe">订阅</el-button>
+          <el-button type="primary" size="small" @click="subscribe" :loading="subscribeLoading">订阅</el-button>
         </el-form>
         <el-table :data="subs" size="small" border>
           <el-table-column prop="event_type" label="事件" width="160" />
@@ -86,8 +86,8 @@
           </el-table-column>
           <el-table-column label="操作" width="160">
             <template #default="{ row }">
-              <el-button link type="primary" size="small" @click="testPush(row)">测试推送</el-button>
-              <el-button link size="small" @click="toggleSub(row)">{{ row.enabled ? '停用' : '启用' }}</el-button>
+              <el-button link type="primary" size="small" :loading="busyId === row.id" @click="testPush(row)">测试推送</el-button>
+              <el-button link size="small" :loading="busyId === row.id" @click="toggleSub(row)">{{ row.enabled ? '停用' : '启用' }}</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -100,14 +100,14 @@
             <el-input v-model="report.sqlText" type="textarea" :rows="3"
                       placeholder="SELECT 查询语句（只读，自动限 200 行）" />
           </el-form-item>
-          <el-button type="primary" size="small" @click="addReport">保存报表</el-button>
+          <el-button type="primary" size="small" @click="addReport" :loading="addReportLoading">保存报表</el-button>
         </el-form>
         <el-table :data="reports" size="small" border style="margin-top: 8px">
           <el-table-column prop="name" label="报表" width="200" />
           <el-table-column prop="remark" label="说明" show-overflow-tooltip />
           <el-table-column label="操作" width="90">
             <template #default="{ row }">
-              <el-button link type="primary" size="small" @click="runReport(row)">运行</el-button>
+              <el-button link type="primary" size="small" :loading="busyId === row.id" @click="runReport(row)">运行</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -140,6 +140,11 @@ const elem = reactive({ code: '', name: '', datatype: 'S', format: '', stdRef: '
 const term = reactive({ category: 'DIAG', localName: '', stdCode: '', stdSystem: 'ICD10' })
 const sub = reactive({ eventType: '', subscriber: '', targetUrl: '' })
 const report = reactive({ name: '', sqlText: '' })
+const addElementLoading = ref(false)
+const addTermLoading = ref(false)
+const subscribeLoading = ref(false)
+const addReportLoading = ref(false)
+const busyId = ref<unknown>(null)
 
 async function loadOdr() { odr.value = (await client.get('/datagov/odr/summary')).data.data }
 async function loadElements() { elements.value = (await client.get('/datagov/elements')).data.data }
@@ -148,39 +153,60 @@ async function loadSubs() { subs.value = (await client.get('/datagov/subscriptio
 async function loadReports() { reports.value = (await client.get('/datagov/reports')).data.data }
 
 async function addElement() {
-  if (!elem.code || !elem.name) return
-  await client.post('/datagov/elements', elem)
-  elem.code = ''
-  await loadElements()
+  if (!elem.code || !elem.name) { ElMessage.warning('请填写数据元标识与名称'); return }
+  addElementLoading.value = true
+  try {
+    await client.post('/datagov/elements', elem)
+    elem.code = ''
+    await loadElements()
+  } finally { addElementLoading.value = false }
 }
 async function addTerm() {
-  if (!term.localName || !term.stdCode) return
-  await client.post('/datagov/terms', term)
-  term.localName = ''
-  await loadTerms()
+  if (!term.localName || !term.stdCode) { ElMessage.warning('请填写本地名称与标准编码'); return }
+  addTermLoading.value = true
+  try {
+    await client.post('/datagov/terms', term)
+    term.localName = ''
+    await loadTerms()
+  } finally { addTermLoading.value = false }
 }
 async function subscribe() {
-  if (!sub.eventType || !sub.targetUrl) return
-  await client.post('/datagov/subscriptions', sub)
-  await loadSubs()
+  if (!sub.eventType || !sub.targetUrl) { ElMessage.warning('请填写事件与回调地址'); return }
+  subscribeLoading.value = true
+  try {
+    await client.post('/datagov/subscriptions', sub)
+    await loadSubs()
+  } finally { subscribeLoading.value = false }
 }
 async function testPush(row: Record<string, unknown>) {
-  await client.post(`/datagov/subscriptions/${row.id}/test-push`)
-  ElMessage.success('已推送（Mock）')
-  await loadSubs()
+  busyId.value = row.id
+  try {
+    await client.post(`/datagov/subscriptions/${row.id}/test-push`)
+    ElMessage.success('已推送（Mock）')
+    await loadSubs()
+  } finally { busyId.value = null }
 }
 async function toggleSub(row: Record<string, unknown>) {
-  await client.put(`/datagov/subscriptions/${row.id}/toggle`)
-  await loadSubs()
+  busyId.value = row.id
+  try {
+    await client.put(`/datagov/subscriptions/${row.id}/toggle`)
+    await loadSubs()
+  } finally { busyId.value = null }
 }
 async function addReport() {
-  if (!report.name || !report.sqlText) return
-  await client.post('/datagov/reports', report)
-  ElMessage.success('已保存')
-  await loadReports()
+  if (!report.name || !report.sqlText) { ElMessage.warning('请填写报表名称与查询语句'); return }
+  addReportLoading.value = true
+  try {
+    await client.post('/datagov/reports', report)
+    ElMessage.success('已保存')
+    await loadReports()
+  } finally { addReportLoading.value = false }
 }
 async function runReport(row: Record<string, unknown>) {
-  reportResult.value = (await client.post(`/datagov/reports/${row.id}/run`)).data.data
+  busyId.value = row.id
+  try {
+    reportResult.value = (await client.post(`/datagov/reports/${row.id}/run`)).data.data
+  } finally { busyId.value = null }
 }
 
 watch(tab, (t) => {

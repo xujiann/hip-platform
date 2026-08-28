@@ -38,6 +38,14 @@ export const useAuthStore = defineStore('auth', {
           children: menus.filter((m) => m.parentId === dir.id && m.type === 'MENU'),
         }))
     },
+    /**
+     * 后端下发的按钮级权限点集合（menus 里 type='BUTTON' 且有 perm 的项）。
+     * 当前 sys_menu 种子只种了 DIR/MENU、尚无 BUTTON 行——此集合为空，hasPerm 走「未启用即放行」降级。
+     */
+    buttonPerms(s): Set<string> {
+      const menus = s.user?.menus ?? []
+      return new Set(menus.filter((m) => m.type === 'BUTTON' && m.perm).map((m) => m.perm))
+    },
   },
   actions: {
     async login(username: string, password: string) {
@@ -58,6 +66,17 @@ export const useAuthStore = defineStore('auth', {
       this.user = null
       this.mustChangePassword = false
       localStorage.removeItem('hip_token')
+    },
+    /**
+     * 按钮级权限判定（UX 收口，非安全边界——后端 @PreAuthorize 才是兜底）。
+     *
+     * 安全降级：若后端尚未种任何 BUTTON 权限点（buttonPerms 为空），说明按钮级权限体系还没启用，
+     * 一律放行——否则会把所有受控按钮误藏光。只有当该 perm 已被后端定义、且当前用户不具备时才隐藏。
+     */
+    hasPerm(perm: string): boolean {
+      const perms = this.buttonPerms
+      if (perms.size === 0) return true
+      return perms.has(perm)
     },
   },
 })

@@ -8,7 +8,7 @@
           <el-form-item><el-input v-model="emp.deptId" placeholder="科室ID" style="width: 90px" /></el-form-item>
           <el-form-item><el-input v-model="emp.title" placeholder="职称/岗位" style="width: 120px" /></el-form-item>
           <el-form-item><el-input v-model="emp.phone" placeholder="手机" style="width: 130px" /></el-form-item>
-          <el-button type="primary" size="small" @click="addEmp">建档</el-button>
+          <el-button type="primary" size="small" :loading="addEmpLoading" @click="addEmp">建档</el-button>
           <el-input v-model="empKeyword" placeholder="姓名/工号检索" size="small" clearable
                     style="width: 150px; margin-left: 12px" @change="loadEmps" />
         </el-form>
@@ -32,7 +32,7 @@
             <el-input v-model="salaryText" type="textarea" :rows="3"
                       placeholder="G001,8000,2000,500&#10;G002,7500,1800,300" style="margin-top: 4px" />
           </el-form-item>
-          <el-button type="primary" size="small" @click="importSalary">导入</el-button>
+          <el-button type="primary" size="small" :loading="importSalaryLoading" @click="importSalary">导入</el-button>
           <el-input v-model="salaryEmpNo" placeholder="按工号查个人工资" size="small"
                     style="width: 160px; margin-left: 12px" @change="loadSalary" />
         </el-form>
@@ -51,7 +51,7 @@
           <el-form-item><el-input v-model="tr.employeeId" placeholder="员工ID" style="width: 90px" /></el-form-item>
           <el-form-item><el-input v-model="tr.category" placeholder="培训类别" style="width: 130px" /></el-form-item>
           <el-form-item><el-input v-model="tr.certName" placeholder="证书名称" style="width: 150px" /></el-form-item>
-          <el-button type="primary" size="small" @click="addTraining">登记培训</el-button>
+          <el-button type="primary" size="small" :loading="addTrainingLoading" @click="addTraining">登记培训</el-button>
         </el-form>
         <el-table :data="trainings" size="small" border>
           <el-table-column prop="emp_name" label="员工" width="100" />
@@ -60,7 +60,7 @@
           <el-table-column prop="cert_name" label="证书" show-overflow-tooltip />
         </el-table>
         <h4>招聘面试
-          <el-button link type="primary" size="small" @click="addRecruit">登记面试</el-button>
+          <el-button link type="primary" size="small" :loading="addRecruitLoading" @click="addRecruit">登记面试</el-button>
         </h4>
         <el-table :data="recruits" size="small" border>
           <el-table-column prop="candidate_name" label="应聘人" width="110" />
@@ -69,8 +69,8 @@
           <el-table-column label="结果" width="150">
             <template #default="{ row }">
               <template v-if="row.result === 'PENDING'">
-                <el-button link type="success" size="small" @click="recruitResult(row, 'PASS')">通过</el-button>
-                <el-button link type="danger" size="small" @click="recruitResult(row, 'FAIL')">淘汰</el-button>
+                <el-button link type="success" size="small" :loading="busyId === row.id" @click="recruitResult(row, 'PASS')">通过</el-button>
+                <el-button link type="danger" size="small" :loading="busyId === row.id" @click="recruitResult(row, 'FAIL')">淘汰</el-button>
               </template>
               <el-tag v-else :type="row.result === 'PASS' ? 'success' : 'info'" size="small">
                 {{ row.result === 'PASS' ? '通过' : '淘汰' }}</el-tag>
@@ -85,7 +85,7 @@
           <el-form-item><el-input v-model="cme.projectName" placeholder="继续教育项目名" style="width: 200px" /></el-form-item>
           <el-form-item label="学分"><el-input-number v-model="cme.credit" :min="0" :step="0.5" :precision="1" /></el-form-item>
           <el-form-item label="年度"><el-input v-model="cme.cmeYear" style="width: 80px" /></el-form-item>
-          <el-button type="primary" size="small" @click="addCme">登记</el-button>
+          <el-button type="primary" size="small" :loading="addCmeLoading" @click="addCme">登记</el-button>
         </el-form>
         <el-row :gutter="16">
           <el-col :span="14">
@@ -109,8 +109,8 @@
           考勤（打卡/补卡）
           <el-date-picker v-model="attDate" type="date" value-format="YYYY-MM-DD" size="small"
                           style="width: 140px; margin-left: 8px" @change="loadAtt" />
-          <el-button link type="primary" size="small" @click="punch(false)">打卡</el-button>
-          <el-button link type="warning" size="small" @click="punch(true)">补卡</el-button>
+          <el-button link type="primary" size="small" :loading="punchLoading" @click="punch(false)">打卡</el-button>
+          <el-button link type="warning" size="small" :loading="punchLoading" @click="punch(true)">补卡</el-button>
         </h4>
         <el-table :data="attendance" size="small" border>
           <el-table-column prop="emp_no" label="工号" width="90" />
@@ -141,9 +141,9 @@
         <el-form inline size="small">
           <el-form-item><el-input v-model="tf.assetId" placeholder="资产ID" style="width: 90px" /></el-form-item>
           <el-form-item><el-input v-model="tf.toDeptId" placeholder="调入科室ID" style="width: 110px" /></el-form-item>
-          <el-button type="primary" size="small" @click="doTransfer">调拨</el-button>
-          <el-button size="small" @click="doHandover">移交登记</el-button>
-          <el-button type="danger" size="small" @click="applyScrap">报废申请</el-button>
+          <el-button type="primary" size="small" :loading="doTransferLoading" @click="doTransfer">调拨</el-button>
+          <el-button size="small" :loading="doHandoverLoading" @click="doHandover">移交登记</el-button>
+          <el-button type="danger" size="small" :loading="applyScrapLoading" @click="applyScrap">报废申请</el-button>
         </el-form>
         <el-table :data="transfers" size="small" border>
           <el-table-column prop="asset_name" label="资产" width="150" />
@@ -172,15 +172,15 @@
           <el-table-column label="操作" width="150">
             <template #default="{ row }">
               <template v-if="row.status === 'APPLIED'">
-                <el-button link type="success" size="small" @click="reviewScrap(row, true)">批准</el-button>
-                <el-button link type="danger" size="small" @click="reviewScrap(row, false)">驳回</el-button>
+                <el-button link type="success" size="small" :loading="busyId === row.id" @click="reviewScrap(row, true)">批准</el-button>
+                <el-button link type="danger" size="small" :loading="busyId === row.id" @click="reviewScrap(row, false)">驳回</el-button>
               </template>
             </template>
           </el-table-column>
         </el-table>
         <h4>价值调整/附件
-          <el-button link type="warning" size="small" @click="addAdjust">增值/折旧补录</el-button>
-          <el-button link type="primary" size="small" @click="addAssetDoc">附件登记</el-button>
+          <el-button link type="warning" size="small" :loading="addAdjustLoading" @click="addAdjust">增值/折旧补录</el-button>
+          <el-button link type="primary" size="small" :loading="addAssetDocLoading" @click="addAssetDoc">附件登记</el-button>
         </h4>
         <el-table :data="adjusts" size="small" border>
           <el-table-column prop="asset_name" label="资产" width="150" />
@@ -192,7 +192,7 @@
           <el-table-column prop="created_at" label="时间" width="170" />
         </el-table>
         <h4>房屋建筑台账
-          <el-button link type="primary" size="small" @click="addBuilding">登记房屋</el-button>
+          <el-button link type="primary" size="small" :loading="addBuildingLoading" @click="addBuilding">登记房屋</el-button>
         </h4>
         <el-table :data="buildings" size="small" border>
           <el-table-column prop="building_no" label="编号" width="100" />
@@ -209,7 +209,7 @@
           <el-form-item><el-input v-model="pr.itemId" placeholder="项目ID" style="width: 90px" /></el-form-item>
           <el-form-item><el-input-number v-model="pr.newPrice" :min="0" :precision="2" /></el-form-item>
           <el-form-item><el-input v-model="pr.reason" placeholder="调价原因" style="width: 200px" /></el-form-item>
-          <el-button type="primary" size="small" @click="changePrice">调价</el-button>
+          <el-button type="primary" size="small" :loading="changePriceLoading" @click="changePrice">调价</el-button>
         </el-form>
         <el-table :data="priceLogs" size="small" border>
           <el-table-column prop="name" label="项目" width="160" />
@@ -319,6 +319,20 @@ const searchTo = ref(today)
 const searchPay = ref('')
 const searchType = ref('') // 1.0.1（1227）：按项目类型切明细行模式
 const cme = reactive({ employeeId: '', projectName: '', credit: 5, cmeYear: today.slice(0, 4) })
+const busyId = ref<unknown>(null)
+const addEmpLoading = ref(false)
+const importSalaryLoading = ref(false)
+const addCmeLoading = ref(false)
+const punchLoading = ref(false)
+const addTrainingLoading = ref(false)
+const addRecruitLoading = ref(false)
+const doTransferLoading = ref(false)
+const doHandoverLoading = ref(false)
+const applyScrapLoading = ref(false)
+const addAdjustLoading = ref(false)
+const addAssetDocLoading = ref(false)
+const addBuildingLoading = ref(false)
+const changePriceLoading = ref(false)
 
 async function loadCme() {
   const d = (await client.get('/hr/cme')).data.data
@@ -329,36 +343,62 @@ async function loadAtt() {
   attendance.value = (await client.get('/hr/attendance', { params: { date: attDate.value } })).data.data
 }
 async function addCme() {
-  if (!cme.employeeId || !cme.projectName) return
-  await client.post('/hr/cme', { employeeId: Number(cme.employeeId), projectName: cme.projectName,
-    credit: cme.credit, cmeYear: Number(cme.cmeYear), organizer: '省继教平台' })
-  cme.projectName = ''
-  await loadCme()
+  if (!cme.employeeId || !cme.projectName) { ElMessage.warning('请填写完整'); return }
+  addCmeLoading.value = true
+  try {
+    await client.post('/hr/cme', { employeeId: Number(cme.employeeId), projectName: cme.projectName,
+      credit: cme.credit, cmeYear: Number(cme.cmeYear), organizer: '省继教平台' })
+    cme.projectName = ''
+    await loadCme()
+  } finally {
+    addCmeLoading.value = false
+  }
 }
 async function punch(makeup: boolean) {
   const tip = makeup ? '员工ID,上班,下班,补卡说明（逗号分隔）' : '员工ID,上班,下班（逗号分隔）'
-  const { value } = await ElMessageBox.prompt(tip, makeup ? '补卡' : '打卡',
-    { inputValue: makeup ? '1,08:00,17:30,忘带工牌' : '1,08:00,17:30' })
+  const res = await ElMessageBox.prompt(tip, makeup ? '补卡' : '打卡',
+    { inputValue: makeup ? '1,08:00,17:30,忘带工牌' : '1,08:00,17:30' }).catch(() => null)
+  if (!res) return
+  const { value } = res
   const [employeeId, checkIn, checkOut, note] = value.split(/[,，]/).map((s: string) => s.trim())
-  await client.post('/hr/attendance', { employeeId: Number(employeeId), workDate: attDate.value,
-    checkIn, checkOut, attType: makeup ? 'MAKEUP' : 'NORMAL', note })
-  await loadAtt()
+  punchLoading.value = true
+  try {
+    await client.post('/hr/attendance', { employeeId: Number(employeeId), workDate: attDate.value,
+      checkIn, checkOut, attType: makeup ? 'MAKEUP' : 'NORMAL', note })
+    await loadAtt()
+  } finally {
+    punchLoading.value = false
+  }
 }
 async function loadAdjusts() { adjusts.value = (await client.get('/asset-plus/value-adjusts')).data.data }
 async function addAdjust() {
-  const { value } = await ElMessageBox.prompt('资产ID,类型(APPRECIATION/DEP_FIX),金额,原因', '价值调整',
-    { inputValue: `${tf.assetId || 1},DEP_FIX,1000,历史折旧补录` })
+  const res = await ElMessageBox.prompt('资产ID,类型(APPRECIATION/DEP_FIX),金额,原因', '价值调整',
+    { inputValue: `${tf.assetId || 1},DEP_FIX,1000,历史折旧补录` }).catch(() => null)
+  if (!res) return
+  const { value } = res
   const [assetId, adjustType, amount, reason] = value.split(/[,，]/).map((s: string) => s.trim())
-  await client.post('/asset-plus/value-adjusts',
-    { assetId: Number(assetId), adjustType, amount: Number(amount), reason })
-  await loadAdjusts()
+  addAdjustLoading.value = true
+  try {
+    await client.post('/asset-plus/value-adjusts',
+      { assetId: Number(assetId), adjustType, amount: Number(amount), reason })
+    await loadAdjusts()
+  } finally {
+    addAdjustLoading.value = false
+  }
 }
 async function addAssetDoc() {
-  const { value } = await ElMessageBox.prompt('资产ID,附件名', '附件登记',
-    { inputValue: `${tf.assetId || 1},购置合同.pdf` })
+  const res = await ElMessageBox.prompt('资产ID,附件名', '附件登记',
+    { inputValue: `${tf.assetId || 1},购置合同.pdf` }).catch(() => null)
+  if (!res) return
+  const { value } = res
   const [assetId, docName] = value.split(/[,，]/).map((s: string) => s.trim())
-  await client.post('/asset-plus/docs', { assetId: Number(assetId), docName, remark: '' })
-  ElMessage.success('已登记')
+  addAssetDocLoading.value = true
+  try {
+    await client.post('/asset-plus/docs', { assetId: Number(assetId), docName, remark: '' })
+    ElMessage.success('已登记')
+  } finally {
+    addAssetDocLoading.value = false
+  }
 }
 async function searchCharges() {
   chargeHits.value = (await client.get('/finance/charge-search',
@@ -392,70 +432,133 @@ async function loadRecon() {
 }
 
 async function addEmp() {
-  if (!emp.empNo || !emp.name) return
-  await client.post('/hr/employees', { ...emp, deptId: emp.deptId ? Number(emp.deptId) : null, hireDate: today })
-  ElMessage.success('已建档')
-  await loadEmps()
+  if (!emp.empNo || !emp.name) { ElMessage.warning('请填写完整'); return }
+  addEmpLoading.value = true
+  try {
+    await client.post('/hr/employees', { ...emp, deptId: emp.deptId ? Number(emp.deptId) : null, hireDate: today })
+    ElMessage.success('已建档')
+    await loadEmps()
+  } finally {
+    addEmpLoading.value = false
+  }
 }
 async function importSalary() {
   const rows = salaryText.value.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
     const [empNo, basePay, bonus, deduction] = l.split(/[,，\t]/).map((s) => s.trim())
     return { empNo, basePay: Number(basePay || 0), bonus: Number(bonus || 0), deduction: Number(deduction || 0) }
   })
-  if (!rows.length) return
-  const r = (await client.post('/hr/salaries/import', { month: salaryMonth.value, rows })).data.data
-  ElMessage.success(`导入 ${r.imported} 条，工号不存在 ${r.missing} 条`)
+  if (!rows.length) { ElMessage.warning('请粘贴工资数据'); return }
+  importSalaryLoading.value = true
+  try {
+    const r = (await client.post('/hr/salaries/import', { month: salaryMonth.value, rows })).data.data
+    ElMessage.success(`导入 ${r.imported} 条，工号不存在 ${r.missing} 条`)
+  } finally {
+    importSalaryLoading.value = false
+  }
 }
 async function addTraining() {
-  if (!tr.employeeId || !tr.category) return
-  await client.post('/hr/trainings', { ...tr, employeeId: Number(tr.employeeId), org: '院内培训中心' })
-  await loadTrain()
+  if (!tr.employeeId || !tr.category) { ElMessage.warning('请填写完整'); return }
+  addTrainingLoading.value = true
+  try {
+    await client.post('/hr/trainings', { ...tr, employeeId: Number(tr.employeeId), org: '院内培训中心' })
+    await loadTrain()
+  } finally {
+    addTrainingLoading.value = false
+  }
 }
 async function addRecruit() {
-  const { value } = await ElMessageBox.prompt('应聘人,岗位（逗号分隔）', '登记面试', { inputValue: '张应聘,护士' })
+  const res = await ElMessageBox.prompt('应聘人,岗位（逗号分隔）', '登记面试', { inputValue: '张应聘,护士' }).catch(() => null)
+  if (!res) return
+  const { value } = res
   const [candidateName, position] = value.split(/[,，]/).map((s: string) => s.trim())
-  await client.post('/hr/recruits', { candidateName, position, interviewDate: today, note: '' })
-  await loadTrain()
+  addRecruitLoading.value = true
+  try {
+    await client.post('/hr/recruits', { candidateName, position, interviewDate: today, note: '' })
+    await loadTrain()
+  } finally {
+    addRecruitLoading.value = false
+  }
 }
 async function recruitResult(row: Record<string, unknown>, result: string) {
-  await client.put(`/hr/recruits/${row.id}/result`, null, { params: { result } })
-  await loadTrain()
+  busyId.value = row.id
+  try {
+    await client.put(`/hr/recruits/${row.id}/result`, null, { params: { result } })
+    await loadTrain()
+  } finally {
+    busyId.value = null
+  }
 }
 async function doTransfer() {
-  if (!tf.assetId || !tf.toDeptId) return
-  await client.post('/asset-plus/transfers',
-    { assetId: Number(tf.assetId), toDeptId: Number(tf.toDeptId), note: '科室调拨' })
-  ElMessage.success('已调拨')
-  await loadAsset()
+  if (!tf.assetId || !tf.toDeptId) { ElMessage.warning('请填写完整'); return }
+  doTransferLoading.value = true
+  try {
+    await client.post('/asset-plus/transfers',
+      { assetId: Number(tf.assetId), toDeptId: Number(tf.toDeptId), note: '科室调拨' })
+    ElMessage.success('已调拨')
+    await loadAsset()
+  } finally {
+    doTransferLoading.value = false
+  }
 }
 async function doHandover() {
-  const { value } = await ElMessageBox.prompt('资产ID,移交人,接收人（逗号分隔）', '移交登记',
-    { inputValue: `${tf.assetId || 1},张三,李四` })
+  const res = await ElMessageBox.prompt('资产ID,移交人,接收人（逗号分隔）', '移交登记',
+    { inputValue: `${tf.assetId || 1},张三,李四` }).catch(() => null)
+  if (!res) return
+  const { value } = res
   const [assetId, fromPerson, toPerson] = value.split(/[,，]/).map((s: string) => s.trim())
-  await client.post('/asset-plus/handovers', { assetId: Number(assetId), fromPerson, toPerson, note: '' })
-  await loadAsset()
+  doHandoverLoading.value = true
+  try {
+    await client.post('/asset-plus/handovers', { assetId: Number(assetId), fromPerson, toPerson, note: '' })
+    await loadAsset()
+  } finally {
+    doHandoverLoading.value = false
+  }
 }
 async function applyScrap() {
-  const { value } = await ElMessageBox.prompt('报废原因', '报废申请', { inputValue: '超使用年限，维修不经济' })
-  await client.post('/asset-plus/scraps', null, { params: { assetId: Number(tf.assetId), reason: value } })
-  await loadAsset()
+  const res = await ElMessageBox.prompt('报废原因', '报废申请', { inputValue: '超使用年限，维修不经济' }).catch(() => null)
+  if (!res) return
+  const { value } = res
+  applyScrapLoading.value = true
+  try {
+    await client.post('/asset-plus/scraps', null, { params: { assetId: Number(tf.assetId), reason: value } })
+    await loadAsset()
+  } finally {
+    applyScrapLoading.value = false
+  }
 }
 async function reviewScrap(row: Record<string, unknown>, approve: boolean) {
-  await client.put(`/asset-plus/scraps/${row.id}/review`, null, { params: { approve, note: approve ? '同意' : '不同意' } })
-  await loadAsset()
+  busyId.value = row.id
+  try {
+    await client.put(`/asset-plus/scraps/${row.id}/review`, null, { params: { approve, note: approve ? '同意' : '不同意' } })
+    await loadAsset()
+  } finally {
+    busyId.value = null
+  }
 }
 async function addBuilding() {
-  const { value } = await ElMessageBox.prompt('编号,名称,用途,面积（逗号分隔）', '登记房屋',
-    { inputValue: 'F01,门诊综合楼,门诊,12000' })
+  const res = await ElMessageBox.prompt('编号,名称,用途,面积（逗号分隔）', '登记房屋',
+    { inputValue: 'F01,门诊综合楼,门诊,12000' }).catch(() => null)
+  if (!res) return
+  const { value } = res
   const [buildingNo, name, usageType, areaSqm] = value.split(/[,，]/).map((s: string) => s.trim())
-  await client.post('/asset-plus/buildings', { buildingNo, name, usageType, areaSqm: Number(areaSqm), address: '' })
-  await loadAsset()
+  addBuildingLoading.value = true
+  try {
+    await client.post('/asset-plus/buildings', { buildingNo, name, usageType, areaSqm: Number(areaSqm), address: '' })
+    await loadAsset()
+  } finally {
+    addBuildingLoading.value = false
+  }
 }
 async function changePrice() {
-  if (!pr.itemId || !pr.reason) return
-  await client.put(`/price/charge-items/${pr.itemId}`, { newPrice: pr.newPrice, reason: pr.reason })
-  ElMessage.success('已调价并留痕')
-  await loadFinance()
+  if (!pr.itemId || !pr.reason) { ElMessage.warning('请填写完整'); return }
+  changePriceLoading.value = true
+  try {
+    await client.put(`/price/charge-items/${pr.itemId}`, { newPrice: pr.newPrice, reason: pr.reason })
+    ElMessage.success('已调价并留痕')
+    await loadFinance()
+  } finally {
+    changePriceLoading.value = false
+  }
 }
 
 watch(tab, (t) => {

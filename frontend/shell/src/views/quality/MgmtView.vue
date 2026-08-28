@@ -13,7 +13,7 @@
               <el-option label="白班" value="DAY" /><el-option label="中班" value="MID" /><el-option label="夜班" value="NIGHT" />
             </el-select>
           </el-form-item>
-          <el-button type="primary" size="small" @click="addShift">排班</el-button>
+          <el-button type="primary" size="small" @click="addShift" :loading="addShiftLoading">排班</el-button>
           <el-date-picker v-model="shiftQueryDate" type="date" value-format="YYYY-MM-DD" size="small"
                           style="width: 140px; margin-left: 16px" @change="loadShifts" />
         </el-form>
@@ -32,7 +32,7 @@
           <el-form-item><el-input v-model="score.deptId" placeholder="科室ID" style="width: 90px" /></el-form-item>
           <el-form-item><el-input v-model="score.item" placeholder="检查项目（如 基础护理）" style="width: 180px" /></el-form-item>
           <el-form-item><el-input-number v-model="score.score" :min="0" :max="100" /></el-form-item>
-          <el-button type="primary" size="small" @click="addScore">登记评分</el-button>
+          <el-button type="primary" size="small" @click="addScore" :loading="addScoreLoading">登记评分</el-button>
         </el-form>
         <h4>科室对比</h4>
         <el-table :data="scoreSummary" size="small" border>
@@ -63,7 +63,7 @@
             <el-date-picker v-model="cred.expireDate" type="date" value-format="YYYY-MM-DD" placeholder="到期日"
                             style="width: 140px" />
           </el-form-item>
-          <el-button type="primary" size="small" @click="addCred">登记</el-button>
+          <el-button type="primary" size="small" @click="addCred" :loading="addCredLoading">登记</el-button>
         </el-form>
         <el-table :data="credentials" size="small" border>
           <el-table-column prop="staff_name" label="姓名" width="100" />
@@ -92,7 +92,7 @@
               <el-table-column label="调整" width="200">
                 <template #default="{ row }">
                   <el-button v-for="l in [1, 2, 3]" :key="l" link :type="row.level === l ? 'info' : 'primary'"
-                             size="small" @click="grant(row, l)">{{ l }}级</el-button>
+                             size="small" :loading="busyId === row.user_id" @click="grant(row, l)">{{ l }}级</el-button>
                 </template>
               </el-table-column>
             </el-table>
@@ -115,7 +115,7 @@
       <el-tab-pane label="消毒供应" name="cssd">
         <el-form inline size="small">
           <el-form-item><el-input v-model="cssdName" placeholder="包名（如 剖宫产器械包）" style="width: 200px" /></el-form-item>
-          <el-button type="primary" size="small" @click="pack">打包生成条码</el-button>
+          <el-button type="primary" size="small" @click="pack" :loading="packLoading">打包生成条码</el-button>
         </el-form>
         <el-table :data="cssdPackages" size="small" border>
           <el-table-column prop="pkg_no" label="包条码" width="130" />
@@ -129,11 +129,14 @@
           </el-table-column>
           <el-table-column label="流转" width="220">
             <template #default="{ row }">
-              <el-button v-if="row.status === 'PACKED'" link type="primary" size="small" @click="sterilize(row)">
+              <el-button v-if="row.status === 'PACKED'" link type="primary" size="small"
+                         :loading="busyId === row.pkg_no" @click="sterilize(row)">
                 灭菌</el-button>
-              <el-button v-if="row.status === 'STERILIZED'" link type="warning" size="small" @click="issueCssd(row)">
+              <el-button v-if="row.status === 'STERILIZED'" link type="warning" size="small"
+                         :loading="busyId === row.pkg_no" @click="issueCssd(row)">
                 发放</el-button>
-              <el-button v-if="row.status === 'ISSUED'" link type="success" size="small" @click="useCssd(row)">
+              <el-button v-if="row.status === 'ISSUED'" link type="success" size="small"
+                         :loading="busyId === row.pkg_no" @click="useCssd(row)">
                 使用登记</el-button>
               <el-button link size="small" @click="showTrace(row)">追溯</el-button>
             </template>
@@ -152,7 +155,7 @@
             </el-select>
           </el-form-item>
           <el-form-item><el-input v-model="phc.content" placeholder="内容（如 流感疫苗第1剂）" style="width: 220px" /></el-form-item>
-          <el-button type="primary" size="small" @click="addPhc">登记</el-button>
+          <el-button type="primary" size="small" @click="addPhc" :loading="addPhcLoading">登记</el-button>
         </el-form>
         <el-table :data="phcRecords" size="small" border>
           <el-table-column prop="patient_name" label="患者" width="100" />
@@ -185,6 +188,12 @@ const cssdPackages = ref<Record<string, unknown>[]>([])
 const phcRecords = ref<Record<string, unknown>[]>([])
 const shiftQueryDate = ref(today)
 const cssdName = ref('')
+const addShiftLoading = ref(false)
+const addScoreLoading = ref(false)
+const addCredLoading = ref(false)
+const packLoading = ref(false)
+const addPhcLoading = ref(false)
+const busyId = ref<unknown>(null)
 const shift = reactive({ deptId: '', nurseName: '', shiftDate: today, shiftType: 'DAY' })
 const score = reactive({ deptId: '', item: '', score: 90 })
 const cred = reactive({ staffName: '', certType: '定期考核', certNo: '', expireDate: '' })
@@ -208,48 +217,76 @@ async function loadCssd() { cssdPackages.value = (await client.get('/cssd/packag
 async function loadPhc() { phcRecords.value = (await client.get('/phc/records')).data.data }
 
 async function addShift() {
-  if (!shift.deptId || !shift.nurseName) return
-  await client.post('/nursing/shifts', { ...shift, deptId: Number(shift.deptId) })
-  shiftQueryDate.value = shift.shiftDate
-  await loadShifts()
+  if (!shift.deptId || !shift.nurseName) { ElMessage.warning('请填写完整'); return }
+  addShiftLoading.value = true
+  try {
+    await client.post('/nursing/shifts', { ...shift, deptId: Number(shift.deptId) })
+    shiftQueryDate.value = shift.shiftDate
+    await loadShifts()
+  } finally { addShiftLoading.value = false }
 }
 async function addScore() {
-  if (!score.deptId || !score.item) return
-  await client.post('/nursing/qc-scores', { ...score, deptId: Number(score.deptId) })
-  score.item = ''
-  await loadScores()
+  if (!score.deptId || !score.item) { ElMessage.warning('请填写完整'); return }
+  addScoreLoading.value = true
+  try {
+    await client.post('/nursing/qc-scores', { ...score, deptId: Number(score.deptId) })
+    score.item = ''
+    await loadScores()
+  } finally { addScoreLoading.value = false }
 }
 async function addCred() {
-  if (!cred.staffName || !cred.expireDate) return
-  await client.post('/hrp/credentials', cred)
-  cred.staffName = ''
-  await loadCreds()
+  if (!cred.staffName || !cred.expireDate) { ElMessage.warning('请填写完整'); return }
+  addCredLoading.value = true
+  try {
+    await client.post('/hrp/credentials', cred)
+    cred.staffName = ''
+    await loadCreds()
+  } finally { addCredLoading.value = false }
 }
 async function grant(row: Record<string, unknown>, level: number) {
-  await client.put(`/outpatient/abx-privileges/${row.user_id}`, null, { params: { level } })
-  ElMessage.success('已调整')
-  await loadAbx()
+  busyId.value = row.user_id
+  try {
+    await client.put(`/outpatient/abx-privileges/${row.user_id}`, null, { params: { level } })
+    ElMessage.success('已调整')
+    await loadAbx()
+  } finally { busyId.value = null }
 }
 async function pack() {
-  if (!cssdName.value) return
-  const resp = await client.post('/cssd/packages', { name: cssdName.value })
-  ElMessage.success(`已打包，条码 ${resp.data.data.pkgNo}`)
-  cssdName.value = ''
-  await loadCssd()
+  if (!cssdName.value) { ElMessage.warning('请填写包名'); return }
+  packLoading.value = true
+  try {
+    const resp = await client.post('/cssd/packages', { name: cssdName.value })
+    ElMessage.success(`已打包，条码 ${resp.data.data.pkgNo}`)
+    cssdName.value = ''
+    await loadCssd()
+  } finally { packLoading.value = false }
 }
 async function sterilize(row: Record<string, unknown>) {
-  const { value } = await ElMessageBox.prompt('灭菌批次号', '灭菌', { inputValue: 'MJ-' + today })
-  await client.put(`/cssd/packages/${row.pkg_no}/sterilize`, null, { params: { batch: value } })
-  await loadCssd()
+  const res = await ElMessageBox.prompt('灭菌批次号', '灭菌', { inputValue: 'MJ-' + today }).catch(() => null)
+  if (!res) return
+  const { value } = res
+  busyId.value = row.pkg_no
+  try {
+    await client.put(`/cssd/packages/${row.pkg_no}/sterilize`, null, { params: { batch: value } })
+    await loadCssd()
+  } finally { busyId.value = null }
 }
 async function issueCssd(row: Record<string, unknown>) {
-  const { value } = await ElMessageBox.prompt('发放科室ID', '发放', { inputValue: '2' })
-  await client.put(`/cssd/packages/${row.pkg_no}/issue`, null, { params: { deptId: value } })
-  await loadCssd()
+  const res = await ElMessageBox.prompt('发放科室ID', '发放', { inputValue: '2' }).catch(() => null)
+  if (!res) return
+  const { value } = res
+  busyId.value = row.pkg_no
+  try {
+    await client.put(`/cssd/packages/${row.pkg_no}/issue`, null, { params: { deptId: value } })
+    await loadCssd()
+  } finally { busyId.value = null }
 }
 async function useCssd(row: Record<string, unknown>) {
-  await client.put(`/cssd/packages/${row.pkg_no}/use`)
-  await loadCssd()
+  busyId.value = row.pkg_no
+  try {
+    await client.put(`/cssd/packages/${row.pkg_no}/use`)
+    await loadCssd()
+  } finally { busyId.value = null }
 }
 async function showTrace(row: Record<string, unknown>) {
   const chain = (await client.get(`/cssd/packages/${row.pkg_no}/trace`)).data.data as
@@ -257,10 +294,13 @@ async function showTrace(row: Record<string, unknown>) {
   ElMessageBox.alert(chain.map((c) => `${c.action} @ ${c.at}`).join('\n'), `追溯链 ${row.pkg_no}`)
 }
 async function addPhc() {
-  if (!phc.patientId || !phc.content) return
-  await client.post('/phc/records', { ...phc, patientId: Number(phc.patientId) })
-  phc.content = ''
-  await loadPhc()
+  if (!phc.patientId || !phc.content) { ElMessage.warning('请填写完整'); return }
+  addPhcLoading.value = true
+  try {
+    await client.post('/phc/records', { ...phc, patientId: Number(phc.patientId) })
+    phc.content = ''
+    await loadPhc()
+  } finally { addPhcLoading.value = false }
 }
 
 watch(tab, (t) => {

@@ -14,7 +14,7 @@
           <el-form-item>
             <el-date-picker v-model="fu.dueDate" type="date" value-format="YYYY-MM-DD" placeholder="随访日期" />
           </el-form-item>
-          <el-button type="primary" size="small" @click="createFollowup">建随访计划</el-button>
+          <el-button type="primary" size="small" :loading="createFollowupLoading" @click="createFollowup">建随访计划</el-button>
         </el-form>
         <el-table :data="followups" size="small" border>
           <el-table-column prop="due_date" label="随访日期" width="110" />
@@ -23,7 +23,7 @@
           <el-table-column prop="topic" label="主题" />
           <el-table-column label="操作" width="100">
             <template #default="{ row }">
-              <el-button link type="success" size="small" @click="doneFollowup(row)">完成随访</el-button>
+              <el-button link type="success" size="small" :loading="doneFollowupBusy === row.id" @click="doneFollowup(row)">完成随访</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -51,7 +51,8 @@
           <el-table-column prop="question" label="会诊问题" show-overflow-tooltip />
           <el-table-column label="状态/意见" width="220">
             <template #default="{ row }">
-              <el-button v-if="row.status === 'REQUESTED'" link type="primary" size="small" @click="completeConsult(row)">
+              <el-button v-if="row.status === 'REQUESTED'" link type="primary" size="small"
+                         :loading="completeConsultBusy === row.id" @click="completeConsult(row)">
                 书写会诊意见
               </el-button>
               <span v-else class="opinion">{{ row.opinion }}</span>
@@ -84,7 +85,7 @@
           <el-form-item>
             <el-input v-model="grp.members" placeholder="人员名单（逗号分隔）" style="width: 240px" />
           </el-form-item>
-          <el-button type="primary" size="small" @click="createGroup">团检建档</el-button>
+          <el-button type="primary" size="small" :loading="createGroupLoading" @click="createGroup">团检建档</el-button>
         </el-form>
         <el-table :data="groups" size="small" border @row-click="openGroup" highlight-current-row>
           <el-table-column prop="unit_name" label="单位" width="160" />
@@ -114,8 +115,8 @@
             <el-table-column label="操作" width="180">
               <template #default="{ row }">
                 <template v-if="row.status !== 'DONE'">
-                  <el-button link type="success" size="small" @click="finishExam(row, false)">正常</el-button>
-                  <el-button link type="danger" size="small" @click="finishExam(row, true)">异常</el-button>
+                  <el-button link type="success" size="small" :loading="finishExamBusy === row.id" @click="finishExam(row, false)">正常</el-button>
+                  <el-button link type="danger" size="small" :loading="finishExamBusy === row.id" @click="finishExam(row, true)">异常</el-button>
                 </template>
               </template>
             </el-table-column>
@@ -154,9 +155,9 @@
           <el-table-column label="操作" width="220">
             <template #default="{ row }">
               <template v-if="row.status === 'ACTIVE'">
-                <el-button link type="warning" size="small" @click="addVariance(row, 'DELAY')">记变异</el-button>
-                <el-button link type="danger" size="small" @click="addVariance(row, 'EXIT')">退出路径</el-button>
-                <el-button link type="success" size="small" @click="completePathway(row)">完成</el-button>
+                <el-button link type="warning" size="small" :loading="addVarianceBusy === row.id" @click="addVariance(row, 'DELAY')">记变异</el-button>
+                <el-button link type="danger" size="small" :loading="addVarianceBusy === row.id" @click="addVariance(row, 'EXIT')">退出路径</el-button>
+                <el-button link type="success" size="small" :loading="completePathwayBusy === row.id" @click="completePathway(row)">完成</el-button>
               </template>
             </template>
           </el-table-column>
@@ -183,6 +184,13 @@ const groupRecords = ref<Record<string, unknown>[]>([])
 const enrollments = ref<Record<string, unknown>[]>([])
 const varStats = ref<Record<string, unknown>[]>([])
 const grp = reactive({ unitName: '', contact: '', packageId: '', members: '' })
+const createFollowupLoading = ref(false)
+const createGroupLoading = ref(false)
+const doneFollowupBusy = ref<unknown>(null)
+const completeConsultBusy = ref<unknown>(null)
+const finishExamBusy = ref<unknown>(null)
+const addVarianceBusy = ref<unknown>(null)
+const completePathwayBusy = ref<unknown>(null)
 
 async function loadGroups() { groups.value = (await client.get('/exam/groups')).data.data }
 async function loadPathways() {
@@ -190,33 +198,57 @@ async function loadPathways() {
   varStats.value = (await client.get('/pathways/variance-stats')).data.data
 }
 async function createGroup() {
-  if (!grp.unitName || !grp.packageId || !grp.members) return
+  if (!grp.unitName || !grp.packageId || !grp.members) { ElMessage.warning('请填写单位、套餐和人员名单'); return }
   const names = grp.members.split(/[,，、]/).map((s) => s.trim()).filter(Boolean)
-  const resp = await client.post('/exam/groups',
-    { unitName: grp.unitName, contact: grp.contact, packageId: Number(grp.packageId), memberNames: names })
-  ElMessage.success(`团检建档成功，${resp.data.data.members} 人`)
-  await loadGroups()
+  createGroupLoading.value = true
+  try {
+    const resp = await client.post('/exam/groups',
+      { unitName: grp.unitName, contact: grp.contact, packageId: Number(grp.packageId), memberNames: names })
+    ElMessage.success(`团检建档成功，${resp.data.data.members} 人`)
+    await loadGroups()
+  } finally {
+    createGroupLoading.value = false
+  }
 }
 async function openGroup(row: Record<string, unknown>) {
   groupRecords.value = (await client.get(`/exam/groups/${row.id}/records`)).data.data
 }
 async function finishExam(row: Record<string, unknown>, abnormal: boolean) {
-  const { value } = await ElMessageBox.prompt('总检结论', '完成体检',
-    { inputValue: abnormal ? '血压偏高，建议心内科复查' : '各项指标正常' })
-  await client.put(`/exam/records/${row.id}/complete`, null, { params: { summary: value, abnormal } })
-  await loadGroups()
-  groupRecords.value = groupRecords.value.map((r) =>
-    r.id === row.id ? { ...r, status: 'DONE', summary: value, abnormal } : r)
+  const res = await ElMessageBox.prompt('总检结论', '完成体检',
+    { inputValue: abnormal ? '血压偏高，建议心内科复查' : '各项指标正常' }).catch(() => null)
+  if (!res) return
+  const { value } = res
+  finishExamBusy.value = row.id
+  try {
+    await client.put(`/exam/records/${row.id}/complete`, null, { params: { summary: value, abnormal } })
+    await loadGroups()
+    groupRecords.value = groupRecords.value.map((r) =>
+      r.id === row.id ? { ...r, status: 'DONE', summary: value, abnormal } : r)
+  } finally {
+    finishExamBusy.value = null
+  }
 }
 async function addVariance(row: Record<string, unknown>, varType: string) {
-  const { value } = await ElMessageBox.prompt('变异原因', varType === 'EXIT' ? '退出路径' : '变异登记',
-    { inputValue: varType === 'EXIT' ? '病情变化，转出路径' : '检查延迟一天完成' })
-  await client.post(`/pathways/enrollments/${row.id}/variances`, { dayNo: 1, varType, reason: value })
-  await loadPathways()
+  const res = await ElMessageBox.prompt('变异原因', varType === 'EXIT' ? '退出路径' : '变异登记',
+    { inputValue: varType === 'EXIT' ? '病情变化，转出路径' : '检查延迟一天完成' }).catch(() => null)
+  if (!res) return
+  const { value } = res
+  addVarianceBusy.value = row.id
+  try {
+    await client.post(`/pathways/enrollments/${row.id}/variances`, { dayNo: 1, varType, reason: value })
+    await loadPathways()
+  } finally {
+    addVarianceBusy.value = null
+  }
 }
 async function completePathway(row: Record<string, unknown>) {
-  await client.put(`/pathways/enrollments/${row.id}/complete`)
-  await loadPathways()
+  completePathwayBusy.value = row.id
+  try {
+    await client.put(`/pathways/enrollments/${row.id}/complete`)
+    await loadPathways()
+  } finally {
+    completePathwayBusy.value = null
+  }
 }
 
 async function searchPatients(kw: string) {
@@ -236,21 +268,40 @@ async function createFollowup() {
     ElMessage.warning('患者、主题、日期必填')
     return
   }
-  await client.post('/patientcare/followups', fu)
-  ElMessage.success('随访计划已建立')
-  await loadAll()
+  createFollowupLoading.value = true
+  try {
+    await client.post('/patientcare/followups', fu)
+    ElMessage.success('随访计划已建立')
+    await loadAll()
+  } finally {
+    createFollowupLoading.value = false
+  }
 }
 
 async function doneFollowup(row: Record<string, unknown>) {
-  const { value } = await ElMessageBox.prompt('随访结果', '完成随访', { inputValue: '恢复良好，无异常' })
-  await client.put(`/patientcare/followups/${row.id}/done`, null, { params: { note: value } })
-  await loadAll()
+  const res = await ElMessageBox.prompt('随访结果', '完成随访', { inputValue: '恢复良好，无异常' }).catch(() => null)
+  if (!res) return
+  const { value } = res
+  doneFollowupBusy.value = row.id
+  try {
+    await client.put(`/patientcare/followups/${row.id}/done`, null, { params: { note: value } })
+    await loadAll()
+  } finally {
+    doneFollowupBusy.value = null
+  }
 }
 
 async function completeConsult(row: Record<string, unknown>) {
-  const { value } = await ElMessageBox.prompt('会诊意见', '书写会诊意见')
-  await client.put(`/inpatient/consults/${row.id}/complete`, null, { params: { opinion: value } })
-  await loadAll()
+  const res = await ElMessageBox.prompt('会诊意见', '书写会诊意见').catch(() => null)
+  if (!res) return
+  const { value } = res
+  completeConsultBusy.value = row.id
+  try {
+    await client.put(`/inpatient/consults/${row.id}/complete`, null, { params: { opinion: value } })
+    await loadAll()
+  } finally {
+    completeConsultBusy.value = null
+  }
 }
 
 watch(tab, (t) => {

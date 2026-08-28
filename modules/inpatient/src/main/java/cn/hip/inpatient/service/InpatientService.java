@@ -314,7 +314,9 @@ public class InpatientService {
      */
     @Transactional
     public InpAdmission cancelSettlement(Long admissionId, Long operatorId, Long bedId) {
-        InpSettlement s = settlementRepo.findByAdmissionIdAndStatus(admissionId, "PAID")
+        // V90：按 settle_type='FINAL' 定位——中间结算引入后同一入院可有多张 PAID 行，
+        // 裸按 (admissionId,'PAID') 取会命中中间结算行、返回多行报错。冲销永远针对出院结算。
+        InpSettlement s = settlementRepo.findByAdmissionIdAndStatusAndSettleType(admissionId, "PAID", "FINAL")
                 .orElseThrow(() -> new InpException(9021, "该患者无有效出院结算单"));
         // 条件更新抢占：并发双击/两窗口同时冲销，只有一方成功
         if (settlementRepo.claimCancel(s.getId(), Instant.now(), operatorId) == 0) {
@@ -342,5 +344,87 @@ public class InpatientService {
             }
         }
         return admissionRepo.findById(admissionId).orElseThrow();
+    }
+
+    /**
+     * 住院中间结算（V90，长住/医保患者刚需）：住院期间就【当前已发生费用】出一张阶段性结算单，
+     * 不出院、不释放床位、不冲抵全部押金。与出院结算(discharge)口径不重复的机理：
+     *
+     * <p>① 只认领尚未被任何中间结算认领的【已执行】医嘱(interim_settle_id is null)并原子打标——
+     *    两张中间结算永不重叠认领同一笔费用（并发下靠行锁，每行只被一方 update 命中）。
+     * <p>② 本次中间结算金额 = 实际打标那批医嘱的金额之和（先打标后按 settle_id 求和，而非"先算再打标"，
+     *    杜绝并发下金额与打标行不一致）。
+     * <p>③ 出院结算 discharge() 的费用总额永远按医嘱台账现算(sum 全部已执行医嘱)、从不读中间结算行——
+     *    故中间结算结构上不可能抬高出院总额；中间结算金额恒为出院总额的子集。收入确认只认 FINAL。
+     * <p>④ balance 与 /account 同口径：押金合计 - 已发生费用合计（含已被中间结算认领部分），
+     *    即中间结算单上的 balance 就是当刻真实账户余额，负数=需补押金。
+     */
+    @Transactional
+    public InpSettlement interimSettle(Long admissionId, Long cashierId, String payMethod) {
+        InpAdmission adm = admissionRepo.findById(admissionId)
+                .orElseThrow(() -> new InpException(9003, "住院记录不存在"));
+        if (!"IN_HOSPITAL".equals(adm.getStatus())) {
+            throw new InpException(9030, "已出院不能做中间结算");
+        }
+        // 中间结算暂不发医保通道报文：避免与出院 YB 结算重复上传、污染不可逆的年度累计（起付线/统筹额度）。
+        // 仅本地记账留痕；医保分段上传留待按当地医保接口规范实现（见汇报·遗留风险）。
+        if ("YB".equals(payMethod)) {
+            throw new InpException(9032, "中间结算暂不支持医保通道结算，请用现金/自费方式");
+        }
+
+        // 先建结算单占号（拿到 id 才能给医嘱打标）；TEMP 占位含 admissionId 防并发互撞
+        InpSettlement s = new InpSettlement();
+        s.setSettleNo("TEMP-INT-" + admissionId);
+        s.setAdmissionId(admissionId);
+        s.setSettleType("INTERIM");
+        s.setTotalAmount(BigDecimal.ZERO);   // 打标后回填真实金额
+        s.setDepositAmount(BigDecimal.ZERO);
+        s.setBalance(BigDecimal.ZERO);
+        s.setCashierId(cashierId);
+        s.setPayMethod(payMethod == null ? "CASH" : payMethod);
+        s = settlementRepo.save(s);
+        // 必须 flush 出 INSERT，后续原生 update 的 FK(interim_settle_id) 才引用得到该行
+        entityManager.flush();
+        final Long settleId = s.getId();
+
+        // ① 原子认领：仅未被认领的已执行医嘱，打上本次结算 id（并发安全，靠行锁与 is null 条件）
+        entityManager.createNativeQuery(
+                        "update inp_order set interim_settle_id = :sid "
+                                + "where admission_id = :aid and status = 'EXECUTED' and interim_settle_id is null")
+                .setParameter("sid", settleId)
+                .setParameter("aid", admissionId)
+                .executeUpdate();
+        // ② 本次金额 = 实际被本单认领的医嘱金额之和（对打标结果求和，杜绝与打标行不一致）
+        BigDecimal interimAmount = toBig(entityManager.createNativeQuery(
+                        "select coalesce(sum(amount), 0) from inp_order where interim_settle_id = :sid")
+                .setParameter("sid", settleId).getSingleResult());
+        if (interimAmount.signum() <= 0) {
+            // 无新增已发生费用可结算——抛出即回滚，打标与占号一并撤销
+            throw new InpException(9031, "无新增已发生费用可结算");
+        }
+
+        // ④ 账户级快照：与 /account 同口径（押金合计 - 全部已发生费用合计）
+        BigDecimal depositTotal = toBig(entityManager.createNativeQuery(
+                        "select coalesce(sum(amount), 0) from inp_deposit where admission_id = :aid")
+                .setParameter("aid", admissionId).getSingleResult());
+        BigDecimal executedTotal = toBig(entityManager.createNativeQuery(
+                        "select coalesce(sum(amount), 0) from inp_order where admission_id = :aid and status = 'EXECUTED'")
+                .setParameter("aid", admissionId).getSingleResult());
+
+        s.setTotalAmount(interimAmount);
+        s.setDepositAmount(depositTotal);
+        s.setBalance(depositTotal.subtract(executedTotal));   // 负数=需补押金；即当刻真实账户余额
+        // 结算号后缀带 I 与出院结算 S 区分，且与旧纯数字号永不相等
+        s.setSettleNo("%s%s-I%06d".formatted(
+                configReader.get("billno_prefix_interim", "ZJ"),
+                BusinessDates.today().format(DateTimeFormatter.BASIC_ISO_DATE), settleId));
+        return settlementRepo.save(s);
+    }
+
+    /** 原生查询数值结果统一转 BigDecimal（coalesce(sum) 在 PG numeric 上回 BigDecimal，兜底其它数值型） */
+    private static BigDecimal toBig(Object v) {
+        if (v == null) return BigDecimal.ZERO;
+        if (v instanceof BigDecimal b) return b;
+        return new BigDecimal(v.toString());
     }
 }

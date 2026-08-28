@@ -152,9 +152,14 @@ class Phase107ConcurrencyTest {
         Long drugId = drug("阿莫西林");
         int before = drugRepository.findById(drugId).orElseThrow().getStock();
 
-        inventoryService.stockIn(drugId, 10, "B107", cn.hip.platform.core.config.BusinessDates.today().plusYears(1), "测试供应商", null);
+        // 1.2.13 起入库先记待验收、不加库存；验收通过才原子加。此处覆盖两段
+        var pending = inventoryService.stockIn(drugId, 10, "B107",
+                cn.hip.platform.core.config.BusinessDates.today().plusYears(1), "测试供应商", null, null);
         entityManager.clear();
-        assertEquals(before + 10, drugRepository.findById(drugId).orElseThrow().getStock());
+        assertEquals(before, drugRepository.findById(drugId).orElseThrow().getStock(), "验收前库存不动");
+        inventoryService.acceptStockIn(pending.getId(), null);
+        entityManager.clear();
+        assertEquals(before + 10, drugRepository.findById(drugId).orElseThrow().getStock(), "验收后原子加 10");
 
         // 盘点走条件更新：期望值过期（模拟期间有发药）时影响 0 行，不会覆盖并发扣减
         int current = drugRepository.findById(drugId).orElseThrow().getStock();

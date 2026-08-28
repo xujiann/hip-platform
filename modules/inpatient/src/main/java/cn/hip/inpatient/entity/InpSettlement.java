@@ -51,6 +51,14 @@ public class InpSettlement {
     @Column(nullable = false, length = 16)
     private String status = "PAID";
 
+    /**
+     * 结算类型：FINAL 出院结算（一次入院唯一，唯一索引 uq_inp_settlement_active 保证）/
+     * INTERIM 住院中间结算（可多张，不受唯一约束）。缺省 FINAL——discharge() 不设此值即为 FINAL，
+     * 历史行为零变化；中间结算金额恒为出院总额子集，收入确认只认 FINAL，二者不相加（V90 注释）。
+     */
+    @Column(nullable = false, length = 16)
+    private String settleType = "FINAL";
+
     /** 冲销时间（账务按冲销日归集，不改写结算日历史报表） */
     private Instant refundedAt;
 

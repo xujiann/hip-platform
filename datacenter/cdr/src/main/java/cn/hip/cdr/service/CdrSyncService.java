@@ -193,6 +193,7 @@ public class CdrSyncService {
             var settleByAdm = groupBy(named.queryForList("""
                     select distinct on (admission_id) admission_id, total_amount, deposit_amount, balance
                     from inp_settlement where admission_id in (:ids) and status = 'PAID'
+                          and settle_type = 'FINAL'
                     order by admission_id, id desc
                     """, Map.of("ids", ids)), "admission_id");
             txTemplate.executeWithoutResult(tx -> {

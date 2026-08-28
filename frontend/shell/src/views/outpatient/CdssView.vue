@@ -31,7 +31,7 @@
               </el-select>
             </el-form-item>
             <el-form-item><el-input v-model="ddi.message" placeholder="提示语" style="width: 260px" /></el-form-item>
-            <el-button type="primary" size="small" @click="addDdi">保存</el-button>
+            <el-button type="primary" size="small" :loading="addDdiLoading" @click="addDdi">保存</el-button>
           </el-form>
           <el-table :data="rules.ddi" size="small" border>
             <el-table-column prop="drug_a" label="药品A" width="120" />
@@ -95,16 +95,22 @@ const suggestionHits = ref<{ id: number; icd_prefix: string; content: string }[]
 const icdQuery = ref('J15.900')
 const showAddDdi = ref(false)
 const ddi = reactive({ drugA: '', drugB: '', severity: 'CAUTION', message: '' })
+const addDdiLoading = ref(false)
 
 async function loadAlerts() { alerts.value = (await client.get('/cdss/alerts')).data.data }
 async function loadRules() { rules.value = (await client.get('/cdss/rules')).data.data }
 
 async function addDdi() {
-  if (!ddi.drugA || !ddi.drugB || !ddi.message) return
-  await client.post('/cdss/ddi-rules', ddi)
-  ElMessage.success('已保存')
-  showAddDdi.value = false
-  await loadRules()
+  if (!ddi.drugA || !ddi.drugB || !ddi.message) { ElMessage.warning('请填写药品A、药品B和提示语'); return }
+  addDdiLoading.value = true
+  try {
+    await client.post('/cdss/ddi-rules', ddi)
+    ElMessage.success('已保存')
+    showAddDdi.value = false
+    await loadRules()
+  } finally {
+    addDdiLoading.value = false
+  }
 }
 async function querySuggestion() {
   suggestionHits.value = (await client.get('/cdss/suggestions', { params: { icd: icdQuery.value } })).data.data

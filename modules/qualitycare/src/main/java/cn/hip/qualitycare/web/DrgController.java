@@ -80,10 +80,14 @@ public class DrgController {
         var pending = jdbc.queryForList("""
                 select a.id, coalesce(a.discharge_diag_icd, a.admit_diag_icd) as admit_diag_icd,
                        coalesce(s.total_amount, 0) as total_cost,
-                       round((extract(epoch from (a.discharged_at - a.admit_at)) / 86400)::numeric, 1) as inp_days,
+                       coalesce(round((extract(epoch from (a.discharged_at - a.admit_at)) / 86400)::numeric, 1), 0) as inp_days,
                        exists (select 1 from inp_surgery g where g.admission_id = a.id and g.status = 'DONE') as has_surgery
                 from inp_admission a
+                -- 只认 FINAL 出院结算（v30）：中间结算引入 INTERIM 类型后，一个 admission
+                -- 可有多张 PAID（FINAL + 若干 INTERIM），裸 join 会产生重复行让 drg_case
+                -- 对同一病例插两次撞唯一约束（4090）。DRG 入组本就该用出院总费用=FINAL
                 left join inp_settlement s on s.admission_id = a.id and s.status = 'PAID'
+                    and s.settle_type = 'FINAL'
                 where a.status = 'DISCHARGED'
                   and (?::bigint is null or a.id = ?)
                   and not exists (select 1 from drg_case c where c.admission_id = a.id)

@@ -35,8 +35,27 @@
           <el-option label="现金结清" value="CASH" />
           <el-option label="医保结算" value="YB" />
         </el-select>
+        <!-- 车道B 收尾①：住院中间结算——住院期间就已发生费用出阶段性结算单，不出院、不释放床位 -->
+        <el-button type="warning" :loading="interiming" @click="interimSettle">中间结算</el-button>
         <el-button type="danger" :loading="discharging" @click="discharge">出院结算</el-button>
         <el-button @click="printSummary()">打印出院小结</el-button>
+      </div>
+
+      <!-- 历次中间结算（与出院结算口径不重复：中间结算只结已发生费用的子集，出院结算按台账现算全账单） -->
+      <div v-if="interims.length" style="margin-top: 10px;">
+        <b style="font-size: 13px;">历次中间结算</b>
+        <el-table :data="interims" size="small" style="margin-top: 4px">
+          <el-table-column prop="settle_no" label="结算单号" width="180" />
+          <el-table-column prop="total_amount" label="本次结算" width="100">
+            <template #default="{ row }">¥{{ Number(row.total_amount).toFixed(2) }}</template>
+          </el-table-column>
+          <el-table-column prop="balance" label="当时余额" width="100">
+            <template #default="{ row }">¥{{ Number(row.balance).toFixed(2) }}</template>
+          </el-table-column>
+          <el-table-column prop="created_at" label="时间">
+            <template #default="{ row }">{{ String(row.created_at).slice(0, 19).replace('T', ' ') }}</template>
+          </el-table-column>
+        </el-table>
       </div>
       <el-table :data="detail.orders" size="small" height="260" style="margin-top: 12px">
         <el-table-column prop="itemName" label="项目" />
@@ -78,6 +97,8 @@ const detail = ref<Record<string, unknown> | null>(null)
 const extraDeposit = ref(0)
 const payMethod = ref('CASH')
 const discharging = ref(false)
+const interiming = ref(false)
+const interims = ref<Record<string, unknown>[]>([])
 
 // 1.0.1（2067）：每日费用清单
 const dailyDate = ref(todayLocal())
@@ -122,7 +143,35 @@ async function open(row: Record<string, unknown> | null) {
   const adm = (detail.value as Record<string, unknown>)?.admission as Record<string, unknown> | undefined
   dischargeIcd.value = String(adm?.dischargeDiagIcd ?? '')
   dischargeName.value = String(adm?.dischargeDiagName ?? '')
-  await loadDaily()
+  await Promise.all([loadDaily(), loadInterims()])
+}
+
+// 车道B 收尾①：历次中间结算
+async function loadInterims() {
+  if (!current.value) { interims.value = []; return }
+  interims.value = (await client.get(
+    `/inpatient/admissions/${current.value.id}/interim-settlements`)).data.data
+}
+
+async function interimSettle() {
+  if (!current.value) return
+  try {
+    await ElMessageBox.confirm(
+      `确认为 ${current.value.patientName} 做住院中间结算？将就当前已发生费用出一张中间结算单（不出院、不释放床位）。`,
+      '中间结算确认')
+  } catch {
+    return   // 用户取消
+  }
+  interiming.value = true
+  try {
+    // 业务错误（9030 已出院 / 9031 无新增费用 / 9032 医保通道）由拦截器统一红字提示并 reject
+    const resp = await client.post(`/inpatient/admissions/${current.value.id}/interim-settle`)
+    const s = resp.data.data
+    ElMessage.success(`中间结算完成 ${s.settleNo}：本次结算 ¥${s.totalAmount}，当时余额 ¥${s.balance}`)
+    await loadInterims()
+  } finally {
+    interiming.value = false
+  }
 }
 
 // 1.0.4：出院诊断补录（病案编码；DRG 入组优先取出院诊断）

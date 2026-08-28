@@ -2,16 +2,23 @@ package cn.hip.platform.masterdata.service;
 
 import cn.hip.platform.masterdata.entity.DrugItem;
 import cn.hip.platform.masterdata.entity.InvStockIn;
+import cn.hip.platform.masterdata.entity.InvStockTake;
+import cn.hip.platform.masterdata.entity.InvStockTakeLine;
 import cn.hip.platform.masterdata.entity.InvTransaction;
 import cn.hip.platform.masterdata.repository.DrugItemRepository;
 import cn.hip.platform.masterdata.repository.InvStockInRepository;
+import cn.hip.platform.masterdata.repository.InvStockTakeLineRepository;
+import cn.hip.platform.masterdata.repository.InvStockTakeRepository;
 import cn.hip.platform.masterdata.repository.InvTransactionRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.List;
 import cn.hip.platform.core.config.BusinessDates;
 
@@ -22,6 +29,8 @@ public class InventoryService {
     private final DrugItemRepository drugRepository;
     private final InvStockInRepository stockInRepository;
     private final InvTransactionRepository transactionRepository;
+    private final InvStockTakeRepository stockTakeRepository;
+    private final InvStockTakeLineRepository stockTakeLineRepository;
     private final jakarta.persistence.EntityManager entityManager;
 
     public static class InventoryException extends RuntimeException {
@@ -32,15 +41,19 @@ public class InventoryService {
         }
     }
 
-    /** 入库：加库存并留痕 */
+    // ================= 入库验收（药事全链③）=================
+
+    /**
+     * 入库登记：只落一条待验收单，**不加库存、不写流水**。
+     * 真正入账在验收通过（acceptStockIn）时发生——这样质检/验收环节才能挡住不合格批次，
+     * 而不是入库即无条件加库存。与采购勾稽可选：purchaseNo 有则关联，无则允许直接入库验收。
+     */
     @Transactional
     public InvStockIn stockIn(Long drugId, int qty, String batchNo, LocalDate expireDate,
-                              String supplier, Long operatorId) {
+                              String supplier, String purchaseNo, Long operatorId) {
         if (qty <= 0) throw new InventoryException(8001, "入库数量必须大于 0");
-        DrugItem drug = drugRepository.findById(drugId)
+        drugRepository.findById(drugId)
                 .orElseThrow(() -> new InventoryException(8002, "药品不存在"));
-        // 原子加：读-改-写会覆盖期间并发发药的扣减，导致库存虚增、账实不符
-        drugRepository.restoreStock(drugId, qty);
 
         InvStockIn in = new InvStockIn();
         in.setInNo("RK" + BusinessDates.today().format(DateTimeFormatter.BASIC_ISO_DATE) + "-" + nextInSeq());
@@ -49,12 +62,54 @@ public class InventoryService {
         in.setBatchNo(batchNo);
         in.setExpireDate(expireDate);
         in.setSupplier(supplier);
+        in.setPurchaseNo(purchaseNo);
         in.setOperatorId(operatorId);
-        in = stockInRepository.save(in);
-        int stockAfter = drugRepository.findById(drugId).map(DrugItem::getStock).orElse(0);
-        log(drugId, "IN", qty, stockAfter, in.getInNo(), operatorId);
-        return in;
+        in.setAcceptStatus("PENDING_ACCEPT");   // 显式待验收，验收前不入账
+        return stockInRepository.save(in);
     }
+
+    /** 验收通过：条件更新置 ACCEPTED，只有第一次影响 1 行才真正加库存并写 IN 流水（防重复入账） */
+    @Transactional
+    public InvStockIn acceptStockIn(Long stockInId, Long operatorId) {
+        InvStockIn in = stockInRepository.findById(stockInId)
+                .orElseThrow(() -> new InventoryException(8010, "入库单不存在"));
+        if (!"PENDING_ACCEPT".equals(in.getAcceptStatus())) {
+            throw new InventoryException(8011, "入库单不是待验收状态，无法验收");
+        }
+        // 先捕获再更新：markAccepted 带 clearAutomatically 会清持久化上下文，之后 in 即失效
+        Long drugId = in.getDrugId();
+        int qty = in.getQty();
+        String inNo = in.getInNo();
+        if (stockInRepository.markAccepted(stockInId, operatorId, Instant.now()) == 0) {
+            throw new InventoryException(8011, "入库单已被处理（并发验收/拒收），请刷新");
+        }
+        // 条件更新已保证唯一入账，这里原子加库存 + 留痕
+        drugRepository.restoreStock(drugId, qty);
+        int stockAfter = drugRepository.findById(drugId).map(DrugItem::getStock).orElse(0);
+        log(drugId, "IN", qty, stockAfter, inNo, operatorId);
+        return stockInRepository.findById(stockInId).orElseThrow();
+    }
+
+    /** 拒收：条件更新置 REJECTED（带原因），不动库存 */
+    @Transactional
+    public InvStockIn rejectStockIn(Long stockInId, String reason, Long operatorId) {
+        if (reason == null || reason.isBlank()) throw new InventoryException(8012, "拒收原因必填");
+        InvStockIn in = stockInRepository.findById(stockInId)
+                .orElseThrow(() -> new InventoryException(8010, "入库单不存在"));
+        if (!"PENDING_ACCEPT".equals(in.getAcceptStatus())) {
+            throw new InventoryException(8011, "入库单不是待验收状态，无法拒收");
+        }
+        if (stockInRepository.markRejected(stockInId, operatorId, Instant.now(), reason.trim()) == 0) {
+            throw new InventoryException(8011, "入库单已被处理（并发验收/拒收），请刷新");
+        }
+        return stockInRepository.findById(stockInId).orElseThrow();
+    }
+
+    public List<InvStockIn> pendingStockIns() {
+        return stockInRepository.findByAcceptStatusOrderByIdDesc("PENDING_ACCEPT");
+    }
+
+    // ================= 出/退库留痕（原有）=================
 
     /** 出库留痕（发药/病区执行调用，扣减已由调用方原子完成） */
     @Transactional
@@ -70,7 +125,7 @@ public class InventoryService {
         log(drugId, "RET", qty, stockAfter, refNo, operatorId);
     }
 
-    /** 盘点调整：直接设定库存 */
+    /** 单药盘点调整（保留：快速直调入口，与盘点单并存）：直接设定库存 */
     @Transactional
     public void adjust(Long drugId, int newStock, String reason, Long operatorId) {
         if (newStock < 0) throw new InventoryException(8003, "库存不能为负");
@@ -89,11 +144,204 @@ public class InventoryService {
         return drugRepository.findByEnabledTrueAndStockLessThan(threshold);
     }
 
+    // ================= 库存盘点（药事全链①）=================
+
+    public record StockTakeLineView(Long lineId, Long drugId, String drugName,
+                                    int bookQty, Integer actualQty, Integer diff) {}
+
+    public record StockTakeView(Long id, String takeNo, String status, String remark,
+                                Instant createdAt, Instant confirmedAt,
+                                List<StockTakeLineView> lines,
+                                int lineCount, int countedLines, int gainLines, int lossLines, int netDiff) {}
+
+    public record CountEntry(Long drugId, Integer actualQty) {}
+
+    /** 建盘点单：对给定药品逐一快照当前库存为账面数，落草稿单 */
+    @Transactional
+    public StockTakeView createStockTake(List<Long> drugIds, String remark, Long operatorId) {
+        if (drugIds == null || drugIds.isEmpty()) throw new InventoryException(8009, "盘点单至少需选择一种药品");
+        InvStockTake take = new InvStockTake();
+        take.setTakeNo("PD" + BusinessDates.today().format(DateTimeFormatter.BASIC_ISO_DATE) + "-" + nextTakeSeq());
+        take.setStatus("DRAFT");
+        take.setRemark(remark);
+        take.setOperatorId(operatorId);
+        take = stockTakeRepository.save(take);
+        for (Long drugId : drugIds.stream().distinct().toList()) {
+            DrugItem drug = drugRepository.findById(drugId)
+                    .orElseThrow(() -> new InventoryException(8002, "药品不存在"));
+            InvStockTakeLine line = new InvStockTakeLine();
+            line.setTakeId(take.getId());
+            line.setDrugId(drugId);
+            line.setBookQty(drug.getStock());   // 账面数快照
+            stockTakeLineRepository.save(line);
+        }
+        return buildTakeView(take.getId());
+    }
+
+    /** 批量录入实盘数：命中行更新实盘数，未建行的药品按当前库存补建行后再录（upsert） */
+    @Transactional
+    public StockTakeView enterCounts(Long takeId, List<CountEntry> entries) {
+        InvStockTake take = stockTakeRepository.findById(takeId)
+                .orElseThrow(() -> new InventoryException(8005, "盘点单不存在"));
+        if (!"DRAFT".equals(take.getStatus())) throw new InventoryException(8006, "盘点单非草稿状态，不能录入实盘数");
+        if (entries != null) {
+            for (CountEntry e : entries) {
+                if (e.actualQty() != null && e.actualQty() < 0) throw new InventoryException(8007, "实盘数不能为负");
+                InvStockTakeLine line = stockTakeLineRepository.findByTakeIdAndDrugId(takeId, e.drugId())
+                        .orElseGet(() -> {
+                            DrugItem drug = drugRepository.findById(e.drugId())
+                                    .orElseThrow(() -> new InventoryException(8002, "药品不存在"));
+                            InvStockTakeLine nl = new InvStockTakeLine();
+                            nl.setTakeId(takeId);
+                            nl.setDrugId(e.drugId());
+                            nl.setBookQty(drug.getStock());
+                            return nl;
+                        });
+                line.setActualQty(e.actualQty());
+                stockTakeLineRepository.save(line);
+            }
+        }
+        return buildTakeView(takeId);
+    }
+
+    /**
+     * 确认盘点：对每条有实盘数且盈亏≠0 的行，按「账面=快照」条件更新到实盘数并写 STOCKTAKE 流水。
+     * 任一药品账面在盘点期间被并发出入库改动（条件更新影响 0 行）即整单回滚、报 8008，
+     * 迫使重新盘点——保证盈亏账实对账口径不被期间正常业务污染。
+     */
+    @Transactional
+    public StockTakeView confirmStockTake(Long takeId, Long operatorId) {
+        InvStockTake take = stockTakeRepository.findById(takeId)
+                .orElseThrow(() -> new InventoryException(8005, "盘点单不存在"));
+        if (!"DRAFT".equals(take.getStatus())) throw new InventoryException(8006, "盘点单非草稿状态，不能确认");
+        String takeNo = take.getTakeNo();
+        List<InvStockTakeLine> lines = stockTakeLineRepository.findByTakeIdOrderById(takeId);
+        List<InvStockTakeLine> counted = lines.stream().filter(l -> l.getActualQty() != null).toList();
+        if (counted.isEmpty()) throw new InventoryException(8009, "盘点单没有已录实盘数的盘点行，无法确认");
+        for (InvStockTakeLine line : counted) {
+            int book = line.getBookQty();
+            int actual = line.getActualQty();
+            int delta = actual - book;
+            if (delta == 0) continue;   // 账实相符，无需调库也无需流水
+            if (drugRepository.adjustStock(line.getDrugId(), book, actual) == 0) {
+                String name = drugRepository.findById(line.getDrugId()).map(DrugItem::getName).orElse("");
+                throw new InventoryException(8008, "药品【" + name + "】账面已变化（盘点期间有出入库），请重新盘点");
+            }
+            log(line.getDrugId(), "STOCKTAKE", delta, actual, takeNo, operatorId);
+        }
+        // adjustStock 带 clearAutomatically，take 已脱管，重取一份改状态；
+        // saveAndFlush 确保状态落库（否则同一事务内后续若清持久化上下文，未刷的状态更新会丢）
+        InvStockTake fresh = stockTakeRepository.findById(takeId).orElseThrow();
+        fresh.setStatus("CONFIRMED");
+        fresh.setConfirmedAt(Instant.now());
+        stockTakeRepository.saveAndFlush(fresh);
+        return buildTakeView(takeId);
+    }
+
+    /** 作废盘点单（仅草稿可作废） */
+    @Transactional
+    public StockTakeView cancelStockTake(Long takeId) {
+        InvStockTake take = stockTakeRepository.findById(takeId)
+                .orElseThrow(() -> new InventoryException(8005, "盘点单不存在"));
+        if (!"DRAFT".equals(take.getStatus())) throw new InventoryException(8006, "盘点单非草稿状态，不能作废");
+        take.setStatus("CANCELLED");
+        stockTakeRepository.saveAndFlush(take);
+        return buildTakeView(takeId);
+    }
+
+    public StockTakeView getStockTake(Long takeId) {
+        return buildTakeView(takeId);
+    }
+
+    public List<InvStockTake> recentStockTakes() {
+        return stockTakeRepository.findTop50ByOrderByIdDesc();
+    }
+
+    private StockTakeView buildTakeView(Long takeId) {
+        InvStockTake take = stockTakeRepository.findById(takeId)
+                .orElseThrow(() -> new InventoryException(8005, "盘点单不存在"));
+        List<InvStockTakeLine> lines = stockTakeLineRepository.findByTakeIdOrderById(takeId);
+        List<StockTakeLineView> lineViews = new ArrayList<>();
+        int countedLines = 0, gainLines = 0, lossLines = 0, netDiff = 0;
+        for (InvStockTakeLine l : lines) {
+            String name = drugRepository.findById(l.getDrugId()).map(DrugItem::getName).orElse("");
+            Integer diff = l.getActualQty() == null ? null : l.getActualQty() - l.getBookQty();
+            if (diff != null) {
+                countedLines++;
+                netDiff += diff;
+                if (diff > 0) gainLines++;
+                else if (diff < 0) lossLines++;
+            }
+            lineViews.add(new StockTakeLineView(l.getId(), l.getDrugId(), name, l.getBookQty(), l.getActualQty(), diff));
+        }
+        return new StockTakeView(take.getId(), take.getTakeNo(), take.getStatus(), take.getRemark(),
+                take.getCreatedAt(), take.getConfirmedAt(), lineViews,
+                lines.size(), countedLines, gainLines, lossLines, netDiff);
+    }
+
+    // ================= 效期预警（药事全链②，估算口径）=================
+
+    public record ExpiryWarning(Long drugId, String drugName, Long stockInId, String batchNo,
+                                LocalDate expireDate, long daysToExpire, int batchQty,
+                                int estimatedRemaining, String status) {}
+
+    /**
+     * 近效期预警（**只读估算口径**）。
+     *
+     * <p>背景：库存是 md_drug.stock 单一聚合值，发药/退药直接扣聚合、不落批次级在库量，
+     * 且扣减分散在 outpatient/inpatient 多处。要做精确批次追溯须跨模块改扣减路径，风险高。
+     * 故此处采用估算：把该药「发药净出量」按 FEFO（先到期先出）从最早效期批次起分摊消耗，
+     * 各批次入库量减去被分摊的消耗即为**估算在库量**；效期在阈值内且估算在库量>0 的批次报警。
+     *
+     * <p>已知偏差（明确不追求精确）：①实际发药未按批次记录，消耗按 FEFO 假设分摊；
+     * ②盘点前的期初/种子库存不属任何入库批次，不参与分摊；③ADJ/STOCKTAKE 调整不计入消耗。
+     * 因此估算偏保守（宁可多报不漏报），供药师人工复核，不作精确批次结论。
+     */
+    public List<ExpiryWarning> expiryWarnings(int days) {
+        LocalDate today = BusinessDates.today();
+        LocalDate threshold = today.plusDays(days);
+        // 候选：效期 <= 阈值 的已验收批次，取其涉及的药品集合
+        List<InvStockIn> candidates = stockInRepository.findAcceptedNearExpiry(threshold);
+        List<Long> drugIds = candidates.stream().map(InvStockIn::getDrugId).distinct().toList();
+
+        List<ExpiryWarning> result = new ArrayList<>();
+        for (Long drugId : drugIds) {
+            List<InvStockIn> batches = stockInRepository.findAcceptedBatchesByDrugFefo(drugId);   // 效期升序
+            long netConsumed = Math.max(0, -transactionRepository.sumOutReturnQty(drugId));
+            String name = drugRepository.findById(drugId).map(DrugItem::getName).orElse("");
+            long remainingConsume = netConsumed;
+            for (InvStockIn b : batches) {
+                int batchQty = b.getQty();
+                long alloc = Math.min(batchQty, remainingConsume);   // FEFO：早效期先被消耗
+                int estRemaining = (int) (batchQty - alloc);
+                remainingConsume -= alloc;
+                if (b.getExpireDate() == null || b.getExpireDate().isAfter(threshold)) continue;   // 只报阈值内批次
+                if (estRemaining <= 0) continue;
+                long d = ChronoUnit.DAYS.between(today, b.getExpireDate());
+                String status = b.getExpireDate().isBefore(today) ? "EXPIRED" : "NEAR_EXPIRY";
+                result.add(new ExpiryWarning(drugId, name, b.getId(), b.getBatchNo(),
+                        b.getExpireDate(), d, batchQty, estRemaining, status));
+            }
+        }
+        result.sort((a, b) -> a.expireDate().compareTo(b.expireDate()));
+        return result;
+    }
+
+    // ================= 内部工具 =================
+
     /** 入库单号取序列：nanoTime%1e6 会碰撞唯一约束（裸 500） */
     private long nextInSeq() {
         return ((Number) entityManager.createNativeQuery("select nextval('inv_stock_in_seq')")
                 .unwrap(org.hibernate.query.NativeQuery.class)
                 .addSynchronizedQuerySpace("")   // 取号不触发全会话 flush（1.1.7 B-8）
+                .getSingleResult()).longValue();
+    }
+
+    /** 盘点单号取序列（同 nextInSeq 防碰撞/防 flush 思路） */
+    private long nextTakeSeq() {
+        return ((Number) entityManager.createNativeQuery("select nextval('inv_stock_take_seq')")
+                .unwrap(org.hibernate.query.NativeQuery.class)
+                .addSynchronizedQuerySpace("")
                 .getSingleResult()).longValue();
     }
 

@@ -29,6 +29,7 @@ public class ChargeService {
     private final InsuranceSplitService insuranceSplitService;
     private final cn.hip.platform.core.service.ConfigReader configReader;
     private final cn.hip.platform.core.config.ModuleGate moduleGate;
+    private final RefundApprovalService refundApprovalService;
 
     /** 结算：全部未收费订单一次结清 */
     @Transactional
@@ -92,6 +93,9 @@ public class ChargeService {
         if (!"PAID".equals(charge.getStatus())) {
             throw new BizException(5003, "该结算单已退费");
         }
+        // 大额退费审批闸（v30）：超阈值须先有 APPROVED 审批单，否则拒绝并引导走审批。
+        // 放在抢占逻辑之前——审批未过时不触碰任何单据/明细状态；消费审批单是幂等条件更新
+        refundApprovalService.assertApproved(charge);
         List<OutpOrder> orders = orderRepository.findByChargeId(chargeId);
         // 空列表必须显式拒绝：明细抢占会把 chargeId 置 null，他方先退后本方查得空集，
         // 若放任则 `0 != 0` 为假、防线在最需要它时反而放行（settle/dispense 早有 isEmpty 拦截，此处漏了）

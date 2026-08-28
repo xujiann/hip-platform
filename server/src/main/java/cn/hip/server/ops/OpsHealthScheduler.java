@@ -11,8 +11,10 @@ import java.util.function.BooleanSupplier;
 
 /**
  * 1.0.5：健康告警定时评估（原仅拉式——打开运维页才评估，无人看就无人知道）。
- * 每小时跑与健康概览同口径的检查，异常自动开故障工单（同题未处理不重复开单）；
- * 外发通道（短信/IM）依赖网关资质，接入点即本类 check 的告警落点，属外部条件项。
+ * 每小时跑与健康概览同口径的检查，异常自动开故障工单（同题未处理不重复开单）。
+ * 1.2.14 巡检扩面：新增连接池耗尽/集成积压/堆内存三条盲区检查；并把外发从"外部条件项"
+ * 落地为可插拔 webhook——配了 sys_config.ops_alert_webhook 则 HIGH 工单 POST 外发（钉钉/企业微信），
+ * 未配则仅开单（向后兼容）；外发失败一律吞掉，绝不拖累巡检主流程。
  */
 @Slf4j
 @Component
@@ -21,10 +23,24 @@ public class OpsHealthScheduler {
 
     private final JdbcTemplate jdbc;
     private final cn.hip.platform.core.service.JobLockService jobLock;
+    /** 连接池指标来源：注入 DataSource 后解包为 HikariDataSource 读活跃/上限（Hikari 是 Boot 默认池） */
+    private final javax.sql.DataSource dataSource;
 
     /** 磁盘告警监测路径（逗号分隔多卷）；缺省查工作目录——试点应配数据库卷与备份卷所在分区 */
     @org.springframework.beans.factory.annotation.Value("${hip.ops.disk-paths:}")
     private String diskPaths;
+
+    /** 连接池使用率(活跃/上限)告警阈值：逼近上限时新请求排队 → 全站阻塞，比慢接口更靠前的死因 */
+    @org.springframework.beans.factory.annotation.Value("${hip.ops.pool-usage-threshold:0.9}")
+    private double poolUsageThreshold;
+
+    /** JVM 堆使用率(已用/最大)告警阈值：过高 → GC 频繁/停顿 → 迟早 OOM 进程猝死 */
+    @org.springframework.beans.factory.annotation.Value("${hip.ops.heap-usage-threshold:0.9}")
+    private double heapUsageThreshold;
+
+    /** 集成报文近 1 小时 ERROR 条数阈值：超阈值说明 LIS/PACS 报文处理在堆积（结果回不来） */
+    @org.springframework.beans.factory.annotation.Value("${hip.ops.queue-error-threshold:100}")
+    private int queueErrorThreshold;
 
     @Scheduled(cron = "0 0 * * * *", zone = cn.hip.platform.core.config.HipProfiles.ZONE)
     public void hourlyHealthCheck() {
@@ -66,6 +82,17 @@ public class OpsHealthScheduler {
                             vol.exists() && vol.getFreeSpace() / 1024 / 1024 / 1024 < 10);
                     check(opened, "磁盘监测路径不存在（配置错误）：" + p.trim(), "MEDIUM", () -> !vol.exists());
                 }
+                // 1.2.14 巡检扩面：三条新盲区。连接池耗尽/堆压力是"全站级"死因（比慢接口更靠前），
+                // 集成积压是"临床级"降级（检验/影像结果回不来）。阈值均可配（hip.ops.*）。
+                check(opened, "数据库连接池接近耗尽", "HIGH", () -> poolUsageRatio() >= poolUsageThreshold);
+                check(opened, "集成报文近 1 小时错误积压", "MEDIUM", () -> {
+                    Integer n = jdbc.queryForObject("""
+                            select count(*) from int_message_log
+                            where status = 'ERROR' and created_at > now() - interval '1 hour'
+                            """, Integer.class);
+                    return n != null && n > queueErrorThreshold;
+                });
+                check(opened, "JVM 堆内存使用率过高", "HIGH", () -> heapUsageRatio() >= heapUsageThreshold);
                 // 观测表归档：三张只增不减的表若无清理，ops_slow_api 还会自我放大
                 // （DB 慢 → 更多请求超阈值 → 每个都同步 insert → 更慢）。
                 // 小时判断必须与 cron 同时区：LocalTime.now() 用 JVM 默认时区，
@@ -95,5 +122,91 @@ public class OpsHealthScheduler {
         jdbc.update("insert into ops_fault_ticket(title, level, reporter) values (?,?,'system')", title, level);
         opened.incrementAndGet();
         log.warn("自动巡检开单: {} ({})", title, level);
+        // 可插拔外发：仅"刚开单"这一次触发（同题已 OPEN 会在上面 return，天然不重复外发）
+        dispatchWebhook(title, level);
+    }
+
+    /**
+     * 连接池使用率 = 活跃连接 / 池上限（0~1）。取指标失败或非 Hikari 池返回 0（不误报）。
+     * Hikari 是 Spring Boot 默认连接池；池满时新请求进入 awaiting 队列直至超时，是全站阻塞的先兆。
+     */
+    private double poolUsageRatio() {
+        try {
+            var hikari = dataSource.unwrap(com.zaxxer.hikari.HikariDataSource.class);
+            var mx = hikari.getHikariPoolMXBean();
+            int max = hikari.getMaximumPoolSize();
+            return max <= 0 ? 0.0 : (double) mx.getActiveConnections() / max;
+        } catch (Exception e) {
+            return 0.0;
+        }
+    }
+
+    /** JVM 堆使用率 = 已用 / 最大（0~1）。getMax() 未定义(-1) 时返回 0（不误报）。 */
+    private double heapUsageRatio() {
+        var h = java.lang.management.ManagementFactory.getMemoryMXBean().getHeapMemoryUsage();
+        long max = h.getMax();
+        return max <= 0 ? 0.0 : (double) h.getUsed() / max;
+    }
+
+    /**
+     * 告警外发（可插拔）：配了 sys_config.ops_alert_webhook 且为 HIGH 级工单，则 POST 到该 webhook
+     * （钉钉/企业微信 text 型格式）；未配置=保持原行为（仅开单，向后兼容）。
+     * 外发绝不能影响巡检主流程——读配置/建连/发送任一环节异常一律吞掉，最多记一条 warn。
+     */
+    private void dispatchWebhook(String title, String level) {
+        if (!"HIGH".equals(level)) {
+            return;   // 仅高级别外发，避免刷屏；MEDIUM/LOW 仍进工单台账
+        }
+        String url;
+        try {
+            var rows = jdbc.queryForList(
+                    "select cfg_value from sys_config where cfg_key = 'ops_alert_webhook'");
+            if (rows.isEmpty()) {
+                return;   // 键不存在
+            }
+            url = (String) rows.get(0).get("cfg_value");
+        } catch (Exception e) {
+            return;   // 读配置失败也不能拖累巡检
+        }
+        if (url == null || url.isBlank()) {
+            return;   // 未配置=只开单（当前行为）
+        }
+        try {
+            String content = "【HIP 自动巡检告警·" + level + "】\n" + title;
+            String body = "{\"msgtype\":\"text\",\"text\":{\"content\":\"" + jsonEscape(content) + "\"}}";
+            var client = java.net.http.HttpClient.newBuilder()
+                    .connectTimeout(java.time.Duration.ofSeconds(3)).build();
+            var req = java.net.http.HttpRequest.newBuilder()
+                    .uri(java.net.URI.create(url))
+                    .timeout(java.time.Duration.ofSeconds(5))
+                    .header("Content-Type", "application/json; charset=utf-8")
+                    .POST(java.net.http.HttpRequest.BodyPublishers.ofString(
+                            body, java.nio.charset.StandardCharsets.UTF_8))
+                    .build();
+            var resp = client.send(req, java.net.http.HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() / 100 != 2) {
+                log.warn("告警外发返回非 2xx（{}）: {}", resp.statusCode(), title);
+            }
+        } catch (Exception e) {
+            // 网络/网关/超时等一律吞掉：外发是"加分项"，挂了不能反过来搞垮巡检闸门
+            log.warn("告警外发失败（不影响巡检）: {} - {}", title, e.toString());
+        }
+    }
+
+    /** 最小 JSON 字符串转义：标题可能含引号/反斜杠/换行，避免拼坏 webhook body。 */
+    private static String jsonEscape(String s) {
+        var sb = new StringBuilder(s.length() + 16);
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '"'  -> sb.append("\\\"");
+                case '\\' -> sb.append("\\\\");
+                case '\n' -> sb.append("\\n");
+                case '\r' -> sb.append("\\r");
+                case '\t' -> sb.append("\\t");
+                default   -> sb.append(c);
+            }
+        }
+        return sb.toString();
     }
 }

@@ -30,7 +30,7 @@
           <el-input v-model="vital.dbp" placeholder="舒张压" />
           <el-input v-model="vital.spo2" placeholder="SpO2" />
         </div>
-        <el-button type="primary" style="width: 100%; margin-top: 8px" @click="saveVital">保存体征</el-button>
+        <el-button type="primary" style="width: 100%; margin-top: 8px" :loading="saveVitalLoading" @click="saveVital">保存体征</el-button>
         <h4>最近体征</h4>
         <el-card v-for="(v, i) in vitals.slice(-5).reverse()" :key="i" class="pt-card" shadow="never">
           <span class="muted">{{ String(v.measuredAt).slice(5, 16).replace('T', ' ') }}</span>
@@ -40,7 +40,7 @@
       </template>
       <template v-else>
         <h4>查房病历
-          <el-button link type="primary" size="small" @click="addRound">记查房</el-button>
+          <el-button link type="primary" size="small" :loading="addRoundLoading" @click="addRound">记查房</el-button>
         </h4>
         <el-card v-for="r in records" :key="String(r.id)" class="pt-card" shadow="never">
           <b>{{ r.title }}</b>
@@ -66,6 +66,8 @@ const drawer = ref(false)
 const vitals = ref<Record<string, unknown>[]>([])
 const records = ref<Record<string, unknown>[]>([])
 const vital = reactive({ temperature: '', pulse: '', respiration: '', sbp: '', dbp: '', spo2: '' })
+const saveVitalLoading = ref(false)
+const addRoundLoading = ref(false)
 
 async function load() {
   const all = (await client.get('/inpatient/admissions')).data.data as Record<string, unknown>[]
@@ -96,17 +98,25 @@ async function saveVital() {
     ElMessage.error((e as Error).message)
     return
   }
-  await client.post(`/inpatient/admissions/${current.value.id}/vitals`, payload)
-  ElMessage.success('已录入')
-  vitals.value = (await client.get(`/inpatient/admissions/${current.value.id}/vitals`)).data.data
+  saveVitalLoading.value = true
+  try {
+    await client.post(`/inpatient/admissions/${current.value.id}/vitals`, payload)
+    ElMessage.success('已录入')
+    vitals.value = (await client.get(`/inpatient/admissions/${current.value.id}/vitals`)).data.data
+  } finally { saveVitalLoading.value = false }
 }
 
 async function addRound() {
   if (!current.value) return
-  const { value } = await ElMessageBox.prompt('查房情况', '移动查房', { inputValue: '生命体征平稳，继续目前治疗' })
-  await client.post(`/inpatient/admissions/${current.value.id}/records`,
-    { recordType: 'PROGRESS', title: '移动查房记录', content: value })
-  records.value = (await client.get(`/inpatient/admissions/${current.value.id}/records`)).data.data
+  const res = await ElMessageBox.prompt('查房情况', '移动查房', { inputValue: '生命体征平稳，继续目前治疗' }).catch(() => null)
+  if (!res) return
+  const { value } = res
+  addRoundLoading.value = true
+  try {
+    await client.post(`/inpatient/admissions/${current.value.id}/records`,
+      { recordType: 'PROGRESS', title: '移动查房记录', content: value })
+    records.value = (await client.get(`/inpatient/admissions/${current.value.id}/records`)).data.data
+  } finally { addRoundLoading.value = false }
 }
 
 onMounted(load)

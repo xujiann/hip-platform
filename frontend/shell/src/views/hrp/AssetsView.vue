@@ -21,9 +21,9 @@
       </el-table-column>
       <el-table-column label="操作" width="150">
         <template #default="{ row }">
-          <el-button v-if="row.status === 'IN_USE'" link type="warning" @click="setStatus(row, 'REPAIR')">报修</el-button>
-          <el-button v-if="row.status === 'REPAIR'" link type="success" @click="setStatus(row, 'IN_USE')">修复</el-button>
-          <el-button v-if="row.status !== 'SCRAPPED'" link type="danger" @click="setStatus(row, 'SCRAPPED')">报废</el-button>
+          <el-button v-if="row.status === 'IN_USE'" link type="warning" :loading="statusBusyId === row.id" @click="setStatus(row, 'REPAIR')">报修</el-button>
+          <el-button v-if="row.status === 'REPAIR'" link type="success" :loading="statusBusyId === row.id" @click="setStatus(row, 'IN_USE')">修复</el-button>
+          <el-button v-if="row.status !== 'SCRAPPED'" link type="danger" :loading="statusBusyId === row.id" @click="setStatus(row, 'SCRAPPED')">报废</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -68,6 +68,7 @@ const records = ref<Record<string, unknown>[]>([])
 const depts = ref<{ id: number; name: string }[]>([])
 const loading = ref(false)
 const saving = ref(false)
+const statusBusyId = ref<unknown>(null)
 const dialogVisible = ref(false)
 const form = reactive({
   name: '', category: '医疗设备', deptId: null as number | null,
@@ -101,8 +102,13 @@ async function save() {
 }
 
 async function setStatus(row: Record<string, unknown>, status: string) {
-  await client.put(`/hrp/assets/${row.id}/status`, null, { params: { status } })
-  await load()
+  statusBusyId.value = row.id
+  try {
+    await client.put(`/hrp/assets/${row.id}/status`, null, { params: { status } })
+    await load()
+  } finally {
+    statusBusyId.value = null
+  }
 }
 
 onMounted(async () => {

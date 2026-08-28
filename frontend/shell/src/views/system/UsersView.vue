@@ -29,7 +29,8 @@
       <el-table-column label="操作" width="170">
         <template #default="{ row }">
           <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
-          <el-button v-if="row.username !== 'admin'" link :type="row.enabled ? 'danger' : 'success'"
+          <el-button v-if="row.username !== 'admin' && auth.hasPerm('sys:user:toggle')" link
+                     :type="row.enabled ? 'danger' : 'success'" :loading="togglingId === row.id"
                      @click="toggleEnabled(row)">
             {{ row.enabled ? '停用' : '启用' }}
           </el-button>
@@ -83,6 +84,9 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import client from '../../api/client'
+import { useAuthStore } from '../../stores/auth'
+
+const auth = useAuthStore()
 
 interface UserRow {
   id: number | null
@@ -101,6 +105,7 @@ const pageNo = ref(1)
 const pageSize = 20
 const loading = ref(false)
 const saving = ref(false)
+const togglingId = ref<number | null>(null)
 const dialogVisible = ref(false)
 const depts = ref<{ id: number; name: string }[]>([])
 const roles = ref<{ code: string; name: string }[]>([])
@@ -168,8 +173,13 @@ async function save() {
 }
 
 async function toggleEnabled(row: UserRow) {
-  await client.put(`/system/users/${row.id}/enabled`, null, { params: { enabled: !row.enabled } })
-  await load()
+  togglingId.value = row.id
+  try {
+    await client.put(`/system/users/${row.id}/enabled`, null, { params: { enabled: !row.enabled } })
+    await load()
+  } finally {
+    togglingId.value = null
+  }
 }
 
 onMounted(async () => {

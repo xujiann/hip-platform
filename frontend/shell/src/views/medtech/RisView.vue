@@ -17,7 +17,7 @@
           <el-button link type="primary" size="small" @click="openReport(row)">
             {{ row.status === 'REGISTERED' ? '书写报告' : '修改报告' }}
           </el-button>
-          <el-button v-if="row.status === 'REPORTED'" link type="success" size="small" @click="verify(row)">审核发布</el-button>
+          <el-button v-if="row.status === 'REPORTED'" link type="success" size="small" :loading="busyId === row.id" @click="verify(row)">审核发布</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -33,7 +33,7 @@
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="saveReport">保存报告</el-button>
+        <el-button type="primary" @click="saveReport" :loading="saveReportLoading">保存报告</el-button>
       </template>
     </el-dialog>
   </el-card>
@@ -49,6 +49,8 @@ const dialogVisible = ref(false)
 const current = ref<Record<string, unknown> | null>(null)
 const findings = ref('')
 const impression = ref('')
+const busyId = ref<unknown>(null)
+const saveReportLoading = ref(false)
 
 async function load() {
   records.value = (await client.get('/ris/worklist')).data.data
@@ -63,22 +65,28 @@ function openReport(row: Record<string, unknown>) {
 
 async function saveReport() {
   if (!current.value) return
-  await client.put(`/ris/exams/${current.value.id}/report`, { findings: findings.value, impression: impression.value })
-  ElMessage.success('报告已保存')
-  dialogVisible.value = false
-  await load()
+  saveReportLoading.value = true
+  try {
+    await client.put(`/ris/exams/${current.value.id}/report`, { findings: findings.value, impression: impression.value })
+    ElMessage.success('报告已保存')
+    dialogVisible.value = false
+    await load()
+  } finally { saveReportLoading.value = false }
 }
 
 async function verify(row: Record<string, unknown>) {
-  await client.put(`/ris/exams/${row.id}/verify`)
-  ElMessage.success('已审核发布，医嘱转已执行')
-  // 云胶片/报告对外分享：发布即出 72h 有效短链，可发给患者
-  const share = (await client.post(`/ris/exams/${row.id}/share`)).data.data
-  await ElMessageBox.alert(
-    `<div style="word-break:break-all">匿名访问链接（72 小时有效，姓名已脱敏）：
+  busyId.value = row.id
+  try {
+    await client.put(`/ris/exams/${row.id}/verify`)
+    ElMessage.success('已审核发布，医嘱转已执行')
+    // 云胶片/报告对外分享：发布即出 72h 有效短链，可发给患者
+    const share = (await client.post(`/ris/exams/${row.id}/share`)).data.data
+    await ElMessageBox.alert(
+      `<div style="word-break:break-all">匿名访问链接（72 小时有效，姓名已脱敏）：
 <b>${location.origin}${share.url}</b></div>`,
-    '报告分享')
-  await load()
+      '报告分享')
+    await load()
+  } finally { busyId.value = null }
 }
 
 onMounted(load)

@@ -24,6 +24,7 @@ const router = createRouter({
         { path: 'outpatient/schedules', component: () => import('../views/outpatient/SchedulesView.vue') },
         { path: 'outpatient/doctor', component: () => import('../views/outpatient/DoctorStationView.vue') },
         { path: 'outpatient/charge', component: () => import('../views/outpatient/ChargeView.vue') },
+        { path: 'outpatient/refund-approval', component: () => import('../views/outpatient/RefundApprovalView.vue') },
         { path: 'outpatient/pharmacy', component: () => import('../views/outpatient/PharmacyView.vue') },
         { path: 'outpatient/exec', component: () => import('../views/outpatient/ExecStationView.vue') },
         { path: 'integration/monitor', component: () => import('../views/integration/MonitorView.vue') },
@@ -46,6 +47,9 @@ const router = createRouter({
         { path: 'masterdata/drugs', component: () => import('../views/masterdata/DrugsView.vue') },
         { path: 'masterdata/charge-items', component: () => import('../views/masterdata/ChargeItemsView.vue') },
         { path: 'masterdata/inventory', component: () => import('../views/masterdata/InventoryView.vue') },
+        { path: 'masterdata/stock-take', component: () => import('../views/masterdata/StockTakeView.vue') },
+        { path: 'masterdata/stock-in-accept', component: () => import('../views/masterdata/StockInAcceptView.vue') },
+        { path: 'masterdata/expiry-warning', component: () => import('../views/masterdata/ExpiryWarningView.vue') },
         { path: 'inpatient/admission', component: () => import('../views/inpatient/AdmissionView.vue') },
         { path: 'inpatient/doctor', component: () => import('../views/inpatient/InpDoctorView.vue') },
         { path: 'inpatient/nurse', component: () => import('../views/inpatient/InpNurseView.vue') },
@@ -64,6 +68,7 @@ const router = createRouter({
         { path: 'pay', component: () => import('../views/outpatient/PayView.vue') },
         { path: 'mrstats', component: () => import('../views/quality/MedStatsView.vue') },
         { path: 'mrfront', component: () => import('../views/quality/MedRecordFrontPageView.vue') },
+        { path: 'emr-copy', component: () => import('../views/quality/EmrCopyView.vue') },
         { path: 'hrp/equipment', component: () => import('../views/hrp/EquipmentView.vue') },
         { path: 'nursing-plus', component: () => import('../views/quality/NursingPlusView.vue') },
         { path: 'drug-analysis', component: () => import('../views/hrp/DrugAnalysisView.vue') },
@@ -101,6 +106,13 @@ router.beforeEach(async (to) => {
     } catch {
       return   // 拉取失败不拦路，交给接口层的 401/403 处理
     }
+  }
+  // 退费审批台（v30）无 sys_menu 种子（前端新增页），改按角色守卫，与后端 @PreAuthorize('hasRole ADMIN') 对齐：
+  // 仅授权人（ADMIN）可进；跳过下方基于菜单命中的判断（该路径本就不在菜单里，否则会误判无权限）。
+  if (to.path === '/outpatient/refund-approval') {
+    if (auth.user?.roles?.includes('ADMIN')) return
+    ElMessage.error('退费审批仅授权人（管理员）可访问')
+    return '/dashboard'
   }
   const menus = auth.user?.menus ?? []
   if (menus.length === 0) return   // 菜单未知时不拦，避免把人锁在门外

@@ -14,7 +14,7 @@
           </el-form-item>
           <el-form-item><el-input v-model="mat.unit" placeholder="单位" style="width: 80px" /></el-form-item>
           <el-form-item><el-input-number v-model="mat.price" :min="0" :precision="2" /></el-form-item>
-          <el-button type="primary" size="small" @click="createMaterial">新建</el-button>
+          <el-button type="primary" size="small" :loading="createMaterialLoading" @click="createMaterial">新建</el-button>
         </el-form>
         <el-table :data="materials" size="small" border>
           <el-table-column prop="code" label="编码" width="110" />
@@ -26,8 +26,8 @@
           <el-table-column prop="stock" label="库存" width="80" />
           <el-table-column label="操作" width="150">
             <template #default="{ row }">
-              <el-button link type="success" size="small" @click="stockIo(row, 'in')">入库</el-button>
-              <el-button link type="warning" size="small" @click="stockIo(row, 'out')">出库</el-button>
+              <el-button link type="success" size="small" :loading="stockBusyId === row.id" @click="stockIo(row, 'in')">入库</el-button>
+              <el-button link type="warning" size="small" :loading="stockBusyId === row.id" @click="stockIo(row, 'out')">出库</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -39,7 +39,7 @@
           <el-form-item><el-input v-model="sup.contact" placeholder="联系人" style="width: 100px" /></el-form-item>
           <el-form-item><el-input v-model="sup.phone" placeholder="电话" style="width: 140px" /></el-form-item>
           <el-form-item><el-input v-model="sup.scope" placeholder="供货范围" style="width: 180px" /></el-form-item>
-          <el-button type="primary" size="small" @click="createSupplier">登记</el-button>
+          <el-button type="primary" size="small" :loading="createSupplierLoading" @click="createSupplier">登记</el-button>
         </el-form>
         <el-table :data="suppliers" size="small" border>
           <el-table-column prop="name" label="名称" />
@@ -61,7 +61,7 @@
           </el-form-item>
           <el-form-item><el-input v-model="oa.title" placeholder="标题" style="width: 180px" /></el-form-item>
           <el-form-item><el-input v-model="oa.content" placeholder="内容" style="width: 260px" /></el-form-item>
-          <el-button type="primary" size="small" @click="createOa">提交申请</el-button>
+          <el-button type="primary" size="small" :loading="createOaLoading" @click="createOa">提交申请</el-button>
         </el-form>
         <el-table :data="oaList" size="small" border>
           <el-table-column label="类型" width="90">
@@ -73,8 +73,8 @@
           <el-table-column label="状态" width="170">
             <template #default="{ row }">
               <template v-if="row.status === 'PENDING'">
-                <el-button link type="success" size="small" @click="decide(row, true)">批准</el-button>
-                <el-button link type="danger" size="small" @click="decide(row, false)">驳回</el-button>
+                <el-button link type="success" size="small" :loading="decideBusyId === row.id" @click="decide(row, true)">批准</el-button>
+                <el-button link type="danger" size="small" :loading="decideBusyId === row.id" @click="decide(row, false)">驳回</el-button>
               </template>
               <el-tag v-else :type="row.status === 'APPROVED' ? 'success' : 'danger'" size="small">
                 {{ row.status === 'APPROVED' ? '已批准' : '已驳回' }}
@@ -104,6 +104,11 @@ const oaList = ref<Record<string, unknown>[]>([])
 const mat = reactive({ name: '', category: 'CONSUMABLE_LOW', unit: '个', price: 1 })
 const sup = reactive({ name: '', contact: '', phone: '', scope: '' })
 const oa = reactive({ type: 'LEAVE', title: '', content: '' })
+const createMaterialLoading = ref(false)
+const createSupplierLoading = ref(false)
+const createOaLoading = ref(false)
+const stockBusyId = ref<unknown>(null)
+const decideBusyId = ref<unknown>(null)
 
 async function loadAll() {
   materials.value = (await client.get('/hrp/materials')).data.data
@@ -112,35 +117,62 @@ async function loadAll() {
 }
 
 async function createMaterial() {
-  if (!mat.name) return
-  await client.post('/hrp/materials', mat)
-  ElMessage.success('已建档')
-  await loadAll()
+  if (!mat.name) { ElMessage.warning('请填写名称'); return }
+  createMaterialLoading.value = true
+  try {
+    await client.post('/hrp/materials', mat)
+    ElMessage.success('已建档')
+    await loadAll()
+  } finally {
+    createMaterialLoading.value = false
+  }
 }
 
 async function stockIo(row: Record<string, unknown>, dir: 'in' | 'out') {
-  const { value } = await ElMessageBox.prompt('数量', dir === 'in' ? '入库' : '出库', { inputValue: '10' })
-  await client.post(`/hrp/materials/${row.id}/stock-${dir}`, null, { params: { qty: Number(value) } })
-  ElMessage.success('库存已更新')
-  await loadAll()
+  const res = await ElMessageBox.prompt('数量', dir === 'in' ? '入库' : '出库', { inputValue: '10' }).catch(() => null)
+  if (!res) return
+  const { value } = res
+  stockBusyId.value = row.id
+  try {
+    await client.post(`/hrp/materials/${row.id}/stock-${dir}`, null, { params: { qty: Number(value) } })
+    ElMessage.success('库存已更新')
+    await loadAll()
+  } finally {
+    stockBusyId.value = null
+  }
 }
 
 async function createSupplier() {
-  if (!sup.name) return
-  await client.post('/hrp/suppliers', sup)
-  await loadAll()
+  if (!sup.name) { ElMessage.warning('请填写供应商名称'); return }
+  createSupplierLoading.value = true
+  try {
+    await client.post('/hrp/suppliers', sup)
+    await loadAll()
+  } finally {
+    createSupplierLoading.value = false
+  }
 }
 
 async function createOa() {
-  if (!oa.title || !oa.content) return
-  await client.post('/oa/requests', oa)
-  ElMessage.success('已提交')
-  await loadAll()
+  if (!oa.title || !oa.content) { ElMessage.warning('请填写标题和内容'); return }
+  createOaLoading.value = true
+  try {
+    await client.post('/oa/requests', oa)
+    ElMessage.success('已提交')
+    await loadAll()
+  } finally {
+    createOaLoading.value = false
+  }
 }
 
 async function decide(row: Record<string, unknown>, approve: boolean) {
-  await client.put(`/oa/requests/${row.id}/decide`, null, { params: { approve, note: approve ? '同意' : '不同意' } })
-  await loadAll()
+  decideBusyId.value = row.id
+  try {
+    await client.put(`/oa/requests/${row.id}/decide`, null, { params: { approve, note: approve ? '同意' : '不同意' } })
+    await loadAll()
+  } finally {
+    decideBusyId.value = null
+  }
 }
 
 onMounted(loadAll)

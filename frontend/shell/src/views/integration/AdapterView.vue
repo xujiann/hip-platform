@@ -10,7 +10,7 @@
         </el-select>
       </el-form-item>
       <el-form-item><el-input v-model="ad.config" placeholder="目标（目录/数据源）" style="width: 180px" /></el-form-item>
-      <el-button type="primary" size="small" @click="saveAdapter">保存适配器</el-button>
+      <el-button type="primary" size="small" :loading="saveAdapterLoading" @click="saveAdapter">保存适配器</el-button>
     </el-form>
     <el-table :data="adapters" size="small" border>
       <el-table-column prop="name" label="适配器" width="160" />
@@ -26,13 +26,13 @@
       </el-table-column>
       <el-table-column label="操作" width="90">
         <template #default="{ row }">
-          <el-button link size="small" @click="toggle(row)">{{ row.enabled ? '停用' : '启用' }}</el-button>
+          <el-button link size="small" :loading="busyId === row.id" @click="toggle(row)">{{ row.enabled ? '停用' : '启用' }}</el-button>
         </template>
       </el-table-column>
     </el-table>
 
     <h4>内容路由规则
-      <el-button link type="primary" size="small" @click="addRule">新增规则</el-button>
+      <el-button link type="primary" size="small" :loading="addRuleLoading" @click="addRule">新增规则</el-button>
     </h4>
     <el-table :data="rules" size="small" border>
       <el-table-column prop="keyword" label="报文关键字" width="140" />
@@ -43,7 +43,7 @@
 
     <h4>路由测试</h4>
     <el-input v-model="testContent" placeholder="粘贴报文片段（如含 ORU 的 HL7 消息）" style="width: 420px" />
-    <el-button type="primary" size="small" style="margin-left: 8px" @click="routeTest">测试路由</el-button>
+    <el-button type="primary" size="small" style="margin-left: 8px" :loading="routeTestLoading" @click="routeTest">测试路由</el-button>
     <el-alert v-if="testResult" style="margin-top: 8px" show-icon :closable="false"
               :type="testResult.matched ? 'success' : 'warning'"
               :title="testResult.matched
@@ -64,30 +64,48 @@ const rules = ref<Record<string, unknown>[]>([])
 const testContent = ref('MSH|^~\\&|LIS|ORU^R01|...')
 const testResult = ref<TestResult | null>(null)
 const ad = reactive({ name: '', type: 'FILE', config: '' })
+const saveAdapterLoading = ref(false)
+const addRuleLoading = ref(false)
+const routeTestLoading = ref(false)
+const busyId = ref<unknown>(null)
 
 async function load() {
   adapters.value = (await client.get('/integration/adapters')).data.data
   rules.value = (await client.get('/integration/adapters/rules')).data.data
 }
 async function saveAdapter() {
-  if (!ad.name || !ad.config) return
-  await client.post('/integration/adapters', ad)
-  ElMessage.success('已保存')
-  await load()
+  if (!ad.name || !ad.config) { ElMessage.warning('请填写完整'); return }
+  saveAdapterLoading.value = true
+  try {
+    await client.post('/integration/adapters', ad)
+    ElMessage.success('已保存')
+    await load()
+  } finally { saveAdapterLoading.value = false }
 }
 async function toggle(row: Record<string, unknown>) {
-  await client.put(`/integration/adapters/${row.id}/toggle`)
-  await load()
+  busyId.value = row.id
+  try {
+    await client.put(`/integration/adapters/${row.id}/toggle`)
+    await load()
+  } finally { busyId.value = null }
 }
 async function addRule() {
-  const { value } = await ElMessageBox.prompt('关键字,适配器ID（逗号分隔）', '新增路由规则', { inputValue: 'ADT,1' })
+  const res = await ElMessageBox.prompt('关键字,适配器ID（逗号分隔）', '新增路由规则', { inputValue: 'ADT,1' }).catch(() => null)
+  if (!res) return
+  const { value } = res
   const [keyword, adapterId] = value.split(/[,，]/).map((s: string) => s.trim())
-  await client.post('/integration/adapters/rules', { keyword, adapterId: Number(adapterId), remark: '' })
-  await load()
+  addRuleLoading.value = true
+  try {
+    await client.post('/integration/adapters/rules', { keyword, adapterId: Number(adapterId), remark: '' })
+    await load()
+  } finally { addRuleLoading.value = false }
 }
 async function routeTest() {
-  testResult.value = (await client.post('/integration/adapters/route-test', null,
-    { params: { content: testContent.value } })).data.data
+  routeTestLoading.value = true
+  try {
+    testResult.value = (await client.post('/integration/adapters/route-test', null,
+      { params: { content: testContent.value } })).data.data
+  } finally { routeTestLoading.value = false }
 }
 
 onMounted(load)

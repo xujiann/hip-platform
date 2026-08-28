@@ -49,7 +49,7 @@
           <el-form-item><el-input v-model="deathForm.chainB" placeholder="死因链(b)" style="width: 140px" /></el-form-item>
           <el-form-item><el-input v-model="deathForm.chainC" placeholder="死因链(c)" style="width: 140px" /></el-form-item>
           <el-form-item><el-input v-model="deathForm.place" placeholder="死亡地点" style="width: 100px" /></el-form-item>
-          <el-button type="primary" size="small" @click="saveDeathCard">登记</el-button>
+          <el-button type="primary" size="small" @click="saveDeathCard" :loading="saveDeathCardLoading">登记</el-button>
         </el-form>
         <el-table :data="deathCards" size="small" border max-height="420">
           <el-table-column prop="patient_name" label="患者" width="90" />
@@ -92,17 +92,21 @@ async function load() {
 import { reactive } from 'vue'
 import { ElMessage } from 'element-plus'
 const deathCards = ref<Record<string, unknown>[]>([])
+const saveDeathCardLoading = ref(false)
 const deathForm = reactive({ patientId: '', admissionId: '', diedAt: '', directCause: '',
   directCauseIcd: '', chainB: '', chainC: '', place: '' })
 async function loadDeathCards() { deathCards.value = (await client.get('/mrstats/death-cards')).data.data }
 async function saveDeathCard() {
-  await client.post('/mrstats/death-cards', {
-    ...deathForm,
-    patientId: Number(deathForm.patientId) || null,
-    admissionId: deathForm.admissionId ? Number(deathForm.admissionId) : null,
-  })
-  ElMessage.success('已登记')
-  await loadDeathCards()
+  saveDeathCardLoading.value = true
+  try {
+    await client.post('/mrstats/death-cards', {
+      ...deathForm,
+      patientId: Number(deathForm.patientId) || null,
+      admissionId: deathForm.admissionId ? Number(deathForm.admissionId) : null,
+    })
+    ElMessage.success('已登记')
+    await loadDeathCards()
+  } finally { saveDeathCardLoading.value = false }
 }
 
 watch(tab, async (t) => {

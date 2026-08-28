@@ -101,7 +101,8 @@ public class NursingQualityController {
                 join sys_dept d on d.id = a.dept_id
                 left join sys_dept w on w.id = a.ward_id
                 left join inp_bed b on b.id = a.bed_id
-                left join inp_settlement s on s.admission_id = a.id and s.status = 'PAID'
+                -- 只认 FINAL（v30 中间结算副作用）：一 admission 多张 PAID 会让首页费用段重复
+                left join inp_settlement s on s.admission_id = a.id and s.status = 'PAID' and s.settle_type = 'FINAL'
                 where a.id = ?
                 """, id);
         if (rows.isEmpty()) return R.fail(9802, "住院记录不存在");

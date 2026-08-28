@@ -75,8 +75,8 @@ async function stockIn() {
   saving.value = true
   try {
     const resp = await client.post('/inventory/stock-in', form)
-    ElMessage.success(`入库成功，单号 ${resp.data.data.inNo}`)
-    await Promise.all([loadTransactions(), loadLowStock()])
+    // 1.2.13 起入库先待验收、验收通过才入账，故不立即刷新库存/流水
+    ElMessage.success(`已登记待验收，单号 ${resp.data.data.inNo}（到「入库验收」通过后入库）`)
   } finally {
     saving.value = false
   }
