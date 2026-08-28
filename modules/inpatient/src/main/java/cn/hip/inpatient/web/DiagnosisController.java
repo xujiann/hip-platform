@@ -42,7 +42,11 @@ public class DiagnosisController {
                 "select * from inp_diagnosis where admission_id = ? order by id", admissionId));
     }
 
+    // 删除诊断影响 DRG 严重度子分组与医保支付权重（上线前审查 P2-3）：
+    // 收窄到管理员+编码组，移除门诊医生的删除权。删除经 AuditLogFilter 自动留痕。
+    // 残留：按 admission 责任归属的对象级校验需责任医生模型，记入上线后加固项。
     @DeleteMapping("/{id}")
+    @PreAuthorize("hasAnyRole('ADMIN','QUALITY')")
     public R<Void> remove(@PathVariable Long id) {
         int n = jdbc.update("delete from inp_diagnosis where id = ?", id);
         return n == 0 ? R.fail(9016, "诊断不存在") : R.ok();

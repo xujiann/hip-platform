@@ -34,6 +34,10 @@ public class InpTransferLog {
 
     private Long operatorId;
 
+    /** 转科原因（收尾环·阻塞3）：UI 采集，可空以兼容历史/接口机记录 */
+    @Column(length = 200)
+    private String reason;
+
     @Column(nullable = false, updatable = false)
     private Instant createdAt = Instant.now();
 }

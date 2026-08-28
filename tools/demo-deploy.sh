@@ -35,8 +35,7 @@ if [[ "${1:-}" != "--data-only" ]]; then
     # compose 对这三个变量是 :?required，缺失即拒绝启动（不提供默认值兜底）
     : "${HIP_DB_PASSWORD:=$(openssl rand -base64 24)}"
     : "${HIP_JWT_SECRET:=$(openssl rand -base64 48)}"
-    : "${HIP_REDIS_PASSWORD:=$(openssl rand -base64 24)}"
-    export HIP_DB_PASSWORD HIP_JWT_SECRET HIP_REDIS_PASSWORD
+    export HIP_DB_PASSWORD HIP_JWT_SECRET
 
     if [[ -z "${HIP_DEMO_ADMIN_PASSWORD:-}" ]]; then
         echo "错误：必须设置 HIP_DEMO_ADMIN_PASSWORD" >&2
@@ -50,7 +49,6 @@ if [[ "${1:-}" != "--data-only" ]]; then
         cat > .demo-env <<EOF
 export HIP_DB_PASSWORD='$HIP_DB_PASSWORD'
 export HIP_JWT_SECRET='$HIP_JWT_SECRET'
-export HIP_REDIS_PASSWORD='$HIP_REDIS_PASSWORD'
 EOF
         echo "[1/4] 已生成凭据并写入 .demo-env（权限 600，勿入版本库）"
     else

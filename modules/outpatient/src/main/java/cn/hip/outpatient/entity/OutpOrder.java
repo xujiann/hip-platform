@@ -92,4 +92,13 @@ public class OutpOrder {
 
     @Column(nullable = false, updatable = false)
     private Instant createdAt = Instant.now();
+
+    /**
+     * 库存预警（阻塞6，非持久化）：开药嘱时若药品当前库存低于本次开量则置为当前库存值，
+     * 否则为 null。开单不因此拦截（医生可能有临时进药安排），仅在返回结果里带出，
+     * 让医生当场知情、换药或安排进药——把"缴费后到药房才撞 6002 只能退费重开"的坑
+     * 提前到开单环节。仅药品(orderType=DRUG)可能非空。
+     */
+    @Transient
+    private Integer stockWarnAvailable;
 }

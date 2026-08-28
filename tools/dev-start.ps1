@@ -11,7 +11,7 @@ wsl -d Ubuntu -u root -- service postgresql start
 Write-Host "[2/3] 启动后端 (端口 8080)..." -ForegroundColor Cyan
 $env:JAVA_HOME = 'C:\Program Files\Eclipse Adoptium\jdk-21.0.12.8-hotspot'
 $env:Path = "$env:JAVA_HOME\bin;$env:USERPROFILE\tools\apache-maven-3.9.16\bin;$env:Path"
-Start-Process powershell -ArgumentList '-NoExit', '-Command', "cd '$root'; mvn -pl server -am spring-boot:run"
+Start-Process powershell -ArgumentList '-NoExit', '-Command', "cd '$root'; mvn -pl server -am spring-boot:run '-Dspring-boot.run.profiles=dev'"
 
 Write-Host "[3/3] 启动前端 (端口 5173)..." -ForegroundColor Cyan
 Start-Process powershell -ArgumentList '-NoExit', '-Command', "cd '$root\frontend\shell'; npm run dev"

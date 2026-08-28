@@ -92,7 +92,7 @@ if (-not $jar) {
     throw "未找到后端产物，请先构建：mvn -pl server -am package -DskipTests"
 }
 $env:SPRING_DATASOURCE_URL = "jdbc:postgresql://127.0.0.1:5432/$demoDb"
-Start-Process java -ArgumentList '-jar', $jar.FullName `
+Start-Process java -ArgumentList '-jar', $jar.FullName, '--spring.profiles.active=dev' `
     -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput "$root\demo-server.log" `
     -RedirectStandardError "$root\demo-server.err.log"
 

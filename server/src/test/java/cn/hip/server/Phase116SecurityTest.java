@@ -75,6 +75,34 @@ class Phase116SecurityTest {
                 .andExpect(jsonPath("$.code").value(9021));
     }
 
+    /**
+     * 1.2.14 P1 越权收口：CASHIER 在住院线只该做预交金，不得写临床/结算。
+     * 类级去掉 CASHIER 后，收费员 POST 医嘱、PUT 出院诊断（操纵 DRG 权重）必须 403；
+     * 而其正当职能——缴预交金、看账户余额——仍过权限层（不是 403）。
+     */
+    @Test
+    void cashierCannotWriteInpatientClinicalButKeepsDepositAndBalance() throws Exception {
+        String cashier = tokenFor("cash116p1", "CASHIER");
+        // 越权写：篡改医嘱、改出院诊断（DRG 支付权重）——必须 403
+        mockMvc.perform(post("/api/inpatient/admissions/1/orders")
+                        .contentType("application/json").content("{\"lines\":[]}")
+                        .header("Authorization", cashier))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(put("/api/inpatient/admissions/1/discharge-diag")
+                        .contentType("application/json").content("{\"icd\":\"J18.9\",\"name\":\"肺炎\"}")
+                        .header("Authorization", cashier))
+                .andExpect(status().isForbidden());
+        // 正当职能：缴预交金、看账户余额——过权限层（业务码非 403）
+        mockMvc.perform(post("/api/inpatient/admissions/999999/deposits")
+                        .contentType("application/json").content("{\"amount\":100,\"payMethod\":\"CASH\"}")
+                        .header("Authorization", cashier))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(9003));   // 无此住院记录，但已过授权
+        mockMvc.perform(get("/api/inpatient/admissions/999999/account").header("Authorization", cashier))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0));
+    }
+
     /** B-1 失败路径：真实封顶线键 yb_cap_* 的坏值必须被拦——原规则校验的是不存在的幽灵键 */
     @Test
     void configValidationCoversRealKeys() throws Exception {

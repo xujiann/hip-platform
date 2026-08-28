@@ -22,8 +22,11 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api/inpatient")
 // 1.1.6 A-1：此前全类无注解，任何在职账号（含 INTERFACE 接口机）可入院/出院/开医嘱/冲销结算
+// 1.2.14 P1 越权收口：类级去掉 CASHIER——收费员在住院线只该做预交金，
+// 此前类级放行让其可 POST 医嘱篡改任意病区医嘱、PUT 出院诊断操纵 DRG 权重、POST 任意出院。
+// 收费员该有的（缴预交金、看账户余额、打一日清单）改到方法级单独放行，不再靠类级放宽。
 @org.springframework.security.access.prepost.PreAuthorize(
-        "hasAnyRole('ADMIN','DOCTOR_OUTP','NURSE','CASHIER')")
+        "hasAnyRole('ADMIN','DOCTOR_OUTP','NURSE')")
 @RequiredArgsConstructor
 public class InpatientController {
 
@@ -51,6 +54,99 @@ public class InpatientController {
                 .map(r -> (java.math.BigDecimal) r.get("amount"))
                 .reduce(java.math.BigDecimal.ZERO, java.math.BigDecimal::add);
         return R.ok(Map.of("date", date, "rows", rows, "total", total));
+    }
+
+    /**
+     * 收尾环·打印1：住院费用一日清单打印数据集（患者可拿走的凭据）。
+     * 参照门诊 PrintReportController 的既有数据集实现——只读 JdbcTemplate 组装，
+     * 含患者姓名/住院号、当日按项费用与当日合计、以及账户级押金余额。
+     */
+    // 一日清单交患者：收费窗口也需打，CASHIER 方法级放行（出院小结属临床文书，不给 CASHIER）
+    @org.springframework.security.access.prepost.PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP','NURSE','CASHIER')")
+    @GetMapping("/admissions/{id}/print/daily-fee")
+    public R<Map<String, Object>> printDailyFee(@PathVariable Long id, @RequestParam String date) {
+        var head = jdbcTemplate.queryForList("""
+                select a.admission_no, p.name as patient_name, p.patient_no, p.sex,
+                       cd.name as dept_name, wd.name as ward_name, b.bed_no
+                from inp_admission a
+                join empi_patient p on p.id = a.patient_id
+                left join sys_dept cd on cd.id = a.dept_id
+                left join sys_dept wd on wd.id = a.ward_id
+                left join inp_bed  b  on b.id = a.bed_id
+                where a.id = ?
+                """, id);
+        if (head.isEmpty()) return R.fail(9003, "住院记录不存在");
+        var rows = jdbcTemplate.queryForList("""
+                select item_name, spec, qty, unit_price, amount, order_type, executed_at
+                from inp_order
+                where admission_id = ? and status = 'EXECUTED'
+                  and executed_at >= ?::date and executed_at < ?::date + interval '1 day'
+                order by executed_at
+                """, id, date, date);
+        var dayTotal = rows.stream().map(r -> (BigDecimal) r.get("amount"))
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        // 账户级押金/已发生费用/余额（与 /account 同口径）
+        var depositTotal = jdbcTemplate.queryForObject(
+                "select coalesce(sum(amount),0) from inp_deposit where admission_id = ?", BigDecimal.class, id);
+        var executedTotal = jdbcTemplate.queryForObject(
+                "select coalesce(sum(amount),0) from inp_order where admission_id = ? and status = 'EXECUTED'",
+                BigDecimal.class, id);
+        var balance = depositTotal.subtract(executedTotal);
+        var m = new LinkedHashMap<String, Object>(head.get(0));
+        m.put("date", date);
+        m.put("rows", rows);
+        m.put("dayTotal", dayTotal);
+        m.put("depositTotal", depositTotal);
+        m.put("executedTotal", executedTotal);
+        m.put("balance", balance);
+        m.put("owed", balance.signum() < 0);
+        return R.ok(m);
+    }
+
+    /**
+     * 收尾环·打印2：出院小结打印数据集。
+     * 患者基本信息 + 入出院日期 + 诊断（入院/出院主诊断/其他诊断）+ 诊疗经过摘要 + 出院医嘱。
+     * 数据源：inp_admission / inp_medical_record（DISCHARGE 记录为出院小结正文）/ inp_diagnosis。
+     * 出院带药取已执行药嘱明细，作为出院医嘱的用药参考。
+     */
+    @GetMapping("/admissions/{id}/print/discharge-summary")
+    public R<Map<String, Object>> printDischargeSummary(@PathVariable Long id) {
+        var head = jdbcTemplate.queryForList("""
+                select a.admission_no, a.admit_at, a.discharged_at, a.status,
+                       a.admit_diag_icd, a.admit_diag_name,
+                       a.discharge_diag_icd, a.discharge_diag_name,
+                       p.name as patient_name, p.patient_no, p.sex, p.birth_date,
+                       cd.name as dept_name, wd.name as ward_name, b.bed_no,
+                       u.real_name as doctor_name
+                from inp_admission a
+                join empi_patient p on p.id = a.patient_id
+                left join sys_dept cd on cd.id = a.dept_id
+                left join sys_dept wd on wd.id = a.ward_id
+                left join inp_bed  b  on b.id = a.bed_id
+                left join sys_user u  on u.id = a.doctor_id
+                where a.id = ?
+                """, id);
+        if (head.isEmpty()) return R.fail(9003, "住院记录不存在");
+        var m = new LinkedHashMap<String, Object>(head.get(0));
+        // 其他诊断（病案补录的并发症/合并症）
+        m.put("otherDiagnoses", jdbcTemplate.queryForList(
+                "select icd, name from inp_diagnosis where admission_id = ? order by id", id));
+        // 诊疗经过：全部住院病历按时间正序（出院小结 DISCHARGE 记录为正文核心）
+        m.put("records", jdbcTemplate.queryForList("""
+                select record_type, title, content, created_at,
+                       (signature is not null) as signed
+                from inp_medical_record
+                where admission_id = ?
+                order by id
+                """, id));
+        // 出院带药：已执行药嘱，作为出院医嘱的用药参考
+        m.put("meds", jdbcTemplate.queryForList("""
+                select item_name, spec, qty, unit, usage_route, frequency, dose_per_time
+                from inp_order
+                where admission_id = ? and status = 'EXECUTED' and order_type = 'DRUG'
+                order by id
+                """, id));
+        return R.ok(m);
     }
 
     /** 1.0.4：出院诊断补录（病案编码，出院前后均可；DRG 入组优先取出院诊断） */
@@ -143,8 +239,42 @@ public class InpatientController {
         return R.ok(m);
     }
 
+    /**
+     * 住院账户实时状态（收尾环·阻塞1，预交款不足提醒的数据源）。
+     * 只读、复用现有查询，不改动任何医疗动作。口径：
+     *   已交押金 = sum(inp_deposit.amount)；
+     *   已发生费用 = 已执行医嘱金额合计（与出院结算 total 同口径）；
+     *   余额 = 押金 - 已发生费用（可为负）；欠费 = 余额 < 0。
+     * pendingAmount（未执行医嘱预计费用）不计入余额，仅供医生预判"再执行就欠费"。
+     * <p>刻意不硬拦开单/执行：欠费属追缴范畴，医疗行为不因欠费停摆——本端点只让前端能"感知并提醒"。
+     */
+    // 只读账户余额：收费员催缴/退补差需看，CASHIER 方法级放行
+    @org.springframework.security.access.prepost.PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP','NURSE','CASHIER')")
+    @GetMapping("/admissions/{id}/account")
+    public R<Map<String, Object>> account(@PathVariable Long id) {
+        List<InpDeposit> deposits = depositRepo.findByAdmissionIdOrderByIdAsc(id);
+        List<InpOrder> orders = orderRepo.findByAdmissionIdOrderByIdAsc(id);
+        BigDecimal depositTotal = deposits.stream().map(InpDeposit::getAmount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal executedAmount = orders.stream().filter(o -> "EXECUTED".equals(o.getStatus()))
+                .map(InpOrder::getAmount).reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal pendingAmount = orders.stream().filter(o -> "CREATED".equals(o.getStatus()))
+                .map(InpOrder::getAmount).reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal balance = depositTotal.subtract(executedAmount);
+        var m = new LinkedHashMap<String, Object>();
+        m.put("admissionId", id);
+        m.put("depositTotal", depositTotal);
+        m.put("executedAmount", executedAmount);
+        m.put("pendingAmount", pendingAmount);
+        m.put("balance", balance);
+        m.put("owed", balance.signum() < 0);
+        return R.ok(m);
+    }
+
     public record DepositRequest(BigDecimal amount, String payMethod) {}
 
+    // 预交金是收费职能：CASHIER 方法级单独放行（类级已不含 CASHIER）
+    @org.springframework.security.access.prepost.PreAuthorize("hasAnyRole('ADMIN','CASHIER','NURSE','DOCTOR_OUTP')")
     @PostMapping("/admissions/{id}/deposits")
     public R<Object> addDeposit(@PathVariable Long id, @RequestBody DepositRequest req, Authentication auth) {
         try {
@@ -154,17 +284,36 @@ public class InpatientController {
         }
     }
 
-    public record TransferRequest(Long toDeptId, Long toBedId) {}
+    public record TransferRequest(Long toDeptId, Long toBedId, String reason) {}
 
     @PostMapping("/admissions/{id}/transfer")
     public R<Object> transfer(@PathVariable Long id, @RequestBody TransferRequest req, Authentication auth) {
         try {
-            var adm = inpatientService.transfer(id, req.toDeptId(), req.toBedId(), currentUserService.idOf(auth));
+            var adm = inpatientService.transfer(id, req.toDeptId(), req.toBedId(), req.reason(),
+                    currentUserService.idOf(auth));
             return R.ok(Map.of("admissionNo", adm.getAdmissionNo(),
                     "deptId", adm.getDeptId(), "wardId", adm.getWardId(), "bedId", adm.getBedId()));
         } catch (InpException e) {
             return R.fail(e.code, e.getMessage());
         }
+    }
+
+    /** 转科历史：某患者历次转科记录（带科室名/床号/原因），供转科对话框回看 */
+    @GetMapping("/admissions/{id}/transfers")
+    public R<List<Map<String, Object>>> transfers(@PathVariable Long id) {
+        var rows = jdbcTemplate.queryForList("""
+                select t.id, t.created_at, t.reason,
+                       fd.name as from_dept_name, td.name as to_dept_name,
+                       fb.bed_no as from_bed_no, tb.bed_no as to_bed_no
+                from inp_transfer_log t
+                left join sys_dept fd on fd.id = t.from_dept_id
+                left join sys_dept td on td.id = t.to_dept_id
+                left join inp_bed  fb on fb.id = t.from_bed_id
+                left join inp_bed  tb on tb.id = t.to_bed_id
+                where t.admission_id = ?
+                order by t.id desc
+                """, id);
+        return R.ok(rows);
     }
 
     public record CreateOrdersRequest(List<InpatientService.OrderLine> lines) {}

@@ -94,4 +94,58 @@ amx4 = ok(call('GET', '/masterdata/drugs?keyword=' + q('阿莫西林'), token=to
 assert amx4['stock'] == amx3['stock'] - 1
 print(f"[9] 盘点调整 OK：{amx3['stock']} -> {amx4['stock']}")
 
+# === 收尾环补充（1.2.14）：预交款不足提醒 / 转科带原因 / 打印数据集 ===
+from e2elib import find_free_bed, today_bj  # noqa: E402
+
+# 10 预交款不足提醒：入院不缴押金，执行一条药嘱 → 账户判欠费
+bedC = find_free_bed(token)
+pc = new_patient(token, '欠费提醒E2E', sex='M')
+admC = ok(call('POST', '/inpatient/admissions', {
+    'patientId': pc['id'], 'deptId': 1, 'bedId': bedC['id'],
+    'diagIcd': icds[0]['code'], 'diagName': icds[0]['name'], 'deposit': 0, 'payMethod': 'CASH'}, token), '入院(无押金)')
+cid = admC['id']
+oc = ok(call('POST', f'/inpatient/admissions/{cid}/orders', {'lines': [
+    {'orderType': 'DRUG', 'itemId': amx['id'], 'qty': 1, 'usageRoute': '口服', 'frequency': 'qd', 'dosePerTime': '1粒'},
+]}, token), '开药嘱')[0]
+ok(call('PUT', f"/inpatient/orders/{oc['id']}/execute", token=token), '执行药嘱')
+acc = ok(call('GET', f'/inpatient/admissions/{cid}/account', token=token), '账户状态')
+assert acc['owed'] is True, f'已执行费用>押金必须判欠费: {acc}'
+assert float(acc['balance']) < 0, f'余额应为负: {acc}'
+assert abs(float(acc['executedAmount']) - float(amx['price'])) < 0.001, f'已发生费用应=药价: {acc}'
+print('[10] 预交款不足提醒 OK：欠费 ¥%.2f（已发生 ¥%s / 押金 0）' % (abs(float(acc['balance'])), acc['executedAmount']))
+
+# 11 转科（带原因）：转到另一张空床，历史可读回原因与目标床
+bedD = find_free_bed(token)
+assert bedD['id'] != bedC['id'], '目标床应不同于当前床'
+ok(call('POST', f'/inpatient/admissions/{cid}/transfer', {
+    'toDeptId': 1, 'toBedId': bedD['id'], 'reason': '病情变化需专科处理'}, token), '转科')
+hist = ok(call('GET', f'/inpatient/admissions/{cid}/transfers', token=token), '转科历史')
+assert len(hist) >= 1 and hist[0]['reason'] == '病情变化需专科处理', f'转科原因须留痕: {hist}'
+assert hist[0]['to_bed_no'] == bedD['bedNo'], f'历史应含目标床号: {hist[0]}'
+print('[11] 转科(带原因)留痕 OK：-> %s床，原因「%s」' % (hist[0]['to_bed_no'], hist[0]['reason']))
+
+# 12 打印数据集：每日费用清单 + 出院小结
+today = str(today_bj())
+dfp = ok(call('GET', f'/inpatient/admissions/{cid}/print/daily-fee?date={today}', token=token), '日清单打印')
+assert dfp['patient_name'] == '欠费提醒E2E' and dfp['admission_no'] == admC['admissionNo']
+assert abs(float(dfp['executedTotal']) - float(amx['price'])) < 0.001, f'日清单应带账户已发生费用: {dfp}'
+assert float(dfp['balance']) < 0 and dfp['owed'] is True, f'日清单应带欠费余额: {dfp}'
+assert len(dfp['rows']) >= 1, f'当日应有已执行费用行: {dfp}'
+print('[12a] 日清单打印数据集 OK：当日合计 ¥%s，押金余额 ¥%s' % (dfp['dayTotal'], dfp['balance']))
+
+ok(call('PUT', f'/inpatient/admissions/{cid}/discharge-diag',
+        {'icd': icds[0]['code'], 'name': icds[0]['name']}, token), '出院诊断补录')
+ok(call('POST', f'/inpatient/admissions/{cid}/records',
+        {'recordType': 'DISCHARGE', 'title': '出院小结', 'content': '经治疗好转，准予出院，一周后复诊。'}, token), '出院小结病历')
+dsp = ok(call('GET', f'/inpatient/admissions/{cid}/print/discharge-summary', token=token), '出院小结打印')
+assert dsp['admission_no'] == admC['admissionNo'] and dsp['admit_diag_name']
+assert any(r['record_type'] == 'DISCHARGE' for r in dsp['records']), f'应含出院小结病历: {dsp["records"]}'
+assert len(dsp['meds']) >= 1, f'出院带药应含已执行药嘱: {dsp}'
+print('[12b] 出院小结打印数据集 OK：诊疗经过 %d 条，带药 %d 项' % (len(dsp['records']), len(dsp['meds'])))
+
+# 收尾：欠费出院不硬拦（允许欠费出院），释放床位
+sc = ok(call('POST', f'/inpatient/admissions/{cid}/discharge', {}, token), '欠费出院')
+assert float(sc['balance']) < 0, f'欠费出院结算单应标注负余额: {sc}'
+print('[12c] 欠费出院不硬拦 OK：结算单 %s 欠费 ¥%.2f' % (sc['settleNo'], abs(float(sc['balance']))))
+
 print('\n=== 进销存 + 住院线 E2E 全部通过 ✔ ===')

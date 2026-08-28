@@ -24,6 +24,7 @@ public class InpEmrController {
     private final VitalSignRepo vitalRepo;
     private final CurrentUserService currentUserService;
     private final cn.hip.platform.integration.signature.SignatureAdapter signatureAdapter;
+    private final org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     @GetMapping("/records")
     public R<List<InpMedicalRecord>> records(@PathVariable Long admissionId) {
@@ -61,6 +62,41 @@ public class InpEmrController {
         r.setSignedAt(java.time.Instant.now());
         recordRepo.save(r);
         return R.ok(java.util.Map.of("signature", r.getSignature(), "signedAt", r.getSignedAt()));
+    }
+
+    public record AmendRequest(String amendText, String reason) {}
+
+    /**
+     * 1.2.13 阻塞4：住院病历补正——签名冻结的病历不放开编辑，只能追加法定留痕补正记录
+     * （原文快照 + 补正内容 + 补正人 + 补正时间 + 补正原因）。
+     * 签名前应走 POST /records 或直接维护，签名后才走补正。
+     */
+    @PostMapping("/records/{recordId}/amend")
+    public R<Void> amendRecord(@PathVariable Long admissionId, @PathVariable Long recordId,
+                               @RequestBody AmendRequest req, Authentication auth) {
+        InpMedicalRecord r = recordRepo.findById(recordId)
+                .filter(x -> x.getAdmissionId().equals(admissionId)).orElse(null);
+        if (r == null) return R.fail(9107, "病历不存在");
+        if (r.getSignature() == null) return R.fail(9108, "病历未签名冻结，请直接修改，无需补正");
+        if (req.amendText() == null || req.amendText().isBlank()) return R.fail(9109, "补正内容不能为空");
+        if (req.reason() == null || req.reason().isBlank()) return R.fail(9109, "补正原因不能为空");
+        jdbc.update("""
+                insert into emr_amendment(emr_type, emr_id, original_text, amend_text, reason, amended_by)
+                values ('INP', ?, ?, ?, ?, ?)
+                """, r.getId(), r.getContent(), req.amendText(), req.reason(), currentUserService.idOf(auth));
+        return R.ok();
+    }
+
+    /** 住院病历补正历史（时间正序） */
+    @GetMapping("/records/{recordId}/amendments")
+    public R<List<java.util.Map<String, Object>>> amendments(@PathVariable Long admissionId,
+                                                             @PathVariable Long recordId) {
+        return R.ok(jdbc.queryForList("""
+                select a.id, a.amend_text, a.reason, a.amended_by, a.amended_at, u.real_name as amended_by_name
+                from emr_amendment a left join sys_user u on u.id = a.amended_by
+                where a.emr_type = 'INP' and a.emr_id = ?
+                order by a.id
+                """, recordId));
     }
 
     @GetMapping("/vitals")

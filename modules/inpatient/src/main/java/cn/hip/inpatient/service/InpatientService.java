@@ -181,9 +181,15 @@ public class InpatientService {
         }
     }
 
-    /** 转科转床：原子占新床成功后才释放旧床，全程留痕 */
+    /** 转科转床（无原因重载，保留既有调用点签名不变） */
     @Transactional
     public InpAdmission transfer(Long admissionId, Long toDeptId, Long toBedId, Long operatorId) {
+        return transfer(admissionId, toDeptId, toBedId, null, operatorId);
+    }
+
+    /** 转科转床：原子占新床成功后才释放旧床，全程留痕（reason 为收尾环补采的转科原因，可空） */
+    @Transactional
+    public InpAdmission transfer(Long admissionId, Long toDeptId, Long toBedId, String reason, Long operatorId) {
         InpAdmission adm = admissionRepo.findById(admissionId)
                 .orElseThrow(() -> new InpException(9003, "住院记录不存在"));
         if (!"IN_HOSPITAL".equals(adm.getStatus())) {
@@ -206,6 +212,7 @@ public class InpatientService {
         log.setToDeptId(toDeptId);
         log.setFromBedId(fromBedId);
         log.setToBedId(toBedId);
+        log.setReason(reason);
         log.setOperatorId(operatorId);
         transferLogRepo.save(log);
 

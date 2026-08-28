@@ -101,6 +101,26 @@ public class DoctorStationController {
         }
     }
 
+    public record AmendRequest(String amendText, String reason) {}
+
+    /** 病历补正（阻塞4）：签名冻结病历追加法定留痕补正，不改原文 */
+    @PostMapping("/{registrationId}/emr/amend")
+    public R<Void> amendEmr(@PathVariable Long registrationId, @RequestBody AmendRequest req, Authentication auth) {
+        try {
+            doctorStationService.amendEmr(registrationId, req.amendText(), req.reason(),
+                    currentUserService.idOf(auth));
+            return R.ok();
+        } catch (BizException e) {
+            return R.fail(e.code, e.getMessage());
+        }
+    }
+
+    /** 病历补正历史 */
+    @GetMapping("/{registrationId}/emr/amendments")
+    public R<List<Map<String, Object>>> amendments(@PathVariable Long registrationId) {
+        return R.ok(doctorStationService.listAmendments(registrationId));
+    }
+
     public record CreateOrdersRequest(List<DoctorStationService.OrderLine> lines) {}
 
     @PostMapping("/{registrationId}/orders")

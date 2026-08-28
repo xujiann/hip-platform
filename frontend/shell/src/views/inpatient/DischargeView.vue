@@ -15,10 +15,13 @@
       <el-descriptions :column="1" border>
         <el-descriptions-item label="费用总额">¥{{ detail.totalAmount }}</el-descriptions-item>
         <el-descriptions-item label="已交押金">¥{{ detail.depositAmount }}</el-descriptions-item>
-        <el-descriptions-item :label="Number(balance) >= 0 ? '应退' : '应补'">
+        <el-descriptions-item :label="Number(balance) >= 0 ? '应退' : '欠费应补'">
           <span class="balance">¥{{ Math.abs(Number(balance)).toFixed(2) }}</span>
         </el-descriptions-item>
       </el-descriptions>
+      <!-- 收尾环·阻塞1：欠费出院不硬拦（医院常规，事后追缴），但必须明确标注欠费金额 -->
+      <el-alert v-if="Number(balance) < 0" type="error" show-icon :closable="false" style="margin-top: 8px"
+                :title="`欠费 ¥${Math.abs(Number(balance)).toFixed(2)}，允许欠费出院但请提醒患者续交/事后追缴`" />
       <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
         <b style="font-size: 13px;">出院诊断</b>
         <el-input v-model="dischargeIcd" placeholder="ICD-10" style="width: 110px" size="small" />
@@ -33,6 +36,7 @@
           <el-option label="医保结算" value="YB" />
         </el-select>
         <el-button type="danger" :loading="discharging" @click="discharge">出院结算</el-button>
+        <el-button @click="printSummary()">打印出院小结</el-button>
       </div>
       <el-table :data="detail.orders" size="small" height="260" style="margin-top: 12px">
         <el-table-column prop="itemName" label="项目" />
@@ -50,6 +54,7 @@
         <el-date-picker v-model="dailyDate" type="date" value-format="YYYY-MM-DD" size="small"
                         style="width: 140px" @change="loadDaily" />
         <span v-if="daily" style="font-size: 13px; color: #909399;">当日合计 ¥{{ daily.total }}</span>
+        <el-button size="small" @click="printDaily">打印日清单</el-button>
       </div>
       <el-table v-if="daily" :data="daily.rows" size="small" height="180" style="margin-top: 6px">
         <el-table-column prop="item_name" label="项目" />
@@ -85,6 +90,21 @@ async function loadDaily() {
 
 const balance = computed(() =>
   detail.value ? (Number(detail.value.depositAmount) - Number(detail.value.totalAmount)).toFixed(2) : '0')
+
+// 收尾环·打印：住院单据在独立打印页新开一页（与门诊 PrintView 同一入口）
+function openPrint(query: Record<string, string>) {
+  const qs = new URLSearchParams(query).toString()
+  window.open(`/print?${qs}`, '_blank')
+}
+function printDaily() {
+  if (!current.value) return
+  openPrint({ type: 'inp-daily-fee', id: String(current.value.id), date: dailyDate.value })
+}
+function printSummary(admissionId?: number | string) {
+  const aid = admissionId ?? current.value?.id
+  if (!aid) return
+  openPrint({ type: 'inp-discharge-summary', id: String(aid) })
+}
 
 async function load() {
   const resp = await client.get('/inpatient/admissions')
@@ -135,13 +155,17 @@ async function discharge() {
   } catch {
     return   // 用户取消
   }
+  const dischargedId = current.value.id
   discharging.value = true
   try {
     const resp = await client.post(`/inpatient/admissions/${current.value.id}/discharge`, null,
       { params: { payMethod: payMethod.value } })
     const s = resp.data.data
-    const msg = Number(s.balance) >= 0 ? `应退 ¥${s.balance}` : `应补 ¥${Math.abs(Number(s.balance))}`
+    // 欠费出院（balance<0）：不硬拦，但结算提示明确标注"欠费应补"
+    const msg = Number(s.balance) >= 0 ? `应退 ¥${s.balance}` : `欠费应补 ¥${Math.abs(Number(s.balance))}`
     ElMessage.success(`出院结算完成 ${s.settleNo}：费用 ¥${s.totalAmount}，押金 ¥${s.depositAmount}，${msg}`)
+    // 结算后自动开出院小结打印页（患者离院即带走）
+    printSummary(dischargedId as number)
     await load()
   } finally {
     discharging.value = false

@@ -63,6 +63,7 @@ const router = createRouter({
         { path: 'cdss', component: () => import('../views/outpatient/CdssView.vue') },
         { path: 'pay', component: () => import('../views/outpatient/PayView.vue') },
         { path: 'mrstats', component: () => import('../views/quality/MedStatsView.vue') },
+        { path: 'mrfront', component: () => import('../views/quality/MedRecordFrontPageView.vue') },
         { path: 'hrp/equipment', component: () => import('../views/hrp/EquipmentView.vue') },
         { path: 'nursing-plus', component: () => import('../views/quality/NursingPlusView.vue') },
         { path: 'drug-analysis', component: () => import('../views/hrp/DrugAnalysisView.vue') },

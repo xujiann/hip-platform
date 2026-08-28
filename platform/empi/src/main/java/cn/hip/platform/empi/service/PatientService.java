@@ -59,7 +59,21 @@ public class PatientService {
      */
     @Transactional
     public Patient update(Long id, Patient data) {
+        return update(id, data, true);
+    }
+
+    /**
+     * @param canEditIdentity 是否允许修改身份与联系方式（姓名/证件/手机）。
+     *   上线前审查 P2-2：患者端登录用 patientNo+phone，任意院内角色改掉手机号即可登入他人
+     *   门户读其报告/账单；改证件/姓名是身份冒用。故非管理员**只能改临床与地址类字段**，
+     *   身份三项若发生实际变更即拒绝。临床字段（血型/过敏史）仍放开——医生护士要合法维护。
+     */
+    public Patient update(Long id, Patient data, boolean canEditIdentity) {
         Patient p = patientRepository.findById(id).orElseThrow();
+        if (!canEditIdentity && identityChanged(p, data)) {
+            throw new cn.hip.platform.core.common.HipBizException(2005,
+                    "修改患者姓名/证件/手机需管理员权限");
+        }
         if (data.getName() != null) p.setName(data.getName());
         if (data.getSex() != null) p.setSex(data.getSex());
         if (data.getBirthDate() != null) p.setBirthDate(data.getBirthDate());
@@ -71,6 +85,18 @@ public class PatientService {
         if (data.getBloodType() != null) p.setBloodType(data.getBloodType());
         if (data.getAllergyHistory() != null) p.setAllergyHistory(data.getAllergyHistory());
         return patientRepository.save(p);
+    }
+
+    /** 身份三项（姓名/证件类型+号/手机）是否被实际改动——同值提交不算改动，避免误伤合法编辑 */
+    private boolean identityChanged(Patient cur, Patient data) {
+        return changed(data.getName(), cur.getName())
+                || changed(data.getIdType(), cur.getIdType())
+                || changed(data.getIdNo(), cur.getIdNo())
+                || changed(data.getPhone(), cur.getPhone());
+    }
+
+    private boolean changed(String incoming, String current) {
+        return incoming != null && !incoming.equals(current);
     }
 
     public static Integer ageOf(LocalDate birthDate) {

@@ -55,8 +55,30 @@
                         :closable="false" style="margin-bottom: 4px" />
             </el-form-item>
             <el-form-item label="处理意见"><el-input v-model="emr.advice" type="textarea" :rows="2" /></el-form-item>
-            <el-button type="primary" :loading="savingEmr" @click="saveEmr">保存病历</el-button>
+            <el-button type="primary" :loading="savingEmr" :disabled="emrSigned" @click="saveEmr">保存病历</el-button>
           </el-form>
+
+          <!-- 阻塞4：签名冻结病历的合规补正入口 -->
+          <div v-if="emrSigned" class="amend-block">
+            <el-alert type="info" :closable="false" show-icon
+                      title="病历已签名冻结，原文不可修改。如发现错字/表述有误，请追加补正记录（原文保留，留痕可追溯）。" />
+            <el-form :model="amendForm" label-width="80px" style="margin-top: 10px">
+              <el-form-item label="补正内容">
+                <el-input v-model="amendForm.amendText" type="textarea" :rows="2" placeholder="正确的表述/更正说明" />
+              </el-form-item>
+              <el-form-item label="补正原因">
+                <el-input v-model="amendForm.reason" placeholder="如：录入笔误、诊断补充" />
+              </el-form-item>
+              <el-button type="warning" :loading="amending" @click="submitAmend">提交补正</el-button>
+            </el-form>
+            <el-timeline v-if="amendments.length" style="margin-top: 12px">
+              <el-timeline-item v-for="a in amendments" :key="a.id as number"
+                                :timestamp="`${String(a.amended_at).slice(0, 16).replace('T', ' ')} · ${a.amended_by_name ?? ('用户' + a.amended_by)}`">
+                <b>补正：</b>{{ a.amend_text }}
+                <div class="amend-reason">原因：{{ a.reason }}</div>
+              </el-timeline-item>
+            </el-timeline>
+          </div>
         </el-tab-pane>
 
         <el-tab-pane label="处方" name="rx">
@@ -90,6 +112,14 @@
               </template>
             </el-table-column>
           </el-table>
+          <!-- 阻塞6：断货医生开单感知——开单不拦，但当场提示库存不足，让医生换药或知情 -->
+          <el-alert v-if="stockWarnings.length" type="warning" show-icon :closable="true" style="margin-top: 8px"
+                    @close="stockWarnings = []"
+                    title="以下药品库存不足，患者缴费后可能无法发药，请换药或安排进药：">
+            <template #default>
+              <div v-for="(w, i) in stockWarnings" :key="i">· {{ w }}</div>
+            </template>
+          </el-alert>
           <el-button type="success" :disabled="!rxLines.length" :loading="submitting" style="margin-top: 8px"
                      @click="submitOrders('rx')">
             开立处方
@@ -175,6 +205,11 @@ const savingEmr = ref(false)
 const submitting = ref(false)
 
 const emr = reactive({ chiefComplaint: '', presentIllness: '', pastHistory: '', physicalExam: '', advice: '' })
+const emrSigned = ref(false)
+const amendForm = reactive({ amendText: '', reason: '' })
+const amending = ref(false)
+const amendments = ref<Record<string, unknown>[]>([])
+const stockWarnings = ref<string[]>([])
 const diagCodes = ref<string[]>([])
 const cdssTips = ref<string[]>([])
 const icdOptions = ref<{ code: string; name: string }[]>([])
@@ -216,8 +251,44 @@ async function openPatient(row: Record<string, unknown> | null) {
   })
   icdOptions.value = (ws.diagnoses ?? []).map((d: { icdCode: string; icdName: string }) => ({ code: d.icdCode, name: d.icdName }))
   orders.value = ws.orders ?? []
+  emrSigned.value = !!ws.emr?.signature
+  stockWarnings.value = []
+  amendForm.amendText = ''
+  amendForm.reason = ''
+  amendments.value = emrSigned.value ? await loadAmendments(row.registrationId as number) : []
   rxLines.value = []
   labLines.value = []
+}
+
+async function loadAmendments(registrationId: number) {
+  const resp = await client.get(`/outpatient/doctor/${registrationId}/emr/amendments`)
+  return (resp.data.data ?? []) as Record<string, unknown>[]
+}
+
+// 阻塞4：签名冻结病历追加补正记录（原文保留，法定留痕）
+async function submitAmend() {
+  if (!current.value) return
+  if (!amendForm.amendText.trim() || !amendForm.reason.trim()) {
+    ElMessage.warning('补正内容与补正原因均须填写')
+    return
+  }
+  amending.value = true
+  try {
+    const resp = await client.post(`/outpatient/doctor/${current.value.registrationId}/emr/amend`, {
+      amendText: amendForm.amendText,
+      reason: amendForm.reason,
+    })
+    if (resp.data.code !== 0) {
+      ElMessage.error(resp.data.message)
+      return
+    }
+    ElMessage.success('补正已留痕')
+    amendForm.amendText = ''
+    amendForm.reason = ''
+    amendments.value = await loadAmendments(current.value.registrationId as number)
+  } finally {
+    amending.value = false
+  }
 }
 
 async function startVisit() {
@@ -297,12 +368,22 @@ async function submitOrders(kind: 'rx' | 'lab') {
   const lines = kind === 'rx' ? rxLines.value : labLines.value
   submitting.value = true
   try {
-    await client.post(`/outpatient/doctor/${current.value.registrationId}/orders`, { lines })
+    const resp = await client.post(`/outpatient/doctor/${current.value.registrationId}/orders`, { lines })
     ElMessage.success(kind === 'rx' ? '处方已开立' : '申请已提交')
+    // 阻塞6：开单返回值带库存预警（stockWarnAvailable 非空即库存低于开量）
+    const created = (resp.data.data ?? []) as Record<string, unknown>[]
+    const warns = created.filter((o) => o.stockWarnAvailable !== null && o.stockWarnAvailable !== undefined)
     if (kind === 'rx') rxLines.value = []
     else labLines.value = []
     await openPatient(current.value)
-    tab.value = 'orders'
+    if (warns.length) {
+      stockWarnings.value = warns.map((o) => `${o.itemName}（余 ${o.stockWarnAvailable}）`)
+      tab.value = 'rx'
+      ElMessage({ type: 'warning', duration: 6000,
+        message: '部分药品库存不足，缴费后可能无法发药，请查看处方页提示' })
+    } else {
+      tab.value = 'orders'
+    }
   } finally {
     submitting.value = false
   }
@@ -329,5 +410,15 @@ onMounted(loadWorklist)
   align-items: center;
   margin-bottom: 8px;
   flex-wrap: wrap;
+}
+.amend-block {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px dashed #dcdfe6;
+}
+.amend-reason {
+  color: #888;
+  font-size: 12px;
+  margin-top: 2px;
 }
 </style>

@@ -47,11 +47,27 @@ class Phase109DeploymentGuardTest {
         assertEquals("someone", svc.verify(svc.issue("someone")));
     }
 
-    /** dev（默认）profile 仍可用占位密钥，否则本机开发与 CI 无法启动 */
+    /** 显式 dev profile 可用占位密钥，否则本机开发与 CI 无法启动 */
     @Test
     void devProfileAllowsPlaceholder() {
-        assertDoesNotThrow(() -> build(JwtService.DEV_PLACEHOLDER));
         assertDoesNotThrow(() -> build(JwtService.DEV_PLACEHOLDER, "dev"));
+    }
+
+    /**
+     * fail-closed（上线前审查 P2-1）：**无 profile 一律按生产处理**，占位密钥被拒。
+     * 此前无 profile 被当开发放行——运维漏配 spring.profiles.active 即回落公开占位密钥、
+     * 可伪造 ADMIN 令牌完全接管。缺配必须朝安全侧倒。
+     */
+    @Test
+    void missingProfileIsTreatedAsProductionAndRejectsPlaceholder() {
+        var ex = assertThrows(IllegalStateException.class,
+                () -> build(JwtService.DEV_PLACEHOLDER),
+                "无 profile 必须按生产处理、拒绝占位密钥");
+        assertTrue(ex.getMessage().contains("HIP_JWT_SECRET"), ex.getMessage());
+        // 拼错的 profile（既非生产名也非 dev/test/ci）同样按生产处理
+        assertThrows(IllegalStateException.class,
+                () -> build(JwtService.DEV_PLACEHOLDER, "piloot"),
+                "拼错的 profile 不能成为绕过闸门的路径");
     }
 
     /** 生产形态判定集中在 HipProfiles，新增闸门只需调它 */
@@ -69,6 +85,10 @@ class Phase109DeploymentGuardTest {
         dev.setActiveProfiles("dev");
         assertFalse(HipProfiles.isProduction(dev));
 
-        assertFalse(HipProfiles.isProduction(new MockEnvironment()));   // 无 profile = 开发
+        // fail-closed：无 profile = 生产（缺配朝安全侧倒），拼错的 profile 同理
+        assertTrue(HipProfiles.isProduction(new MockEnvironment()));
+        MockEnvironment typo = new MockEnvironment();
+        typo.setActiveProfiles("piloot");
+        assertTrue(HipProfiles.isProduction(typo));
     }
 }

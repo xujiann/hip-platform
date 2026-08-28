@@ -74,29 +74,135 @@ public class NursingQualityController {
                 "defectTotal", missingAdmission.size() + missingDischargeSummary.size()));
     }
 
-    /** 病案首页数据集（出院后自动汇编） */
+    /**
+     * 病案首页数据组装（阻塞7）：出院后按住院号从 inp_admission / inp_diagnosis /
+     * inp_medical_record / inp_settlement / inp_surgery / empi_patient 自动提取，组装成
+     * 结构化病案首页——患者基本信息、入出院信息、诊断（主诊断+其他诊断）、手术、按类费用汇总。
+     *
+     * <p><b>实现边界（留给实施期）：</b>本实现是院内查看/打印用的病案首页组装，
+     * <b>不生成国家标准上报文件</b>（HQMS 住院病案首页报文 / DRG-DIP 结算清单）——
+     * 那需对接病案质控配套产品或本地化字典映射（性别/民族/职业/离院方式等国标代码、
+     * 手术 ICD-9-CM3 编码、医保结算清单版式），属实施期对接工作，非本平台内置。
+     *
+     * <p>返回结构中扁平键（total_amount / admit_diag_icd 等）保留向后兼容既有 E2E，
+     * 嵌套段（patient / admission / diagnoses / surgeries / fees）供前端病案首页页面渲染。
+     */
     @GetMapping("/api/inpatient/admissions/{id}/front-page")
     public R<Map<String, Object>> frontPage(@PathVariable Long id) {
         var rows = jdbc.queryForList("""
                 select a.admission_no, a.care_level, a.admit_at, a.discharged_at, a.status, a.archived,
-                       a.admit_diag_icd, a.admit_diag_name,
-                       p.name as patient_name, p.sex, p.birth_date, p.id_no,
-                       d.name as dept_name,
-                       s.total_amount, s.deposit_amount, s.balance
+                       a.admit_diag_icd, a.admit_diag_name, a.discharge_diag_icd, a.discharge_diag_name,
+                       p.name as patient_name, p.sex, p.birth_date, p.id_no, p.patient_no,
+                       p.phone, p.address, p.insurance_type,
+                       d.name as dept_name, w.name as ward_name, b.bed_no,
+                       s.settle_no, s.total_amount, s.deposit_amount, s.balance, s.pay_method
                 from inp_admission a
                 join empi_patient p on p.id = a.patient_id
                 join sys_dept d on d.id = a.dept_id
+                left join sys_dept w on w.id = a.ward_id
+                left join inp_bed b on b.id = a.bed_id
                 left join inp_settlement s on s.admission_id = a.id and s.status = 'PAID'
                 where a.id = ?
                 """, id);
         if (rows.isEmpty()) return R.fail(9802, "住院记录不存在");
-        var page = rows.get(0);
-        page.put("drugAmount", jdbc.queryForObject(
+        var flat = rows.get(0);
+
+        // 其他诊断（inp_diagnosis 补录的出院/并发症合并症诊断）
+        var otherDiags = jdbc.queryForList(
+                "select icd, name from inp_diagnosis where admission_id = ? order by id", id);
+        // 主诊断：优先取出院主诊断（病案编码口径），未编码则回退入院诊断
+        var primary = new java.util.LinkedHashMap<String, Object>();
+        Object dxIcd = flat.get("discharge_diag_icd");
+        if (dxIcd != null && !String.valueOf(dxIcd).isBlank()) {
+            primary.put("icd", dxIcd);
+            primary.put("name", flat.get("discharge_diag_name"));
+            primary.put("source", "DISCHARGE");
+        } else {
+            primary.put("icd", flat.get("admit_diag_icd"));
+            primary.put("name", flat.get("admit_diag_name"));
+            primary.put("source", "ADMIT");
+        }
+        var diagnoses = new java.util.LinkedHashMap<String, Object>();
+        diagnoses.put("primary", primary);
+        diagnoses.put("others", otherDiags);
+
+        // 手术信息（若有）
+        var surgeries = jdbc.queryForList("""
+                select procedure_name, anesthesia_type, scheduled_at, status
+                from inp_surgery where admission_id = ? order by coalesce(scheduled_at, created_at), id
+                """, id);
+
+        // 费用按类汇总（已执行医嘱行）：DRUG 药品 / LAB 检验 / EXAM 检查 / TREAT 治疗
+        var byCategory = jdbc.queryForList("""
+                select order_type, coalesce(sum(amount), 0) as amount, count(*) as items
+                from inp_order where admission_id = ? and status = 'EXECUTED'
+                group by order_type order by order_type
+                """, id);
+        Double drugAmount = jdbc.queryForObject(
                 "select coalesce(sum(amount),0) from inp_order where admission_id = ? and order_type = 'DRUG' and status = 'EXECUTED'",
-                Double.class, id));
-        page.put("recordCount", jdbc.queryForObject(
-                "select count(*) from inp_medical_record where admission_id = ?", Long.class, id));
+                Double.class, id);
+        Long recordCount = jdbc.queryForObject(
+                "select count(*) from inp_medical_record where admission_id = ?", Long.class, id);
+
+        var fees = new java.util.LinkedHashMap<String, Object>();
+        fees.put("totalAmount", flat.get("total_amount"));
+        fees.put("depositAmount", flat.get("deposit_amount"));
+        fees.put("balance", flat.get("balance"));
+        fees.put("payMethod", flat.get("pay_method"));
+        fees.put("drugAmount", drugAmount);
+        fees.put("byCategory", byCategory);
+
+        var page = new java.util.LinkedHashMap<String, Object>();
+        // 结构化段（前端病案首页页面渲染）
+        page.put("patient", java.util.Map.of(
+                "name", nz(flat.get("patient_name")), "sex", nz(flat.get("sex")),
+                "birthDate", nz(flat.get("birth_date")), "idNo", nz(flat.get("id_no")),
+                "patientNo", nz(flat.get("patient_no")), "phone", nz(flat.get("phone")),
+                "address", nz(flat.get("address")), "insuranceType", nz(flat.get("insurance_type"))));
+        page.put("admission", java.util.Map.of(
+                "admissionNo", nz(flat.get("admission_no")), "deptName", nz(flat.get("dept_name")),
+                "wardName", nz(flat.get("ward_name")), "bedNo", nz(flat.get("bed_no")),
+                "careLevel", nz(flat.get("care_level")), "admitAt", nz(flat.get("admit_at")),
+                "dischargedAt", nz(flat.get("discharged_at")), "status", nz(flat.get("status")),
+                "archived", nz(flat.get("archived"))));
+        page.put("diagnoses", diagnoses);
+        page.put("surgeries", surgeries);
+        page.put("fees", fees);
+        page.put("recordCount", recordCount);
+        // 扁平向后兼容键（既有 E2E 依赖 total_amount / admit_diag_icd）
+        page.put("admission_no", flat.get("admission_no"));
+        page.put("patient_name", flat.get("patient_name"));
+        page.put("admit_diag_icd", flat.get("admit_diag_icd"));
+        page.put("admit_diag_name", flat.get("admit_diag_name"));
+        page.put("total_amount", flat.get("total_amount"));
+        page.put("deposit_amount", flat.get("deposit_amount"));
+        page.put("balance", flat.get("balance"));
+        page.put("status", flat.get("status"));
+        page.put("archived", flat.get("archived"));
+        page.put("drugAmount", drugAmount);
         return R.ok(page);
+    }
+
+    /** null 安全占位（Map.of 不接受 null 值） */
+    private static Object nz(Object v) {
+        return v == null ? "" : v;
+    }
+
+    /** 病案首页选单：近期出院/在院住院记录（供病案首页页面按住院号选取） */
+    @GetMapping("/api/quality/med-records")
+    public R<List<Map<String, Object>>> medRecords(@RequestParam(required = false) String keyword) {
+        String kw = keyword == null ? "" : keyword.trim();
+        String like = "%" + kw + "%";
+        return R.ok(jdbc.queryForList("""
+                select a.id, a.admission_no, a.status, a.discharged_at, a.archived,
+                       p.name as patient_name, d.name as dept_name
+                from inp_admission a
+                join empi_patient p on p.id = a.patient_id
+                join sys_dept d on d.id = a.dept_id
+                where (? = '' or a.admission_no ilike ? or p.name ilike ?)
+                order by coalesce(a.discharged_at, a.admit_at) desc, a.id desc
+                limit 100
+                """, kw, like, like));
     }
 
     /** 病案归档（须已出院） */

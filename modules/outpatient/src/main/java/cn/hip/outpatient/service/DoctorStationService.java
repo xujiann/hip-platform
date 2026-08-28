@@ -31,6 +31,7 @@ public class DoctorStationService {
     private final jakarta.persistence.EntityManager entityManager;
     private final CdssService cdssService;
     private final cn.hip.platform.core.service.ConfigReader configReader;
+    private final org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     /** 组号取数据库序列：跨实例、跨重启唯一 */
     private long nextGroupSeq() {
@@ -138,6 +139,7 @@ public class DoctorStationService {
             o.setOrderType(line.orderType());
             o.setQty(line.qty() == null || line.qty() <= 0 ? 1 : line.qty());
             o.setDoctorId(doctorId);
+            Integer stockWarn = null;
             if ("DRUG".equals(line.orderType())) {
                 DrugItem drug = drugRepository.findById(line.itemId())
                         .orElseThrow(() -> new BizException(4004, "药品不存在: " + line.itemId()));
@@ -152,6 +154,13 @@ public class DoctorStationService {
                 o.setFrequency(line.frequency());
                 o.setDosePerTime(line.dosePerTime());
                 o.setDays(line.days());
+                // 库存预警（阻塞6）：本次开量高于当前库存（含库存<=0）即预警，但不拦截开单。
+                // 读的是主数据门诊药房库存快照；发药时才原子扣减并可能撞 6002，
+                // 此处提前让医生知情，避免"缴费后到药房才发现断货、只能退费重开"。
+                int stock = drug.getStock() == null ? 0 : drug.getStock();
+                if (stock < o.getQty()) {
+                    stockWarn = stock;
+                }
             } else {
                 ChargeItem item = chargeItemRepository.findById(line.itemId())
                         .orElseThrow(() -> new BizException(4005, "收费项目不存在: " + line.itemId()));
@@ -163,7 +172,10 @@ public class DoctorStationService {
                 o.setUnitPrice(item.getPrice());
             }
             o.setAmount(o.getUnitPrice().multiply(BigDecimal.valueOf(o.getQty())));
-            return orderRepository.save(o);
+            OutpOrder saved = orderRepository.save(o);
+            // 预警是非持久化提示，落库后回填到返回实例上（不入库）
+            saved.setStockWarnAvailable(stockWarn);
+            return saved;
         }).toList();
     }
 
@@ -239,6 +251,52 @@ public class DoctorStationService {
         emr.setSignature(result.signature());
         emr.setSignedAt(java.time.Instant.now());
         return emrRepository.save(emr);
+    }
+
+    /** 病历原文拼接（补正留痕时快照原文，与签名摘要同口径） */
+    private static String emrText(OutpEmr emr) {
+        return String.join("|",
+                String.valueOf(emr.getChiefComplaint()), String.valueOf(emr.getPresentIllness()),
+                String.valueOf(emr.getPastHistory()), String.valueOf(emr.getPhysicalExam()),
+                String.valueOf(emr.getAdvice()));
+    }
+
+    /**
+     * 病历补正（阻塞4）：签名冻结的门诊病历不允许改原文，但可追加一条补正记录
+     * （原文快照 + 补正内容 + 补正人 + 补正时间 + 补正原因），形成法定可追溯的修改痕迹。
+     * 未签名的病历应走 saveEmr 直接修改，不走补正。
+     */
+    @Transactional
+    public void amendEmr(Long registrationId, String amendText, String reason, Long doctorId) {
+        OutpEmr emr = emrRepository.findByRegistrationId(registrationId)
+                .orElseThrow(() -> new BizException(4016, "病历不存在，无法补正"));
+        if (emr.getSignature() == null) {
+            throw new BizException(4018, "病历未签名冻结，请直接修改，无需补正");
+        }
+        if (amendText == null || amendText.isBlank()) {
+            throw new BizException(4019, "补正内容不能为空");
+        }
+        if (reason == null || reason.isBlank()) {
+            throw new BizException(4019, "补正原因不能为空");
+        }
+        jdbc.update("""
+                insert into emr_amendment(emr_type, emr_id, original_text, amend_text, reason, amended_by)
+                values ('OUTP', ?, ?, ?, ?, ?)
+                """, emr.getId(), emrText(emr), amendText, reason, doctorId);
+    }
+
+    /** 门诊病历补正历史（时间正序） */
+    public List<java.util.Map<String, Object>> listAmendments(Long registrationId) {
+        OutpEmr emr = emrRepository.findByRegistrationId(registrationId).orElse(null);
+        if (emr == null) {
+            return List.of();
+        }
+        return jdbc.queryForList("""
+                select a.id, a.amend_text, a.reason, a.amended_by, a.amended_at, u.real_name as amended_by_name
+                from emr_amendment a left join sys_user u on u.id = a.amended_by
+                where a.emr_type = 'OUTP' and a.emr_id = ?
+                order by a.id
+                """, emr.getId());
     }
 
     /** 作废医嘱（仅未收费的可作废） */

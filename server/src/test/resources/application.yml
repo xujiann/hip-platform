@@ -1,6 +1,11 @@
 spring:
   application:
     name: hip-server-test
+  # 测试显式声明 test profile（上线前审查 P2-1）：isProduction 改 fail-closed 后，
+  # 空 profile 被当生产、拒占位密钥会让全部上下文加载失败。test 是显式非生产形态。
+  # 需要验证 pilot/prod 闸门的用例（Phase109/112）在类内自设 profile，不受此默认影响。
+  profiles:
+    active: test
   datasource:
     hikari:
       # 会话时区钉死业务时区（1.2.2）：PGJDBC 默认把 JVM 时区设为会话时区，

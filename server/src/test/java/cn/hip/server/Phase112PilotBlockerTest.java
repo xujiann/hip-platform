@@ -120,7 +120,9 @@ class Phase112PilotBlockerTest {
     /** A-3 失败路径：超长帧必须回 AE 并断连，而不是无限吃堆（测试 profile 关 MLLP，自建实例） */
     @Test
     void mllpOversizedFrameRejected() throws Exception {
-        var server = new MllpServer(null, new org.springframework.mock.env.MockEnvironment());
+        var smokeEnv = new org.springframework.mock.env.MockEnvironment();
+        smokeEnv.setActiveProfiles("dev");   // fail-closed 后空 profile=生产会拒启动，冒烟用显式 dev
+        var server = new MllpServer(null, smokeEnv);
         org.springframework.test.util.ReflectionTestUtils.setField(server, "enabled", true);
         org.springframework.test.util.ReflectionTestUtils.setField(server, "port", 25998);
         org.springframework.test.util.ReflectionTestUtils.setField(server, "bindAddress", "127.0.0.1");
@@ -167,6 +169,7 @@ class Phase112PilotBlockerTest {
                 "pilot 无白名单时 25999 不应有监听");
         // 同配置换 dev profile 则正常启动（闸门只作用于生产）
         var devEnv = new org.springframework.mock.env.MockEnvironment();
+        devEnv.setActiveProfiles("dev");
         var dev = new MllpServer(null, devEnv);
         org.springframework.test.util.ReflectionTestUtils.setField(dev, "enabled", true);
         org.springframework.test.util.ReflectionTestUtils.setField(dev, "port", 25999);

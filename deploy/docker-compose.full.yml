@@ -6,15 +6,26 @@
 # 默认值兜底会让「忘配」变成「静默用公开口令/占位密钥」）：
 #   export HIP_DB_PASSWORD=<强口令>
 #   export HIP_JWT_SECRET=$(openssl rand -base64 48)
-#   export HIP_REDIS_PASSWORD=<强口令>
 # 时区固定 Asia/Shanghai：容器默认 UTC 会让 ::date 归日与 @Scheduled 触发时刻整体偏 8 小时。
+# v29 P2-7：移除了 redis 服务——全库无任何 Redis 用法（选主用 PG advisory lock、
+# 登录锁定用 sys_user 列），强制运维为幽灵依赖维护强口令是负担。多实例若日后需共享
+# 缓存/限流再真正接入，届时一并加回服务与闸门。
 x-tz: &tz
   TZ: Asia/Shanghai
+
+# 每个服务共用的日志上限：Docker 默认 json-file 不轮转、无大小上限——
+# 医院机房"某个坏日"的循环抛栈能把 /var/lib/docker 写满，pg 与应用一起挂（v29 P1-2）。
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
 
 services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    logging: *default-logging
     environment:
       <<: *tz
       POSTGRES_DB: hip
@@ -35,22 +46,31 @@ services:
       timeout: 3s
       retries: 10
 
-  redis:
-    image: redis:7-alpine
+  # 数据库定时备份（v29 P1-1）：db-backup.ps1 是 Windows+WSL 开发态脚本，
+  # Linux 机房用不了——生产备份必须随 compose 一起交付，否则三个月零备份。
+  # 每日 02:30（容器 TZ 已固定北京时）pg_dump -Fc 落到与 pg 共享的 ./backups 卷，
+  # 保留 14 份。异地外传（rsync/对象存储）留给实施按院配置——见部署手册。
+  db-backup:
+    image: postgres:16-alpine
     restart: unless-stopped
+    logging: *default-logging
     environment:
       <<: *tz
-    command: ["redis-server", "--requirepass", "${HIP_REDIS_PASSWORD:?必须设置 HIP_REDIS_PASSWORD}"]
+      PGPASSWORD: ${HIP_DB_PASSWORD:?必须设置 HIP_DB_PASSWORD}
     volumes:
-      - hip-redisdata:/data
-    ports:
-      - "127.0.0.1:6379:6379"
+      - ./backups:/backups
+      - ./tools/backup-loop.sh:/backup-loop.sh:ro
+    entrypoint: ["sh", "/backup-loop.sh"]
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   server:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.server
     restart: unless-stopped
+    logging: *default-logging
     environment:
       <<: *tz
       # pilot profile 是两道安全闸门（JwtService 密钥校验、MockAdapterGuard）的触发条件，
@@ -60,8 +80,6 @@ services:
       HIP_DB_URL: jdbc:postgresql://postgres:5432/hip
       HIP_DB_USER: hip
       HIP_DB_PASSWORD: ${HIP_DB_PASSWORD:?必须设置 HIP_DB_PASSWORD}
-      SPRING_DATA_REDIS_HOST: redis
-      SPRING_DATA_REDIS_PASSWORD: ${HIP_REDIS_PASSWORD:?必须设置 HIP_REDIS_PASSWORD}
       HIP_AI_URL: http://ai-service:8100
       HIP_MLLP_ENABLED: ${HIP_MLLP_ENABLED:-false}
       # MLLP 无协议级鉴权：开启时必须同时给出 LIS/中间件的来源 IP 白名单（支持 CIDR），
@@ -74,6 +92,9 @@ services:
       - "8080:8080"
       # 检验设备 MLLP 通道（hip.integration.mllp-enabled=true 时才需要）
       - "2575:2575"
+    # 文件日志落宿主可监控分区（v29 P1-3）：容器易失层里的日志重建即丢、巡检也取不到
+    volumes:
+      - ./logs:/app/logs
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health | grep -q UP"]
       interval: 10s
@@ -88,12 +109,14 @@ services:
   ai-service:
     build: ../ai-service
     restart: unless-stopped
+    logging: *default-logging
     environment:
       <<: *tz
 
   frontend:
     build: ../frontend/shell
     restart: unless-stopped
+    logging: *default-logging
     environment:
       <<: *tz
     depends_on:
@@ -122,5 +145,4 @@ services:
 
 volumes:
   hip-pgdata:
-  hip-redisdata:
   hip-orthanc:

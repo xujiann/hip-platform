@@ -80,12 +80,14 @@ public class HrPlusController {
 
     @GetMapping("/api/hr/attendance")
     public R<List<Map<String, Object>>> attendance(@RequestParam(required = false) String date) {
-        String d = date == null ? "current_date" : "'" + date.replaceAll("[^0-9-]", "") + "'::date";
+        // 绑定参数而非 .formatted() 拼接（上线前审查 P3-1）：原正则消毒虽挡住了注入，
+        // 但"请求参数经 .formatted 入 SQL"是全库唯一潜在陷阱，日后放宽正则即重开注入面。
+        // 与同文件 upsert 的 coalesce(?::date, current_date) 写法统一
         return R.ok(jdbc.queryForList("""
                 select a.*, e.name as emp_name, e.emp_no from hr_attendance a
                 join hr_employee e on e.id = a.employee_id
-                where a.work_date = %s order by e.emp_no
-                """.formatted(d)));
+                where a.work_date = coalesce(?::date, current_date) order by e.emp_no
+                """, date));
     }
 
     // ---- 资产价值调整 / 附件 ----

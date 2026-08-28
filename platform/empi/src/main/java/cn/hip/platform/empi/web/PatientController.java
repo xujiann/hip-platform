@@ -83,7 +83,8 @@ public class PatientController {
         if (maskErr != null) return R.fail(2004, maskErr);
         String idErr = idCardError(patient);
         if (idErr != null) return R.fail(2003, idErr);
-        var dto = toDto(patientService.update(id, patient));
+        // 身份三项（姓名/证件/手机）修改限管理员（上线前审查 P2-2）：非管理员改手机=门户接管跳板
+        var dto = toDto(patientService.update(id, patient, isAdmin(auth)));
         return R.ok(isAdmin(auth) ? dto : maskSensitive(dto));
     }
 

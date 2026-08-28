@@ -9,13 +9,36 @@ spring:
   jpa:
     show-sql: false
 
+  datasource:
+    hikari:
+      # 医院门诊高峰 200 工作线程争默认 10 条连接会批量 30s 超时（v29 P2-3）。
+      # 显式配池：pg 默认 max_connections=100，双实例各留余量取 25；
+      # max-lifetime 略小于常见网关空闲断连（如 10 分钟），泄漏检测兜底
+      maximum-pool-size: 25
+      minimum-idle: 5
+      connection-timeout: 20000
+      max-lifetime: 540000
+      leak-detection-threshold: 30000
+
 hip:
   ops:
     slow-ms: 300           # 试点收紧慢接口观测阈值
+    # 磁盘巡检盯宿主真实挂载点（v29 P2-4）：缺省 user.dir 是容器 overlay，
+    # 而真正会写满的是 pg 数据卷/备份卷/日志卷所在分区。逗号分隔多卷
+    disk-paths: ${HIP_OPS_DISK_PATHS:/app/logs,/backups}
   integration:
     mllp-enabled: ${HIP_MLLP_ENABLED:false}   # 按院有无直连设备决定
     ai-url: ${HIP_AI_URL:http://127.0.0.1:8100}
     pacs-url: ${HIP_PACS_URL:http://127.0.0.1:8042}
+
+server:
+  shutdown: graceful       # 重部署时排空在途请求（v29 P3-1），默认 IMMEDIATE 会硬切收费/结算
+
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
 
 logging:
   file:
@@ -24,3 +47,6 @@ logging:
     rollingpolicy:
       max-file-size: 50MB
       max-history: 30
+      # 无 total-size-cap 时"某个坏日"的循环抛栈能写出数 GB（v29 P1-3）：
+      # max-history 只按天算，同一天超 50MB 会滚出多个 50MB 文件无兜底
+      total-size-cap: 3GB
