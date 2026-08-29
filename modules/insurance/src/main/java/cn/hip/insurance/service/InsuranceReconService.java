@@ -82,13 +82,16 @@ public class InsuranceReconService {
                 """, date, date, date, date);
         var inpSettles = jdbc.queryForList("""
                 select settle_no, total_amount, status from inp_settlement
-                where pay_method = 'YB'
+                -- 显式收 FINAL（第七轮审阅 P3-C）：此前安全仅隐式依赖 interimSettle 拒 YB(9032)——
+                -- 一旦放开中间结算走医保通道，对账会把 INTERIM 当出院 YB 单去比报文而满屏误报。
+                -- 本地自证：医保对账只认出院结算
+                where pay_method = 'YB' and settle_type = 'FINAL'
                   and created_at >= ?::date and created_at < ?::date + interval '1 day'
                 order by id
                 """, date, date);
         var inpCancels = jdbc.queryForList("""
                 select settle_no, total_amount from inp_settlement
-                where pay_method = 'YB' and status = 'CANCELLED'
+                where pay_method = 'YB' and status = 'CANCELLED' and settle_type = 'FINAL'
                   and refunded_at >= ?::date and refunded_at < ?::date + interval '1 day'
                   and (created_at < ?::date or created_at >= ?::date + interval '1 day')
                 order by id

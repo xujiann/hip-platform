@@ -213,8 +213,12 @@ public class InventoryService {
     public StockTakeView confirmStockTake(Long takeId, Long operatorId) {
         InvStockTake take = stockTakeRepository.findById(takeId)
                 .orElseThrow(() -> new InventoryException(8005, "盘点单不存在"));
-        if (!"DRAFT".equals(take.getStatus())) throw new InventoryException(8006, "盘点单非草稿状态，不能确认");
         String takeNo = take.getTakeNo();
+        // 抢占 DRAFT→CONFIRMED（第七轮审阅 P2-3）：先原子占状态，防 confirm×cancel 并发下
+        // "作废单却动了库存"。占不到即已被他方确认/作废
+        if (stockTakeRepository.claimStatus(takeId, "CONFIRMED") == 0) {
+            throw new InventoryException(8006, "盘点单非草稿状态，不能确认");
+        }
         List<InvStockTakeLine> lines = stockTakeLineRepository.findByTakeIdOrderById(takeId);
         List<InvStockTakeLine> counted = lines.stream().filter(l -> l.getActualQty() != null).toList();
         if (counted.isEmpty()) throw new InventoryException(8009, "盘点单没有已录实盘数的盘点行，无法确认");
@@ -222,17 +226,24 @@ public class InventoryService {
             int book = line.getBookQty();
             int actual = line.getActualQty();
             int delta = actual - book;
-            if (delta == 0) continue;   // 账实相符，无需调库也无需流水
+            if (delta == 0) {
+                // 账实相符行也要校验账面未在盘点期间漂移（第七轮审阅 P2-2）：
+                // 原先 delta=0 直接跳过，会把"窗口内被并发发药改动过"的行记成"账实相符"，
+                // 破坏审计口径且违背 javadoc 承诺。用零位移条件更新做存在性校验（不改库存）
+                if (drugRepository.adjustStock(line.getDrugId(), book, book) == 0) {
+                    String name = drugRepository.findById(line.getDrugId()).map(DrugItem::getName).orElse("");
+                    throw new InventoryException(8008, "药品【" + name + "】账面已变化（盘点期间有出入库），请重新盘点");
+                }
+                continue;   // 账实相符且无漂移，无需调库也无需流水
+            }
             if (drugRepository.adjustStock(line.getDrugId(), book, actual) == 0) {
                 String name = drugRepository.findById(line.getDrugId()).map(DrugItem::getName).orElse("");
                 throw new InventoryException(8008, "药品【" + name + "】账面已变化（盘点期间有出入库），请重新盘点");
             }
             log(line.getDrugId(), "STOCKTAKE", delta, actual, takeNo, operatorId);
         }
-        // adjustStock 带 clearAutomatically，take 已脱管，重取一份改状态；
-        // saveAndFlush 确保状态落库（否则同一事务内后续若清持久化上下文，未刷的状态更新会丢）
+        // 状态已由入口 claimStatus 原子置 CONFIRMED；此处仅补确认时刻
         InvStockTake fresh = stockTakeRepository.findById(takeId).orElseThrow();
-        fresh.setStatus("CONFIRMED");
         fresh.setConfirmedAt(Instant.now());
         stockTakeRepository.saveAndFlush(fresh);
         return buildTakeView(takeId);
@@ -241,11 +252,12 @@ public class InventoryService {
     /** 作废盘点单（仅草稿可作废） */
     @Transactional
     public StockTakeView cancelStockTake(Long takeId) {
-        InvStockTake take = stockTakeRepository.findById(takeId)
+        stockTakeRepository.findById(takeId)
                 .orElseThrow(() -> new InventoryException(8005, "盘点单不存在"));
-        if (!"DRAFT".equals(take.getStatus())) throw new InventoryException(8006, "盘点单非草稿状态，不能作废");
-        take.setStatus("CANCELLED");
-        stockTakeRepository.saveAndFlush(take);
+        // 抢占 DRAFT→CANCELLED（第七轮审阅 P2-3）：与 confirm 同一抢占纪律，防并发下作废与确认互相覆盖
+        if (stockTakeRepository.claimStatus(takeId, "CANCELLED") == 0) {
+            throw new InventoryException(8006, "盘点单非草稿状态，不能作废");
+        }
         return buildTakeView(takeId);
     }
 
@@ -293,9 +305,14 @@ public class InventoryService {
      * 故此处采用估算：把该药「发药净出量」按 FEFO（先到期先出）从最早效期批次起分摊消耗，
      * 各批次入库量减去被分摊的消耗即为**估算在库量**；效期在阈值内且估算在库量>0 的批次报警。
      *
-     * <p>已知偏差（明确不追求精确）：①实际发药未按批次记录，消耗按 FEFO 假设分摊；
+     * <p>已知偏差（明确不追求精确）：①实际发药未按批次记录，消耗按假设分摊；
      * ②盘点前的期初/种子库存不属任何入库批次，不参与分摊；③ADJ/STOCKTAKE 调整不计入消耗。
-     * 因此估算偏保守（宁可多报不漏报），供药师人工复核，不作精确批次结论。
+     *
+     * <p><b>分摊方向刻意取"消耗先扣远效期批次"（第七轮审阅 P2-1 修正）</b>：
+     * 若按 FEFO（消耗先扣近效期批次）分摊，会把与该批次无关的期初/非 FEFO 消耗算到近效期批次头上，
+     * 把仍在架的近效期药估算成 0 在库而**漏报**——这是偏乐观、临床上更危险的方向。
+     * 改为从**最晚效期批次**起扣减消耗，让近效期批次的估算在库量偏大，宁可多报不漏报（真正的偏保守）。
+     * 仍供药师人工复核，不作精确批次结论；根治需批次级出库记录。
      */
     public List<ExpiryWarning> expiryWarnings(int days) {
         LocalDate today = BusinessDates.today();
@@ -309,12 +326,19 @@ public class InventoryService {
             List<InvStockIn> batches = stockInRepository.findAcceptedBatchesByDrugFefo(drugId);   // 效期升序
             long netConsumed = Math.max(0, -transactionRepository.sumOutReturnQty(drugId));
             String name = drugRepository.findById(drugId).map(DrugItem::getName).orElse("");
+            // 消耗从最晚效期批次起扣（batches 是效期升序，故逆序遍历分摊）——
+            // 使近效期批次尽量不被"消耗光"，估算偏保守（宁可多报，防漏报近效期药）
             long remainingConsume = netConsumed;
+            var estRemainingById = new java.util.HashMap<Long, Integer>();
+            for (int i = batches.size() - 1; i >= 0; i--) {
+                InvStockIn b = batches.get(i);
+                long alloc = Math.min(b.getQty(), remainingConsume);
+                estRemainingById.put(b.getId(), (int) (b.getQty() - alloc));
+                remainingConsume -= alloc;
+            }
             for (InvStockIn b : batches) {
                 int batchQty = b.getQty();
-                long alloc = Math.min(batchQty, remainingConsume);   // FEFO：早效期先被消耗
-                int estRemaining = (int) (batchQty - alloc);
-                remainingConsume -= alloc;
+                int estRemaining = estRemainingById.get(b.getId());
                 if (b.getExpireDate() == null || b.getExpireDate().isAfter(threshold)) continue;   // 只报阈值内批次
                 if (estRemaining <= 0) continue;
                 long d = ChronoUnit.DAYS.between(today, b.getExpireDate());

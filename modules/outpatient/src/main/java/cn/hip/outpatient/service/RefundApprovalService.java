@@ -31,7 +31,13 @@ public class RefundApprovalService {
 
     /** 该结算单是否需要审批（金额 ≥ 阈值且阈值 > 0） */
     public boolean needsApproval(BigDecimal amount) {
-        BigDecimal threshold = new BigDecimal(configReader.get("refund_approval_threshold", "500"));
+        // 阈值脏值容错（第七轮审阅 P3-2）：配置被写成非数字时不应让退费全线 500，回落默认 500
+        BigDecimal threshold;
+        try {
+            threshold = new BigDecimal(configReader.get("refund_approval_threshold", "500").trim());
+        } catch (NumberFormatException e) {
+            threshold = new BigDecimal("500");
+        }
         return threshold.signum() > 0 && amount.compareTo(threshold) >= 0;
     }
 
@@ -81,18 +87,34 @@ public class RefundApprovalService {
         if (pending != null && pending > 0) {
             throw new BizException(5013, "该结算单已有待审批的退费申请，请勿重复提交");
         }
-        jdbc.update("""
-                insert into outp_refund_approval(charge_id, charge_no, amount, reason, applied_by)
-                values (?,?,?,?,?)
-                """, chargeId, charge.getChargeNo(), charge.getTotalAmount(), reason, applicantId);
+        try {
+            jdbc.update("""
+                    insert into outp_refund_approval(charge_id, charge_no, amount, reason, applied_by)
+                    values (?,?,?,?,?)
+                    """, chargeId, charge.getChargeNo(), charge.getTotalAmount(), reason, applicantId);
+        } catch (org.springframework.dao.DataIntegrityViolationException e) {
+            // 并发两个 apply 同时越过上面的 count 检查时，第二条撞唯一部分索引 uq_refund_approval_pending。
+            // 转成可读 5013 而非裸 500（第七轮审阅 P3-1）
+            throw new BizException(5013, "该结算单已有待审批的退费申请，请勿重复提交");
+        }
         return jdbc.queryForObject(
                 "select id from outp_refund_approval where charge_id = ? and status = 'PENDING'",
                 Long.class, chargeId);
     }
 
-    /** 授权人审批：通过/驳回 */
+    /** 授权人审批：通过/驳回。职责分离——审批人不得是申请人（第七轮审阅 P2-4） */
     @Transactional
     public void decide(Long approvalId, boolean approved, String note, Long approverId) {
+        // 大额退费审批的立项目的就是防舞弊/职责分离：自己申请自己批等于没有审批。
+        // approverId 为 null（测试或系统调用）时不设防，仅拦真实的自申自批
+        if (approverId != null) {
+            Long applicant = jdbc.queryForList(
+                    "select applied_by from outp_refund_approval where id = ?", Long.class, approvalId)
+                    .stream().findFirst().orElse(null);
+            if (approverId.equals(applicant)) {
+                throw new BizException(5015, "退费审批须由他人复核，不能审批自己提交的申请");
+            }
+        }
         int n = jdbc.update("""
                 update outp_refund_approval
                    set status = ?, approved_by = ?, approved_at = now(), approve_note = ?

@@ -292,4 +292,54 @@ class ClinicalClosureTest {
                 "select count(*) from drg_case where admission_id = ?", Long.class, admId),
                 "DRG 入组对同一病例恰好一条，不因多张 PAID 重复");
     }
+
+    /**
+     * 第七轮审阅 P3-B：误开的中间结算单可冲销——置 CANCELLED 并释放医嘱打标，
+     * 释放的医嘱可被后续中间结算重新纳入。
+     */
+    @Test
+    void interimSettlementCanBeCancelledAndReleasesOrders() {
+        Long pid = newPatient("中间结算冲销");
+        Long bed = freeBed();
+        Long admId = inpatientService.admit(pid, 1L, bed, null, "J18.9", "肺炎",
+                new BigDecimal("1000"), "CASH", null).getId();
+        BigDecimal price = seeds.anyDrug().getPrice();
+        executedOrder(admId, 1);
+        entityManager.flush();
+        InpSettlement it = inpatientService.interimSettle(admId, null, "CASH");
+        entityManager.flush();
+        // 冲销该中间结算
+        inpatientService.cancelInterimSettle(it.getId(), null);
+        entityManager.flush();
+        assertEquals("CANCELLED", jdbc.queryForObject(
+                "select status from inp_settlement where id = ?", String.class, it.getId()));
+        // 打标已释放：该医嘱 interim_settle_id 回到 null
+        assertEquals(0, (long) jdbc.queryForObject(
+                "select count(*) from inp_order where interim_settle_id = ?", Long.class, it.getId()),
+                "冲销后医嘱打标已释放");
+        // 释放的医嘱可被新的中间结算重新认领（金额=原 price）
+        InpSettlement it2 = inpatientService.interimSettle(admId, null, "CASH");
+        assertEquals(0, it2.getTotalAmount().compareTo(price), "释放的医嘱被新中间结算重新纳入");
+    }
+
+    /**
+     * 第七轮审阅 P3-A：并发 discharge 已提交后，interimSettle 认领 0 行 → 9031 回滚，
+     * 不为已出院的 admission 留 INTERIM 幽灵单。此处用"先出院再中间结算"确定性复现认领落空。
+     */
+    @Test
+    void interimSettleAfterDischargeLeavesNoGhostRecord() {
+        Long pid = newPatient("中间结算幽灵");
+        Long bed = freeBed();
+        Long admId = inpatientService.admit(pid, 1L, bed, null, "J18.9", "肺炎",
+                new BigDecimal("1000"), "CASH", null).getId();
+        executedOrder(admId, 1);
+        inpatientService.discharge(admId, null, "CASH");   // 先出院
+        entityManager.flush();
+        // 已出院：interimSettle 直接被 9030 挡（入口状态检查）——确认不产生 INTERIM 单
+        assertEquals(9030, assertThrows(InpatientService.InpException.class,
+                () -> inpatientService.interimSettle(admId, null, "CASH")).code);
+        assertEquals(0, (long) jdbc.queryForObject(
+                "select count(*) from inp_settlement where admission_id = ? and settle_type = 'INTERIM'",
+                Long.class, admId), "已出院的 admission 不留 INTERIM 幽灵单");
+    }
 }

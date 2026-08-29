@@ -93,6 +93,11 @@ public class OpsHealthScheduler {
                     return n != null && n > queueErrorThreshold;
                 });
                 check(opened, "JVM 堆内存使用率过高", "HIGH", () -> heapUsageRatio() >= heapUsageThreshold);
+                // default 分区恒空是分区改造（V100）的不变量（第七轮审阅 P2-2）：
+                // hip_purge_observability 维护落后超 2 月时新数据会落 default，后续建分区将失败、
+                // 表膨胀重现且只有一行日志。任一观测表 default 非空即开单，逼运维尽快补分区
+                check(opened, "分区表 default 分区非空（月度维护可能已落后，须尽快补分区）", "HIGH",
+                        this::anyDefaultPartitionNonEmpty);
                 // 观测表归档：三张只增不减的表若无清理，ops_slow_api 还会自我放大
                 // （DB 慢 → 更多请求超阈值 → 每个都同步 insert → 更慢）。
                 // 小时判断必须与 cron 同时区：LocalTime.now() 用 JVM 默认时区，
@@ -146,6 +151,24 @@ public class OpsHealthScheduler {
         var h = java.lang.management.ManagementFactory.getMemoryMXBean().getHeapMemoryUsage();
         long max = h.getMax();
         return max <= 0 ? 0.0 : (double) h.getUsed() / max;
+    }
+
+    /**
+     * V100 三张分区表的 default 分区是否有任一非空（第七轮审阅 P2-2）。
+     * default 恒空是设计不变量；非空意味着某月无分区、月度维护落后，须尽快补分区。
+     * 取指标失败（如表还没分区化的旧库）返回 false，不误报。
+     */
+    private boolean anyDefaultPartitionNonEmpty() {
+        for (String def : new String[]{"sys_audit_log_pdefault", "int_message_log_pdefault", "ops_slow_api_pdefault"}) {
+            try {
+                if (jdbc.queryForObject("select exists(select 1 from " + def + " limit 1)", Boolean.class)) {
+                    return true;
+                }
+            } catch (Exception ignore) {
+                // 该 default 分区不存在（未分区化的库）——跳过，不误报
+            }
+        }
+        return false;
     }
 
     /**

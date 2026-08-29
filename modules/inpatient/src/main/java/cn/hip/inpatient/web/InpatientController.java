@@ -408,6 +408,18 @@ public class InpatientController {
         }
     }
 
+    /** 冲销一张误开的中间结算单（第七轮审阅 P3-B）：置 CANCELLED 并释放医嘱打标，限收费员/管理员 */
+    @org.springframework.security.access.prepost.PreAuthorize("hasAnyRole('ADMIN','CASHIER')")
+    @PostMapping("/interim-settlements/{settleId}/cancel")
+    public R<Object> cancelInterimSettle(@PathVariable Long settleId, Authentication auth) {
+        try {
+            inpatientService.cancelInterimSettle(settleId, currentUserService.idOf(auth));
+            return R.ok(null);
+        } catch (InpException e) {
+            return R.fail(e.code, e.getMessage());
+        }
+    }
+
     /** 某次入院的历次中间结算单（住院费用页回看，只读） */
     @org.springframework.security.access.prepost.PreAuthorize("hasAnyRole('ADMIN','CASHIER','NURSE','DOCTOR_OUTP')")
     @GetMapping("/admissions/{id}/interim-settlements")

@@ -131,6 +131,27 @@ class PharmacyChainTest {
                 () -> inventoryService.confirmStockTake(view.id(), null)).code);
     }
 
+    /**
+     * 第七轮审阅 P2-2 回归：账实相符（delta=0）的行也要校验账面未漂移。
+     * 原先 delta=0 直接跳过条件更新，会把"窗口内被并发发药改动过"的行记成账实相符。
+     */
+    @Test
+    void stockTakeConfirmZeroDeltaLineStillDetectsDrift() {
+        Long drugId = seeds.drug("零差漂移药").getId();
+        int book = stockOf(drugId);
+        var view = inventoryService.createStockTake(java.util.List.of(drugId), null, null);
+        // 实盘=账面（delta 0）
+        inventoryService.enterCounts(view.id(),
+                java.util.List.of(new InventoryService.CountEntry(drugId, book)));
+        // 盘点期间账面漂移
+        drugRepository.deductStock(drugId, 1);
+        entityManager.flush();
+        entityManager.clear();
+        assertEquals(8008, assertThrows(InventoryException.class,
+                () -> inventoryService.confirmStockTake(view.id(), null)).code,
+                "delta=0 行也须检出账面漂移，不能记成账实相符");
+    }
+
     // ========== ② 效期预警（估算口径）==========
 
     @Test

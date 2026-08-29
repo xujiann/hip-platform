@@ -131,4 +131,30 @@ class RefundApprovalTest {
                 () -> refundApprovalService.apply(charge.getId(), "第二次", null));
         assertEquals(5013, ex.code);
     }
+
+    /** 第七轮审阅 P2-4：审批人不能是申请人（职责分离，防自申自批） */
+    @Test
+    void selfApprovalIsRejected() {
+        setThreshold("0.01");
+        var charge = makeCharge();
+        Long applicantId = 42L;
+        Long approvalId = refundApprovalService.apply(charge.getId(), "自己申请", applicantId);
+        // 同一人审批自己的申请 → 5015
+        var ex = assertThrows(BizException.class,
+                () -> refundApprovalService.decide(approvalId, true, "自己批", applicantId));
+        assertEquals(5015, ex.code, ex.getMessage());
+        // 他人审批则放行
+        refundApprovalService.decide(approvalId, true, "他人复核", 99L);
+        assertEquals("APPROVED", jdbc.queryForObject(
+                "select status from outp_refund_approval where id = ?", String.class, approvalId));
+    }
+
+    /** 第七轮审阅 P3-2：阈值配置脏值不应让退费全线 500，回落默认 */
+    @Test
+    void dirtyThresholdFallsBackToDefault() {
+        setThreshold("not-a-number");
+        // needsApproval 不抛异常，按默认 500 判定
+        assertTrue(refundApprovalService.needsApproval(new java.math.BigDecimal("600")));
+        assertFalse(refundApprovalService.needsApproval(new java.math.BigDecimal("100")));
+    }
 }

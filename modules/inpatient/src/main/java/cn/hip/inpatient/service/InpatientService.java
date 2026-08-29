@@ -387,10 +387,13 @@ public class InpatientService {
         entityManager.flush();
         final Long settleId = s.getId();
 
-        // ① 原子认领：仅未被认领的已执行医嘱，打上本次结算 id（并发安全，靠行锁与 is null 条件）
+        // ① 原子认领：仅未被认领的已执行医嘱，打上本次结算 id（并发安全，靠行锁与 is null 条件）。
+        // 认领同时校验住院仍在院（第七轮审阅 P3-A）：与并发 discharge/claimDischarge 抢跑时，
+        // 出院已提交则子查询为空、认领 0 行——避免为已出院的 admission 留一张时序矛盾的 INTERIM 幽灵单
         entityManager.createNativeQuery(
                         "update inp_order set interim_settle_id = :sid "
-                                + "where admission_id = :aid and status = 'EXECUTED' and interim_settle_id is null")
+                                + "where admission_id = :aid and status = 'EXECUTED' and interim_settle_id is null "
+                                + "and exists (select 1 from inp_admission a where a.id = :aid and a.status = 'IN_HOSPITAL')")
                 .setParameter("sid", settleId)
                 .setParameter("aid", admissionId)
                 .executeUpdate();
@@ -419,6 +422,36 @@ public class InpatientService {
                 configReader.get("billno_prefix_interim", "ZJ"),
                 BusinessDates.today().format(DateTimeFormatter.BASIC_ISO_DATE), settleId));
         return settlementRepo.save(s);
+    }
+
+    /**
+     * 冲销一张 INTERIM 中间结算单（第七轮审阅 P3-B）：误开的中间结算此前无系统内纠正路径，
+     * 只能改库。置 CANCELLED 并释放其认领的医嘱打标（interim_settle_id=null），让这些医嘱
+     * 可被后续中间结算或出院结算重新纳入。资金上本无副作用（出院按台账现算、忽略打标），
+     * 但法定留痕需要一条可作废的路径而非改库。
+     */
+    @Transactional
+    public void cancelInterimSettle(Long settleId, Long operatorId) {
+        InpSettlement s = settlementRepo.findById(settleId)
+                .orElseThrow(() -> new InpException(9033, "结算单不存在"));
+        if (!"INTERIM".equals(s.getSettleType())) {
+            throw new InpException(9033, "仅中间结算单可冲销，出院结算请走结算冲销");
+        }
+        // 条件更新抢占：并发双击/两窗口同时冲销只一方成功（同全仓抢占纪律）
+        int n = entityManager.createNativeQuery(
+                        "update inp_settlement set status = 'CANCELLED', refunded_at = now(), refund_by = :op "
+                                + "where id = :id and status = 'PAID' and settle_type = 'INTERIM'")
+                .setParameter("op", operatorId)
+                .setParameter("id", settleId)
+                .executeUpdate();
+        if (n == 0) {
+            throw new InpException(9034, "该中间结算单已冲销或状态异常");
+        }
+        // 释放打标：被本单认领的医嘱回到未结算，可被后续结算重新纳入
+        entityManager.createNativeQuery(
+                        "update inp_order set interim_settle_id = null where interim_settle_id = :id")
+                .setParameter("id", settleId)
+                .executeUpdate();
     }
 
     /** 原生查询数值结果统一转 BigDecimal（coalesce(sum) 在 PG numeric 上回 BigDecimal，兜底其它数值型） */

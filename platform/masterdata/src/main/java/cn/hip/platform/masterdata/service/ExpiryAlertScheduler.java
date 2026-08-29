@@ -46,18 +46,20 @@ public class ExpiryAlertScheduler {
             try {
                 for (InventoryService.ExpiryWarning w : inventoryService.expiryWarnings(days)) {
                     String label = "EXPIRED".equals(w.status()) ? "已过期" : "近效期";
-                    String title = String.format("[效期预警] %s 批号%s 于 %s 到期（%s，估算在库 %d）",
-                            w.drugName(), w.batchNo() == null ? "-" : w.batchNo(),
-                            w.expireDate(), label, w.estimatedRemaining());
+                    // title 必须**稳定**（第七轮审阅）：原先含"估算在库 N"，而 N 随发药变化，
+                    // 同一批次每次巡检 title 都不同 → 去重失效 → 每天一张工单风暴。
+                    // 去重键只用批号+效期（同一批次唯一），估算量进日志不进 title
+                    String title = String.format("[效期预警] %s 批号%s 于 %s 到期（%s）",
+                            w.drugName(), w.batchNo() == null ? "-" : w.batchNo(), w.expireDate(), label);
                     String level = "EXPIRED".equals(w.status()) ? "HIGH" : "MEDIUM";
                     Integer open = jdbc.queryForObject(
                             "select count(*) from ops_fault_ticket where title = ? and status = 'OPEN'",
                             Integer.class, title);
-                    if (open != null && open > 0) continue;   // 同题未处理不重复开单
+                    if (open != null && open > 0) continue;   // 同题未处理不重复开单（title 已稳定）
                     jdbc.update("insert into ops_fault_ticket(title, level, reporter) values (?,?,'system')",
                             title, level);
                     opened.incrementAndGet();
-                    log.warn("效期预警开单: {} ({})", title, level);
+                    log.warn("效期预警开单: {}（估算在库 {}，{}）", title, w.estimatedRemaining(), level);
                 }
             } catch (Exception e) {
                 log.error("效期预警巡检失败", e);

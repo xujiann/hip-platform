@@ -71,4 +71,25 @@ class Phase110RoleUsabilityTest {
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.code").value(1000));
     }
+
+    /**
+     * BUTTON 权限点下发（v31 V111）：前端 hasPerm 依赖 /auth/me 下发的 BUTTON 菜单项。
+     * 收费员必须拿到收费/退费按钮权限、药师必须拿到发药/退药权限、且各自不越界。
+     * 授权口径须与页面菜单一致——能进收费页(ADMIN,CASHIER)才有收费按钮权限。
+     */
+    @Test
+    void buttonPermsAreDeliveredPerRole() throws Exception {
+        String cashier = tokenFor("usab_btn_cashier", "CASHIER");
+        mockMvc.perform(get("/api/auth/me").header("Authorization", cashier))
+                .andExpect(jsonPath("$.data.menus[?(@.perm == 'outp:charge:refund')]").exists())
+                .andExpect(jsonPath("$.data.menus[?(@.perm == 'outp:charge:settle')]").exists())
+                // 收费员不该有发药按钮权限（那是药师的）
+                .andExpect(jsonPath("$.data.menus[?(@.perm == 'outp:pharmacy:dispense')]").doesNotExist());
+
+        String pharm = tokenFor("usab_btn_pharm", "PHARMACIST");
+        mockMvc.perform(get("/api/auth/me").header("Authorization", pharm))
+                .andExpect(jsonPath("$.data.menus[?(@.perm == 'outp:pharmacy:dispense')]").exists())
+                .andExpect(jsonPath("$.data.menus[?(@.perm == 'outp:pharmacy:return')]").exists())
+                .andExpect(jsonPath("$.data.menus[?(@.perm == 'outp:charge:refund')]").doesNotExist());
+    }
 }
