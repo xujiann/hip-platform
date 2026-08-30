@@ -96,7 +96,7 @@
               <el-option v-for="u in ['口服', '静滴', '肌注', '外用', '雾化']" :key="u" :label="u" :value="u" />
             </el-select>
             <el-input-number v-model="rxDays" :min="1" :max="30" style="width: 100px" /><span>天</span>
-            <el-input-number v-model="rxQty" :min="1" style="width: 100px" /><span>盒/瓶</span>
+            <el-input-number v-model="rxQty" :min="1" :max="999" style="width: 100px" /><span>盒/瓶</span>
             <el-button type="primary" @click="addRxLine">加入</el-button>
           </div>
           <el-table :data="rxLines" size="small">

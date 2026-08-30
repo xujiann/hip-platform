@@ -42,7 +42,7 @@
         <el-table-column prop="bookQty" label="账面数" width="90" />
         <el-table-column label="实盘数" width="150">
           <template #default="{ row }">
-            <el-input-number v-if="current!.status === 'DRAFT'" v-model="row.actualQty" :min="0"
+            <el-input-number v-if="current!.status === 'DRAFT'" v-model="row.actualQty" :min="0" :max="999999"
                              size="small" controls-position="right" style="width: 120px" />
             <span v-else>{{ row.actualQty ?? '—' }}</span>
           </template>

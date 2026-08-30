@@ -2,6 +2,51 @@
 
 版本纪律：语义化版本；平台迁移段 V1–V999，实施段 V10000+；升级 = 停服→备份→换产物→自动前滚→回归抽查（多医院部署操作指南 §三）。
 
+## 1.3.2（2026-08-30）
+
+v32 第八轮——多 agent 上线前**可落地缺口扫描**（4 域 finder 自证 + 完整性/有效性批判）收口。
+排除三项外部边界（须客户书面定责）。11 项缺口全闭环（P2×1/P3×5/P4×5），203 测试 + 23 套 E2E
+全新库 CI 顺序全绿。
+
+**安全**：
+- **内置 admin 首登强制改密闸（P2，批判新发现，全场最重）**：AdminUserInitializer 建 admin/admin123
+  从不置 mustChangePassword，1009 闸只拦置位用户 → 最高权限账号带**公开默认口令**可无限期使用。
+  改为 `mustChangePassword = HipProfiles.isProduction(env)`——生产（pilot/prod 及空/未知 fail-closed）
+  闭洞，dev/test/ci 不置位（E2E 用 admin/admin123 直登、单测 test profile 均不受影响）。复用"一个
+  isProduction 闸统管生产安全姿态"既有范式；补 AdminUserInitializerTest + 全新库 dev 直登实证。
+- **住院诊断补录对象级归属校验（P3，9018）**：DiagnosisController.add() 此前只校验 admission 存在，
+  DOCTOR_OUTP 可给任意住院病案补录影响 DRG 权重的诊断（水平越权）。补：ADMIN/QUALITY 编码组横切，
+  仅 DOCTOR_OUTP 只能补录主管为本人的病案，doctor_id 未采集时放行（null 容忍不误拒）。P2-3"记后续"
+  的延后理由（需责任医生模型）已不成立——doctor_id 早在 V8。
+- **审计留痕手机号脱敏（P4）**：AuditLogFilter 脱敏正则原只命中 14-18 位（身份证/多数卡号），
+  11 位手机号明文入 sys_audit_log。补边界锚定的手机号中段打码。
+
+**并发正确性（长尾模块抽查）**：
+- **院感三管监测重复病例（P3）**：InfectionPlusController.infect 的置管跃迁 update 缺 `status='ACTIVE'`
+  守卫、且 qc_infection_case 无唯一约束 → 并发双 infect 各插一条病例。改条件更新判行数，仅抢到跃迁者登记。
+- **临床路径 EXIT 覆盖终态（P4）**：PatientCareController.addVariance 的 EXIT 分支 update 缺守卫，
+  与并发 complete 竞争会把 COMPLETED 覆盖成 EXITED。补 `status='ACTIVE'` 守卫 + 方法级 @Transactional。
+
+**测试健壮性**：
+- **Phase113FinanceTest 确定性重写（P3，方法论⑦活标本）**：refundGoesToRefundDayAndRefundOperator
+  用共享 admin 做 D1 收款员 + 姓名子串匹配，对全表对账聚合做绝对断言 → 脏库假红。改 D1 侧也用专属
+  唯一账号、按唯一 real_name 精确匹配，断言域收窄到本测试单笔。
+- **PharmacyChainTest 时区口径对齐（P4）**：6 处 LocalDate.now() → BusinessDates.today()（方法论②）。
+
+**前端打磨**：
+- **13 处资金/数量 el-input-number 补 :max（P4）**：越界输入击穿 numeric(12,2)→22003→500，逐个补业务上界。
+- **AuditView 分页/时间范围（P3）**：后端固定 limit 200 → 超最新 200 条历史留痕不可检索（合规回溯缺口）。
+  后端补 from/to 半开区间 + page/size + total（返回 {list,total}），前端补日期范围选择 + el-pagination。
+
+**交付一致性**：
+- **错误码速查表漏抓 5 变量文案码（P3）**：gen-error-codes.py 正则只吃字面量，1102/1402/2003/2004/4634
+  （皆 `R.fail(码, 变量)`）静默漏抓 → 一线按码查不到。补 MANUAL 字典重生成，全量 301→306 码。
+- **配置手册漏登 4 键 + V90 未种 interim 前缀（P4）**：billno_prefix_interim/refund_approval_threshold/
+  inv_expiry_alert_enabled/inv_expiry_warn_days 未登手册（33→37 键）；**V112** 补 interim 前缀种子行
+  （原缺种子行，经管理页改它报 1401）。
+- **3 套 E2E 补接入 CI**：e2e-pharmacy-chain / clinical-closure / emr-closure 是 v30/v31 写好却一直漏接
+  ci.yml（CI 只跑 20 套、注释也写"20 套"），这三块 v30/v31 功能在 CI 无回归覆盖——补入 CI 全序（23 套）。
+
 ## 1.3.1（2026-08-29）
 
 v31 第七轮对抗审阅（两 agent 分域审查 v1.2.14..v1.3.0 新代码）全部闭环 + 交付一致性收尾。

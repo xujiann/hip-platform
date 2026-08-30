@@ -168,6 +168,7 @@ public class PatientCareController {
 
     /** 变异登记：EXIT 同步退出路径 */
     @PostMapping("/api/pathways/enrollments/{id}/variances")
+    @Transactional   // v32：EXIT 分支要"插变异+改状态"原子——抢占失败须连变异行一并回滚
     public R<Void> addVariance(@PathVariable Long id, @RequestBody VarianceReq req) {
         if (!List.of("DELAY", "EXIT", "OTHER").contains(req.varType())) return R.fail(9907, "类型只能为 DELAY/EXIT/OTHER");
         Integer active = jdbc.queryForObject(
@@ -176,7 +177,12 @@ public class PatientCareController {
         jdbc.update("insert into cp_variance(enrollment_id, day_no, var_type, reason) values (?,?,?,?)",
                 id, req.dayNo(), req.varType(), req.reason());
         if ("EXIT".equals(req.varType())) {
-            jdbc.update("update cp_enrollment set status = 'EXITED', ended_at = now() where id = ?", id);
+            // v32 P4：EXIT 跃迁补状态守卫。原 update 缺 `and status='ACTIVE'`，与并发的
+            // completeEnrollment 竞争时会把 COMPLETED 覆盖成 EXITED、ended_at 重置、varianceStats
+            // 失真（completeEnrollment 即标准范式）。n==0 说明期间已被 complete/exit，整体回滚。
+            int n = jdbc.update(
+                    "update cp_enrollment set status = 'EXITED', ended_at = now() where id = ? and status = 'ACTIVE'", id);
+            if (n == 0) return R.fail(9908, "入径不存在或已结束");
         }
         return R.ok();
     }

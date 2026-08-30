@@ -207,7 +207,7 @@
         <h4>诊疗项目调价（留痕）</h4>
         <el-form inline size="small">
           <el-form-item><el-input v-model="pr.itemId" placeholder="项目ID" style="width: 90px" /></el-form-item>
-          <el-form-item><el-input-number v-model="pr.newPrice" :min="0" :precision="2" /></el-form-item>
+          <el-form-item><el-input-number v-model="pr.newPrice" :min="0" :max="9999999.99" :precision="2" /></el-form-item>
           <el-form-item><el-input v-model="pr.reason" placeholder="调价原因" style="width: 200px" /></el-form-item>
           <el-button type="primary" size="small" :loading="changePriceLoading" @click="changePrice">调价</el-button>
         </el-form>

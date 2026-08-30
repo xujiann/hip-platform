@@ -10,7 +10,7 @@
                        :label="`${d.name} ${d.spec}（现存 ${d.stock}）`" :value="d.id as number" />
           </el-select>
         </el-form-item>
-        <el-form-item label="数量" required><el-input-number v-model="form.qty" :min="1" /></el-form-item>
+        <el-form-item label="数量" required><el-input-number v-model="form.qty" :min="1" :max="999999" /></el-form-item>
         <el-form-item label="批号"><el-input v-model="form.batchNo" /></el-form-item>
         <el-form-item label="效期">
           <el-date-picker v-model="form.expireDate" type="date" value-format="YYYY-MM-DD" style="width: 100%" />

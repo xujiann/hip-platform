@@ -35,7 +35,7 @@
         <el-select v-model="route" style="width: 90px">
           <el-option v-for="u in ['口服', '静滴', '肌注']" :key="u" :label="u" :value="u" />
         </el-select>
-        <el-input-number v-model="qty" :min="1" style="width: 90px" />
+        <el-input-number v-model="qty" :min="1" :max="999" style="width: 90px" />
         <el-button type="primary" @click="addDrug">开药</el-button>
         <el-select v-model="itemId" filterable remote :remote-method="searchItems" placeholder="检查/检验/治疗"
                    style="width: 220px">

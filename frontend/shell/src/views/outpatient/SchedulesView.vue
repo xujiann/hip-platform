@@ -64,10 +64,10 @@
           </el-radio-group>
         </el-form-item>
         <el-form-item label="挂号费" required>
-          <el-input-number v-model="form.fee" :min="0" :precision="2" />
+          <el-input-number v-model="form.fee" :min="0" :max="9999.99" :precision="2" />
         </el-form-item>
         <el-form-item label="号源数量" required>
-          <el-input-number v-model="form.capacity" :min="1" />
+          <el-input-number v-model="form.capacity" :min="1" :max="999" />
         </el-form-item>
       </el-form>
       <template #footer>

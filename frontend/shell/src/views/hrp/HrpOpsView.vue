@@ -13,7 +13,7 @@
             </el-select>
           </el-form-item>
           <el-form-item><el-input v-model="mat.unit" placeholder="单位" style="width: 80px" /></el-form-item>
-          <el-form-item><el-input-number v-model="mat.price" :min="0" :precision="2" /></el-form-item>
+          <el-form-item><el-input-number v-model="mat.price" :min="0" :max="9999999.99" :precision="2" /></el-form-item>
           <el-button type="primary" size="small" :loading="createMaterialLoading" @click="createMaterial">新建</el-button>
         </el-form>
         <el-table :data="materials" size="small" border>

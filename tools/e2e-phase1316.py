@@ -41,7 +41,7 @@ assert charge['chargeNo'] in csv_text
 print(f"[十三-2] 日结报表 OK（今日实收 ¥{daily['total']['paid']}），CSV 含本单")
 
 # ---- 十三期：审计日志 ----
-logs = ok(call('GET', '/audit/logs?username=admin', token=t), '审计')
+logs = ok(call('GET', '/audit/logs?username=admin', token=t), '审计')['list']   # v32：返回 {list,total}
 assert any(l['path'].endswith('/settle') for l in logs), '审计应记录收费操作'
 print(f"[十三-3] 审计日志 OK（admin 最近 {len(logs)} 条写操作留痕）")
 

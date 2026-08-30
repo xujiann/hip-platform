@@ -193,7 +193,7 @@ assert plain['phone'] == phone
 print(f"[卅一-2] 数据脱敏 OK（普通用户见 {masked['phone']}，ADMIN 见明文）")
 
 # 敏感操作审计：作废/授权/退费等路径可单独过滤
-sens = ok(call('GET', '/audit/logs?sensitive=true', token=t), '敏感审计')
+sens = ok(call('GET', '/audit/logs?sensitive=true', token=t), '敏感审计')['list']   # v32：返回 {list,total}
 assert len(sens) >= 1
 keywords = ['/refund', '/roles', '/menus', '/abx-privileges', '/system/users', '/insurance/catalog', '/cancel']
 assert all(any(k in s['path'] for k in keywords) for s in sens), sens[:3]

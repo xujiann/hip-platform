@@ -50,7 +50,7 @@
           </el-select>
         </el-form-item>
         <el-form-item label="预交押金">
-          <el-input-number v-model="form.deposit" :min="0" :step="100" style="width: 160px" />
+          <el-input-number v-model="form.deposit" :min="0" :max="1000000" :step="100" style="width: 160px" />
           <el-select v-model="form.payMethod" style="width: 100px; margin-left: 8px">
             <el-option label="现金" value="CASH" />
             <el-option label="微信" value="WECHAT" />

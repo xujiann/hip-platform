@@ -79,7 +79,12 @@ public class AuditLogFilter extends OncePerRequestFilter {
                     // 证件号做 keyword 查询时会把 15/18 位号码全文写进审计表（1.2.3 五轮 P2-7）：
                     // 审计表读权限面大于患者查询面，等保数据最小化——中段打码后再入库
                     if (qs != null && !qs.isBlank()) {
+                        // 先长后短：14-18 位连号（身份证 15/18、多数银行卡 16-18）中段打码
                         qs = qs.replaceAll("(\\d{4})\\d{7,10}(\\d{3,4})", "$1****$2");
+                        // v32 P4：11 位手机号同属可直接定位自然人的敏感标识，原正则（≥14 位）漏掉它。
+                        // 严格锚定 `1` 开头的 11 位、且前后非数字——避免咬进更长的连号（如单号已被上段处理，
+                        // 且 SJ/CY 前缀单号是"字母+数字"不会被误当手机；上段打码后中段已是 **，不会再命中）
+                        qs = qs.replaceAll("(?<!\\d)(1\\d{2})\\d{4}(\\d{4})(?!\\d)", "$1****$2");
                     }
                     String recorded = qs == null || qs.isBlank() ? path : path + "?" + qs;
                     if (recorded.length() > 255) {

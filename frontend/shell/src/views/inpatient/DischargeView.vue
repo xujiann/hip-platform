@@ -29,7 +29,7 @@
         <el-button size="small" @click="saveDischargeDiag">保存</el-button>
       </div>
       <div class="actions">
-        <el-input-number v-model="extraDeposit" :min="0" :step="100" />
+        <el-input-number v-model="extraDeposit" :min="0" :max="1000000" :step="100" />
         <el-button @click="addDeposit">补交押金</el-button>
         <el-select v-model="payMethod" style="width: 110px">
           <el-option label="现金结清" value="CASH" />

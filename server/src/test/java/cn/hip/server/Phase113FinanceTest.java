@@ -71,7 +71,15 @@ class Phase113FinanceTest {
      */
     @Test
     void refundGoesToRefundDayAndRefundOperator() {
-        Long uidA = jdbc.queryForObject("select id from sys_user where username = 'admin'", Long.class);
+        // v32：D1 收款员甲也用**专属唯一账号**（原先复用全局 admin）。reconciliation.byCashier 是
+        // 全表按日期+操作员聚合，用 admin 会把全库历史退费（refund_by=admin、refunded_at 落昨日窗）
+        // 算进断言 → 脏 hip_test 假红（方法论⑦标本）。新建、当次事务回滚的唯一账号在全表无任何
+        // 历史行，绝对计数恒真、与残留无关；且按唯一 real_name 精确匹配，消除 admin/管理 子串误命中。
+        jdbc.update("""
+                insert into sys_user(username, password, real_name, enabled)
+                values ('cashier113a', 'x', '收费员甲113', true) on conflict (username) do nothing
+                """);
+        Long uidA = jdbc.queryForObject("select id from sys_user where username = 'cashier113a'", Long.class);
         jdbc.update("""
                 insert into sys_user(username, password, real_name, enabled)
                 values ('cashier113b', 'x', '退费员乙113', true) on conflict (username) do nothing
@@ -90,16 +98,16 @@ class Phase113FinanceTest {
         String today = cn.hip.platform.core.config.BusinessDates.today().toString();
         String yesterday = cn.hip.platform.core.config.BusinessDates.today().minusDays(1).toString();
 
-        // D1 视角：甲有一笔收款、零退款（修复前这里会出现一笔退款——历史报表变脸）
+        // D1 视角：甲有一笔收款、零退款（修复前退费被算进 D1——历史报表变脸）。
+        // 甲是当次新建的唯一账号，其昨日聚合行只含本测试倒填的这一笔 → 绝对计数确定
         var d1 = financeController.reconciliation(yesterday).getData();
         @SuppressWarnings("unchecked")
         var d1Rows = (List<Map<String, Object>>) d1.get("byCashier");
         var rowA = d1Rows.stream()
-                .filter(r -> String.valueOf(r.get("cashier")).contains("admin")
-                        || String.valueOf(r.get("cashier")).contains("管理"))
-                .findFirst().orElseThrow();
+                .filter(r -> String.valueOf(r.get("cashier")).contains("收费员甲113"))
+                .findFirst().orElseThrow(() -> new AssertionError("收款侧必须出现收费员甲"));
         assertEquals(0L, ((Number) rowA.get("refund_cnt")).longValue(), "D1 不得出现 D2 才发生的退费");
-        assertTrue(((Number) rowA.get("paid_cnt")).longValue() >= 1);
+        assertEquals(1L, ((Number) rowA.get("paid_cnt")).longValue(), "甲昨日恰一笔收款");
 
         // D2 视角：退款挂在乙名下（修复前挂在收款员甲头上）
         var d2 = financeController.reconciliation(today).getData();

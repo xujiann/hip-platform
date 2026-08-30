@@ -43,7 +43,7 @@
           </el-form-item>
           <el-form-item><el-input v-model="sr.title" placeholder="题目/成果名称" style="width: 220px" /></el-form-item>
           <el-form-item><el-input v-model="sr.leader" placeholder="负责人" style="width: 100px" /></el-form-item>
-          <el-form-item><el-input-number v-model="sr.amount" :min="0" :step="10000" /></el-form-item>
+          <el-form-item><el-input-number v-model="sr.amount" :min="0" :max="99999999.99" :step="10000" /></el-form-item>
           <el-button type="primary" size="small" :loading="addResearchLoading" @click="addResearch">登记</el-button>
         </el-form>
         <el-table :data="research" size="small" border>

@@ -73,9 +73,14 @@ public class InfectionPlusController {
         var rows = jdbc.queryForList("select * from inf_catheter where id = ? and status = 'ACTIVE'", id);
         if (rows.isEmpty()) return R.fail(4753, "置管不存在或已结束");
         var c = rows.get(0);
-        jdbc.update("""
-                update inf_catheter set status = 'INFECTED', infect_date = current_date, end_at = now() where id = ?
+        // v32 P3：条件更新+判定行数作为并发裁决点。原 update 缺 `and status='ACTIVE'`，
+        // 而 qc_infection_case 无唯一约束——并发双 infect 都先读到 ACTIVE 就各插一条病例，
+        // 院感登记/现患率重复计数（remove() 即标准范式）。只有抢到跃迁的一方（n==1）才登记病例。
+        int n = jdbc.update("""
+                update inf_catheter set status = 'INFECTED', infect_date = current_date, end_at = now()
+                where id = ? and status = 'ACTIVE'
                 """, id);
+        if (n == 0) return R.fail(4753, "置管不存在或已结束");
         String site = switch ((String) c.get("line_type")) {
             case "VENT" -> "呼吸机相关肺炎(VAP)";
             case "CVC" -> "血管内导管相关血流感染(CLABSI)";

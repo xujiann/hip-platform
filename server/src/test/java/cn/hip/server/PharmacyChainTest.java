@@ -13,7 +13,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.LocalDate;
+import cn.hip.platform.core.config.BusinessDates;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -45,7 +45,7 @@ class PharmacyChainTest {
         Long drugId = seeds.drug("验收测试药").getId();
         int before = stockOf(drugId);
 
-        InvStockIn in = inventoryService.stockIn(drugId, 30, "BACC", LocalDate.now().plusYears(1),
+        InvStockIn in = inventoryService.stockIn(drugId, 30, "BACC", BusinessDates.today().plusYears(1),
                 "验收供应商", "CG-001", null);
         // 待验收：库存不动、无 IN 流水
         assertEquals("PENDING_ACCEPT", in.getAcceptStatus());
@@ -66,7 +66,7 @@ class PharmacyChainTest {
     void stockInRejectKeepsStockAndRequiresReason() {
         Long drugId = seeds.drug("拒收测试药").getId();
         int before = stockOf(drugId);
-        InvStockIn in = inventoryService.stockIn(drugId, 50, "BREJ", LocalDate.now().plusYears(1), "供", null, null);
+        InvStockIn in = inventoryService.stockIn(drugId, 50, "BREJ", BusinessDates.today().plusYears(1), "供", null, null);
 
         // 拒收原因必填（8012）
         assertEquals(8012, assertThrows(InventoryException.class,
@@ -158,7 +158,7 @@ class PharmacyChainTest {
     void expiryWarningEstimatesRemainingByFefo() {
         Long drugId = seeds.drug("效期测试药" + System.nanoTime()).getId();
         // 一个 30 天后到期的已验收批次，入库量 100
-        InvStockIn in = inventoryService.stockIn(drugId, 100, "BEXP", LocalDate.now().plusDays(30), "供", null, null);
+        InvStockIn in = inventoryService.stockIn(drugId, 100, "BEXP", BusinessDates.today().plusDays(30), "供", null, null);
         inventoryService.acceptStockIn(in.getId(), null);
 
         var warns = inventoryService.expiryWarnings(90);
@@ -174,7 +174,7 @@ class PharmacyChainTest {
 
         // 超出预警窗（120 天后到期）的批次不报
         Long farDrug = seeds.drug("远效期药" + System.nanoTime()).getId();
-        InvStockIn far = inventoryService.stockIn(farDrug, 10, "BFAR", LocalDate.now().plusDays(120), "供", null, null);
+        InvStockIn far = inventoryService.stockIn(farDrug, 10, "BFAR", BusinessDates.today().plusDays(120), "供", null, null);
         inventoryService.acceptStockIn(far.getId(), null);
         assertTrue(inventoryService.expiryWarnings(90).stream().noneMatch(w -> w.drugId().equals(farDrug)),
                 "120 天后到期不应进 90 天预警");
@@ -183,7 +183,7 @@ class PharmacyChainTest {
     @Test
     void expiryScanOpensFaultTicket() {
         Long drugId = seeds.drug("效期开单药" + System.nanoTime()).getId();
-        InvStockIn in = inventoryService.stockIn(drugId, 40, "BTICK", LocalDate.now().plusDays(10), "供", null, null);
+        InvStockIn in = inventoryService.stockIn(drugId, 40, "BTICK", BusinessDates.today().plusDays(10), "供", null, null);
         inventoryService.acceptStockIn(in.getId(), null);
 
         int opened = expiryAlertScheduler.runScan();

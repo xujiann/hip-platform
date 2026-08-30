@@ -86,7 +86,7 @@
           </el-form-item>
           <el-form-item><el-input v-model="doc.supplierId" placeholder="供应商ID" style="width: 100px" /></el-form-item>
           <el-form-item><el-input v-model="doc.items" placeholder="品目摘要" style="width: 200px" /></el-form-item>
-          <el-form-item><el-input-number v-model="doc.amount" :min="0" :step="100" /></el-form-item>
+          <el-form-item><el-input-number v-model="doc.amount" :min="0" :max="9999999.99" :step="100" /></el-form-item>
           <el-button type="primary" size="small" :loading="createDocLoading" @click="createDoc">开单</el-button>
         </el-form>
         <el-table :data="docs" size="small" border>

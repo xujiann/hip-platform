@@ -41,7 +41,7 @@
             <el-option v-for="d in depts" :key="d.id" :label="d.name" :value="d.id" />
           </el-select>
         </el-form-item>
-        <el-form-item label="原值 ¥" required><el-input-number v-model="form.price" :min="0" :precision="2" /></el-form-item>
+        <el-form-item label="原值 ¥" required><el-input-number v-model="form.price" :min="0" :max="99999999.99" :precision="2" /></el-form-item>
         <el-form-item label="购置日期" required>
           <el-date-picker v-model="form.purchaseDate" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
         </el-form-item>

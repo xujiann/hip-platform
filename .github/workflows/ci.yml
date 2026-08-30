@@ -130,7 +130,7 @@ jobs:
           for i in $(seq 1 15); do curl -sf http://localhost:8100/docs > /dev/null && break; sleep 1; done
           curl -sf http://localhost:8100/docs > /dev/null || { echo "ai-service 未就绪："; cat ../ai.log || cat ai.log; exit 1; }
 
-      - name: 运行全部 E2E 套件（20 套）
+      - name: 运行全部 E2E 套件（23 套）
         run: |
           python3 tools/e2e-outpatient.py
           python3 tools/e2e-inpatient.py
@@ -152,6 +152,11 @@ jobs:
           python3 tools/e2e-phase3940.py
           python3 tools/e2e-product1.py
           python3 tools/e2e-101.py
+          # v32：这三套 v30/v31 就写好但一直漏接 CI（药事全链/临床收尾/病历补正）——
+          # 交付一致性收口，自成一体（各自建患者），置于末尾与本地全新库验证顺序一致
+          python3 tools/e2e-pharmacy-chain.py
+          python3 tools/e2e-clinical-closure.py
+          python3 tools/e2e-emr-closure.py
 
       - name: 失败时输出服务端日志
         if: failure()
