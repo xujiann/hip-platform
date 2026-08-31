@@ -17,6 +17,7 @@
           <el-button link type="primary" size="small" @click="openReport(row)">
             {{ row.status === 'REGISTERED' ? '书写报告' : '修改报告' }}
           </el-button>
+          <el-button v-if="row.status === 'REPORTED'" link type="warning" size="small" @click="markCritical(row)">标记危急</el-button>
           <el-button v-if="row.status === 'REPORTED'" link type="success" size="small" :loading="busyId === row.id" @click="verify(row)">审核发布</el-button>
         </template>
       </el-table-column>
@@ -72,6 +73,18 @@ async function saveReport() {
     dialogVisible.value = false
     await load()
   } finally { saveReportLoading.value = false }
+}
+
+async function markCritical(row: Record<string, unknown>) {
+  // 影像危急值（气胸/夹层/颅内出血等）：上报后走与检验同一条确认闭环，通知开单医师限时确认
+  const res = await ElMessageBox.prompt('危急描述（必填，如：右侧气胸，肺压缩约 40%）', '影像危急值上报',
+    { inputPlaceholder: '危急征象描述' }).catch(() => null)
+  if (!res) return
+  const note = (res.value || '').trim()
+  if (!note) { ElMessage.warning('危急描述必填'); return }
+  await client.put(`/ris/exams/${row.id}/critical`, { note })
+  ElMessage.success('已上报危急值，已通知开单医师确认')
+  await load()
 }
 
 async function verify(row: Record<string, unknown>) {

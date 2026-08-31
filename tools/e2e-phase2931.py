@@ -7,7 +7,7 @@ import urllib.error
 import urllib.parse
 import os
 import urllib.request
-from e2elib import BASE, call, discharge_cleanup, find_free_bed, login, ok, q, today_bj  # noqa: E402
+from e2elib import BASE, call, discharge_cleanup, find_free_bed, login, ok, provision_user, q, today_bj  # noqa: E402
 
 
 
@@ -82,7 +82,8 @@ print('[廿九-3] 危急值不外显 OK（HH 结果替换为回院提示，正�
 wl = ok(call('GET', '/ris/worklist?modality=ECG', token=t), 'ECG队列')
 row = next(w for w in wl if w['group_no'] == ecg_o['groupNo'])
 ok(call('PUT', f"/ris/exams/{row['id']}/report", {'findings': '窦性心律', 'impression': '正常心电图'}, t), '报告')
-ok(call('PUT', f"/ris/exams/{row['id']}/verify", token=t), '审核')
+_rv = provision_user(t, 'ris_verifier_2931', 'TECHNICIAN', '放射审核')   # v33 双签：审核人≠报告人
+ok(call('PUT', f"/ris/exams/{row['id']}/verify", token=_rv), '审核')
 exams = ok(call('GET', '/portal/my/exam-reports', token=pt), '患者检查报告')
 assert any(e['report_type'] == 'EXAM' and e['conclusion'] == '正常心电图' for e in exams)
 share = ok(call('POST', f"/ris/exams/{row['id']}/share", {}, t), '分享')

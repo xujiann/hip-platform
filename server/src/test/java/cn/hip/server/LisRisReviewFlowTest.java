@@ -48,10 +48,18 @@ class LisRisReviewFlowTest {
     @Autowired ChargeItemRepository chargeItemRepository;
     @Autowired ReviewController reviewController;
     @Autowired MedTechController medTechController;
+    @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     @Autowired jakarta.persistence.EntityManager entityManager;
 
     private final Authentication admin = new UsernamePasswordAuthenticationToken("admin", null, List.of());
+
+    /** 造一个人账号并返回其 Authentication（用于双签分权：报告人≠审核人） */
+    private Authentication userAuth(String username) {
+        jdbc.update("insert into sys_user(username, password, real_name, enabled) "
+                + "values (?, 'x', ?, true) on conflict (username) do nothing", username, username);
+        return new UsernamePasswordAuthenticationToken(username, null, List.of());
+    }
 
     /** JPA 写入在事务内未 flush 时对 JdbcTemplate 不可见，混用前显式刷盘 */
     private void flush() {
@@ -134,7 +142,10 @@ class LisRisReviewFlowTest {
         assertEquals(9945, medTechController.verifyReport(examId, admin).getCode());
         assertEquals(0, medTechController.writeReport(examId,
                 new MedTechController.RisReportReq("窦性心律", "未见明显异常"), admin).getCode());
-        assertEquals(0, medTechController.verifyReport(examId, admin).getCode());
+        // v33 双签分权：报告人(admin)自审应被拒（9947）
+        assertEquals(9947, medTechController.verifyReport(examId, admin).getCode(), "报告人不得自审");
+        // 换审核医师（≠报告人）方可发布
+        assertEquals(0, medTechController.verifyReport(examId, userAuth("radiologist_v33")).getCode());
         entityManager.clear(); // JDBC 更新后清 JPA 一级缓存再读
         assertEquals("EXECUTED", orderRepository.findById(orderId).orElseThrow().getStatus());
     }

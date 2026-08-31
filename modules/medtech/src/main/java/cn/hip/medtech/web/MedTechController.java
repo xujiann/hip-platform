@@ -23,6 +23,7 @@ public class MedTechController {
     private final JdbcTemplate jdbc;
     private final CurrentUserService currentUserService;
     private final ApplicationEventPublisher eventPublisher;
+    private final cn.hip.platform.core.service.ConfigReader configReader;
 
     @org.springframework.beans.factory.annotation.Value("${hip.integration.pacs-url:}")
     private String pacsUrl;
@@ -200,17 +201,60 @@ public class MedTechController {
         return n == 0 ? R.fail(9944, "检查不存在或已审核") : R.ok();
     }
 
-    /** 审核发布：医嘱转已执行 */
+    /** 审核发布：医嘱转已执行。v33：审核人不得为报告医师（双签分权，评审否决项）。 */
     @PutMapping("/api/ris/exams/{id}/verify")
     @Transactional
     public R<Void> verifyReport(@PathVariable Long id, Authentication auth) {
+        Long me = currentUserService.idOf(auth);
         int n = jdbc.update("""
                 update ris_exam set status = 'VERIFIED', verifier_id = ?, verified_at = now()
-                where id = ? and status = 'REPORTED'
-                """, currentUserService.idOf(auth), id);
-        if (n == 0) return R.fail(9945, "须先书写报告");
+                where id = ? and status = 'REPORTED' and reporter_id <> ?
+                """, me, id, me);
+        if (n == 0) {
+            // 区分自审（已报告但报告人=自己）与未报告，给不同错误码
+            var row = jdbc.queryForList("select status, reporter_id from ris_exam where id = ?", id);
+            if (!row.isEmpty() && "REPORTED".equals(row.get(0).get("status"))
+                    && me != null && me.equals(numOrNull(row.get(0).get("reporter_id")))) {
+                return R.fail(9947, "审核人不得为报告医师");
+            }
+            return R.fail(9945, "须先书写报告");
+        }
         jdbc.update("update outp_order set status = 'EXECUTED' where id = (select order_id from ris_exam where id = ?) and status = 'CHARGED'", id);
         return R.ok();
+    }
+
+    public record RisCriticalReq(String note) {}
+
+    /**
+     * v33：影像危急值上报（气胸/夹层/颅内出血等）。标记检查为危急并复用 outp_critical_alert
+     * 走与检验同一条确认闭环（通知开单医师→限时接收确认→处置留痕）。须先有报告内容。
+     */
+    @PutMapping("/api/ris/exams/{id}/critical")
+    @Transactional
+    public R<Void> markRisCritical(@PathVariable Long id, @RequestBody RisCriticalReq req) {
+        if (req.note() == null || req.note().isBlank()) return R.fail(9948, "危急描述必填");
+        var rows = jdbc.queryForList("""
+                select e.order_id, e.critical_flag, o.registration_id, o.doctor_id, o.item_name
+                from ris_exam e join outp_order o on o.id = e.order_id
+                where e.id = ? and e.status in ('REPORTED', 'VERIFIED')
+                """, id);
+        if (rows.isEmpty()) return R.fail(9945, "须先书写报告");
+        var row = rows.get(0);
+        if (Boolean.TRUE.equals(row.get("critical_flag"))) return R.fail(9949, "该检查已标记危急值");
+        jdbc.update("update ris_exam set critical_flag = true, critical_note = ? where id = ?", req.note(), id);
+        int minutes = configReader.getInt("critical_ack_deadline_minutes", 10);
+        jdbc.update("""
+                insert into outp_critical_alert(order_id, registration_id, content, source,
+                        notify_to_user_id, notified_at, deadline_at)
+                values (?, ?, ?, 'RIS', ?, now(), now() + make_interval(mins => ?))
+                """, numOrNull(row.get("order_id")), numOrNull(row.get("registration_id")),
+                "【影像危急值】" + row.get("item_name") + "：" + req.note(),
+                numOrNull(row.get("doctor_id")), minutes);
+        return R.ok();
+    }
+
+    private static Long numOrNull(Object o) {
+        return o == null ? null : ((Number) o).longValue();
     }
 
     // ===== 手术麻醉 =====

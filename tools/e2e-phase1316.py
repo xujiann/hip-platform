@@ -6,7 +6,7 @@ import datetime
 import urllib.error
 import urllib.parse
 import urllib.request
-from e2elib import ensure_not_admitted, BASE, call, find_free_bed, login, ok, q, today_bj  # noqa: E402
+from e2elib import ensure_not_admitted, BASE, call, find_free_bed, login, ok, provision_user, q, today_bj  # noqa: E402
 
 
 
@@ -79,10 +79,13 @@ wl = ok(call('GET', '/ris/worklist', token=t), 'RIS队列')
 exam_row = next(w for w in wl if w['group_no'] == next(o['groupNo'] for o in orders if o['orderType'] == 'EXAM'))
 ok(call('PUT', f"/ris/exams/{exam_row['id']}/report",
         {'findings': '肝实质回声均匀，胆囊壁光滑', 'impression': '肝胆未见明显异常'}, t), '写报告')
-ok(call('PUT', f"/ris/exams/{exam_row['id']}/verify", token=t), '审核')
+# v33 双签分权：报告人(admin)自审应被拒（9947），须换审核医师
+assert call('PUT', f"/ris/exams/{exam_row['id']}/verify", token=t)['code'] == 9947, '报告人不得自审'
+verifier = provision_user(t, 'radiologist1316', 'TECHNICIAN', '放射审核医师')
+ok(call('PUT', f"/ris/exams/{exam_row['id']}/verify", token=verifier), '审核')
 ws2 = ok(call('GET', f'/outpatient/doctor/{rid}/workspace', token=t), '工作区2')
 assert next(x for x in ws2['orders'] if x['orderType'] == 'EXAM')['status'] == 'EXECUTED'
-print('[十四-2] RIS 登记→报告→审核→医嘱执行 OK')
+print('[十四-2] RIS 登记→报告→双签审核(≠报告人)→医嘱执行 OK')
 
 # ---- 十五期：手麻 ----
 free = find_free_bed(t)

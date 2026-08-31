@@ -51,6 +51,22 @@ def login(username=os.environ.get('HIP_E2E_USER', 'admin'),
     return ok(call('POST', '/auth/login', {'username': username, 'password': password}), f'登录 {username}')['token']
 
 
+def provision_user(admin_token, username, role_code, real_name=None):
+    """建一个人账号并返回其可用 token（v33）。新建账号带 mustChangePassword（首登强制改密），
+    故须走 建号→登录→改密→再登录 才拿到能办业务的 token（顺带覆盖改密链路）。
+    幂等：已存在（1101）则按约定 work 口令直接登录。用于双签分权等需要"第二个人"的 E2E。"""
+    init_pw, work_pw = 'Init@1234', 'Work@1234'
+    r = call('POST', '/system/users',
+             {'username': username, 'password': init_pw, 'realName': real_name or username,
+              'roleCodes': [role_code]}, admin_token)
+    if r['code'] == 1101:   # 用户名已存在（本地脏库复跑）——此前已改成 work 口令
+        return login(username, work_pw)
+    assert r['code'] == 0, f'建号 {username} 失败: {r}'
+    tok = login(username, init_pw)                                   # 首登 token 受 1009 闸限，仅走改密白名单
+    call('POST', '/auth/change-password', {'oldPassword': init_pw, 'newPassword': work_pw}, tok)
+    return login(username, work_pw)                                  # 改密后旧 token 失效，再登录取干净 token
+
+
 def new_patient(token, name, sex='F', **extra):
     """建 E2E 专用患者（同患者同排班重复挂号会被 3002 拦截，各期造数据须新建专用患者）"""
     return ok(call('POST', '/patients', {'name': name, 'sex': sex, **extra}, token), '建患者')

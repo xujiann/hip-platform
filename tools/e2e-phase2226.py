@@ -6,7 +6,7 @@ import subprocess
 import sys
 import urllib.parse
 import urllib.request
-from e2elib import BASE, call, discharge_cleanup, find_free_bed, new_patient, login, ok, q, today_bj  # noqa: E402
+from e2elib import BASE, call, discharge_cleanup, find_free_bed, new_patient, login, ok, provision_user, q, today_bj  # noqa: E402
 
 
 
@@ -176,12 +176,13 @@ wl = ok(call('GET', '/ris/worklist?modality=ECG', token=t), 'ECG队列')
 ecg_row = next(w for w in wl if w['group_no'] == ecg_o['groupNo'])
 ok(call('PUT', f"/ris/exams/{ecg_row['id']}/report",
         {'findings': '窦性心律，心率 72 次/分', 'impression': '正常心电图'}, t), '心电报告')
-ok(call('PUT', f"/ris/exams/{ecg_row['id']}/verify", token=t), '心电审核')
+_rv = provision_user(t, 'ris_verifier_2226', 'TECHNICIAN', '放射审核')   # v33 双签：审核人≠报告人
+ok(call('PUT', f"/ris/exams/{ecg_row['id']}/verify", token=_rv), '心电审核')
 wl2 = ok(call('GET', '/ris/worklist?modality=ENDO', token=t), 'ENDO队列')
 endo_row = next(w for w in wl2 if w['group_no'] == endo_o['groupNo'])
 ok(call('PUT', f"/ris/exams/{endo_row['id']}/report",
         {'findings': '食管黏膜光滑，胃底体未见溃疡', 'impression': '慢性非萎缩性胃炎'}, t), '内镜报告')
-ok(call('PUT', f"/ris/exams/{endo_row['id']}/verify", token=t), '内镜审核')
+ok(call('PUT', f"/ris/exams/{endo_row['id']}/verify", token=_rv), '内镜审核')
 print('[廿四-1] 心电/内镜 OK（RIS 模式实例化，模态自动归类 ECG/ENDO，报告→审核→医嘱执行）')
 
 # 病理：取材→核收→诊断（LIS 模式）
