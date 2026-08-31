@@ -72,15 +72,27 @@
             <el-form-item>
               <el-select v-model="recordType" style="width: 130px">
                 <el-option label="入院记录" value="ADMISSION" />
+                <el-option label="首次病程" value="FIRST_PROGRESS" />
                 <el-option label="病程记录" value="PROGRESS" />
+                <el-option label="三级查房" value="ROUND" />
                 <el-option label="出院小结" value="DISCHARGE" />
+              </el-select>
+            </el-form-item>
+            <el-form-item v-if="recordType === 'ROUND'">
+              <el-select v-model="roundLevel" style="width: 120px">
+                <el-option label="主任查房" value="CHIEF" />
+                <el-option label="主治查房" value="ATTENDING" />
+                <el-option label="住院医查房" value="RESIDENT" />
               </el-select>
             </el-form-item>
             <el-form-item>
               <el-input v-model="recordTitle" placeholder="标题（可空）" style="width: 180px" />
             </el-form-item>
           </el-form>
-          <el-input v-model="recordContent" type="textarea" :rows="4" placeholder="病历内容" />
+          <el-input v-model="recordContent" type="textarea" :rows="4"
+                    :placeholder="recordType === 'ROUND' ? '查房意见' : '病历内容'" />
+          <el-input v-if="recordType === 'ROUND'" v-model="superiorCorrection" type="textarea" :rows="2"
+                    placeholder="上级修正意见（可空）" style="margin-top: 6px" />
           <el-button type="primary" style="margin-top: 8px" @click="addRecord">保存记录</el-button>
           <el-timeline style="margin-top: 16px">
             <el-timeline-item v-for="r in records" :key="r.id as number"
@@ -218,7 +230,9 @@ const vitals = ref<Record<string, unknown>[]>([])
 const recordType = ref('PROGRESS')
 const recordTitle = ref('')
 const recordContent = ref('')
-const recordTypeNames: Record<string, string> = { ADMISSION: '入院记录', PROGRESS: '病程记录', DISCHARGE: '出院小结' }
+const recordTypeNames: Record<string, string> = { ADMISSION: '入院记录', FIRST_PROGRESS: '首次病程', PROGRESS: '病程记录', ROUND: '三级查房', DISCHARGE: '出院小结' }
+const roundLevel = ref('ATTENDING')
+const superiorCorrection = ref('')
 
 // 转科转床（收尾环·阻塞3）
 const depts = ref<{ id: number; name: string; type: string }[]>([])
@@ -310,14 +324,25 @@ async function doTransfer() {
 
 async function addRecord() {
   if (!current.value || !recordContent.value) {
-    ElMessage.warning('请填写病历内容')
+    ElMessage.warning(recordType.value === 'ROUND' ? '请填写查房意见' : '请填写病历内容')
     return
   }
-  await client.post(`/inpatient/admissions/${current.value.id}/records`, {
-    recordType: recordType.value,
-    title: recordTitle.value || recordTypeNames[recordType.value],
-    content: recordContent.value,
-  })
+  if (recordType.value === 'ROUND') {
+    // v34 三级查房走结构化端点（记录级别/查房意见/上级修正意见）
+    await client.post(`/inpatient/admissions/${current.value.id}/records/round`, {
+      roundLevel: roundLevel.value,
+      roundOpinion: recordContent.value,
+      superiorCorrection: superiorCorrection.value || undefined,
+      title: recordTitle.value || undefined,
+    })
+    superiorCorrection.value = ''
+  } else {
+    await client.post(`/inpatient/admissions/${current.value.id}/records`, {
+      recordType: recordType.value,
+      title: recordTitle.value || recordTypeNames[recordType.value],
+      content: recordContent.value,
+    })
+  }
   ElMessage.success('病历已保存')
   recordContent.value = ''
   recordTitle.value = ''

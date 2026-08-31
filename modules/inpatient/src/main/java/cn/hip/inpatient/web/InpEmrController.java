@@ -48,6 +48,53 @@ public class InpEmrController {
         return R.ok(recordRepo.save(r));
     }
 
+    public record RoundRequest(String roundLevel, String roundOpinion, String superiorCorrection, String title) {}
+
+    /**
+     * v34 三级查房结构化记录（主任 CHIEF / 主治 ATTENDING / 住院医 RESIDENT 查房）。
+     * 复用 record_type='ROUND' 存同表，签名冻结/补正/病历列表/复印/CDR/首页泛型读取自动纳入。
+     * 是病历时限质控"查房时限"统计的数据来源。
+     */
+    @PostMapping("/records/round")
+    public R<InpMedicalRecord> addRound(@PathVariable Long admissionId,
+                                        @RequestBody RoundRequest req, Authentication auth) {
+        if (req.roundLevel() == null || !List.of("CHIEF", "ATTENDING", "RESIDENT").contains(req.roundLevel())) {
+            return R.fail(9119, "查房级别非法（CHIEF 主任 / ATTENDING 主治 / RESIDENT 住院医）");
+        }
+        if (req.roundOpinion() == null || req.roundOpinion().isBlank()) {
+            return R.fail(9120, "查房意见不能为空");
+        }
+        String levelCn = switch (req.roundLevel()) {
+            case "CHIEF" -> "主任";
+            case "ATTENDING" -> "主治";
+            default -> "住院医";
+        };
+        Long me = currentUserService.idOf(auth);
+        InpMedicalRecord r = new InpMedicalRecord();
+        r.setAdmissionId(admissionId);
+        r.setRecordType("ROUND");
+        r.setTitle(req.title() == null || req.title().isBlank() ? "三级查房记录·" + levelCn + "查房" : req.title());
+        r.setContent(req.roundOpinion());   // content not null，复用查房意见作正文
+        r.setDoctorId(me);
+        r.setRoundLevel(req.roundLevel());
+        r.setRoundDoctorId(me);
+        r.setRoundOpinion(req.roundOpinion());
+        r.setSuperiorCorrection(req.superiorCorrection());
+        return R.ok(recordRepo.save(r));
+    }
+
+    /** 查房记录列表（可按级别过滤），含查房医师姓名与是否已签名冻结 */
+    @GetMapping("/records/rounds")
+    public R<List<java.util.Map<String, Object>>> rounds(@PathVariable Long admissionId,
+                                                         @RequestParam(required = false) String level) {
+        String sql = "select r.id, r.round_level, r.round_opinion, r.superior_correction, r.created_at, "
+                + "r.round_doctor_id, u.real_name as round_doctor_name, (r.signature is not null) as signed "
+                + "from inp_medical_record r left join sys_user u on u.id = r.round_doctor_id "
+                + "where r.admission_id = ? and r.record_type = 'ROUND' "
+                + (level == null ? "" : " and r.round_level = ? ") + " order by r.id";
+        return R.ok(level == null ? jdbc.queryForList(sql, admissionId) : jdbc.queryForList(sql, admissionId, level));
+    }
+
     /** 1.0.4：住院病历 CA 签名（SignatureAdapter，与门诊同语义；已签名不可重签） */
     @PostMapping("/records/{recordId}/sign")
     public R<java.util.Map<String, Object>> signRecord(@PathVariable Long admissionId,

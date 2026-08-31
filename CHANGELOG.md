@@ -2,6 +2,37 @@
 
 版本纪律：语义化版本；平台迁移段 V1–V999，实施段 V10000+；升级 = 停服→备份→换产物→自动前滚→回归抽查（多医院部署操作指南 §三）。
 
+## 1.3.4（2026-08-31）
+
+v34 EMR 合规文书轮（四子系统盘点后 EMR 深化的第一轮）。多 agent 精确落点侦察 + 综合定序，
+本轮做 3 项内聚特性（知情同意 / 三级查房 / 病历时限扩展）；出院完整性 gate（integrity）推迟 v35
+（它是 discharge 上第二道 gate，且依赖 consent/ward-round 数据沉淀）。**所有 gate 默认 warn/off →
+运行时零打断**。214 测试、25 套 E2E、错误码 324。
+
+**知情同意书 / 授权委托书（V116，评审法定否决项，从零建）**：
+- `emr_consent` 表（SURGERY/TRANSFUSION/ANESTHESIA/SPECIAL_EXAM/SELF_PAY/PROXY）+ 医患双签
+  （患者签 → 医师 CA 签，复用 SignatureAdapter），SIGNED 为有效终态；ConsentController 6 端点 +
+  ConsentView 前端。错误码 9110-9115。
+- **三处试点期可配 gate**（`emr.gate.consent.surgery/transfusion/selfpay`，默认 warn 警告放行不硬拦）：
+  手术申请（MedTechController.requestSurgery）/ 输血申请（BloodController.apply）/ 自费医嘱
+  （InpatientService.createOrders，仅 block 模式查、依赖 md_charge_item/md_drug 新增 self_pay 标记）。
+  warn 命中返回 success + warning 字段（不挡历史流），block 硬拦 9116/9117/9118；改 sys_config 即时收紧。
+
+**三级查房结构化（V115）**：
+- inp_medical_record 扩 record_type='ROUND' + 4 稀疏列（round_level 主任/主治/住院医、round_doctor_id、
+  round_opinion、superior_correction），复用签名冻结/补正/病历列表/复印/CDR/首页泛型读取（零查询改动）。
+  InpEmrController 加 POST /records/round + GET /records/rounds（9119/9120）；InpDoctorView 病历页加查房录入。
+
+**病历书写时限质控扩展（V117）**：
+- emrTimeliness 从 3 项扩到 7 项：+ 首程 8h / 三级查房 48h（依赖 ward-round，`emr.timeliness.round_check.enabled`
+  默认 off 避免历史误报）/ 病程连续性（危重 care_level 更短阈值）/ 抢救记录超时闭合；阈值 6 键 sys_config 可配。
+  新增科室看板端点；defectBreakdown 明细；原键全保留（向后兼容，defectTotal 数值会因新增缺陷类上涨）。
+  QualityCenterView 病历时限 tab 补 4 张缺陷表。
+
+**交付**：新 E2E `e2e-emr-consent`（双签流转 / 手术 gate warn→block→放行 / 三级查房 / 时限新键）接入 CI（25 套）；
+ConsentFlowTest + InpWardRoundTest（各 3）。**consent gate 默认 warn，既有 25 套 E2E 零打断**。
+录入侧返回体 requestSurgery/BloodController.apply 由 R&lt;Void&gt;→R&lt;Map&gt; 携带 warning（JSON 向后兼容）。
+
 ## 1.3.3（2026-08-30）
 
 v33 四子系统（HIS/LIS/PACS/EMR）功能缺口盘点 → **危急值双通道闭环轮**（LIS+RIS，不碰计费口径）。

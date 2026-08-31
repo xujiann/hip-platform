@@ -116,6 +116,14 @@ public class InpatientService {
         if (!"IN_HOSPITAL".equals(adm.getStatus())) {
             throw new InpException(9005, "已出院不能开医嘱");
         }
+        // v34 自费医嘱知情同意 gate（试点期可配 emr.gate.consent.selfpay，默认 warn）。
+        // 仅 block 模式才查（warn/off 只读一次缓存配置、零额外开销、零打断）；含自费项而无有效自费
+        // 同意书时硬拦。self_pay 标记由主数据维护补齐，未标记则天然无自费项、gate 空转。
+        if ("block".equals(configReader.get("emr.gate.consent.selfpay", "warn"))
+                && lines.stream().anyMatch(this::isSelfPayItem)
+                && !hasSignedConsent(admissionId, "SELF_PAY")) {
+            throw new InpException(9118, "含自费医嘱但无有效自费知情同意书");
+        }
         String stamp = BusinessDates.today().format(DateTimeFormatter.BASIC_ISO_DATE);
         return lines.stream().map(line -> {
             InpOrder o = new InpOrder();
@@ -148,6 +156,23 @@ public class InpatientService {
             o.setAmount(o.getUnitPrice().multiply(BigDecimal.valueOf(o.getQty())));
             return orderRepo.save(o);
         }).toList();
+    }
+
+    /** v34：该行医嘱对应的项目/药品是否标记为自费（self_pay），供自费同意 gate 判定 */
+    private boolean isSelfPayItem(OrderLine line) {
+        String table = "DRUG".equals(line.orderType()) ? "md_drug" : "md_charge_item";
+        var rs = entityManager.createNativeQuery("select self_pay from " + table + " where id = :id")
+                .setParameter("id", line.itemId()).getResultList();
+        return !rs.isEmpty() && Boolean.TRUE.equals(rs.get(0));
+    }
+
+    /** v34：该住院是否已有指定类型的有效（SIGNED、未作废）知情同意书 */
+    private boolean hasSignedConsent(Long admissionId, String consentType) {
+        Number c = (Number) entityManager.createNativeQuery(
+                "select count(*) from emr_consent where admission_id = :aid and consent_type = :t "
+                        + "and status = 'SIGNED' and revoked_at is null")
+                .setParameter("aid", admissionId).setParameter("t", consentType).getSingleResult();
+        return c.longValue() > 0;
     }
 
     /** 护士执行：药品执行时原子扣库存并留痕 */

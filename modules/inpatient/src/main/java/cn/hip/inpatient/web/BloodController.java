@@ -21,23 +21,37 @@ public class BloodController {
 
     private final JdbcTemplate jdbc;
     private final CurrentUserService currentUserService;
+    private final cn.hip.platform.core.service.ConfigReader configReader;
 
     private static final Set<String> PRODUCTS = Set.of("RBC", "PLASMA", "PLT");
 
     public record ApplyReq(Long admissionId, String product, Integer volumeMl, String reason) {}
 
     @PostMapping("/applies")
-    public R<Void> apply(@RequestBody ApplyReq req, Authentication auth) {
+    public R<Map<String, Object>> apply(@RequestBody ApplyReq req, Authentication auth) {
         if (!PRODUCTS.contains(req.product())) return R.fail(4530, "血制品只能为 RBC/PLASMA/PLT");
         if (req.volumeMl() == null || req.volumeMl() <= 0) return R.fail(4530, "用血量必须大于 0");
         Integer inHosp = jdbc.queryForObject(
                 "select count(*) from inp_admission where id = ? and status = 'IN_HOSPITAL'",
                 Integer.class, req.admissionId());
         if (inHosp == null || inHosp == 0) return R.fail(4530, "住院记录不存在或已出院");
+        // v34 知情同意 gate（试点期可配 emr.gate.consent.transfusion，默认 warn 警告放行）
+        String warning = null;
+        String mode = configReader.get("emr.gate.consent.transfusion", "warn");
+        if (!"off".equals(mode)) {
+            Integer c = jdbc.queryForObject("""
+                    select count(*) from emr_consent where admission_id = ? and consent_type = 'TRANSFUSION'
+                      and status = 'SIGNED' and revoked_at is null
+                    """, Integer.class, req.admissionId());
+            if (c == null || c == 0) {
+                if ("block".equals(mode)) return R.fail(9117, "无有效输血知情同意书，不能申请用血");
+                warning = "未查到有效输血知情同意书，请及时补录并医患双签";
+            }
+        }
         jdbc.update("""
                 insert into blood_apply(admission_id, product, volume_ml, reason, apply_doctor_id) values (?,?,?,?,?)
                 """, req.admissionId(), req.product(), req.volumeMl(), req.reason(), currentUserService.idOf(auth));
-        return R.ok();
+        return warning == null ? R.ok(Map.of()) : R.ok(Map.of("warning", warning));
     }
 
     @PutMapping("/applies/{id}/review")

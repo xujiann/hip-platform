@@ -107,7 +107,7 @@ const titles: Record<string, string> = {
   'inp-daily-fee': '住院费用一日清单', 'inp-discharge-summary': '出院小结',
 }
 const payNames: Record<string, string> = { CASH: '现金', WECHAT: '微信', ALIPAY: '支付宝', YB: '医保' }
-const recordTypeNames: Record<string, string> = { ADMISSION: '入院记录', PROGRESS: '病程记录', DISCHARGE: '出院小结' }
+const recordTypeNames: Record<string, string> = { ADMISSION: '入院记录', FIRST_PROGRESS: '首次病程', PROGRESS: '病程记录', ROUND: '三级查房', DISCHARGE: '出院小结' }
 
 // 住院单据用较宽版式（A5 清单/小结），门诊凭条保持窄条
 const isSheet = computed(() => type === 'inp-daily-fee' || type === 'inp-discharge-summary')

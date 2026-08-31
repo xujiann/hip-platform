@@ -19,6 +19,7 @@ public class NursingQualityController {
 
     private final JdbcTemplate jdbc;
     private final CurrentUserService currentUserService;
+    private final cn.hip.platform.core.service.ConfigReader configReader;
 
     /** 护理白板：在院一览（床位/护理级别/过敏/未执行医嘱数） */
     @GetMapping("/api/inpatient/nursing/board")
@@ -45,9 +46,20 @@ public class NursingQualityController {
         return R.ok();
     }
 
-    /** 病历时限质控：入院>24h 无入院记录 / 出院无出院小结 / 门诊病历未签名 */
+    /**
+     * 病历时限质控（v34 扩至 7 项）：入院&gt;24h 无入院记录 / 出院无出院小结 / 门诊未签名（原 3 项）
+     * + 首程&gt;8h / 三级查房&gt;48h（依赖 ward-round，emr.round.check.enabled=on 才查）/ 病程连续性 / 抢救记录超时闭合。
+     * 阈值均 sys_config 可配。纯只读报表，不 gate 任何写路径。
+     */
     @GetMapping("/api/quality/emr-timeliness")
     public R<Map<String, Object>> emrTimeliness() {
+        int firstProgressH = configReader.getInt("emr.timeliness.first_progress_hours", 8);
+        int roundH = configReader.getInt("emr.timeliness.round_interval_hours", 48);
+        int gapDays = configReader.getInt("emr.timeliness.progress_gap_days", 3);
+        int gapCritDays = configReader.getInt("emr.timeliness.progress_gap_crit_days", 1);
+        int rescueH = configReader.getInt("emr.timeliness.rescue_record_hours", 6);
+        boolean roundCheck = "on".equalsIgnoreCase(configReader.get("emr.timeliness.round_check.enabled", "off"));
+
         var missingAdmission = jdbc.queryForList("""
                 select a.admission_no, p.name as patient_name, d.name as dept_name,
                        round(extract(epoch from (now() - a.admit_at)) / 3600) as hours
@@ -67,11 +79,91 @@ public class NursingQualityController {
                 """);
         Long unsignedEmr = jdbc.queryForObject(
                 "select count(*) from outp_emr where signature is null", Long.class);
-        return R.ok(Map.of(
-                "missingAdmissionRecord", missingAdmission,
-                "missingDischargeSummary", missingDischargeSummary,
-                "unsignedOutpEmrCount", unsignedEmr,
-                "defectTotal", missingAdmission.size() + missingDischargeSummary.size()));
+        // 首程记录时限（仅在院；FIRST_PROGRESS 为 v34 新记录类型，历史首程混在 PROGRESS 故只报不拦）
+        var missingFirstProgress = jdbc.queryForList("""
+                select a.admission_no, p.name as patient_name, d.name as dept_name,
+                       round(extract(epoch from (now() - a.admit_at)) / 3600) as hours
+                from inp_admission a join empi_patient p on p.id = a.patient_id join sys_dept d on d.id = a.dept_id
+                where a.status = 'IN_HOSPITAL' and a.admit_at < now() - make_interval(hours => ?)
+                  and not exists (select 1 from inp_medical_record r
+                                  where r.admission_id = a.id and r.record_type = 'FIRST_PROGRESS')
+                """, firstProgressH);
+        // 三级查房时限（依赖 ward-round 数据，默认关闭以免历史在院全量误报）
+        var missingRound = roundCheck ? jdbc.queryForList("""
+                select a.admission_no, p.name as patient_name, d.name as dept_name,
+                       round(extract(epoch from (now() - a.admit_at)) / 3600) as hours
+                from inp_admission a join empi_patient p on p.id = a.patient_id join sys_dept d on d.id = a.dept_id
+                where a.status = 'IN_HOSPITAL' and a.admit_at < now() - make_interval(hours => ?)
+                  and not exists (select 1 from inp_medical_record r
+                                  where r.admission_id = a.id and r.record_type = 'ROUND')
+                """, roundH) : java.util.List.<Map<String, Object>>of();
+        // 病程连续性：距上次病程/查房/入院记录超阈值（危重 care_level 特级/一级用更短阈值）
+        var progressContinuity = jdbc.queryForList("""
+                select a.admission_no, p.name as patient_name, d.name as dept_name, a.care_level,
+                       round(extract(epoch from (now() - coalesce(last.ts, a.admit_at))) / 86400.0, 1) as gap_days
+                from inp_admission a join empi_patient p on p.id = a.patient_id join sys_dept d on d.id = a.dept_id
+                left join lateral (
+                    select max(r.created_at) as ts from inp_medical_record r
+                    where r.admission_id = a.id and r.record_type in ('PROGRESS','ROUND','ADMISSION','FIRST_PROGRESS')
+                ) last on true
+                where a.status = 'IN_HOSPITAL'
+                  and now() - coalesce(last.ts, a.admit_at) >
+                      make_interval(days => case when a.care_level in ('特级','一级') then ? else ? end)
+                """, gapCritDays, gapDays);
+        // 抢救记录超时闭合：抢救开始超阈值仍未结束/补记完成
+        var rescueLate = jdbc.queryForList("""
+                select r.id, round(extract(epoch from (now() - r.rescue_start)) / 3600) as hours
+                from er_rescue_record r
+                where r.rescue_end is null and r.rescue_start < now() - make_interval(hours => ?)
+                """, rescueH);
+
+        int defectTotal = missingAdmission.size() + missingDischargeSummary.size() + missingFirstProgress.size()
+                + missingRound.size() + progressContinuity.size() + rescueLate.size();
+        var breakdown = new java.util.LinkedHashMap<String, Object>();
+        breakdown.put("admission", missingAdmission.size());
+        breakdown.put("dischargeSummary", missingDischargeSummary.size());
+        breakdown.put("firstProgress", missingFirstProgress.size());
+        breakdown.put("round", missingRound.size());
+        breakdown.put("progressGap", progressContinuity.size());
+        breakdown.put("rescue", rescueLate.size());
+
+        var m = new java.util.LinkedHashMap<String, Object>();
+        m.put("missingAdmissionRecord", missingAdmission);
+        m.put("missingDischargeSummary", missingDischargeSummary);
+        m.put("unsignedOutpEmrCount", unsignedEmr);
+        m.put("missingFirstProgress", missingFirstProgress);
+        m.put("missingRound", missingRound);
+        m.put("roundCheckEnabled", roundCheck);
+        m.put("progressContinuityDefect", progressContinuity);
+        m.put("rescueLateRecord", rescueLate);
+        m.put("defectTotal", defectTotal);
+        m.put("defectBreakdown", breakdown);
+        return R.ok(m);
+    }
+
+    /** 病历时限缺陷科室看板（v34）：按科室汇总在院侧各类缺陷计数，供红黄灯预警 */
+    @GetMapping("/api/quality/emr-timeliness/board")
+    public R<List<Map<String, Object>>> emrTimelinessBoard() {
+        int firstProgressH = configReader.getInt("emr.timeliness.first_progress_hours", 8);
+        return R.ok(jdbc.queryForList("""
+                select d.name as dept_name,
+                       count(*) filter (where a.admit_at < now() - interval '24 hours'
+                              and not exists (select 1 from inp_medical_record r
+                                  where r.admission_id = a.id and r.record_type = 'ADMISSION')) as missing_admission,
+                       count(*) filter (where a.admit_at < now() - make_interval(hours => ?)
+                              and not exists (select 1 from inp_medical_record r
+                                  where r.admission_id = a.id and r.record_type = 'FIRST_PROGRESS')) as missing_first_progress
+                from inp_admission a join sys_dept d on d.id = a.dept_id
+                where a.status = 'IN_HOSPITAL'
+                group by d.name
+                having count(*) filter (where a.admit_at < now() - interval '24 hours'
+                              and not exists (select 1 from inp_medical_record r
+                                  where r.admission_id = a.id and r.record_type = 'ADMISSION')) > 0
+                    or count(*) filter (where a.admit_at < now() - make_interval(hours => ?)
+                              and not exists (select 1 from inp_medical_record r
+                                  where r.admission_id = a.id and r.record_type = 'FIRST_PROGRESS')) > 0
+                order by dept_name
+                """, firstProgressH, firstProgressH));
     }
 
     /**

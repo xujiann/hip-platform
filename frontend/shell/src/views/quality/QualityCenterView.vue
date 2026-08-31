@@ -20,6 +20,40 @@
           <el-table-column prop="admission_no" label="住院号" width="170" />
           <el-table-column prop="patient_name" label="患者" />
         </el-table>
+
+        <h4 style="margin-top: 12px">首程记录超时（超 8h 未书写首次病程）</h4>
+        <el-table :data="(emr.missingFirstProgress as Record<string, unknown>[]) ?? []" size="small" border>
+          <el-table-column prop="admission_no" label="住院号" width="170" />
+          <el-table-column prop="patient_name" label="患者" width="100" />
+          <el-table-column prop="dept_name" label="科室" width="120" />
+          <el-table-column prop="hours" label="已入院(小时)" width="110" />
+        </el-table>
+
+        <h4 style="margin-top: 12px">
+          三级查房超时（超 48h 无查房）
+          <el-tag v-if="!emr.roundCheckEnabled" type="info" size="small">未启用（依赖三级查房数据）</el-tag>
+        </h4>
+        <el-table v-if="emr.roundCheckEnabled" :data="(emr.missingRound as Record<string, unknown>[]) ?? []" size="small" border>
+          <el-table-column prop="admission_no" label="住院号" width="170" />
+          <el-table-column prop="patient_name" label="患者" width="100" />
+          <el-table-column prop="dept_name" label="科室" width="120" />
+          <el-table-column prop="hours" label="已入院(小时)" width="110" />
+        </el-table>
+
+        <h4 style="margin-top: 12px">病程记录连续性缺陷（距上次记录超阈值）</h4>
+        <el-table :data="(emr.progressContinuityDefect as Record<string, unknown>[]) ?? []" size="small" border>
+          <el-table-column prop="admission_no" label="住院号" width="170" />
+          <el-table-column prop="patient_name" label="患者" width="100" />
+          <el-table-column prop="dept_name" label="科室" width="120" />
+          <el-table-column prop="care_level" label="护理级别" width="90" />
+          <el-table-column prop="gap_days" label="间隔(天)" width="90" />
+        </el-table>
+
+        <h4 style="margin-top: 12px">抢救记录超时未闭合</h4>
+        <el-table :data="(emr.rescueLateRecord as Record<string, unknown>[]) ?? []" size="small" border>
+          <el-table-column prop="id" label="抢救记录号" width="130" />
+          <el-table-column prop="hours" label="已开始(小时)" width="120" />
+        </el-table>
       </el-tab-pane>
 
       <el-tab-pane label="不良事件" name="adverse">

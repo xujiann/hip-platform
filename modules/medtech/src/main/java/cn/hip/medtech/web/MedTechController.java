@@ -263,15 +263,33 @@ public class MedTechController {
                              String opIcd) {}
 
     @PostMapping("/api/inpatient/surgeries")
-    public R<Void> requestSurgery(@RequestBody SurgeryReq req, Authentication auth) {
+    public R<Map<String, Object>> requestSurgery(@RequestBody SurgeryReq req, Authentication auth) {
         String status = req.scheduledAt() == null ? "REQUESTED" : "SCHEDULED";
+        // v34 知情同意 gate（试点期可配 emr.gate.consent.surgery：off 旁路 / warn 警告放行 / block 硬拦）。
+        // 默认 warn——不挡历史不合规流，仅提示；院内规范落地后改 block 硬拦（改 sys_config 即时生效）。
+        String warning = null;
+        String mode = configReader.get("emr.gate.consent.surgery", "warn");
+        if (!"off".equals(mode) && !hasSignedConsent(req.admissionId(), "SURGERY")) {
+            if ("block".equals(mode)) return R.fail(9116, "无有效手术知情同意书，不能申请手术");
+            warning = "未查到有效手术知情同意书，请及时补录并医患双签";
+        }
         // 1.0.4：op_icd 手术操作编码（ICD-9-CM-3），病案首页与 DRG 手术组入组数据基础
         jdbc.update("""
                 insert into inp_surgery(admission_id, procedure_name, anesthesia_type, scheduled_at, surgeon_id, status, op_icd)
                 values (?,?,?,?::timestamptz,?,?,?)
                 """, req.admissionId(), req.procedureName(), req.anesthesiaType(),
                 req.scheduledAt(), currentUserService.idOf(auth), status, req.opIcd());
-        return R.ok();
+        return warning == null ? R.ok(Map.of()) : R.ok(Map.of("warning", warning));
+    }
+
+    /** v34：该住院是否已有指定类型的有效（SIGNED、未作废）知情同意书 */
+    private boolean hasSignedConsent(Long admissionId, String consentType) {
+        if (admissionId == null) return false;
+        Integer n = jdbc.queryForObject("""
+                select count(*) from emr_consent
+                where admission_id = ? and consent_type = ? and status = 'SIGNED' and revoked_at is null
+                """, Integer.class, admissionId, consentType);
+        return n != null && n > 0;
     }
 
     @GetMapping("/api/inpatient/surgeries")

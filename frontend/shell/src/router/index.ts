@@ -56,6 +56,7 @@ const router = createRouter({
         { path: 'inpatient/doctor', component: () => import('../views/inpatient/InpDoctorView.vue') },
         { path: 'inpatient/nurse', component: () => import('../views/inpatient/InpNurseView.vue') },
         { path: 'inpatient/discharge', component: () => import('../views/inpatient/DischargeView.vue') },
+        { path: 'inpatient/consent', component: () => import('../views/inpatient/ConsentView.vue') },
         { path: 'ops', component: () => import('../views/ops/OpsView.vue') },
         { path: 'outpatient/nurse', component: () => import('../views/outpatient/OutpNurseView.vue') },
         { path: 'medtech/appointments', component: () => import('../views/medtech/ApptQueueView.vue') },
