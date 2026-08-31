@@ -9,5 +9,8 @@ public interface OutpDiagnosisRepository extends JpaRepository<OutpDiagnosis, Lo
 
     List<OutpDiagnosis> findByRegistrationIdOrderByPrimaryDiagDescIdAsc(Long registrationId);
 
+    /** v37 历史就诊调阅：批量取多次就诊诊断，避免逐条 N+1 */
+    List<OutpDiagnosis> findByRegistrationIdIn(java.util.Collection<Long> registrationIds);
+
     void deleteByRegistrationId(Long registrationId);
 }

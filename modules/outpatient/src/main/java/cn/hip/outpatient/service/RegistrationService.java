@@ -27,6 +27,44 @@ public class RegistrationService {
         }
     }
 
+    /**
+     * v37 预约签到转正式挂号：预约时已占 schedule 号（appt_no 与 walk-in regNo 同池），
+     * 签到只建挂号记录不再占号——否则一个患者占两个号。挂号费订单行与 register() 同口径。
+     */
+    @Transactional
+    public OutpRegistration registerFromAppointment(Long patientId, Long scheduleId, int regNo) {
+        OutpSchedule schedule = scheduleRepository.findById(scheduleId)
+                .orElseThrow(() -> new BizException(3001, "号源不存在"));
+        OutpRegistration reg = new OutpRegistration();
+        reg.setRegNo(regNo);
+        reg.setPatientId(patientId);
+        reg.setScheduleId(scheduleId);
+        reg.setDeptId(schedule.getDeptId());
+        reg.setDoctorId(schedule.getDoctorId());
+        reg.setVisitDate(schedule.getScheduleDate());
+        reg.setFee(schedule.getFee());
+        try {
+            reg = registrationRepository.saveAndFlush(reg);
+        } catch (org.springframework.dao.DataIntegrityViolationException e) {
+            throw new BizException(3002, "该患者已挂此号，勿重复挂号");
+        }
+        if (reg.getFee() != null && reg.getFee().compareTo(BigDecimal.ZERO) > 0) {
+            OutpOrder regFee = new OutpOrder();
+            regFee.setRegistrationId(reg.getId());
+            regFee.setGroupNo("GH-" + reg.getId());
+            regFee.setOrderType("REG");
+            regFee.setItemId(0L);
+            regFee.setItemCode("REG");
+            regFee.setItemName("挂号费");
+            regFee.setUnit("次");
+            regFee.setQty(1);
+            regFee.setUnitPrice(reg.getFee());
+            regFee.setAmount(reg.getFee());
+            orderRepository.save(regFee);
+        }
+        return reg;
+    }
+
     /** 挂号：占号成功后以占号后的 booked 值作为叫号序号 */
     @Transactional
     public OutpRegistration register(Long patientId, Long scheduleId) {

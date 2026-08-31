@@ -34,6 +34,8 @@
                    @click="startVisit">
           接 诊
         </el-button>
+        <!-- v37 门诊病历连续调阅：历次就诊/既往诊断抽屉 -->
+        <el-button size="small" style="float: right; margin-right: 8px" @click="openHistory">历史就诊</el-button>
       </template>
 
       <el-tabs v-model="tab">
@@ -178,6 +180,24 @@
       </el-tabs>
     </el-card>
     <el-empty v-else class="workspace" description="从左侧队列选择患者" />
+
+    <!-- v37 历史就诊抽屉：近 50 次就诊（剔退号）+ 各次诊断/主诉/处理意见 -->
+    <el-drawer v-model="historyVisible" title="历史就诊" size="480px">
+      <el-empty v-if="!history.length" description="无历史就诊" :image-size="60" />
+      <el-timeline v-else>
+        <el-timeline-item v-for="h in history" :key="h.registrationId as number"
+                          :timestamp="`${h.visitDate}${h.signed ? ' · 已签名' : ''}`">
+          <div v-if="(h.diagnoses as Record<string, unknown>[])?.length" style="margin-bottom:4px">
+            <el-tag v-for="(d, i) in (h.diagnoses as Record<string, unknown>[])" :key="i"
+                    :type="d.primaryDiag ? 'danger' : 'info'" size="small" style="margin-right:4px">
+              {{ d.icdName || d.icdCode }}
+            </el-tag>
+          </div>
+          <p v-if="h.chiefComplaint" class="hist-line">主诉：{{ h.chiefComplaint }}</p>
+          <p v-if="h.advice" class="hist-line">处理：{{ h.advice }}</p>
+        </el-timeline-item>
+      </el-timeline>
+    </el-drawer>
   </div>
 </template>
 
@@ -200,6 +220,13 @@ const orderStatusTag: Record<string, string> = {
 const today = ref(todayLocal())
 const worklist = ref<Record<string, unknown>[]>([])
 const current = ref<Record<string, unknown> | null>(null)
+const historyVisible = ref(false)
+const history = ref<Record<string, unknown>[]>([])
+async function openHistory() {
+  if (!current.value) return
+  history.value = (await client.get(`/outpatient/doctor/patient/${current.value.patientId}/history`)).data.data
+  historyVisible.value = true
+}
 const tab = ref('emr')
 const savingEmr = ref(false)
 const submitting = ref(false)
@@ -404,6 +431,7 @@ onMounted(loadWorklist)
   grid-template-columns: 320px 1fr;
   gap: 12px;
 }
+.hist-line { margin: 2px 0; font-size: 13px; color: var(--el-text-color-regular); }
 .add-row {
   display: flex;
   gap: 8px;

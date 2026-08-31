@@ -2,6 +2,29 @@
 
 版本纪律：语义化版本；平台迁移段 V1–V999，实施段 V10000+；升级 = 停服→备份→换产物→自动前滚→回归抽查（多医院部署操作指南 §三）。
 
+## 1.3.7（2026-08-31）
+
+v37 门诊快赢（"全部推进"第三版）：病历连续调阅（纯只读）+ 分时段预约挂号（触及挂号容量池，
+walk-in register() 完全不动）。225 测试、27 套 E2E、错误码 337。
+
+**门诊病历连续调阅（无迁移）**：
+- GET /api/outpatient/doctor/patient/{patientId}/history：近 50 次就诊（剔退号）+ 各次诊断/主诉/
+  处理意见/签名态。接上此前零调用者的 findTop50ByPatientIdOrderByIdDesc；批量 In 查询避 N+1。
+- DoctorStationView 工作区头部"历史就诊"抽屉（时间线 + 诊断 tag）。
+
+**门诊分时段预约挂号（V122）**：
+- outp_schedule_slot（排班下时段，chk booked≤capacity + uq(schedule,time_begin)）+ outp_appointment
+  （BOOKED/CHECKED_IN/CANCELLED，uq_appt_active 部分唯一索引防重复预约）。
+- **两级原子占号**：预约同事务占 slot + schedule（与 walk-in 同池，appt_no=占后排班序号不重号）；
+  **签到转挂号不再占号**（RegistrationService.registerFromAppointment，挂号费订单行同 register() 口径）；
+  取消两级回落。建时段校验容量合计≤排班总号量（3120），防预约先于 walk-in 打满容量池。
+- 重复预约防线与 register() 同范式：先查后插友好 3112 早退（避免唯一约束 abort 事务毒化 @Transactional
+  测试——方法论④），uq_appt_active 兜底并发。错误码 3110-3114/3120。
+- AppointmentView 前端（排班→设时段→预约→签到台）+ 预约挂号菜单（CASHIER）。
+
+**交付**：OutpAppointmentTest 4（容量校验/预约签到取消全流程/时段满/历史调阅）；新 E2E e2e-outp-appt
+接入 CI（27 套）。walk-in 路径零改动，RegistrationServiceTest/并发测试不受影响。
+
 ## 1.3.6（2026-08-31）
 
 v36 LIS 质控轮（"全部推进"第二版，新表/只读为主，与患者结果发布链路零耦合）。LisQcController 独立

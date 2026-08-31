@@ -142,4 +142,39 @@ public class DoctorStationController {
             return R.fail(e.code, e.getMessage());
         }
     }
+
+    /**
+     * v37 门诊病历连续调阅：患者历次就诊（近 50 次，剔除已退号）+ 各次诊断与病历摘要。
+     * 医生站接诊时看既往——此前 findTop50ByPatientIdOrderByIdDesc 定义后零调用者，本端点接上。
+     * 批量 In 查询避免 50 次 N+1；纯只读。
+     */
+    @GetMapping("/patient/{patientId}/history")
+    public R<List<Map<String, Object>>> patientHistory(@PathVariable Long patientId) {
+        var regs = registrationRepository.findTop50ByPatientIdOrderByIdDesc(patientId).stream()
+                .filter(r -> !"CANCELLED".equals(r.getStatus()))
+                .toList();
+        if (regs.isEmpty()) return R.ok(List.of());
+        var regIds = regs.stream().map(r -> r.getId()).toList();
+        var emrByReg = emrRepository.findByRegistrationIdIn(regIds).stream()
+                .collect(java.util.stream.Collectors.toMap(e -> e.getRegistrationId(), e -> e));
+        var diagByReg = diagnosisRepository.findByRegistrationIdIn(regIds).stream()
+                .collect(java.util.stream.Collectors.groupingBy(d -> d.getRegistrationId()));
+        return R.ok(regs.stream().map(r -> {
+            var m = new java.util.LinkedHashMap<String, Object>();
+            m.put("registrationId", r.getId());
+            m.put("visitDate", r.getVisitDate());
+            m.put("status", r.getStatus());
+            var emr = emrByReg.get(r.getId());
+            if (emr != null) {
+                m.put("chiefComplaint", emr.getChiefComplaint());
+                m.put("advice", emr.getAdvice());
+                m.put("signed", emr.getSignature() != null);
+            }
+            m.put("diagnoses", diagByReg.getOrDefault(r.getId(), List.of()).stream().map(d -> Map.of(
+                    "icdCode", d.getIcdCode() == null ? "" : d.getIcdCode(),
+                    "icdName", d.getIcdName() == null ? "" : d.getIcdName(),
+                    "primaryDiag", Boolean.TRUE.equals(d.getPrimaryDiag()))).toList());
+            return (Map<String, Object>) m;
+        }).toList());
+    }
 }
