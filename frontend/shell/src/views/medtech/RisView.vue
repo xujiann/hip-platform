@@ -9,13 +9,14 @@
       <el-table-column prop="patient_name" label="患者" width="90" />
       <el-table-column prop="item_name" label="检查项目" width="160" />
       <el-table-column label="状态" width="90">
-        <template #default="{ row }">{{ { REGISTERED: '已登记', REPORTED: '已报告' }[row.status as string] }}</template>
+        <template #default="{ row }">{{ { REGISTERED: '已登记', ARRIVED: '已到检', REPORTED: '已报告' }[row.status as string] }}</template>
       </el-table-column>
       <el-table-column prop="impression" label="诊断意见" show-overflow-tooltip />
-      <el-table-column label="操作" width="170">
+      <el-table-column label="操作" width="220">
         <template #default="{ row }">
+          <el-button v-if="row.status === 'REGISTERED'" link size="small" @click="arrive(row)">到检</el-button>
           <el-button link type="primary" size="small" @click="openReport(row)">
-            {{ row.status === 'REGISTERED' ? '书写报告' : '修改报告' }}
+            {{ row.status === 'REPORTED' ? '修改报告' : '书写报告' }}
           </el-button>
           <el-button v-if="row.status === 'REPORTED'" link type="warning" size="small" @click="markCritical(row)">标记危急</el-button>
           <el-button v-if="row.status === 'REPORTED'" link type="success" size="small" :loading="busyId === row.id" @click="verify(row)">审核发布</el-button>
@@ -25,6 +26,12 @@
 
     <el-dialog v-model="dialogVisible" :title="`报告：${current?.item_name}`" width="560px">
       <el-form label-width="80px">
+        <!-- v38 结构化模板：按 RIS 类型套模板到影像所见 -->
+        <el-form-item label="套模板">
+          <el-select v-model="templateId" clearable placeholder="选择报告模板" style="width:260px" @change="applyTemplate">
+            <el-option v-for="t in templates" :key="t.id as number" :label="String(t.name)" :value="t.id as number" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="影像所见">
           <el-input v-model="findings" type="textarea" :rows="4" />
         </el-form-item>
@@ -52,9 +59,23 @@ const findings = ref('')
 const impression = ref('')
 const busyId = ref<unknown>(null)
 const saveReportLoading = ref(false)
+const templates = ref<Record<string, unknown>[]>([])
+const templateId = ref<number | null>(null)
 
 async function load() {
   records.value = (await client.get('/ris/worklist')).data.data
+  templates.value = (await client.get('/emr-templates', { params: { type: 'RIS' } })).data.data
+}
+
+async function arrive(row: Record<string, unknown>) {
+  await client.put(`/ris/exams/${row.id}/arrive`)
+  ElMessage.success('已到检登记')
+  await load()
+}
+
+function applyTemplate() {
+  const t = templates.value.find(x => x.id === templateId.value)
+  if (t) findings.value = String(t.content ?? '')
 }
 
 function openReport(row: Record<string, unknown>) {

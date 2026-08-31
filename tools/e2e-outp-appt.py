@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """v37 门诊快赢 E2E：分时段预约挂号（建时段→预约→签到转挂号→取消回落）+ 病历连续调阅。自成一体。"""
 import sys
-from e2elib import call, login, new_patient, ok, today_bj  # noqa: E402
+from e2elib import call, login, new_patient, ok, provision_user, q, today_bj  # noqa: E402
 
 t = login()
 today = today_bj().isoformat()
@@ -50,5 +50,26 @@ print('[3] 取消两级回落 OK / 时段满 3111')
 regs = ok(call('GET', f'/outpatient/doctor/patient/{p1}/history', token=t), '历史就诊')
 assert len(regs) == 1 and regs[0]['registrationId'] == r['registrationId']
 print('[4] 病历连续调阅 OK（历史含签到转的挂号）')
+
+# ---- 5) v38 RIS 体验：到检登记态 + 结果互认 + 模板 type ----
+exam = ok(call('GET', '/masterdata/charge-items?keyword=' + q('彩超'), token=t), '检查项')[0]
+ok(call('POST', f"/outpatient/doctor/{r['registrationId']}/start", {}, t), '接诊')
+ok(call('POST', f"/outpatient/doctor/{r['registrationId']}/orders",
+        {'lines': [{'orderType': 'EXAM', 'itemId': exam['id'], 'qty': 1}]}, t), '开检查')
+ok(call('POST', '/outpatient/charges/settle', {'registrationId': r['registrationId'], 'payMethod': 'CASH'}, t), '收费')
+wl = ok(call('GET', '/ris/worklist', token=t), 'RIS队列')
+row = next(w for w in wl if w['patient_name'] == '预约E2E甲')
+ok(call('PUT', f"/ris/exams/{row['id']}/arrive", token=t), '到检')
+assert call('PUT', f"/ris/exams/{row['id']}/arrive", token=t)['code'] == 9944, '重复到检 9944'
+ok(call('PUT', f"/ris/exams/{row['id']}/report", {'findings': '肝胆未见异常', 'impression': '未见异常'}, t), '写报告')
+
+rv = provision_user(t, 'ris_verifier_appt', 'TECHNICIAN', '放射审核v38')
+ok(call('PUT', f"/ris/exams/{row['id']}/verify", token=rv), '审核')
+recent = ok(call('GET', f'/ris/recent-exams?patientId={p1}', token=t), '互认查询')
+assert len(recent) >= 1 and any(x['impression'] == '未见异常' for x in recent), '互认应命中已审报告'
+ok(call('POST', '/emr-templates', {'name': '腹部超声模板E2E', 'content': '肝胆胰脾未见明显异常', 'templateType': 'RIS'}, t), '建RIS模板')
+ris_tpls = ok(call('GET', '/emr-templates?type=RIS', token=t), 'RIS模板')
+assert any(x['name'] == '腹部超声模板E2E' for x in ris_tpls)
+print('[5] v38 RIS 体验 OK（到检 ARRIVED→报告→审核 / 互认命中 / 模板 type 过滤）')
 
 print('\ne2e-outp-appt 全部通过 ✅')

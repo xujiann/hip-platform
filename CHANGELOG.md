@@ -2,6 +2,21 @@
 
 版本纪律：语义化版本；平台迁移段 V1–V999，实施段 V10000+；升级 = 停服→备份→换产物→自动前滚→回归抽查（多医院部署操作指南 §三）。
 
+## 1.3.8（2026-08-31）
+
+v38 RIS 体验轮（"全部推进"第四版，此前侦察 agent 超限失败、按已熟现状直接落地）。228 测试、
+27 套 E2E（v38 段并入 e2e-outp-appt）、错误码 337。
+
+- **到检登记态（V123）**：ris_exam 状态机扩 REGISTERED→**ARRIVED**→REPORTED→VERIFIED（加 arrived_at）；
+  PUT /ris/exams/{id}/arrive；writeReport 接受 ARRIVED。RisView 加"到检"按钮与状态映射。
+- **结果互认提醒**：GET /ris/recent-exams?patientId=&itemName=——该患者 ris.mutual.days（默认 30）天内
+  已出报告的同名检查，开单/登记时提示复用（只提示不阻断，控费/医保飞检项）。
+- **报告结构化模板**：emr_template 复用 template_type='RIS'；templates 端点加 type 过滤（缺省全量向后
+  兼容）、createTemplate 加 templateType；RisView 报告对话框"套模板"下拉一键填入影像所见。
+
+V38RisExpTest 3（到检状态机/互认命中与过滤/模板 type）；e2e-outp-appt 扩 [5] RIS 体验段。
+纯扩展（新状态值/新只读端点/模板列已有），既有 RIS 流与 E2E 零打断。
+
 ## 1.3.7（2026-08-31）
 
 v37 门诊快赢（"全部推进"第三版）：病历连续调阅（纯只读）+ 分时段预约挂号（触及挂号容量池，

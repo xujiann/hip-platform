@@ -192,11 +192,41 @@ public class MedTechController {
 
     public record RisReportReq(String findings, String impression) {}
 
+    /** v38 到检登记：患者到检 REGISTERED→ARRIVED（与预约叫号联动的现场登记态） */
+    @PutMapping("/api/ris/exams/{id}/arrive")
+    public R<Void> arrive(@PathVariable Long id) {
+        int n = jdbc.update(
+                "update ris_exam set status = 'ARRIVED', arrived_at = now() where id = ? and status = 'REGISTERED'", id);
+        return n == 0 ? R.fail(9944, "检查不存在或状态不允许到检登记") : R.ok();
+    }
+
+    /**
+     * v38 结果互认提醒：该患者 N 天内已出报告（VERIFIED）的同名检查（只提示不阻断，控费/医保飞检项）。
+     * 开单或登记时前端调用，命中即提示"可复用近期结果"。
+     */
+    @GetMapping("/api/ris/recent-exams")
+    public R<List<Map<String, Object>>> recentExams(@RequestParam Long patientId,
+                                                    @RequestParam(required = false) String itemName) {
+        int days = configReader.getInt("ris.mutual.days", 30);
+        String nameFilter = itemName == null || itemName.isBlank() ? "" : " and o.item_name = ? ";
+        String sql = """
+                select e.id, o.item_name, e.modality, e.impression, e.verified_at
+                from ris_exam e
+                join outp_order o on o.id = e.order_id
+                join outp_registration r on r.id = o.registration_id
+                where r.patient_id = ? and e.status = 'VERIFIED'
+                  and e.verified_at > now() - make_interval(days => ?)
+                """ + nameFilter + " order by e.verified_at desc limit 20";
+        return R.ok(itemName == null || itemName.isBlank()
+                ? jdbc.queryForList(sql, patientId, days)
+                : jdbc.queryForList(sql, patientId, days, itemName));
+    }
+
     @PutMapping("/api/ris/exams/{id}/report")
     public R<Void> writeReport(@PathVariable Long id, @RequestBody RisReportReq req, Authentication auth) {
         int n = jdbc.update("""
                 update ris_exam set findings = ?, impression = ?, reporter_id = ?, reported_at = now(), status = 'REPORTED'
-                where id = ? and status in ('REGISTERED', 'REPORTED')
+                where id = ? and status in ('REGISTERED', 'ARRIVED', 'REPORTED')
                 """, req.findings(), req.impression(), currentUserService.idOf(auth), id);
         return n == 0 ? R.fail(9944, "检查不存在或已审核") : R.ok();
     }
@@ -317,19 +347,30 @@ public class MedTechController {
 
     // ===== 病历模板 =====
 
-    public record EmrTemplateReq(Long deptId, String name, String content) {}
+    public record EmrTemplateReq(Long deptId, String name, String content, String templateType) {}
 
     @PostMapping("/api/emr-templates")
     public R<Void> createTemplate(@RequestBody EmrTemplateReq req) {
-        jdbc.update("insert into emr_template(dept_id, name, content) values (?,?,?)",
-                req.deptId(), req.name(), req.content());
+        jdbc.update("insert into emr_template(dept_id, name, content, template_type) values (?,?,?,?)",
+                req.deptId(), req.name(), req.content(),
+                req.templateType() == null || req.templateType().isBlank() ? "EMR" : req.templateType());
         return R.ok();
     }
 
+    /** v38：type 过滤（EMR 病历 / CONSENT 同意书 / RIS 报告模板），缺省全量向后兼容 */
     @GetMapping("/api/emr-templates")
-    public R<List<Map<String, Object>>> templates(@RequestParam(required = false) Long deptId) {
-        return R.ok(deptId == null
-                ? jdbc.queryForList("select * from emr_template order by id")
-                : jdbc.queryForList("select * from emr_template where dept_id = ? or dept_id is null order by id", deptId));
+    public R<List<Map<String, Object>>> templates(@RequestParam(required = false) Long deptId,
+                                                  @RequestParam(required = false) String type) {
+        var where = new StringBuilder(" where 1=1 ");
+        var args = new java.util.ArrayList<Object>();
+        if (deptId != null) {
+            where.append(" and (dept_id = ? or dept_id is null) ");
+            args.add(deptId);
+        }
+        if (type != null && !type.isBlank()) {
+            where.append(" and template_type = ? ");
+            args.add(type);
+        }
+        return R.ok(jdbc.queryForList("select * from emr_template" + where + " order by id", args.toArray()));
     }
 }
