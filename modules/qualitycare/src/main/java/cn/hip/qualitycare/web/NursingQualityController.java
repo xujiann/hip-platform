@@ -299,6 +299,77 @@ public class NursingQualityController {
                 """, kw, like, like));
     }
 
+    /**
+     * v40 病案室待编码/待归档工作队列：列已出院但尚未收尾的病案（未归档 <b>或</b> 未编码），
+     * 出院天数降序（拖最久的排最前），每行带完整性缺项清单，供病案室每天照单干活。
+     *
+     * <p><b>性能边界：</b>完整性 check 是逐条多次查询（每条约 4–7 趟 DB），故队列硬上限
+     * {@value #MR_WORKQUEUE_LIMIT} 条——正常院区待收尾病案是几十条量级，超限说明积压已远超
+     * 日常处理能力（返回 truncated=true 提示），此时应先按科室清历史欠账而非在本页翻页。
+     *
+     * <p>超期口径：出院天数 &gt; sys_config {@code mr.archive.overdue_days}（默认 3）且未归档
+     * → overdue=true。纯只读，不 gate 任何写路径。
+     */
+    @GetMapping("/api/quality/mr-workqueue")
+    public R<Map<String, Object>> mrWorkqueue() {
+        int overdueDays = configReader.getInt("mr.archive.overdue_days", 3);
+        var rows = jdbc.queryForList("""
+                select a.id, a.admission_no, a.discharged_at, a.archived,
+                       a.discharge_diag_icd, a.discharge_diag_name,
+                       p.name as patient_name, d.name as dept_name,
+                       floor(extract(epoch from (now() - a.discharged_at)) / 86400)::int as discharged_days
+                from inp_admission a
+                join empi_patient p on p.id = a.patient_id
+                join sys_dept d on d.id = a.dept_id
+                where a.status = 'DISCHARGED'
+                  and (a.archived = false or a.discharge_diag_icd is null)
+                order by a.discharged_at asc nulls first, a.id asc
+                limit ?
+                """, MR_WORKQUEUE_LIMIT + 1);
+        boolean truncated = rows.size() > MR_WORKQUEUE_LIMIT;
+        if (truncated) rows = rows.subList(0, MR_WORKQUEUE_LIMIT);
+
+        var items = new java.util.ArrayList<Map<String, Object>>(rows.size());
+        for (var r : rows) {
+            Long admId = ((Number) r.get("id")).longValue();
+            Object dxIcd = r.get("discharge_diag_icd");
+            boolean coded = dxIcd != null && !String.valueOf(dxIcd).isBlank();
+            boolean archived = Boolean.TRUE.equals(r.get("archived"));
+            Integer days = (Integer) r.get("discharged_days");
+            var missing = emrIntegrityService.check(admId);
+
+            var item = new java.util.LinkedHashMap<String, Object>();
+            item.put("id", admId);
+            item.put("admissionNo", r.get("admission_no"));
+            item.put("patientName", r.get("patient_name"));
+            item.put("deptName", r.get("dept_name"));
+            item.put("dischargedAt", r.get("discharged_at"));
+            item.put("dischargedDays", days == null ? 0 : days);
+            item.put("coded", coded);
+            item.put("dischargeDiagIcd", dxIcd);
+            item.put("dischargeDiagName", r.get("discharge_diag_name"));
+            item.put("archived", archived);
+            item.put("missing", missing);
+            item.put("missingCount", missing.size());
+            item.put("overdue", !archived && days != null && days > overdueDays);
+            items.add(item);
+        }
+        // 出院天数降序 = discharged_at 升序（SQL 已排；null 出院时间排最前当作最久）
+        var m = new java.util.LinkedHashMap<String, Object>();
+        m.put("items", items);
+        m.put("total", items.size());
+        m.put("overdueDays", overdueDays);
+        m.put("pendingCode", items.stream().filter(i -> !Boolean.TRUE.equals(i.get("coded"))).count());
+        m.put("pendingArchive", items.stream().filter(i -> !Boolean.TRUE.equals(i.get("archived"))).count());
+        m.put("overdueCount", items.stream().filter(i -> Boolean.TRUE.equals(i.get("overdue"))).count());
+        m.put("limit", MR_WORKQUEUE_LIMIT);
+        m.put("truncated", truncated);
+        return R.ok(m);
+    }
+
+    /** 工作队列上限：逐条完整性 check 有 N+1 代价，超此量级说明积压需按科室专项清理 */
+    private static final int MR_WORKQUEUE_LIMIT = 200;
+
     /** 病案归档（须已出院） */
     @PutMapping("/api/inpatient/admissions/{id}/archive")
     public R<Object> archive(@PathVariable Long id) {

@@ -1,4 +1,6 @@
 <template>
+  <el-tabs v-model="tab" class="mr-tabs" @tab-change="onTabChange">
+  <el-tab-pane label="病案首页" name="front">
   <div class="mrfront-page">
     <!-- 选单：按住院号/姓名检索病案（打印时隐藏） -->
     <el-card class="picker no-print">
@@ -10,7 +12,7 @@
                 @keyup.enter="loadList" @clear="loadList">
         <template #append><el-button @click="loadList">查询</el-button></template>
       </el-input>
-      <el-table :data="list" highlight-current-row height="calc(100vh - 240px)" size="small"
+      <el-table :data="list" highlight-current-row height="calc(100vh - 290px)" size="small"
                 @current-change="pick">
         <el-table-column prop="admission_no" label="住院号" width="150" />
         <el-table-column prop="patient_name" label="姓名" width="80" />
@@ -122,10 +124,77 @@
     </el-card>
     <el-empty v-else class="sheet" description="从左侧选择一份病案查看首页" />
   </div>
+  </el-tab-pane>
+
+  <!-- v40 病案室待办工作队列：已出院但未编码/未归档的病案，出院天数降序 -->
+  <el-tab-pane name="queue">
+    <template #label>
+      待办工作队列
+      <el-badge v-if="queue.total" :value="queue.total" class="qbadge" type="warning" />
+    </template>
+    <el-card class="queue-card">
+      <template #header>
+        <span>病案室待办（已出院未收尾）</span>
+        <el-tag type="info" size="small" style="margin-left: 10px">共 {{ queue.total }} 份</el-tag>
+        <el-tag type="warning" size="small" style="margin-left: 6px">待编码 {{ queue.pendingCode }}</el-tag>
+        <el-tag type="warning" size="small" style="margin-left: 6px">待归档 {{ queue.pendingArchive }}</el-tag>
+        <el-tag type="danger" size="small" style="margin-left: 6px">超期 {{ queue.overdueCount }}</el-tag>
+        <span class="hint">出院超 {{ queue.overdueDays }} 天未归档标红（阈值 mr.archive.overdue_days）</span>
+        <el-button link type="primary" style="float: right" :loading="queueLoading" @click="loadQueue">
+          刷新
+        </el-button>
+      </template>
+      <el-alert v-if="queue.truncated" type="warning" show-icon :closable="false"
+                style="margin-bottom: 8px"
+                :title="`待办超过 ${queue.limit} 份，仅显示最久的 ${queue.limit} 份，请按科室专项清理历史欠账`" />
+      <el-table :data="queue.items" v-loading="queueLoading" size="small"
+                :row-class-name="rowClass" height="calc(100vh - 260px)">
+        <el-table-column prop="admissionNo" label="住院号" width="150" />
+        <el-table-column prop="patientName" label="患者" width="90" />
+        <el-table-column prop="deptName" label="科室" width="110" />
+        <el-table-column label="出院天数" width="100" align="right">
+          <template #default="{ row }">
+            <el-tag v-if="row.overdue" type="danger" size="small">{{ row.dischargedDays }} 天</el-tag>
+            <span v-else>{{ row.dischargedDays }} 天</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="编码" width="110">
+          <template #default="{ row }">
+            <el-tag v-if="row.coded" type="success" size="small">{{ row.dischargeDiagIcd }}</el-tag>
+            <el-tag v-else type="warning" size="small">未编码</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="归档" width="90">
+          <template #default="{ row }">
+            <el-tag v-if="row.archived" type="success" size="small">已归档</el-tag>
+            <el-tag v-else type="info" size="small">未归档</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="病历缺项" min-width="240">
+          <template #default="{ row }">
+            <span v-if="!row.missingCount" class="ok">完整</span>
+            <el-tooltip v-else :content="(row.missing as string[]).join('、')" placement="top">
+              <span class="miss">{{ row.missingCount }} 项：{{ (row.missing as string[]).join('、') }}</span>
+            </el-tooltip>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="160" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="primary" @click="openFront(row)">首页</el-button>
+            <el-button v-if="!row.archived" link type="primary" :loading="archiving === row.id"
+                       @click="doArchive(row)">去归档</el-button>
+          </template>
+        </el-table-column>
+        <template #empty><span>无待办病案，队列已清空</span></template>
+      </el-table>
+    </el-card>
+  </el-tab-pane>
+  </el-tabs>
 </template>
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { ElMessage } from 'element-plus'
 import client from '../../api/client'
 
 const sexName: Record<string, string> = { M: '男', F: '女', U: '未知' }
@@ -158,6 +227,78 @@ function doPrint() {
   window.print()
 }
 
+/* ---- v40 病案室待办工作队列 ---- */
+interface QueueItem {
+  id: number
+  admissionNo: string
+  patientName: string
+  deptName: string
+  dischargedAt: string | null
+  dischargedDays: number
+  coded: boolean
+  dischargeDiagIcd: string | null
+  archived: boolean
+  missing: string[]
+  missingCount: number
+  overdue: boolean
+}
+interface Queue {
+  items: QueueItem[]
+  total: number
+  overdueDays: number
+  pendingCode: number
+  pendingArchive: number
+  overdueCount: number
+  limit: number
+  truncated: boolean
+}
+
+const tab = ref('front')
+const queueLoading = ref(false)
+const archiving = ref<number | null>(null)
+const queue = ref<Queue>({
+  items: [], total: 0, overdueDays: 3, pendingCode: 0, pendingArchive: 0,
+  overdueCount: 0, limit: 200, truncated: false,
+})
+
+async function loadQueue() {
+  queueLoading.value = true
+  try {
+    const resp = await client.get('/quality/mr-workqueue')
+    queue.value = resp.data.data as Queue
+  } finally {
+    queueLoading.value = false
+  }
+}
+
+function onTabChange(name: string | number) {
+  if (name === 'queue' && !queue.value.items.length) loadQueue()
+}
+
+function rowClass({ row }: { row: QueueItem }): string {
+  return row.overdue ? 'overdue-row' : ''
+}
+
+/** 归档：后端 warn 模式下不完整也放行，但会带 warning 字段——必须显式提示，否则质控形同虚设 */
+async function doArchive(row: QueueItem) {
+  archiving.value = row.id
+  try {
+    const resp = await client.put(`/inpatient/admissions/${row.id}/archive`)
+    const warning = (resp.data.data as { warning?: string } | null)?.warning
+    if (warning) ElMessage.warning(warning)
+    else ElMessage.success('归档成功')
+    await Promise.all([loadQueue(), loadList()])
+  } finally {
+    archiving.value = null
+  }
+}
+
+/** 从队列跳到病案首页 tab 查看该份病案 */
+async function openFront(row: QueueItem) {
+  await pick({ id: row.id })
+  tab.value = 'front'
+}
+
 onMounted(async () => {
   const [, cfg] = await Promise.all([loadList(), client.get('/config/public')])
   hospitalName.value = cfg.data.data.hospital_name ?? ''
@@ -177,8 +318,15 @@ h3 { margin: 16px 0 6px; padding-left: 6px; border-left: 3px solid #409eff; font
 .grid .sum td { font-weight: 700; }
 .none { color: #909399; font-size: 13px; margin: 4px 0; }
 .foot { color: #888; font-size: 12px; margin-top: 14px; text-align: right; }
+.queue-card .hint { color: #909399; font-size: 12px; margin-left: 10px; }
+.qbadge { margin-left: 6px; }
+.ok { color: #67c23a; }
+.miss { color: #e6a23c; display: inline-block; max-width: 100%; overflow: hidden;
+        text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+:deep(.overdue-row) { background: #fef0f0; }
 @media print {
   .no-print { display: none !important; }
+  :deep(.el-tabs__header) { display: none !important; }
   .mrfront-page { display: block; }
   .sheet { border: none; box-shadow: none; }
 }

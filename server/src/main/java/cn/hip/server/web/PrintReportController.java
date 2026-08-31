@@ -18,6 +18,7 @@ import cn.hip.platform.core.config.BusinessDates;
 public class PrintReportController {
 
     private final JdbcTemplate jdbc;
+    private final cn.hip.platform.core.security.CurrentUserService currentUserService;
 
     /** 挂号凭条数据 */
     @GetMapping("/api/print/registration/{id}")
@@ -47,6 +48,48 @@ public class PrintReportController {
         receipt.put("items", jdbc.queryForList(
                 "select item_name, spec, qty, unit_price, amount from outp_order where charge_id = ?", id));
         return R.ok(receipt);
+    }
+
+    /**
+     * v40 票据补打检索：收费员按结算单号/患者号/姓名找回历史单据补打。
+     * 此前打印数据集与版式都在，但收费台只能打"刚结算的那一单"——重打无入口。
+     */
+    @GetMapping("/api/print/charge-search")
+    public R<List<Map<String, Object>>> chargeSearch(@RequestParam(required = false) String keyword,
+                                                     @RequestParam(required = false) String date) {
+        var where = new StringBuilder(" where 1=1 ");
+        var args = new java.util.ArrayList<Object>();
+        if (keyword != null && !keyword.isBlank()) {
+            where.append(" and (c.charge_no ilike ? or p.patient_no ilike ? or p.name ilike ?) ");
+            String like = "%" + keyword.trim() + "%";
+            args.add(like);
+            args.add(like);
+            args.add(like);
+        }
+        // 半开区间走索引（1.1.3 起全库口径；?::date 显式定型避免 PG 推断不出参数类型）
+        if (date != null && !date.isBlank()) {
+            where.append(" and c.created_at >= ?::date and c.created_at < (?::date + 1) ");
+            args.add(date);
+            args.add(date);
+        }
+        return R.ok(jdbc.queryForList("""
+                select c.id, c.charge_no, c.total_amount, c.pay_method, c.status, c.created_at,
+                       p.name as patient_name, p.patient_no,
+                       (select count(*) from fin_print_log l where l.doc_type = 'CHARGE' and l.doc_id = c.id) as print_count
+                from outp_charge c
+                join outp_registration r on r.id = c.registration_id
+                join empi_patient p on p.id = r.patient_id
+                """ + where + " order by c.id desc limit 100", args.toArray()));
+    }
+
+    /** v40 打印留痕：前端每次打开打印页记一次（补打次数可追溯，财务/审计关注） */
+    @PostMapping("/api/print/log")
+    public R<Void> logPrint(@RequestParam String docType, @RequestParam Long docId,
+                            org.springframework.security.core.Authentication auth) {
+        if (!List.of("CHARGE", "REGISTRATION").contains(docType)) return R.fail(4000, "单据类型不正确");
+        jdbc.update("insert into fin_print_log(doc_type, doc_id, operator_id) values (?,?,?)",
+                docType, docId, currentUserService.idOf(auth));
+        return R.ok();
     }
 
     /** 检验报告单数据 */

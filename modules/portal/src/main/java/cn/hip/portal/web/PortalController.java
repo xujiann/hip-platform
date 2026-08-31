@@ -29,6 +29,8 @@ public class PortalController {
     private final RegistrationService registrationService;
     private final SysDeptRepository deptRepository;
     private final cn.hip.outpatient.service.PayService payService;
+    /** v40 分时段预约：与院内挂号台共用同一份两级占号实现，不在患者端另写一份 */
+    private final cn.hip.outpatient.service.AppointmentService appointmentService;
     private final org.springframework.jdbc.core.JdbcTemplate jdbc;
     private final org.springframework.core.env.Environment environment;
 
@@ -308,5 +310,137 @@ public class PortalController {
         } catch (RegistrationService.BizException e) {
             return R.fail(e.code, e.getMessage());
         }
+    }
+
+    // ===== v40 ① 分时段预约（院内 v37 能力的患者端入口，占号逻辑同一份 AppointmentService） =====
+
+    /** 某排班的可约时段 + 余号（患者端只看在用时段） */
+    @GetMapping("/schedules/{scheduleId}/slots")
+    public R<List<Map<String, Object>>> scheduleSlots(@PathVariable Long scheduleId) {
+        return R.ok(appointmentService.slots(scheduleId, true));
+    }
+
+    public record PortalApptRequest(Long slotId) {}
+
+    /**
+     * 分时段预约：**patientId 只取自令牌**，请求体里不接受任何患者身份字段——
+     * 否则任何患者可替他人占号。错误码沿用院内挂号段（3110/3111/3112），前端提示口径一致。
+     */
+    @PostMapping("/appointments")
+    public R<Map<String, Object>> bookAppointment(@RequestBody PortalApptRequest req, Authentication auth) {
+        var r = appointmentService.book(req.slotId(), patientId(auth), "PORTAL");
+        if (!r.ok()) return R.fail(r.code(), r.message());
+        return R.ok(Map.of("id", r.apptId(), "apptNo", r.apptNo()));
+    }
+
+    /** 我的预约（只列本人；单条 SQL 带出科室/时段） */
+    @GetMapping("/my/appointments")
+    public R<List<Map<String, Object>>> myAppointments(Authentication auth) {
+        Long pid = patientId(auth);
+        return R.ok(jdbc.queryForList("""
+                select a.id, a.appt_no as "apptNo", a.status, a.source, a.created_at as "createdAt",
+                       a.registration_id as "registrationId",
+                       s.schedule_date as "scheduleDate", s.shift, s.reg_type as "regType", s.fee,
+                       coalesce(d.name, '') as "deptName",
+                       sl.time_begin as "timeBegin", sl.time_end as "timeEnd"
+                from outp_appointment a
+                join outp_schedule s on s.id = a.schedule_id
+                join outp_schedule_slot sl on sl.id = a.slot_id
+                left join sys_dept d on d.id = s.dept_id
+                where a.patient_id = ? order by a.id desc limit 50
+                """, pid));
+    }
+
+    /**
+     * 自助取消预约：**先校验该预约属于令牌患者**（否则患者 A 可取消患者 B 的号），
+     * 再走院内同一份两级释放。
+     */
+    @PostMapping("/my/appointments/{id}/cancel")
+    public R<Void> cancelAppointment(@PathVariable Long id, Authentication auth) {
+        Long pid = patientId(auth);
+        Integer own = jdbc.queryForObject(
+                "select count(*) from outp_appointment where id = ? and patient_id = ?", Integer.class, id, pid);
+        if (own == null || own == 0) return R.fail(9506, "预约不存在或非本人");
+        var r = appointmentService.cancel(id);
+        return r.ok() ? R.ok() : R.fail(r.code(), r.message());
+    }
+
+    // ===== v40 ② 住院患者端：我的住院 / 每日费用清单 / 押金余额（口径与院内 InpatientController 一致） =====
+
+    /** 我的住院记录（只列本人） */
+    @GetMapping("/my/admissions")
+    public R<List<Map<String, Object>>> myAdmissions(Authentication auth) {
+        Long pid = patientId(auth);
+        return R.ok(jdbc.queryForList("""
+                select a.id, a.admission_no as "admissionNo", a.status,
+                       a.admit_at as "admitAt", a.discharged_at as "dischargedAt",
+                       a.admit_diag_name as "admitDiagName",
+                       coalesce(cd.name, '') as "deptName", coalesce(wd.name, '') as "wardName",
+                       coalesce(b.bed_no, '') as "bedNo"
+                from inp_admission a
+                left join sys_dept cd on cd.id = a.dept_id
+                left join sys_dept wd on wd.id = a.ward_id
+                left join inp_bed b on b.id = a.bed_id
+                where a.patient_id = ? order by a.id desc limit 50
+                """, pid));
+    }
+
+    /**
+     * 住院记录归属校验（v40）：住院数据里有诊断与费用，**越权读取即隐私事故**。
+     * 一律用「id + 令牌 patientId」两条件计数，不接受前端传入的患者身份。
+     */
+    private boolean ownsAdmission(Long admissionId, Long pid) {
+        Integer own = jdbc.queryForObject(
+                "select count(*) from inp_admission where id = ? and patient_id = ?", Integer.class, admissionId, pid);
+        return own != null && own > 0;
+    }
+
+    /** 每日费用清单（口径同院内 /api/inpatient/admissions/{id}/daily-fees：按执行日期取已执行医嘱） */
+    @GetMapping("/my/admissions/{id}/daily-fees")
+    public R<Map<String, Object>> myDailyFees(
+            @PathVariable Long id,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,
+            Authentication auth) {
+        if (!ownsAdmission(id, patientId(auth))) return R.fail(9505, "住院记录不存在或非本人");
+        // date 用 LocalDate 承接（非法日期由全局兜底成 4000），再以字符串入 ?::date，与院内同一 SQL
+        String d = date.toString();
+        var rows = jdbc.queryForList("""
+                select item_name as "itemName", spec, qty, unit_price as "unitPrice", amount,
+                       order_type as "orderType", executed_at as "executedAt"
+                from inp_order
+                where admission_id = ? and status = 'EXECUTED'
+                  and executed_at >= ?::date and executed_at < ?::date + interval '1 day'
+                order by executed_at
+                """, id, d, d);
+        var total = rows.stream()
+                .map(r -> (java.math.BigDecimal) r.get("amount"))
+                .reduce(java.math.BigDecimal.ZERO, java.math.BigDecimal::add);
+        return R.ok(Map.of("date", d, "rows", rows, "total", total));
+    }
+
+    /**
+     * 押金/已发生费用/余额。口径与院内 account() 逐项一致：
+     * 押金 = sum(inp_deposit.amount)；已发生 = 已执行医嘱金额合计；余额 = 押金 - 已发生（可为负=欠费）；
+     * 未执行医嘱（CREATED）只作预判展示，不计入余额。
+     */
+    @GetMapping("/my/admissions/{id}/account")
+    public R<Map<String, Object>> myAdmissionAccount(@PathVariable Long id, Authentication auth) {
+        if (!ownsAdmission(id, patientId(auth))) return R.fail(9505, "住院记录不存在或非本人");
+        var m = jdbc.queryForMap("""
+                select
+                  (select coalesce(sum(amount), 0) from inp_deposit where admission_id = ?) as "depositTotal",
+                  (select coalesce(sum(amount), 0) from inp_order
+                     where admission_id = ? and status = 'EXECUTED') as "executedAmount",
+                  (select coalesce(sum(amount), 0) from inp_order
+                     where admission_id = ? and status = 'CREATED') as "pendingAmount"
+                """, id, id, id);
+        var deposit = (java.math.BigDecimal) m.get("depositTotal");
+        var executed = (java.math.BigDecimal) m.get("executedAmount");
+        var balance = deposit.subtract(executed);
+        var out = new LinkedHashMap<String, Object>(m);
+        out.put("admissionId", id);
+        out.put("balance", balance);
+        out.put("owed", balance.signum() < 0);
+        return R.ok(out);
     }
 }

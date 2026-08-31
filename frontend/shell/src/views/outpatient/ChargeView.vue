@@ -60,10 +60,39 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="80">
+        <el-table-column label="操作" width="140">
           <template #default="{ row }">
+            <!-- v40：票据打印/补打（打印数据集与版式早已就绪，此前收费台无入口） -->
+            <el-button link type="primary" @click="printCharge(row.chargeId as number)">打印</el-button>
             <el-button v-if="row.status === 'PAID' && auth.hasPerm('outp:charge:refund')" link type="danger"
                        :loading="refunding === row.chargeId" @click="refund(row)">退费</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
+
+    <!-- v40 票据补打：按结算单号/患者号/姓名找回历史单据重打（含已打次数） -->
+    <el-card>
+      <template #header>
+        票据补打
+        <el-button link type="primary" style="float: right" @click="searchCharges">查询</el-button>
+      </template>
+      <div style="display: flex; gap: 8px; margin-bottom: 8px">
+        <el-input v-model="reprintKeyword" placeholder="结算单号/患者号/姓名" clearable style="width: 200px"
+                  @keyup.enter="searchCharges" />
+        <el-date-picker v-model="reprintDate" type="date" value-format="YYYY-MM-DD" placeholder="收费日期"
+                        style="width: 150px" clearable />
+      </div>
+      <el-table :data="reprintRows" size="small" height="200">
+        <el-table-column prop="charge_no" label="结算单号" width="170" />
+        <el-table-column prop="patient_name" label="姓名" width="90" />
+        <el-table-column prop="total_amount" label="金额" width="90" />
+        <el-table-column label="已打" width="60">
+          <template #default="{ row }">{{ row.print_count }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="80">
+          <template #default="{ row }">
+            <el-button link type="primary" @click="printCharge(row.id as number)">补打</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -83,6 +112,21 @@ const router = useRouter()
 const worklist = ref<Record<string, unknown>[]>([])
 const detail = ref<Record<string, unknown> | null>(null)
 const recent = ref<Record<string, unknown>[]>([])
+// v40 票据打印/补打
+const reprintKeyword = ref('')
+const reprintDate = ref('')
+const reprintRows = ref<Record<string, unknown>[]>([])
+async function searchCharges() {
+  reprintRows.value = (await client.get('/print/charge-search', {
+    params: { keyword: reprintKeyword.value || undefined, date: reprintDate.value || undefined },
+  })).data.data
+}
+/** 打开打印页并记一次打印留痕（补打次数可追溯） */
+async function printCharge(chargeId: number) {
+  window.open(`/print?type=charge&id=${chargeId}`, '_blank')
+  await client.post('/print/log', null, { params: { docType: 'CHARGE', docId: chargeId } })
+  if (reprintRows.value.length) await searchCharges()
+}
 const payMethod = ref('CASH')
 const settling = ref(false)
 const refunding = ref<unknown>(null)
