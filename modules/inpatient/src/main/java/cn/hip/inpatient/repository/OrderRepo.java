@@ -25,4 +25,12 @@ public interface OrderRepo extends JpaRepository<InpOrder, Long> {
     @org.springframework.data.jpa.repository.Query(
             "update InpOrder o set o.status = 'CANCELLED' where o.id = :id and o.status = 'CREATED'")
     int cancelIfCreated(@org.springframework.data.repository.query.Param("id") Long id);
+
+    /** v39：活跃长期医嘱（在院 + 未停嘱 + 未作废）——每日执行行生成的对象 */
+    @org.springframework.data.jpa.repository.Query("""
+            select o from InpOrder o where o.orderNature = 'LONG' and o.stopAt is null
+              and o.status <> 'CANCELLED'
+              and exists (select 1 from InpAdmission a where a.id = o.admissionId and a.status = 'IN_HOSPITAL')
+            """)
+    java.util.List<InpOrder> findActiveLongOrders();
 }

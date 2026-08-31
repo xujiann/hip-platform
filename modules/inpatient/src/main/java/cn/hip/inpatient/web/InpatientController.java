@@ -42,6 +42,59 @@ public class InpatientController {
     private final cn.hip.inpatient.service.EmrIntegrityService emrIntegrityService;
     private final cn.hip.platform.core.service.ConfigReader configReader;
 
+    // ===== v39 长期医嘱：停嘱 / 执行行队列 / 按行执行 =====
+
+    /** 停嘱（仅 LONG）：费用固化 + PENDING 行置 SKIPPED；从未执行过则作废 */
+    @org.springframework.web.bind.annotation.PostMapping("/orders/{orderId}/stop")
+    public R<Void> stopOrder(@PathVariable Long orderId,
+                             org.springframework.security.core.Authentication auth) {
+        try {
+            inpatientService.stopOrder(orderId, currentUserService.idOf(auth));
+            return R.ok();
+        } catch (cn.hip.inpatient.service.InpatientService.InpException e) {
+            return R.fail(e.code, e.getMessage());
+        }
+    }
+
+    /** 护士执行行队列：某日待执行长期医嘱执行行（含患者/床位/药品） */
+    @org.springframework.web.bind.annotation.GetMapping("/exec-lines")
+    public R<java.util.List<java.util.Map<String, Object>>> execLines(
+            @org.springframework.web.bind.annotation.RequestParam String date) {
+        return R.ok(jdbcTemplate.queryForList("""
+                select e.id, e.exec_date, e.seq_no, e.status, e.amount,
+                       o.id as order_id, o.item_name, o.spec, o.qty, o.usage_route, o.frequency, o.dose_per_time,
+                       a.admission_no, p.name as patient_name, b.bed_no
+                from inp_order_exec e
+                join inp_order o on o.id = e.order_id
+                join inp_admission a on a.id = o.admission_id
+                join empi_patient p on p.id = a.patient_id
+                left join inp_bed b on b.id = a.bed_id
+                where e.exec_date = ?::date and e.status = 'PENDING'
+                order by a.admission_no, o.id, e.seq_no
+                """, date));
+    }
+
+    /** 按执行行执行（并发抢占，仅一方成功；扣库存 + 医嘱费用累加） */
+    @org.springframework.web.bind.annotation.PutMapping("/exec-lines/{execId}/execute")
+    public R<Void> executeExecLine(@PathVariable Long execId,
+                                   org.springframework.security.core.Authentication auth) {
+        try {
+            inpatientService.executeExecLine(execId, currentUserService.idOf(auth));
+            return R.ok();
+        } catch (cn.hip.inpatient.service.InpatientService.InpException e) {
+            return R.fail(e.code, e.getMessage());
+        }
+    }
+
+    /** 手动补生成某日执行行（运维/测试；每日 06:30 调度自动做） */
+    @org.springframework.web.bind.annotation.PostMapping("/exec-lines/generate")
+    @org.springframework.security.access.prepost.PreAuthorize("hasRole('ADMIN')")
+    public R<java.util.Map<String, Object>> generateExecLines(
+            @org.springframework.web.bind.annotation.RequestParam String date) {
+        int n = inpatientService.generateDailyExecLines(java.time.LocalDate.parse(date));
+        return R.ok(java.util.Map.of("activeLongOrders", n));
+    }
+
     /** v35：出院/归档前病历完整性只读预检——前端据此弹缺项、按 gate 模式决定提示或禁用 */
     @org.springframework.web.bind.annotation.GetMapping("/admissions/{id}/emr-integrity")
     public R<java.util.Map<String, Object>> emrIntegrity(@PathVariable Long id) {

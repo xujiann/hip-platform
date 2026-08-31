@@ -65,6 +65,18 @@ public class InpOrder {
     @Column(nullable = false, length = 16)
     private String status = "CREATED";
 
+    /**
+     * v39：TEMP 临时（缺省，行为与历史逐字节一致）/ LONG 长期。
+     * LONG 口径：amount=累计已执行金额、首次执行即 EXECUTED——下游读 "EXECUTED 的 amount" 零改动。
+     */
+    @Column(nullable = false, length = 8)
+    private String orderNature = "TEMP";
+
+    /** 停嘱时刻（仅 LONG；停嘱后不再生成/执行执行行，费用固化可参与中间结算） */
+    private Instant stopAt;
+
+    private Long stopDoctorId;
+
     private Long doctorId;
 
     private Long executorId;

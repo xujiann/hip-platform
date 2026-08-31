@@ -48,6 +48,31 @@
       </el-table-column>
     </el-table>
   </el-card>
+
+  <!-- v39 长期医嘱执行行：今日按频次展开的逐次执行队列（按行执行、按行计费） -->
+  <el-card>
+    <template #header>
+      长期医嘱执行行（今日）
+      <el-button link type="primary" style="float: right" @click="loadExecLines">刷新</el-button>
+    </template>
+    <el-empty v-if="!execLines.length" description="今日无待执行长期医嘱" :image-size="60" />
+    <el-table v-else :data="execLines" border stripe size="small">
+      <el-table-column prop="admission_no" label="住院号" width="160" />
+      <el-table-column prop="patient_name" label="姓名" width="90" />
+      <el-table-column prop="bed_no" label="床" width="50" />
+      <el-table-column prop="item_name" label="项目" />
+      <el-table-column label="用法" width="160">
+        <template #default="{ row }">{{ row.usage_route }} {{ row.dose_per_time }} {{ row.frequency }}</template>
+      </el-table-column>
+      <el-table-column prop="seq_no" label="次" width="50" />
+      <el-table-column prop="amount" label="金额" width="80" />
+      <el-table-column label="操作" width="90">
+        <template #default="{ row }">
+          <el-button type="success" size="small" @click="executeLine(row)">执行</el-button>
+        </template>
+      </el-table-column>
+    </el-table>
+  </el-card>
   </div>
 </template>
 
@@ -58,6 +83,19 @@ import client from '../../api/client'
 import { VITAL_RANGES } from '../../utils/vitals'
 
 const worklist = ref<Record<string, unknown>[]>([])
+const execLines = ref<Record<string, unknown>[]>([])
+function todayStr() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+async function loadExecLines() {
+  execLines.value = (await client.get('/inpatient/exec-lines', { params: { date: todayStr() } })).data.data
+}
+async function executeLine(row: Record<string, unknown>) {
+  await client.put(`/inpatient/exec-lines/${row.id}/execute`)
+  ElMessage.success(`已执行：${row.item_name}（第 ${row.seq_no} 次）`)
+  await loadExecLines()
+}
 const admissions = ref<Record<string, unknown>[]>([])
 const vitalAdmissionId = ref<number | null>(null)
 const vital = reactive({
@@ -88,5 +126,5 @@ async function execute(row: Record<string, unknown>) {
   await load()
 }
 
-onMounted(load)
+onMounted(() => { load(); loadExecLines() })
 </script>

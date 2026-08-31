@@ -36,6 +36,11 @@
           <el-option v-for="u in ['口服', '静滴', '肌注']" :key="u" :label="u" :value="u" />
         </el-select>
         <el-input-number v-model="qty" :min="1" :max="999" style="width: 90px" />
+        <!-- v39：长期医嘱按执行行逐日计费，临时医嘱开立即计费 -->
+        <el-select v-model="orderNature" style="width: 80px">
+          <el-option label="临时" value="TEMP" />
+          <el-option label="长期" value="LONG" />
+        </el-select>
         <el-button type="primary" @click="addDrug">开药</el-button>
         <el-select v-model="itemId" filterable remote :remote-method="searchItems" placeholder="检查/检验/治疗"
                    style="width: 220px">
@@ -57,11 +62,20 @@
         </el-table-column>
         <el-table-column prop="qty" label="量" width="50" />
         <el-table-column prop="amount" label="金额" width="80" />
-        <el-table-column label="状态" width="80">
+        <el-table-column label="状态" width="130">
           <template #default="{ row }">
             <el-tag size="small" :type="{ CREATED: 'warning', EXECUTED: 'success', CANCELLED: 'info' }[row.status as string]">
               {{ { CREATED: '未执行', EXECUTED: '已执行', CANCELLED: '作废' }[row.status as string] }}
             </el-tag>
+            <el-tag v-if="row.orderNature === 'LONG'" size="small" :type="row.stopAt ? 'info' : 'primary'" style="margin-left:4px">
+              {{ row.stopAt ? '已停' : '长期' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="70">
+          <template #default="{ row }">
+            <el-button v-if="row.orderNature === 'LONG' && !row.stopAt" link type="danger" size="small"
+                       @click="stopLong(row)">停嘱</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -205,7 +219,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
 import VitalsChart from '../../components/VitalsChart.vue'
 
@@ -224,6 +238,7 @@ const dose = ref('1粒')
 const freq = ref('bid')
 const route = ref('口服')
 const qty = ref(1)
+const orderNature = ref('TEMP')   // v39：临时/长期
 const tab = ref('orders')
 const records = ref<Record<string, unknown>[]>([])
 const vitals = ref<Record<string, unknown>[]>([])
@@ -410,11 +425,23 @@ async function searchItems(kw: string) {
 async function addDrug() {
   if (!current.value || !drugId.value) return
   await client.post(`/inpatient/admissions/${current.value.id}/orders`, {
-    lines: [{ orderType: 'DRUG', itemId: drugId.value, qty: qty.value, usageRoute: route.value, frequency: freq.value, dosePerTime: dose.value }],
+    lines: [{ orderType: 'DRUG', itemId: drugId.value, qty: qty.value, usageRoute: route.value, frequency: freq.value, dosePerTime: dose.value, orderNature: orderNature.value }],
   })
-  ElMessage.success('医嘱已开立')
+  ElMessage.success(orderNature.value === 'LONG' ? '长期医嘱已开立（按执行行逐日计费）' : '医嘱已开立')
   drugId.value = null
   await open(current.value)
+}
+
+async function stopLong(row: Record<string, unknown>) {
+  await ElMessageBox.confirm('停止该长期医嘱？未执行的当日执行行将跳过，费用固化。', '停嘱确认', { type: 'warning' })
+    .catch(() => null)
+    .then(async (ok: unknown) => {
+      if (ok) {
+        await client.post(`/inpatient/orders/${row.id}/stop`)
+        ElMessage.success('已停嘱')
+        await open(current.value!)
+      }
+    })
 }
 
 async function addItem() {

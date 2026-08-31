@@ -107,9 +107,16 @@ public class InpatientService {
     }
 
     public record OrderLine(String orderType, Long itemId, Integer qty,
-                            String usageRoute, String frequency, String dosePerTime) {}
+                            String usageRoute, String frequency, String dosePerTime,
+                            String orderNature) {
+        /** 兼容构造器：既有 50+ 调用点缺省 TEMP（行为与历史一致） */
+        public OrderLine(String orderType, Long itemId, Integer qty,
+                         String usageRoute, String frequency, String dosePerTime) {
+            this(orderType, itemId, qty, usageRoute, frequency, dosePerTime, null);
+        }
+    }
 
-    /** 开住院医嘱（记账式：开立即计费） */
+    /** 开住院医嘱（记账式：TEMP 开立即计费；v39 LONG 长期医嘱按执行行累计计费） */
     @Transactional
     public List<InpOrder> createOrders(Long admissionId, List<OrderLine> lines, Long doctorId) {
         InpAdmission adm = admissionRepo.findById(admissionId)
@@ -154,9 +161,107 @@ public class InpatientService {
                 o.setUnit(item.getUnit());
                 o.setUnitPrice(item.getPrice());
             }
-            o.setAmount(o.getUnitPrice().multiply(BigDecimal.valueOf(o.getQty())));
-            return orderRepo.save(o);
+            // v39：LONG 长期医嘱 amount=累计执行金额（开立为 0，随执行行执行累加）；TEMP 维持开立即计费
+            boolean isLong = "LONG".equals(line.orderNature());
+            o.setOrderNature(isLong ? "LONG" : "TEMP");
+            o.setAmount(isLong ? BigDecimal.ZERO
+                    : o.getUnitPrice().multiply(BigDecimal.valueOf(o.getQty())));
+            InpOrder saved = orderRepo.save(o);
+            if (isLong) {
+                entityManager.flush();   // 原生 insert 的 FK 需先见到该行
+                generateExecLines(saved, BusinessDates.today());
+            }
+            return saved;
         }).toList();
+    }
+
+    /** v39：按频次为长期医嘱生成某日执行行（qd=1/bid=2/tid=3/qid=4 行/日；幂等 on conflict skip） */
+    private void generateExecLines(InpOrder o, java.time.LocalDate date) {
+        int perDay = switch (o.getFrequency() == null ? "" : o.getFrequency().toLowerCase()) {
+            case "bid" -> 2;
+            case "tid" -> 3;
+            case "qid" -> 4;
+            default -> 1;
+        };
+        BigDecimal lineAmount = o.getUnitPrice().multiply(BigDecimal.valueOf(o.getQty()));
+        for (int seq = 1; seq <= perDay; seq++) {
+            entityManager.createNativeQuery("""
+                    insert into inp_order_exec(order_id, exec_date, seq_no, amount)
+                    values (:oid, :d, :seq, :amt) on conflict (order_id, exec_date, seq_no) do nothing
+                    """)
+                    .setParameter("oid", o.getId()).setParameter("d", date)
+                    .setParameter("seq", seq).setParameter("amt", lineAmount)
+                    .executeUpdate();
+        }
+    }
+
+    /** v39：为全部活跃长期医嘱（在院+未停嘱+未作废）生成某日执行行。每日调度调用，幂等可重跑。 */
+    @Transactional
+    public int generateDailyExecLines(java.time.LocalDate date) {
+        int gen = 0;
+        for (InpOrder o : orderRepo.findActiveLongOrders()) {
+            generateExecLines(o, date);
+            gen++;
+        }
+        return gen;
+    }
+
+    /**
+     * v39：执行一条长期医嘱执行行。条件更新抢占（并发双执行仅一方成功）→ 药品扣库存 →
+     * 原子累加医嘱 amount 并置 EXECUTED——下游读 "EXECUTED 的 amount" 口径自动含累计费用。
+     */
+    @Transactional
+    public void executeExecLine(Long execId, Long executorId) {
+        var rows = entityManager.createNativeQuery("""
+                select e.order_id, e.amount, o.order_type, o.item_id, o.qty, o.group_no, o.item_name, o.stop_at
+                from inp_order_exec e join inp_order o on o.id = e.order_id where e.id = :id
+                """).setParameter("id", execId).getResultList();
+        if (rows.isEmpty()) throw new InpException(9126, "执行行不存在");
+        Object[] r = (Object[]) rows.get(0);
+        if (r[7] != null) throw new InpException(9127, "该长期医嘱已停嘱，不能再执行");
+        int claimed = entityManager.createNativeQuery("""
+                update inp_order_exec set status = 'DONE', executor_id = :uid, executed_at = now()
+                where id = :id and status = 'PENDING'
+                """).setParameter("uid", executorId).setParameter("id", execId).executeUpdate();
+        if (claimed == 0) throw new InpException(9126, "执行行不存在或已执行/已跳过");
+        Long orderId = ((Number) r[0]).longValue();
+        BigDecimal lineAmount = (BigDecimal) r[1];
+        if ("DRUG".equals(r[2])) {
+            Long drugId = ((Number) r[3]).longValue();
+            int qty = ((Number) r[4]).intValue();
+            if (drugRepository.deductStock(drugId, qty) == 0) {
+                throw new InpException(9010, "库存不足: " + r[6]);
+            }
+            inventoryService.logOut(drugId, qty, (String) r[5], executorId);
+        }
+        // 原子累加 + 置 EXECUTED；executed_at 只记首次（LONG 逐日费用看执行行，避免多日归到末日）
+        entityManager.createNativeQuery("""
+                update inp_order set amount = amount + :amt, status = 'EXECUTED',
+                       executor_id = :uid, executed_at = coalesce(executed_at, now())
+                where id = :oid
+                """).setParameter("amt", lineAmount).setParameter("uid", executorId)
+                .setParameter("oid", orderId).executeUpdate();
+        // 原生累加绕过 JPA 一级缓存——不清缓存则同事务后续 findById/discharge 汇总读到陈旧 amount
+        entityManager.clear();
+    }
+
+    /**
+     * v39：停嘱（仅 LONG）。今日起 PENDING 执行行置 SKIPPED、不再生成新行——费用固化，
+     * 停嘱后可参与中间结算认领。从未执行过的长期医嘱停嘱即作废（否则 9012 拦出院）。
+     */
+    @Transactional
+    public void stopOrder(Long orderId, Long doctorId) {
+        InpOrder o = orderRepo.findById(orderId).orElseThrow(() -> new InpException(9008, "医嘱不存在"));
+        if (!"LONG".equals(o.getOrderNature())) throw new InpException(9128, "停嘱仅适用于长期医嘱");
+        int n = entityManager.createNativeQuery(
+                "update inp_order set stop_at = now(), stop_doctor_id = :uid where id = :oid and stop_at is null")
+                .setParameter("uid", doctorId).setParameter("oid", orderId).executeUpdate();
+        if (n == 0) throw new InpException(9127, "该长期医嘱已停嘱");
+        entityManager.createNativeQuery(
+                "update inp_order_exec set status = 'SKIPPED' where order_id = :oid and status = 'PENDING'")
+                .setParameter("oid", orderId).executeUpdate();
+        orderRepo.cancelIfCreated(orderId);   // 从未执行过：CREATED→CANCELLED
+        entityManager.clear();   // 原生 update 后清一级缓存，防调用方读到陈旧 status/stopAt
     }
 
     /** v34：该行医嘱对应的项目/药品是否标记为自费（self_pay），供自费同意 gate 判定 */
@@ -180,6 +285,10 @@ public class InpatientService {
     @Transactional
     public InpOrder execute(Long orderId, Long executorId) {
         InpOrder o = orderRepo.findById(orderId).orElseThrow(() -> new InpException(9008, "医嘱不存在"));
+        // v39：长期医嘱按执行行逐次执行计费，不走单次执行路径（否则只计一次费且状态机错乱）
+        if ("LONG".equals(o.getOrderNature())) {
+            throw new InpException(9125, "长期医嘱请按每日执行行执行");
+        }
         // 先抢占状态再扣库存：读-判-写会让两名护士各扣一次库存、各记一条出库流水
         if (orderRepo.claimExecute(orderId, executorId, Instant.now()) == 0) {
             throw new InpException(9009, "仅未执行医嘱可执行");
@@ -424,10 +533,13 @@ public class InpatientService {
 
         // ① 原子认领：仅未被认领的已执行医嘱，打上本次结算 id（并发安全，靠行锁与 is null 条件）。
         // 认领同时校验住院仍在院（第七轮审阅 P3-A）：与并发 discharge/claimDischarge 抢跑时，
-        // 出院已提交则子查询为空、认领 0 行——避免为已出院的 admission 留一张时序矛盾的 INTERIM 幽灵单
+        // 出院已提交则子查询为空、认领 0 行——避免为已出院的 admission 留一张时序矛盾的 INTERIM 幽灵单。
+        // v39：未停嘱的 LONG 不认领——其 amount 随执行行持续累加，认领后已结算单金额会漂移；
+        // 停嘱后费用固化方可认领（中间结算只结"已固化"费用）。
         entityManager.createNativeQuery(
                         "update inp_order set interim_settle_id = :sid "
                                 + "where admission_id = :aid and status = 'EXECUTED' and interim_settle_id is null "
+                                + "and (order_nature = 'TEMP' or stop_at is not null) "
                                 + "and exists (select 1 from inp_admission a where a.id = :aid and a.status = 'IN_HOSPITAL')")
                 .setParameter("sid", settleId)
                 .setParameter("aid", admissionId)
