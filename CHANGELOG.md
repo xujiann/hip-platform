@@ -2,6 +2,25 @@
 
 版本纪律：语义化版本；平台迁移段 V1–V999，实施段 V10000+；升级 = 停服→备份→换产物→自动前滚→回归抽查（多医院部署操作指南 §三）。
 
+## 1.3.6（2026-08-31）
+
+v36 LIS 质控轮（"全部推进"第二版，新表/只读为主，与患者结果发布链路零耦合）。LisQcController 独立
+承载 4 特性，不改 MedTechController.publish。222 测试、26 套 E2E、错误码 329。
+
+- **微生物培养 + 药敏结构化（V119）**：lab_micro_result + lab_micro_ast（一菌多药）。3 端点：待录队列 /
+  录培养药敏（POST /lis/micro/{barcode}，标本须 RECEIVED）/ 按申请查（7106 标本未核收、7107 菌种必填、
+  7108 药敏行非法 SIR∉{S,I,R}）。
+- **室内质控 IQC Westgard（V120）**：lab_qc_record，服务端算 z=(实测-靶值)/SD 跑 Westgard 规则
+  （1-3s / 2-2s 连续同侧 / 1-2s 警告），命中不 throw 随 R.ok 返回判定（zero-throw）；Levey-Jennings 序列 +
+  最新在控卡片端点（7109 必填缺失、7110 SD≤0）。
+- **结果 Delta check + 趋势（无新表）**：GET /lis/delta 对同患者同项目上次结果算变化率、超
+  lab.delta.threshold.pct（默认 50%）标 exceeded；GET /lis/trend 时间序列。只算不阻断。
+- **TAT 周转统计（无新表，V121 加发布索引）**：采样→核收→发布各段耗时均值 + 超时件数
+  （lab.tat.limit.minutes 默认 120），超时明细端点。
+
+**交付**：LisQcView 前端（微生物药敏/室内质控 IQC/TAT 三 tab，菜单 检验质控）；LisQcTest 3（微生物录入+查/
+IQC Westgard 三规则/TAT）；新 E2E e2e-lis-qc 接入 CI（26 套）。纯新增表/端点，既有 25 套 E2E 零影响。
+
 ## 1.3.5（2026-08-31）
 
 v35 EMR 完整性 gate 域（"全部推进"路线图第一版，最安全先行）。多 agent 精确落点侦察 + 综合切版

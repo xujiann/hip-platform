@@ -42,6 +42,7 @@ const router = createRouter({
         { path: 'datagov', component: () => import('../views/datagov/DataGovView.vue') },
         { path: 'lis', component: () => import('../views/medtech/LisView.vue') },
         { path: 'ris', component: () => import('../views/medtech/RisView.vue') },
+        { path: 'lis-qc', component: () => import('../views/medtech/LisQcView.vue') },
         { path: 'surgery', component: () => import('../views/inpatient/SurgeryView.vue') },
         { path: 'system/audit', component: () => import('../views/system/AuditView.vue') },
         { path: 'reports/daily', component: () => import('../views/hrp/DailyReportView.vue') },
