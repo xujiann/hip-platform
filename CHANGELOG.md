@@ -2,6 +2,27 @@
 
 版本纪律：语义化版本；平台迁移段 V1–V999，实施段 V10000+；升级 = 停服→备份→换产物→自动前滚→回归抽查（多医院部署操作指南 §三）。
 
+## 1.3.5（2026-08-31）
+
+v35 EMR 完整性 gate 域（"全部推进"路线图第一版，最安全先行）。多 agent 精确落点侦察 + 综合切版
+（v35 完整性 / v36 LIS 质控 / v37 门诊快赢 / RIS 体验重侦 / 住院医嘱模型隔离末版）。5 特性单域内聚，
+所有 gate 默认 warn/off → 运行时零打断。
+
+**出院/归档病历完整性 gate（V118，evisit）**：
+- **EmrIntegrityService.check(admId)**（inpatient 模块新建，纯只读）：出缺项中文清单——入院记录 /
+  出院小结 / 病程数阈值 / 出院小结 CA 签名 / 手术病例（手术记录+术前小结+手术知情同意）。口径与病案首页一致。
+- **只读预检端点** GET /api/inpatient/admissions/{id}/emr-integrity → {complete, missing, dischargeGate, archiveGate}；
+  DischargeView 选患者即显缺项预警。
+- **出院挡点**（InpatientService.discharge，claimDischarge 抢占之前的只读位，throw 前零副作用）：
+  `emr.gate.discharge` 默认 warn 静默放行（缺项经预检端点提示）、block 抛 9124。
+- **归档挡点**（NursingQualityController.archive，签名 R&lt;Void&gt;→R&lt;Object&gt;）：`emr.gate.archive`
+  默认 warn 返回 R.ok(warning) 放行、block 返回 9820。
+- 阈值键 `emr.integrity.min_progress_notes`（默认 1）。三键 V118 seed。
+
+**交付**：EmrIntegrityGateTest（4：warn 放行带缺项 / block 9124 拦出院 / block 9820 拦归档 / 手术病例缺项）；
+e2e-emr-consent 扩 gate 段（预检列缺项 → block 拦 9124 → warn 放行）。**默认 warn，既有 25 套 E2E 零打断**。
+诚实说明：block 分支无独立 E2E 常驻覆盖（默认 warn 使实际破坏面为零），已由集成测试断言 block→9124/9820。
+
 ## 1.3.4（2026-08-31）
 
 v34 EMR 合规文书轮（四子系统盘点后 EMR 深化的第一轮）。多 agent 精确落点侦察 + 综合定序，

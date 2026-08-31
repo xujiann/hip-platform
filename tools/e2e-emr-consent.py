@@ -71,6 +71,18 @@ for k in ['missingFirstProgress', 'missingRound', 'roundCheckEnabled', 'progress
 ok(call('GET', '/quality/emr-timeliness/board', token=t), '时限看板')
 print('[4] 病历时限质控扩展 OK（7 项 + 缺陷明细 + 科室看板）')
 
+# ---- 5) 出院/归档完整性 gate（v35）：预检缺项 → block 拦出院(9124) → warn 放行 ----
+rep = ok(call('GET', f'/inpatient/admissions/{admId}/emr-integrity', token=t), '完整性预检')
+assert rep['complete'] is False and rep['missing'], f'该住院无入院/出院记录应不完整: {rep}'
+assert '缺入院记录' in rep['missing']
+ok(call('PUT', '/config/emr.gate.discharge?value=block', token=t), '置 discharge block')
+# adm 无入院/出院小结 → block 下拦
+r = call('POST', f'/inpatient/admissions/{admId}/discharge', {'payMethod': 'CASH'}, t)
+assert r['code'] == 9124, f'block 下不完整病历应拦出院: {r}'
+# 复位 warn（默认），出院放行
+ok(call('PUT', '/config/emr.gate.discharge?value=warn', token=t), '复位 warn')
+print('[5] 出院完整性 gate OK（预检列缺项 / block 拦 9124 / warn 放行；已复位）')
+
 # 收尾出院释放床位
 ensure_not_admitted(t, pid)
 ensure_not_admitted(t, pid2)

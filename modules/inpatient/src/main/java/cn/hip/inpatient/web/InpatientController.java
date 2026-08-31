@@ -39,6 +39,19 @@ public class InpatientController {
     private final SysDeptRepository deptRepository;
     private final CurrentUserService currentUserService;
     private final org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
+    private final cn.hip.inpatient.service.EmrIntegrityService emrIntegrityService;
+    private final cn.hip.platform.core.service.ConfigReader configReader;
+
+    /** v35：出院/归档前病历完整性只读预检——前端据此弹缺项、按 gate 模式决定提示或禁用 */
+    @org.springframework.web.bind.annotation.GetMapping("/admissions/{id}/emr-integrity")
+    public R<java.util.Map<String, Object>> emrIntegrity(@PathVariable Long id) {
+        var missing = emrIntegrityService.check(id);
+        return R.ok(java.util.Map.of(
+                "complete", missing.isEmpty(),
+                "missing", missing,
+                "dischargeGate", configReader.get("emr.gate.discharge", "warn"),
+                "archiveGate", configReader.get("emr.gate.archive", "warn")));
+    }
 
     /** 1.0.1（2067）：住院每日费用清单——按执行日期检索医嘱费用明细与合计 */
     @GetMapping("/admissions/{id}/daily-fees")

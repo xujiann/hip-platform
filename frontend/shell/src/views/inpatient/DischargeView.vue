@@ -22,6 +22,9 @@
       <!-- 收尾环·阻塞1：欠费出院不硬拦（医院常规，事后追缴），但必须明确标注欠费金额 -->
       <el-alert v-if="Number(balance) < 0" type="error" show-icon :closable="false" style="margin-top: 8px"
                 :title="`欠费 ¥${Math.abs(Number(balance)).toFixed(2)}，允许欠费出院但请提醒患者续交/事后追缴`" />
+      <!-- v35 病历完整性预检：出院/归档前列缺项。gate 默认 warn 仅提示不硬拦，block 时后端拦截 9124 -->
+      <el-alert v-if="integrity && !integrity.complete" type="warning" show-icon :closable="false" style="margin-top: 8px"
+                :title="`病历不完整（${integrity.dischargeGate === 'block' ? '已启用硬拦，须补齐后方可出院' : '当前仅提示，允许出院'}）：${integrity.missing.join('、')}`" />
       <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
         <b style="font-size: 13px;">出院诊断</b>
         <el-input v-model="dischargeIcd" placeholder="ICD-10" style="width: 110px" size="small" />
@@ -99,6 +102,7 @@ const payMethod = ref('CASH')
 const discharging = ref(false)
 const interiming = ref(false)
 const interims = ref<Record<string, unknown>[]>([])
+const integrity = ref<{ complete: boolean; missing: string[]; dischargeGate: string; archiveGate: string } | null>(null)
 
 // 1.0.1（2067）：每日费用清单
 const dailyDate = ref(todayLocal())
@@ -143,6 +147,7 @@ async function open(row: Record<string, unknown> | null) {
   const adm = (detail.value as Record<string, unknown>)?.admission as Record<string, unknown> | undefined
   dischargeIcd.value = String(adm?.dischargeDiagIcd ?? '')
   dischargeName.value = String(adm?.dischargeDiagName ?? '')
+  integrity.value = (await client.get(`/inpatient/admissions/${row.id}/emr-integrity`)).data.data
   await Promise.all([loadDaily(), loadInterims()])
 }
 

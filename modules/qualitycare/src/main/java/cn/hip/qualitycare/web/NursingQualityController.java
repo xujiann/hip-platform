@@ -20,6 +20,7 @@ public class NursingQualityController {
     private final JdbcTemplate jdbc;
     private final CurrentUserService currentUserService;
     private final cn.hip.platform.core.service.ConfigReader configReader;
+    private final cn.hip.inpatient.service.EmrIntegrityService emrIntegrityService;
 
     /** 护理白板：在院一览（床位/护理级别/过敏/未执行医嘱数） */
     @GetMapping("/api/inpatient/nursing/board")
@@ -300,10 +301,17 @@ public class NursingQualityController {
 
     /** 病案归档（须已出院） */
     @PutMapping("/api/inpatient/admissions/{id}/archive")
-    public R<Void> archive(@PathVariable Long id) {
+    public R<Object> archive(@PathVariable Long id) {
+        // v35 归档病历完整性 gate（试点期可配 emr.gate.archive，默认 warn 警告放行）
+        String mode = configReader.get("emr.gate.archive", "warn");
+        var missing = "off".equals(mode) ? java.util.List.<String>of() : emrIntegrityService.check(id);
+        if (!missing.isEmpty() && "block".equals(mode)) {
+            return R.fail(9820, "病历不完整，不能归档：" + String.join("、", missing));
+        }
         int n = jdbc.update(
                 "update inp_admission set archived = true where id = ? and status = 'DISCHARGED'", id);
-        return n == 0 ? R.fail(9803, "仅出院病历可归档") : R.ok();
+        if (n == 0) return R.fail(9803, "仅出院病历可归档");
+        return missing.isEmpty() ? R.ok() : R.ok(Map.of("warning", "病历不完整已放行：" + String.join("、", missing)));
     }
 
     public record AdverseEventReq(String type, Integer level, String occurredOn, Long deptId,

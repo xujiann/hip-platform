@@ -35,6 +35,7 @@ public class InpatientService {
     private final cn.hip.insurance.service.InsuranceSplitService insuranceSplitService;
     private final cn.hip.platform.core.service.ConfigReader configReader;
     private final cn.hip.platform.core.config.ModuleGate moduleGate;
+    private final EmrIntegrityService emrIntegrityService;
 
     private final jakarta.persistence.EntityManager entityManager;
 
@@ -258,6 +259,15 @@ public class InpatientService {
     public InpSettlement discharge(Long admissionId, Long cashierId, String payMethod) {
         InpAdmission adm = admissionRepo.findById(admissionId)
                 .orElseThrow(() -> new InpException(9003, "住院记录不存在"));
+        // v35 出院病历完整性 gate（试点期可配 emr.gate.discharge，默认 warn 静默放行不硬拦）。
+        // 放在 claimDischarge 抢占之前——只读、throw 前零副作用，不搅动既有抢占/回滚/并发时序。
+        // warn 缺项由只读预检端点 emr-integrity 暴露给前端提示，不在此拦截（返回类型无法挂 warning）。
+        if ("block".equals(configReader.get("emr.gate.discharge", "warn"))) {
+            var missing = emrIntegrityService.check(admissionId);
+            if (!missing.isEmpty()) {
+                throw new InpException(9124, "病历不完整，不能出院结算：" + String.join("、", missing));
+            }
+        }
         // 先抢占 DISCHARGED 再汇总：否则"读快照→置位"之间并发缴的押金既不进结算也不退还，
         // 并发开的医嘱则永不计费。抢占失败即他人已结算。
         if (admissionRepo.claimDischarge(admissionId, Instant.now()) == 0) {
