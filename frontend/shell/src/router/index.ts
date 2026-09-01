@@ -61,6 +61,12 @@ const router = createRouter({
         { path: 'inpatient/discharge', component: () => import('../views/inpatient/DischargeView.vue') },
         { path: 'inpatient/consent', component: () => import('../views/inpatient/ConsentView.vue') },
         { path: 'inpatient/arrears', component: () => import('../views/inpatient/ArrearsView.vue') },
+        // v42 护理文书版：五条新页（菜单 105-109 由 V130-V133 各自 seed，此处只补路由）
+        { path: 'inpatient/nursing-record', component: () => import('../views/inpatient/NursingRecordView.vue') },
+        { path: 'mr-qc', component: () => import('../views/quality/MrQcView.vue') },
+        { path: 'masterdata/fee-category', component: () => import('../views/masterdata/FeeCategoryView.vue') },
+        { path: 'finance/fee-report', component: () => import('../views/finance/FeeReportView.vue') },
+        { path: 'emr-template', component: () => import('../views/quality/EmrTemplateView.vue') },
         { path: 'ops', component: () => import('../views/ops/OpsView.vue') },
         { path: 'outpatient/nurse', component: () => import('../views/outpatient/OutpNurseView.vue') },
         { path: 'medtech/appointments', component: () => import('../views/medtech/ApptQueueView.vue') },

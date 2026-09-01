@@ -29,6 +29,14 @@
           </el-tag>
         </template>
       </el-table-column>
+      <!-- v42：白板是护士的主入口，护理文书入口挂在这里，否则新表没人写 -->
+      <el-table-column label="护理文书" width="130">
+        <template #default="{ row }">
+          <el-button link type="primary" size="small" @click="openRecords(row)">
+            记录 {{ row.nursing_records }} 条
+          </el-button>
+        </template>
+      </el-table-column>
       <el-table-column prop="admission_no" label="住院号" />
     </el-table>
   </el-card>
@@ -36,9 +44,11 @@
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { useRouter } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
 
+const router = useRouter()
 const records = ref<Record<string, unknown>[]>([])
 const loading = ref(false)
 
@@ -52,10 +62,26 @@ async function load() {
   }
 }
 
+/**
+ * 调级走 v42 的带原因端点：分级护理的升降级是护理工作量与收费的直接依据，
+ * 无原因的调级在质控上不可追溯。取消则重新加载还原下拉显示（下拉是非受控回显）。
+ */
 async function setLevel(row: Record<string, unknown>, level: string) {
-  await client.put(`/inpatient/admissions/${row.admission_id}/care-level`, null, { params: { level } })
+  const res = await ElMessageBox.prompt(`调整为「${level}护理」的原因`, '护理级别变更', {
+    inputPlaceholder: '如：病情加重转特级护理 / 病情稳定降级',
+  }).catch(() => null)
+  if (!res) {
+    await load()
+    return
+  }
+  await client.put(`/inpatient/admissions/${row.admission_id}/care-level/change`,
+    { level, reason: res.value })
   ElMessage.success(`已调整为${level}护理`)
   await load()
+}
+
+function openRecords(row: Record<string, unknown>) {
+  router.push({ path: '/inpatient/nursing-record', query: { admissionId: String(row.admission_id) } })
 }
 
 onMounted(load)

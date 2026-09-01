@@ -121,6 +121,49 @@
 
         <p class="foot">病历记录 {{ page.recordCount }} 条　打印时间：{{ now }}</p>
       </div>
+
+      <!-- v42：病案首页质控汇总 + 扣分项明细（终末质控评分单的只读视图）。
+           刻意放在 print-area 之外并标 no-print：首页是法定格式的病历组成部分，
+           院内质控评分不属于首页内容，打印件里出现会污染归档件。 -->
+      <div class="qc-block no-print">
+        <h3>病案质控</h3>
+        <el-alert v-if="qc && !qc.scored" type="info" show-icon :closable="false" class="qc-alert"
+                  :title="qc.note as string" />
+        <template v-if="qc && qc.scored">
+          <div class="qc-head">
+            <el-tag :type="qcTagType(qc.grade)" size="large">
+              {{ qc.grade ? `${qc.grade}级` : '未定级' }}
+            </el-tag>
+            <span class="qc-score">
+              基础分 {{ Number(qc.base_score).toFixed(0) }} − 扣分 {{ Number(qc.total_deduct).toFixed(1) }}
+              = <b>{{ Number(qc.final_score).toFixed(1) }}</b> 分
+            </span>
+            <el-tag :type="qc.status === 'SUBMITTED' ? 'success' : 'warning'" size="small">
+              {{ qc.status === 'SUBMITTED' ? '已提交' : '草稿' }}
+            </el-tag>
+            <span class="qc-meta">
+              质控人 {{ qc.reviewer_name ?? '—' }}　质控时间 {{ fmt(qc.reviewed_at) || '—' }}
+            </span>
+          </div>
+          <el-alert type="info" show-icon :closable="false" class="qc-alert"
+                    title="甲乙丙为事后管理评价，不作为归档/结算的准入条件；扣分项中 AUTO 为完整性规则自动判定，MANUAL 为人工评审。" />
+          <table v-if="(qc.items as Record<string, unknown>[])?.length" class="grid">
+            <tr><th style="width: 90px">一级项</th><th>扣分项</th><th style="width: 70px">扣分</th>
+              <th style="width: 70px">来源</th><th style="width: 220px">扣分原因/说明</th></tr>
+            <tr v-for="(it, i) in (qc.items as Record<string, unknown>[])" :key="i">
+              <td>{{ it.category }}</td>
+              <td>{{ it.item_name }}</td>
+              <td>{{ Number(it.deduct_score).toFixed(1) }}</td>
+              <td>{{ it.source === 'AUTO' ? '自动' : '人工' }}</td>
+              <td>{{ it.remark }}</td>
+            </tr>
+          </table>
+          <p v-else class="none">无扣分项，本病案得满分</p>
+        </template>
+        <ul v-if="qc && !qc.scored && (qc.autoFindings as unknown[])?.length" class="qc-pre">
+          <li v-for="(f, i) in (qc.autoFindings as Record<string, unknown>[])" :key="i">{{ f.text }}</li>
+        </ul>
+      </div>
     </el-card>
     <el-empty v-else class="sheet" description="从左侧选择一份病案查看首页" />
   </div>
@@ -217,10 +260,25 @@ async function loadList() {
   list.value = resp.data.data
 }
 
+/* ---- v42 病案首页质控汇总（终末质控评分单只读视图，兑现偏离表序号 7） ---- */
+const qc = ref<Record<string, any> | null>(null)
+
+function qcTagType(g: unknown): 'success' | 'warning' | 'danger' | 'info' {
+  if (g === '甲') return 'success'
+  if (g === '乙') return 'warning'
+  if (g === '丙') return 'danger'
+  return 'info'
+}
+
 async function pick(row: Record<string, unknown> | null) {
   if (!row) return
-  const resp = await client.get(`/inpatient/admissions/${row.id}/front-page`)
+  const [resp, qcResp] = await Promise.all([
+    client.get(`/inpatient/admissions/${row.id}/front-page`),
+    // 质控摘要未评分也返回 200（scored=false）——病案首页对所有病案都要能打开，不为"还没质控"弹红字
+    client.get(`/quality/mr-qc/summary/${row.id}`),
+  ])
   page.value = resp.data.data
+  qc.value = qcResp.data.data as Record<string, any>
 }
 
 function doPrint() {
@@ -318,6 +376,13 @@ h3 { margin: 16px 0 6px; padding-left: 6px; border-left: 3px solid #409eff; font
 .grid .sum td { font-weight: 700; }
 .none { color: #909399; font-size: 13px; margin: 4px 0; }
 .foot { color: #888; font-size: 12px; margin-top: 14px; text-align: right; }
+.qc-block { margin-top: 18px; padding-top: 10px; border-top: 1px dashed #dcdfe6; }
+.qc-alert { margin-bottom: 8px; }
+.qc-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.qc-score { color: #606266; font-size: 13px; }
+.qc-score b { font-size: 17px; color: #2a78d6; }
+.qc-meta { color: #909399; font-size: 12px; }
+.qc-pre { margin: 6px 0 0 18px; color: #e6a23c; font-size: 13px; }
 .queue-card .hint { color: #909399; font-size: 12px; margin-left: 10px; }
 .qbadge { margin-left: 6px; }
 .ok { color: #67c23a; }

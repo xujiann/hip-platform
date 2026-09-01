@@ -58,6 +58,18 @@ public class DrugItem {
     @Column(nullable = false)
     private Boolean antibiotic = false;
 
+    /**
+     * v42 费用类别（md_fee_category.code），可空。
+     * V132 已按 drug_class 回填（W→西药费 WM / C→中成药费 CPM）；中草药本仓无单独 drug_class 值，
+     * 不臆造映射，由实施期在字典维护页挂类。
+     */
+    @Column(length = 32)
+    private String feeCategoryCode;
+
+    /** v42 补齐 V116 孤儿列：自费药品标记（同 ChargeItem.selfPay，见其注释） */
+    @Column(nullable = false)
+    private Boolean selfPay = false;
+
     @Column(nullable = false)
     private Boolean enabled = true;
 }

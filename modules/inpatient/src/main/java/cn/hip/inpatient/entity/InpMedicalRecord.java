@@ -6,7 +6,14 @@ import lombok.Setter;
 
 import java.time.Instant;
 
-/** 住院病历记录：ADMISSION 入院记录 / PROGRESS 病程记录 / DISCHARGE 出院小结 / ROUND 三级查房（v34） */
+/**
+ * 住院病历记录：ADMISSION 入院记录 / FIRST_PROGRESS 首次病程 / PROGRESS 病程记录 /
+ * ROUND 三级查房（v34） / PREOP 术前小结（v42 补录入入口） / DISCHARGE 出院小结。
+ *
+ * <p>record_type 刻意**不加数据库 CHECK 也不加写入白名单**（试点库历史脏类型会挡住 Flyway；
+ * 写入侧白名单排 v43 单独成版）——EmrIntegrityService 按类型计数判缺项，故新增类型只需前端
+ * 下拉能选到即可自救。
+ */
 @Getter
 @Setter
 @Entity
@@ -26,7 +33,12 @@ public class InpMedicalRecord {
     @Column(nullable = false, length = 100)
     private String title;
 
-    @Column(nullable = false, length = 4000)
+    /**
+     * v42（V133）：varchar(4000) → text。模板渲染后的多段病历（主诉/现病史/既往史/体格检查/
+     * 辅助检查/初步诊断）必然超 4000——门诊侧 outp_emr 同类五字段合计已 5512 字符。
+     * 与 IntMessageLog.payload 同写法（columnDefinition 显式对齐 DDL，ddl-auto=validate 下不误判）。
+     */
+    @Column(nullable = false, columnDefinition = "text")
     private String content;
 
     private Long doctorId;

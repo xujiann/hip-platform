@@ -1,10 +1,14 @@
 <template>
   <div>
   <el-card style="margin-bottom: 12px">
-    <template #header>生命体征录入</template>
+    <template #header>
+      生命体征录入（三测单数据源）
+      <el-button link type="primary" style="float: right" :disabled="!vitalAdmissionId"
+                 @click="printTempSheet">打印体温单</el-button>
+    </template>
     <el-form inline>
       <el-form-item label="患者">
-        <el-select v-model="vitalAdmissionId" style="width: 200px">
+        <el-select v-model="vitalAdmissionId" style="width: 200px" @change="loadVitals">
           <el-option v-for="a in admissions" :key="a.id as number"
                      :label="`${a.bedNo}床 ${a.patientName}`" :value="a.id as number" />
         </el-select>
@@ -17,8 +21,30 @@
         <el-input-number v-model="vital.dbp" :min="VITAL_RANGES.dbp.min" :max="VITAL_RANGES.dbp.max" style="width: 100px" />
       </el-form-item>
       <el-form-item label="SpO₂"><el-input-number v-model="vital.spo2" :min="VITAL_RANGES.spo2.min" :max="VITAL_RANGES.spo2.max" style="width: 100px" /></el-form-item>
+      <!-- v42：三测单纸面格位（V129 新列，全部可空——不填即该项未记录） -->
+      <el-form-item label="测量部位">
+        <el-select v-model="vital.measureSite" clearable placeholder="不限" style="width: 110px">
+          <el-option v-for="s in MEASURE_SITES" :key="s.value" :label="s.label" :value="s.value" />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="降温后体温℃">
+        <el-input-number v-model="vital.tempAfterCooling" :min="VITAL_RANGES.temperature.min"
+                         :max="VITAL_RANGES.temperature.max" :precision="1" :step="0.1"
+                         :controls="false" placeholder="物理降温后" style="width: 120px" />
+      </el-form-item>
+      <el-form-item label="入量ml"><el-input-number v-model="vital.intakeMl" :min="0" :max="20000" :controls="false" style="width: 100px" /></el-form-item>
+      <el-form-item label="出量ml"><el-input-number v-model="vital.outputMl" :min="0" :max="20000" :controls="false" style="width: 100px" /></el-form-item>
+      <el-form-item label="大便次"><el-input-number v-model="vital.stoolCount" :min="0" :max="30" :controls="false" style="width: 90px" /></el-form-item>
+      <el-form-item label="体重kg"><el-input-number v-model="vital.weightKg" :min="0" :max="400" :precision="1" :step="0.1" :controls="false" style="width: 100px" /></el-form-item>
+      <el-form-item label="身高cm"><el-input-number v-model="vital.heightCm" :min="0" :max="260" :controls="false" style="width: 100px" /></el-form-item>
+      <el-form-item label="未测原因">
+        <el-input v-model="vital.notMeasuredReason" clearable maxlength="32" placeholder="外出/拒测等" style="width: 140px" />
+      </el-form-item>
       <el-button type="primary" @click="saveVital">保存</el-button>
     </el-form>
+    <!-- 保存后曲线回显：护士站此前录完无任何反馈，异常趋势要到医生站才看得见 -->
+    <VitalsChart v-if="vitals.length" :vitals="vitals" />
+    <el-empty v-else-if="vitalAdmissionId" description="该患者暂无体征记录" :image-size="60" />
   </el-card>
 
   <el-card>
@@ -80,7 +106,15 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import client from '../../api/client'
+import VitalsChart from '../../components/VitalsChart.vue'
 import { VITAL_RANGES } from '../../utils/vitals'
+
+/** 三测单测量部位（与后端 measure_site 同码；取值校验推 v43，本版不动写路径） */
+const MEASURE_SITES = [
+  { value: 'ORAL', label: '口温' },
+  { value: 'AXILLARY', label: '腋温' },
+  { value: 'RECTAL', label: '肛温' },
+]
 
 const worklist = ref<Record<string, unknown>[]>([])
 const execLines = ref<Record<string, unknown>[]>([])
@@ -98,9 +132,39 @@ async function executeLine(row: Record<string, unknown>) {
 }
 const admissions = ref<Record<string, unknown>[]>([])
 const vitalAdmissionId = ref<number | null>(null)
-const vital = reactive({
+const vitals = ref<Record<string, unknown>[]>([])
+type Num = number | null | undefined
+interface VitalForm {
+  temperature: Num; pulse: Num; respiration: Num; sbp: Num; dbp: Num; spo2: Num
+  measureSite: string | undefined
+  tempAfterCooling: Num
+  intakeMl: Num; outputMl: Num; stoolCount: Num; weightKg: Num; heightCm: Num
+  notMeasuredReason: string | undefined
+}
+const vital = reactive<VitalForm>({
   temperature: 36.5, pulse: 80, respiration: 18, sbp: 120, dbp: 80, spo2: 98,
+  // v42 三测单新列：默认 undefined（不提交即库中为 null，前端按「未测」渲染）
+  measureSite: undefined, tempAfterCooling: undefined,
+  intakeMl: undefined, outputMl: undefined, stoolCount: undefined,
+  weightKg: undefined, heightCm: undefined, notMeasuredReason: undefined,
 })
+
+async function loadVitals() {
+  if (!vitalAdmissionId.value) {
+    vitals.value = []
+    return
+  }
+  vitals.value = (await client.get(`/inpatient/admissions/${vitalAdmissionId.value}/vitals`)).data.data
+}
+
+/** 体温单打印：沿用既有 window.open('/print?type=...') 模式，周次由打印页内翻页控件切换 */
+function printTempSheet() {
+  if (!vitalAdmissionId.value) {
+    ElMessage.warning('请选择患者')
+    return
+  }
+  window.open(`/print?type=temp-sheet&id=${vitalAdmissionId.value}&week=1`)
+}
 
 async function load() {
   const [pending, adm] = await Promise.all([
@@ -118,6 +182,7 @@ async function saveVital() {
   }
   await client.post(`/inpatient/admissions/${vitalAdmissionId.value}/vitals`, vital)
   ElMessage.success('体征已记录')
+  await loadVitals()
 }
 
 async function execute(row: Record<string, unknown>) {

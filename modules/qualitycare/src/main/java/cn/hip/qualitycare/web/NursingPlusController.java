@@ -18,6 +18,8 @@ import java.util.Set;
 public class NursingPlusController {
 
     private final JdbcTemplate jdbc;
+    /** v42 交接班双签：接班人落 sys_user 外键，需按登录态解析用户 id */
+    private final cn.hip.platform.core.security.CurrentUserService currentUserService;
 
     // ---- 传染病报卡 ----
     public record CardReq(Long patientId, String diseaseName, String cardClass, String onsetDate) {}
@@ -149,22 +151,65 @@ public class NursingPlusController {
     }
 
     // ---- 交接班 ----
-    public record HandoverReq(Long deptId, String shiftType, String summary, String todo) {}
+    public record HandoverReq(Long deptId, String shiftType, String summary, String todo, String shiftDate) {}
 
+    /**
+     * 交班登记。
+     *
+     * <p>v42 口径修复：insert 此前不传 shift_date，永远吃列默认值 current_date——
+     * <b>夜班跨零点补录会记到次日</b>（00:00-08:00 的夜班，护士下班后 08:30 补录，
+     * 记录会落在"第二天"，交接班台账与实际班次错位一天，是纸面台账最常见的对账争议）。
+     * 现改为接受 shiftDate 入参；不传仍走当天，既有 E2E（e2e-phase3234 不传该字段）契约不变。
+     */
     @PostMapping("/api/nursing/handovers")
     public R<Void> addHandover(@RequestBody HandoverReq req, Authentication auth) {
         if (req.summary() == null || req.summary().isBlank()) return R.fail(4706, "当班情况必填");
+        String shiftDate = req.shiftDate() == null || req.shiftDate().isBlank() ? null : req.shiftDate().trim();
+        if (shiftDate != null) {
+            try {
+                java.time.LocalDate.parse(shiftDate);
+            } catch (Exception e) {
+                return R.fail(4811, "班次日期格式非法（yyyy-MM-dd）：" + shiftDate);
+            }
+        }
         jdbc.update("""
-                insert into shift_handover(dept_id, shift_type, summary, todo, author) values (?,?,?,?,?)
-                """, req.deptId(), req.shiftType(), req.summary(), req.todo(), auth.getName());
+                insert into shift_handover(dept_id, shift_type, summary, todo, author, shift_date)
+                values (?,?,?,?,?, coalesce(cast(? as date), current_date))
+                """, req.deptId(), req.shiftType(), req.summary(), req.todo(), auth.getName(), shiftDate);
         return R.ok();
+    }
+
+    /**
+     * 接班人签收（v42 交接班双签）。
+     *
+     * <p>此前只有 author 交班人，接班人是否真的接到手上无任何痕迹——"我交了/我没接到"
+     * 在纸面台账上靠双签解决，系统里也应如此。签收人落 sys_user 外键（不是用户名字符串），
+     * 才能做「交班人不能自己签收」这条校验。
+     */
+    @PutMapping("/api/nursing/handovers/{id}/receive")
+    public R<Void> receiveHandover(@PathVariable Long id, Authentication auth) {
+        var rows = jdbc.queryForList("select author, receiver_id from shift_handover where id = ?", id);
+        if (rows.isEmpty() || rows.get(0).get("receiver_id") != null) {
+            return R.fail(4810, "交接班记录不存在或已签收");
+        }
+        if (auth != null && auth.getName().equals(rows.get(0).get("author"))) {
+            return R.fail(4812, "交班人不能签收自己的班，须由接班人签收");
+        }
+        Long me = auth == null ? null : currentUserService.idOf(auth);
+        if (me == null) return R.fail(4813, "无法识别当前登录用户，不能签收");
+        int n = jdbc.update("update shift_handover set receiver_id = ?, received_at = now() "
+                + "where id = ? and receiver_id is null", me, id);
+        return n == 0 ? R.fail(4810, "交接班记录不存在或已签收") : R.ok();
     }
 
     @GetMapping("/api/nursing/handovers")
     public R<List<Map<String, Object>>> handovers() {
         return R.ok(jdbc.queryForList("""
-                select h.*, d.name as dept_name from shift_handover h
-                join sys_dept d on d.id = h.dept_id order by h.id desc limit 100
+                select h.*, d.name as dept_name, u.real_name as receiver_name
+                from shift_handover h
+                join sys_dept d on d.id = h.dept_id
+                left join sys_user u on u.id = h.receiver_id
+                order by h.id desc limit 100
                 """));
     }
 }

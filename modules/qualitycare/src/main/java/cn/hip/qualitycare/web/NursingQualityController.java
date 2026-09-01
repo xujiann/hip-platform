@@ -29,7 +29,9 @@ public class NursingQualityController {
                 select a.id as admission_id, a.admission_no, a.care_level,
                        w.name as ward_name, b.bed_no, d.name as dept_name,
                        p.name as patient_name, p.sex, p.allergy_history,
-                       (select count(*) from inp_order o where o.admission_id = a.id and o.status = 'CREATED') as pending_orders
+                       (select count(*) from inp_order o where o.admission_id = a.id and o.status = 'CREATED') as pending_orders,
+                       -- v42：护理文书条数（白板是护士的主入口，不在这里露出条数就没人去写新表）
+                       (select count(*) from nur_record n where n.admission_id = a.id) as nursing_records
                 from inp_admission a
                 join inp_bed b on b.id = a.bed_id
                 join sys_dept w on w.id = a.ward_id
@@ -40,11 +42,142 @@ public class NursingQualityController {
                 """));
     }
 
+    /** 合法护理级别（分级护理制度四档；顺序即从重到轻，天数分档汇总按此排序） */
+    public static final List<String> CARE_LEVELS = List.of("特级", "一级", "二级", "三级");
+
+    /**
+     * 护理级别调整。
+     *
+     * <p>v42 只做一件事：<b>追加一条 nur_care_level_log 留痕</b>。
+     * 既有的 9801 校验码、update 语句与 {@code R<Void>} 返回体逐字未动——E2E（e2e-phase912）
+     * 直接 {@code PUT ?level=一级} 无 reason，任何新增必填都会把 CI 打断；
+     * 需要强制填变更原因的场景走下面的 {@link #changeCareLevel} 新端点（4806/4807）。
+     */
     @PutMapping("/api/inpatient/admissions/{id}/care-level")
-    public R<Void> setCareLevel(@PathVariable Long id, @RequestParam String level) {
-        if (!List.of("特级", "一级", "二级", "三级").contains(level)) return R.fail(9801, "非法护理级别");
+    public R<Void> setCareLevel(@PathVariable Long id, @RequestParam String level,
+                                @RequestParam(required = false) String reason, Authentication auth) {
+        if (!CARE_LEVELS.contains(level)) return R.fail(9801, "非法护理级别");
         jdbc.update("update inp_admission set care_level = ? where id = ?", level, id);
+        logCareLevel(id, level, reason, auth);
         return R.ok();
+    }
+
+    public record CareLevelReq(String level, String reason) {}
+
+    /**
+     * v42 护理级别调整（带变更原因，护理文书页使用）。
+     *
+     * <p>与上面的兼容端点写的是同一条 update + 同一条留痕，差别只在**变更原因必填**（4807）。
+     * 分级护理的升降级是护理工作量与收费的直接依据，无原因的调级在质控上不可追溯；
+     * 但这条纪律不能倒灌进既有端点（会破坏 E2E 契约），故另立端点。
+     */
+    @PutMapping("/api/inpatient/admissions/{id}/care-level/change")
+    public R<Void> changeCareLevel(@PathVariable Long id, @RequestBody CareLevelReq req, Authentication auth) {
+        if (req.level() == null || !CARE_LEVELS.contains(req.level())) {
+            return R.fail(4806, "护理级别非法（特级/一级/二级/三级）");
+        }
+        if (req.reason() == null || req.reason().isBlank()) return R.fail(4807, "护理级别变更原因必填");
+        int n = jdbc.update("update inp_admission set care_level = ? where id = ?", req.level(), id);
+        if (n == 0) return R.fail(4805, "住院记录不存在");
+        logCareLevel(id, req.level(), req.reason(), auth);
+        return R.ok();
+    }
+
+    /** 护理级别留痕：care_level 是被 update 覆盖的单列，无本表则护理天数分档统计无源可查 */
+    private void logCareLevel(Long admissionId, String level, String reason, Authentication auth) {
+        jdbc.update("""
+                insert into nur_care_level_log(admission_id, level, changed_by, reason) values (?,?,?,?)
+                """, admissionId, level, auth == null ? null : currentUserService.idOf(auth),
+                reason == null || reason.isBlank() ? null : reason.trim());
+    }
+
+    /**
+     * v42 只读报表：按护理级别的护理天数分档汇总。
+     *
+     * <p><b>口径近似必须显式标注</b>：nur_care_level_log 自 v42 起才有数据，本版之前的调级
+     * 一律无历史。因此结果分两段并各自计数：
+     * <ul>
+     *   <li>{@code logged} —— 有留痕的住院：按留痕区段逐段计天（真实口径）；</li>
+     *   <li>{@code approx} —— 无任何留痕的住院：按 <b>当前</b> care_level 铺满整个住院期
+     *       （近似口径，中途调过级的历史会被算作从未调级）。</li>
+     * </ul>
+     * 两段合并为 {@code items}，同时保留 {@code approxAdmissions} 供页面提示——
+     * 绝不把近似值伪装成精确统计（照 v41 床位效率趋势的做法）。
+     */
+    @GetMapping("/api/nursing/care-level/days")
+    public R<Map<String, Object>> careLevelDays(@RequestParam String from, @RequestParam String to) {
+        // ① 有留痕：相邻两条留痕之间为一个区段，末段止于出院时间或现在，再与查询窗口求交
+        var logged = jdbc.queryForList("""
+                with seg as (
+                    select l.admission_id, l.level,
+                           greatest(l.effective_from, ?::date) as seg_from,
+                           least(coalesce(lead(l.effective_from) over (
+                                     partition by l.admission_id order by l.effective_from, l.id),
+                                 coalesce(a.discharged_at, now())),
+                                 coalesce(a.discharged_at, now()),
+                                 ?::date + interval '1 day') as seg_to
+                    from nur_care_level_log l
+                    join inp_admission a on a.id = l.admission_id
+                )
+                select level,
+                       round(sum(extract(epoch from (seg_to - seg_from)) / 86400.0)::numeric, 2) as days,
+                       count(distinct admission_id) as admissions
+                from seg where seg_to > seg_from group by level
+                """, from, to);
+        // ② 无留痕：当前级别铺满住院期与窗口的交集（近似）
+        var approx = jdbc.queryForList("""
+                select a.care_level as level,
+                       round(sum(extract(epoch from (
+                           least(coalesce(a.discharged_at, now()), ?::date + interval '1 day')
+                           - greatest(a.admit_at, ?::date))) / 86400.0)::numeric, 2) as days,
+                       count(*) as admissions
+                from inp_admission a
+                where a.care_level is not null
+                  and not exists (select 1 from nur_care_level_log l where l.admission_id = a.id)
+                  and a.admit_at < ?::date + interval '1 day'
+                  and coalesce(a.discharged_at, now()) > ?::date
+                group by a.care_level
+                """, to, from, to, from);
+
+        var merged = new java.util.LinkedHashMap<String, java.math.BigDecimal>();
+        var admissions = new java.util.LinkedHashMap<String, Long>();
+        for (var src : List.of(logged, approx)) {
+            for (var row : src) {
+                String lv = String.valueOf(row.get("level"));
+                var d = row.get("days") == null ? java.math.BigDecimal.ZERO : (java.math.BigDecimal) row.get("days");
+                merged.merge(lv, d, java.math.BigDecimal::add);
+                admissions.merge(lv, ((Number) row.get("admissions")).longValue(), Long::sum);
+            }
+        }
+        var items = new java.util.ArrayList<Map<String, Object>>();
+        for (String lv : CARE_LEVELS) {
+            if (!merged.containsKey(lv)) continue;
+            items.add(Map.of("careLevel", lv, "days", merged.get(lv), "admissions", admissions.get(lv)));
+        }
+        merged.keySet().stream().filter(k -> !CARE_LEVELS.contains(k)).sorted()
+                .forEach(k -> items.add(Map.of("careLevel", k, "days", merged.get(k), "admissions", admissions.get(k))));
+
+        // approx 按当前级别分组，一次住院只落一组，直接求和即为例次；
+        // logged 一次住院可跨多档，逐档求和会重复计数，故单独取 distinct。
+        long approxAdmissions = approx.stream().mapToLong(r -> ((Number) r.get("admissions")).longValue()).sum();
+        Long loggedDistinct = jdbc.queryForObject("""
+                select count(distinct l.admission_id)
+                from nur_care_level_log l
+                join inp_admission a on a.id = l.admission_id
+                where l.effective_from < ?::date + interval '1 day'
+                  and coalesce(a.discharged_at, now()) > ?::date
+                """, Long.class, to, from);
+        long loggedAdmissions = loggedDistinct == null ? 0 : loggedDistinct;
+        var m = new java.util.LinkedHashMap<String, Object>();
+        m.put("from", from);
+        m.put("to", to);
+        m.put("items", items);
+        m.put("loggedAdmissions", loggedAdmissions);
+        m.put("approxAdmissions", approxAdmissions);
+        m.put("approximate", approxAdmissions > 0);
+        m.put("caliber", "护理级别留痕自 v42 起记录；无留痕的 " + approxAdmissions
+                + " 次住院按当前护理级别铺满住院期近似计算，中途调级的历史无法还原");
+        return R.ok(m);
     }
 
     /**
@@ -379,8 +512,16 @@ public class NursingQualityController {
         if (!missing.isEmpty() && "block".equals(mode)) {
             return R.fail(9820, "病历不完整，不能归档：" + String.join("、", missing));
         }
+        // v42：只追加 archived_at/archived_by 两个 set 字段——此前只有 archived 布尔位，
+        // 谁在什么时候归的档不可追溯（车道3 终末质控要读这两列）。where 条件、返回体、9803 均未动。
+        // 归档人从 SecurityContextHolder 取而非新增 Authentication 入参：archive(Long) 的方法签名
+        // 被 EmrIntegrityGateTest / V40MrWorkqueueTest 直接调用，加参数会打断既有单测。
+        Authentication auth = org.springframework.security.core.context.SecurityContextHolder
+                .getContext().getAuthentication();
         int n = jdbc.update(
-                "update inp_admission set archived = true where id = ? and status = 'DISCHARGED'", id);
+                "update inp_admission set archived = true, archived_at = now(), archived_by = ? "
+                        + "where id = ? and status = 'DISCHARGED'",
+                auth == null ? null : currentUserService.idOf(auth), id);
         if (n == 0) return R.fail(9803, "仅出院病历可归档");
         return missing.isEmpty() ? R.ok() : R.ok(Map.of("warning", "病历不完整已放行：" + String.join("、", missing)));
     }

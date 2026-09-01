@@ -89,6 +89,9 @@
                 <el-option label="首次病程" value="FIRST_PROGRESS" />
                 <el-option label="病程记录" value="PROGRESS" />
                 <el-option label="三级查房" value="ROUND" />
+                <!-- v42：术前小结此前只存在于 EmrIntegrityService 的判定里，下拉五项没有它——
+                     手术病例因此常亮一条「缺术前小结」而医生无法自救。补上即闭环。 -->
+                <el-option label="术前小结" value="PREOP" />
                 <el-option label="出院小结" value="DISCHARGE" />
               </el-select>
             </el-form-item>
@@ -101,6 +104,15 @@
             </el-form-item>
             <el-form-item>
               <el-input v-model="recordTitle" placeholder="标题（可空）" style="width: 180px" />
+            </el-form-item>
+            <!-- v42：病历模板套用（本科室模板 + 全院通用模板）。模板后端 CRUD 与 EMR 分类早已就位，
+                 此前唯一消费方是 RIS 报告页，医生写住院病历时用不到任何模板。 -->
+            <el-form-item>
+              <el-select v-model="emrTemplateId" clearable placeholder="套用病历模板" style="width: 200px"
+                         no-data-text="本科室暂无病历模板（在「数据中心 · 病历模板」维护）" @change="applyEmrTemplate">
+                <el-option v-for="t in emrTemplates" :key="t.id as number"
+                           :label="`${t.name}${t.dept_id ? '' : '（通用）'}`" :value="t.id as number" />
+              </el-select>
             </el-form-item>
           </el-form>
           <el-input v-model="recordContent" type="textarea" :rows="4"
@@ -124,6 +136,11 @@
         </el-tab-pane>
 
         <el-tab-pane label="体征" name="vitals">
+          <!-- v42 合版补：体温单打印入口。规划文档把它划给车道5、任务书划给车道1，两边都没落，
+               合版时统一补在此处（PrintView 的 temp-sheet 分支由车道1 落地，此处不是死链）。 -->
+          <div style="margin-bottom: 8px">
+            <el-button size="small" @click="printTempSheet">打印体温单（三测单）</el-button>
+          </div>
           <VitalsChart :vitals="vitals" />
           <el-table :data="vitals" size="small" height="calc(100vh - 560px)">
             <el-table-column label="时间" width="150">
@@ -223,6 +240,12 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
 import VitalsChart from '../../components/VitalsChart.vue'
 
+/** v42：体温单打印（周次由打印页自行翻页，此处固定从第 1 住院周进） */
+function printTempSheet() {
+  if (!current.value) return
+  window.open(`/print?type=temp-sheet&id=${current.value.id}&week=1`, '_blank')
+}
+
 const admissions = ref<Record<string, unknown>[]>([])
 const current = ref<Record<string, unknown> | null>(null)
 const orders = ref<Record<string, unknown>[]>([])
@@ -245,9 +268,14 @@ const vitals = ref<Record<string, unknown>[]>([])
 const recordType = ref('PROGRESS')
 const recordTitle = ref('')
 const recordContent = ref('')
-const recordTypeNames: Record<string, string> = { ADMISSION: '入院记录', FIRST_PROGRESS: '首次病程', PROGRESS: '病程记录', ROUND: '三级查房', DISCHARGE: '出院小结' }
+// v42：PREOP 补入中文名——此前 EmrIntegrityService 判「缺术前小结」，而列表里 PREOP 行显示为 undefined
+const recordTypeNames: Record<string, string> = { ADMISSION: '入院记录', FIRST_PROGRESS: '首次病程', PROGRESS: '病程记录', ROUND: '三级查房', PREOP: '术前小结', DISCHARGE: '出院小结' }
 const roundLevel = ref('ATTENDING')
 const superiorCorrection = ref('')
+
+// v42 病历模板：GET /emr-templates?type=EMR&deptId=当前科室（后端口径为「本科室 或 全院通用」）
+const emrTemplates = ref<Record<string, unknown>[]>([])
+const emrTemplateId = ref<number | null>(null)
 
 // 转科转床（收尾环·阻塞3）
 const depts = ref<{ id: number; name: string; type: string }[]>([])
@@ -276,15 +304,46 @@ async function loadAccount(id: unknown) {
   account.value = (await client.get(`/inpatient/admissions/${id}/account`)).data.data
 }
 
+/**
+ * v42：拉本科室可用的 EMR 模板。住院病案 DTO 只带 deptName 不带 deptId（InpatientController.toDto），
+ * 用已加载的科室字典按名反查 id；查不到就退化为不带 deptId 的全量查询（只会多出别科模板，不会漏）。
+ */
+async function loadEmrTemplates() {
+  const deptName = String(current.value?.deptName ?? '')
+  const deptId = depts.value.find((d) => d.name === deptName)?.id
+  const params: Record<string, unknown> = { type: 'EMR' }
+  if (deptId) params.deptId = deptId
+  emrTemplates.value = (await client.get('/emr-templates', { params })).data.data
+}
+
+/** 套用模板到病历正文。已有内容时先确认——医生写了一半被模板冲掉是不可撤销的损失。 */
+async function applyEmrTemplate() {
+  const t = emrTemplates.value.find((x) => x.id === emrTemplateId.value)
+  if (!t) return
+  if (recordContent.value.trim()) {
+    const ok = await ElMessageBox.confirm('当前病历内容将被模板覆盖，是否继续？', '套用模板', { type: 'warning' })
+      .catch(() => null)
+    if (!ok) {
+      emrTemplateId.value = null
+      return
+    }
+  }
+  recordContent.value = String(t.content ?? '')
+  if (!recordTitle.value.trim()) recordTitle.value = String(t.name ?? '')
+}
+
 async function open(row: Record<string, unknown> | null) {
   current.value = row
   account.value = null
+  emrTemplateId.value = null
+  emrTemplates.value = []
   if (!row) return
   const [ws, rec, vit] = await Promise.all([
     client.get(`/inpatient/admissions/${row.id}/workspace`),
     client.get(`/inpatient/admissions/${row.id}/records`),
     client.get(`/inpatient/admissions/${row.id}/vitals`),
     loadAccount(row.id),
+    loadEmrTemplates(),
   ])
   orders.value = ws.data.data.orders
   totalAmount.value = ws.data.data.totalAmount
@@ -361,6 +420,7 @@ async function addRecord() {
   ElMessage.success('病历已保存')
   recordContent.value = ''
   recordTitle.value = ''
+  emrTemplateId.value = null
   await open(current.value)
 }
 

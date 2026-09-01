@@ -158,16 +158,28 @@
 
       <el-tab-pane label="交接班" name="handover">
         <el-form inline size="small">
-          <el-form-item><el-input v-model="ho.deptId" placeholder="科室ID" style="width: 90px" /></el-form-item>
+          <!-- v42：科室原为自由文本 ID 输入，填错直接触发 FK 异常走 4090 兜底码（护士看不懂） -->
+          <el-form-item>
+            <el-select v-model="ho.deptId" filterable placeholder="科室" style="width: 150px">
+              <el-option v-for="d in depts" :key="d.id" :label="d.name" :value="d.id" />
+            </el-select>
+          </el-form-item>
           <el-form-item>
             <el-select v-model="ho.shiftType" style="width: 100px">
               <el-option v-for="s in shiftTypes" :key="String(s.code)" :label="String(s.name)" :value="String(s.code)" />
             </el-select>
           </el-form-item>
+          <!-- v42：夜班跨零点补录必须能指定班次日期，否则永远记到次日 -->
+          <el-form-item>
+            <el-date-picker v-model="ho.shiftDate" type="date" value-format="YYYY-MM-DD"
+                            placeholder="班次日期（默认当天）" style="width: 170px" />
+          </el-form-item>
           <el-form-item><el-input v-model="ho.summary" placeholder="当班情况" style="width: 240px" /></el-form-item>
           <el-form-item><el-input v-model="ho.todo" placeholder="交接待办" style="width: 180px" /></el-form-item>
           <el-button type="primary" size="small" @click="addHandover" :loading="addHandoverLoading">交班</el-button>
         </el-form>
+        <el-alert type="info" show-icon :closable="false" style="margin-bottom: 8px"
+                  title="夜班（00:00-08:00）下班后补录请显式选择班次日期——不选默认记为当天，跨零点补录会错位一天。" />
         <el-table :data="handovers" size="small" border>
           <el-table-column prop="dept_name" label="科室" width="130" />
           <el-table-column prop="shift_date" label="日期" width="110" />
@@ -175,6 +187,14 @@
           <el-table-column prop="summary" label="当班情况" show-overflow-tooltip />
           <el-table-column prop="todo" label="待办" show-overflow-tooltip />
           <el-table-column prop="author" label="交班人" width="90" />
+          <el-table-column label="接班签收" width="150">
+            <template #default="{ row }">
+              <span v-if="row.receiver_id" class="received">
+                {{ row.receiver_name }} · {{ String(row.received_at ?? '').slice(0, 16) }}</span>
+              <el-button v-else link type="primary" size="small" :loading="busyId === row.id"
+                         @click="receiveHandover(row)">签收</el-button>
+            </template>
+          </el-table-column>
         </el-table>
         <h4>班次字典
           <el-button link type="primary" size="small" @click="addShiftType" :loading="addShiftTypeLoading">新增班次</el-button>
@@ -207,7 +227,9 @@ const handovers = ref<Record<string, unknown>[]>([])
 const calAdmId = ref('')
 const card = reactive({ patientId: '', diseaseName: '', cardClass: 'B' })
 const planForm = reactive({ title: '', standard: '', adHoc: false })
-const ho = reactive({ deptId: '', shiftType: 'DAY', summary: '', todo: '' })
+const ho = reactive<{ deptId: number | undefined; shiftType: string; summary: string; todo: string; shiftDate: string }>(
+  { deptId: undefined, shiftType: 'DAY', summary: '', todo: '', shiftDate: '' })
+const depts = ref<{ id: number; name: string; type: string }[]>([])
 const riskTrend = ref<Record<string, unknown>[]>([])
 const riskAlerts = ref<Record<string, unknown>[]>([])
 const risk = reactive({ admissionId: '', assessType: 'BRADEN', score: 15 })
@@ -244,6 +266,7 @@ async function loadPlans() { plans.value = (await client.get('/qc-check/plans'))
 async function loadShift() {
   shiftTypes.value = (await client.get('/nursing/shift-types')).data.data
   handovers.value = (await client.get('/nursing/handovers')).data.data
+  if (!depts.value.length) depts.value = (await client.get('/system/depts')).data.data
 }
 
 async function reportCard() {
@@ -301,11 +324,23 @@ async function addHandover() {
   if (!ho.deptId || !ho.summary) { ElMessage.warning('请填写完整'); return }
   addHandoverLoading.value = true
   try {
-    await client.post('/nursing/handovers', { ...ho, deptId: Number(ho.deptId) })
+    await client.post('/nursing/handovers', {
+      deptId: Number(ho.deptId), shiftType: ho.shiftType, summary: ho.summary,
+      todo: ho.todo, shiftDate: ho.shiftDate || undefined,
+    })
     ho.summary = ''
     ho.todo = ''
     await loadShift()
   } finally { addHandoverLoading.value = false }
+}
+/** 接班签收（双签）：交班人不能签收自己的班，后端 4812 拦 */
+async function receiveHandover(row: Record<string, unknown>) {
+  busyId.value = row.id
+  try {
+    await client.put(`/nursing/handovers/${row.id}/receive`)
+    ElMessage.success('已签收')
+    await loadShift()
+  } finally { busyId.value = null }
 }
 async function addShiftType() {
   const res = await ElMessageBox.prompt('编码,名称,开始,结束（逗号分隔）', '新增班次',
@@ -337,4 +372,5 @@ onMounted(loadCards)
 .cal-temp { font-weight: 600; }
 .bar { background: #f0f2f5; border-radius: 3px; height: 10px; width: 180px; }
 .bar-in { background: #2563eb; height: 10px; border-radius: 3px; }
+.received { color: #67c23a; font-size: 12px; }
 </style>

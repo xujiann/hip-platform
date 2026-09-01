@@ -1,6 +1,6 @@
 <template>
   <div class="print-page">
-    <div v-if="data" class="ticket" :class="{ sheet: isSheet }">
+    <div v-if="data" class="ticket" :class="{ sheet: isSheet, wide: isTempSheet }">
       <h2>{{ hospitalName }}</h2>
       <h3>{{ titles[type] }}</h3>
       <hr />
@@ -81,8 +81,57 @@
           </table>
         </div>
       </template>
+      <!-- v42 车道1：体温单（三测单）——独立 SVG 坐标格点版式，不复用票据 isSheet 文字流版式 -->
+      <template v-else-if="type === 'temp-sheet'">
+        <div class="sheet-head">
+          <p>姓名：{{ hdr.patient_name }}　性别：{{ sexNameOf(hdr.sex) }}　科室：{{ hdr.dept_name }}
+            　病区：{{ hdr.ward_name || '—' }}　床号：{{ hdr.bed_no || '—' }}</p>
+          <p>住院号：{{ hdr.admission_no }}　入院日期：{{ fmtDate(hdr.admit_at) }}
+            　护理级别：{{ hdr.care_level || '—' }}　过敏史：{{ hdr.allergy_history || '无' }}</p>
+        </div>
+        <div class="sheet-bar no-print">
+          <el-button-group>
+            <el-button size="small" :disabled="week <= 1 || loading" @click="gotoWeek(week - 1)">← 上一周</el-button>
+            <el-button size="small" :disabled="week >= totalWeeks || loading" @click="gotoWeek(week + 1)">下一周 →</el-button>
+          </el-button-group>
+          <span class="bar-txt">第 {{ data.week }} / {{ totalWeeks }} 住院周　{{ data.weekStart }} ~ {{ data.weekEnd }}</span>
+          <span class="zoom-box">
+            <el-button size="small" :disabled="zoom <= ZOOM_MIN" @click="setZoom(zoom - 0.2)">缩小 −</el-button>
+            <el-slider v-model="zoom" :min="ZOOM_MIN" :max="ZOOM_MAX" :step="0.1" :show-tooltip="false"
+                       style="width: 130px" />
+            <el-button size="small" :disabled="zoom >= ZOOM_MAX" @click="setZoom(zoom + 0.2)">放大 +</el-button>
+            <el-button size="small" @click="setZoom(1)">100%</el-button>
+            <b class="bar-txt">{{ Math.round(zoom * 100) }}%</b>
+          </span>
+        </div>
+        <p class="sheet-week">第 {{ data.week }} / {{ totalWeeks }} 住院周　{{ data.weekStart }} ~ {{ data.weekEnd }}</p>
+        <TempSheetSvg :sheet="data" :scale="zoom" />
+      </template>
+      <!-- v42 车道2：护理记录单（合版时代加——该文件由车道1 独占，车道2 只交付端点与返回体） -->
+      <template v-else-if="type === 'nur-record'">
+        <div class="sheet-head">
+          <p>姓名：{{ hdr.patient_name }}　性别：{{ sexNameOf(hdr.sex) }}　科室：{{ hdr.dept_name }}
+            　病区：{{ hdr.ward_name || '—' }}　床号：{{ hdr.bed_no || '—' }}</p>
+          <p>住院号：{{ hdr.admission_no }}　患者号：{{ hdr.patient_no }}　入院日期：{{ fmtDate(hdr.admit_at) }}
+            　护理级别：{{ hdr.care_level || '—' }}</p>
+          <p v-if="nurFrom || nurTo">记录区间：{{ nurFrom || '起始' }} ~ {{ nurTo || '至今' }}</p>
+        </div>
+        <table class="tbl">
+          <tr><th style="width:14%">时间</th><th style="width:10%">类型</th><th>病情观察</th>
+            <th>护理措施</th><th style="width:14%">效果评价</th><th style="width:10%">护士签名</th></tr>
+          <tr v-for="(r, i) in nurRows" :key="i">
+            <td>{{ String(r.record_time ?? '').replace('T', ' ').slice(0, 16) }}</td>
+            <td>{{ r.kind_name }}</td>
+            <td>{{ r.observation || '—' }}</td>
+            <td>{{ r.measure || '—' }}</td>
+            <td>{{ r.effect || '—' }}</td>
+            <td>{{ r.nurse_name || '—' }}{{ r.signed ? '（已签）' : '' }}</td>
+          </tr>
+          <tr v-if="nurRows.length === 0"><td colspan="6">（该区间无护理记录）</td></tr>
+        </table>
+      </template>
       <hr />
-      <p class="foot">打印时间：{{ now }}　本单据仅作就诊凭证</p>
+      <p class="foot">打印时间：{{ now }}　{{ isTempSheet ? '本页为住院病历组成部分（三测单）' : (type === 'nur-record' ? '本页为住院病历组成部分（护理记录单）' : '本单据仅作就诊凭证') }}</p>
       <el-button class="no-print" type="primary" @click="doPrint">打 印</el-button>
     </div>
     <el-empty v-else description="加载中或单据不存在" />
@@ -93,11 +142,16 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import client from '../api/client'
+import TempSheetSvg from '../components/TempSheetSvg.vue'
 
 const route = useRoute()
 const type = String(route.query.type ?? 'registration')
 const id = String(route.query.id ?? '')
 const date = String(route.query.date ?? '')
+// v42 护理记录单：区间与类型过滤（PrintView 原先只读 type/id/date 三个 query）
+const nurFrom = String(route.query.from ?? '')
+const nurTo = String(route.query.to ?? '')
+const nurKind = String(route.query.kind ?? '')
 const data = ref<Record<string, unknown> | null>(null)
 const hospitalName = ref('')
 const now = new Date().toLocaleString('zh-CN')
@@ -105,16 +159,43 @@ const now = new Date().toLocaleString('zh-CN')
 const titles: Record<string, string> = {
   registration: '挂号凭条', charge: '收费票据', 'lab-report': '检验报告单',
   'inp-daily-fee': '住院费用一日清单', 'inp-discharge-summary': '出院小结',
+  'temp-sheet': '体温单（三测单）', 'nur-record': '护理记录单',
 }
 const payNames: Record<string, string> = { CASH: '现金', WECHAT: '微信', ALIPAY: '支付宝', YB: '医保' }
-const recordTypeNames: Record<string, string> = { ADMISSION: '入院记录', FIRST_PROGRESS: '首次病程', PROGRESS: '病程记录', ROUND: '三级查房', DISCHARGE: '出院小结' }
+// PREOP：EmrIntegrityService 对手术病例硬要 record_type='PREOP'，此前全仓无中文名（v42 车道5 代加）
+const recordTypeNames: Record<string, string> = { ADMISSION: '入院记录', FIRST_PROGRESS: '首次病程', PROGRESS: '病程记录', ROUND: '三级查房', PREOP: '术前小结', DISCHARGE: '出院小结' }
 
 // 住院单据用较宽版式（A5 清单/小结），门诊凭条保持窄条
-const isSheet = computed(() => type === 'inp-daily-fee' || type === 'inp-discharge-summary')
+const isSheet = computed(() => type === 'inp-daily-fee' || type === 'inp-discharge-summary'
+  || type === 'nur-record')   // v42：护理记录单同为 A5 宽版文字流
+// 体温单是坐标格点版式（横向 7 天 × 6 时点），既不是窄条也不是 A5 文字流：自成一档宽版
+const isTempSheet = computed(() => type === 'temp-sheet')
 const sexName = computed(() => ({ M: '男', F: '女' } as Record<string, string>)[String(data.value?.sex)] ?? '')
+
+// ===== 体温单：住院周翻页 + 缩放（投标应答明文承诺项 2025★/2026★/2073） =====
+const ZOOM_MIN = 0.5
+const ZOOM_MAX = 2
+const week = ref(Math.max(1, Number(route.query.week ?? 1) || 1))
+const zoom = ref(1)
+const loading = ref(false)
+const hdr = computed(() => (data.value?.header as Record<string, unknown>) ?? {})
+const totalWeeks = computed(() => Number(data.value?.totalWeeks ?? 1) || 1)
+
+function sexNameOf(v: unknown): string {
+  return ({ M: '男', F: '女' } as Record<string, string>)[String(v)] ?? '—'
+}
+function setZoom(v: number) {
+  zoom.value = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(v * 10) / 10))
+}
+async function gotoWeek(n: number) {
+  if (n < 1 || n > totalWeeks.value || loading.value) return
+  week.value = n
+  await reload()
+}
 const otherDiag = computed(() => (data.value?.otherDiagnoses as { icd: string; name: string }[]) ?? [])
 const records = computed(() => (data.value?.records as Record<string, unknown>[]) ?? [])
 const meds = computed(() => (data.value?.meds as Record<string, unknown>[]) ?? [])
+const nurRows = computed(() => (data.value?.rows as Record<string, unknown>[]) ?? [])
 
 function fmtDate(v: unknown): string {
   if (!v) return '—'
@@ -125,7 +206,26 @@ function fmtDate(v: unknown): string {
 function endpoint(): string {
   if (type === 'inp-daily-fee') return `/inpatient/admissions/${id}/print/daily-fee?date=${date}`
   if (type === 'inp-discharge-summary') return `/inpatient/admissions/${id}/print/discharge-summary`
+  if (type === 'temp-sheet') return `/inpatient/admissions/${id}/print/temp-sheet?week=${week.value}`
+  if (type === 'nur-record') {
+    const qs = new URLSearchParams()
+    if (nurFrom) qs.set('from', nurFrom)
+    if (nurTo) qs.set('to', nurTo)
+    if (nurKind) qs.set('kind', nurKind)
+    const q = qs.toString()
+    return `/inpatient/admissions/${id}/print/nursing-record` + (q ? `?${q}` : '')
+  }
   return `/print/${type}/${id}`
+}
+
+/** 翻页重取（越界由后端返 4821，拦截器已弹红字，此处只保住已渲染的上一页不被清空） */
+async function reload() {
+  loading.value = true
+  try {
+    data.value = (await client.get(endpoint())).data.data
+  } finally {
+    loading.value = false
+  }
 }
 
 function doPrint() {
@@ -133,11 +233,10 @@ function doPrint() {
 }
 
 onMounted(async () => {
-  const [resp, cfg] = await Promise.all([
-    client.get(endpoint()),
+  const [, cfg] = await Promise.all([
+    reload(),
     client.get('/config/public'),
   ])
-  data.value = resp.data.data
   hospitalName.value = cfg.data.data.hospital_name ?? ''
 })
 </script>
@@ -146,6 +245,13 @@ onMounted(async () => {
 .print-page { display: flex; justify-content: center; padding: 24px; background: #fff; min-height: 100%; }
 .ticket { width: 420px; font-size: 13px; }
 .ticket.sheet { width: 640px; }
+/* 体温单：格点版式自带宽度与横向滚动，容器让位到整幅可用宽 */
+.ticket.wide { width: 100%; max-width: 1280px; }
+.sheet-head p { margin: 2px 0; }
+.sheet-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 8px 0; }
+.zoom-box { display: inline-flex; align-items: center; gap: 8px; }
+.bar-txt { font-size: 12px; color: #606266; }
+.sheet-week { text-align: center; font-size: 12px; color: #606266; margin: 4px 0; }
 h2, h3 { text-align: center; margin: 4px 0; }
 .items { width: 100%; border-collapse: collapse; margin: 8px 0; }
 .items th, .items td { border: 1px solid #999; padding: 4px 6px; text-align: left; }
