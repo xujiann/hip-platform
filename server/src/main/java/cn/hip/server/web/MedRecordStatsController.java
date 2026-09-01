@@ -130,4 +130,51 @@ public class MedRecordStatsController {
                 order by d.id desc limit 200
                 """));
     }
+
+    /**
+     * v41 床位效率趋势（按科室 × 月）：出院人次 / 平均住院日 / 占用床日 / 床位周转次数 / 床位使用率。
+     *
+     * <p>补齐验收偏离表已承诺（"可自动生成床位使用率、床位周转次数等统计报表"）但此前代码不存在的项。
+     * <p><b>口径与近似说明（诚实标注，报表页同步展示）</b>：
+     * <ul>
+     *   <li>占用床日按"出院病例的住院天数"归集到出院月，不是逐日切分——跨月长住病例的床日全部计入出院月；
+     *   <li>床位数取该科室**当前**开放床位数（inp_bed 无历史快照），历史月份若增减过床位会有偏差；
+     *   <li>周转次数 = 出院人次 / 床位数；使用率 = 占用床日 / (床位数 × 当月天数)。
+     * </ul>
+     * 这两条近似在小规模县级医院可接受；若院方要求严格口径，需另建每日床位快照表（实施期评估）。
+     */
+    @GetMapping("/dept-bed-trend")
+    public R<List<Map<String, Object>>> deptBedTrend(@RequestParam(defaultValue = "12") int months) {
+        int m = Math.min(Math.max(months, 1), 36);
+        return R.ok(jdbc.queryForList("""
+                with beds as (
+                    select d.id as dept_id, count(b.id) as bed_count
+                    from sys_dept d left join inp_bed b on b.ward_id = d.id
+                    group by d.id
+                ),
+                disch as (
+                    select a.dept_id,
+                           date_trunc('month', a.discharged_at) as ym,
+                           count(*) as discharges,
+                           sum(extract(epoch from (a.discharged_at - a.admit_at)) / 86400.0) as bed_days
+                    from inp_admission a
+                    where a.status = 'DISCHARGED' and a.discharged_at is not null
+                      and a.discharged_at >= date_trunc('month', now()) - make_interval(months => ?)
+                    group by a.dept_id, date_trunc('month', a.discharged_at)
+                )
+                select to_char(x.ym, 'YYYY-MM') as month, d.name as dept_name,
+                       x.discharges,
+                       round((x.bed_days / nullif(x.discharges, 0))::numeric, 1) as avg_stay_days,
+                       round(x.bed_days::numeric, 1) as bed_days,
+                       coalesce(b.bed_count, 0) as bed_count,
+                       round((x.discharges::numeric / nullif(b.bed_count, 0)), 2) as turnover,
+                       round((x.bed_days::numeric
+                              / nullif(b.bed_count * extract(day from (x.ym + interval '1 month' - interval '1 day')), 0)
+                              * 100), 1) as occupancy_pct
+                from disch x
+                join sys_dept d on d.id = x.dept_id
+                left join beds b on b.dept_id = x.dept_id
+                order by x.ym desc, d.name
+                """, m));
+    }
 }

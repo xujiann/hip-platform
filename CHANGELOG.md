@@ -2,6 +2,48 @@
 
 版本纪律：语义化版本；平台迁移段 V1–V999，实施段 V10000+；升级 = 停服→备份→换产物→自动前滚→回归抽查（多医院部署操作指南 §三）。
 
+## 1.4.1（2026-08-31）
+
+v41 月末财务与经营闭环（功能充实审阅第二版）。四域并行——上线首月月底财务科/医保办/院办例会
+必然索要的一组对账与报表。
+
+**住院欠费台账（V127）**：
+- inp_arrears / inp_arrears_payment / inp_arrears_dunning 三表；**出院结算 balance<0 自动挂账**
+  （挂账位置排在医保上传之前，遵循"渠道成功后不再有可失败本地步骤"纪律；召回重结算走
+  on conflict do update 幂等，已核销保持核销，无人工痕迹的自动挂账在不再欠费时撤销）。
+- 补缴/催缴/核销（核销仅 ADMIN）端点 + ArrearsView；错误码 9035-9040。
+- **补缴与押金口径物理隔离**：ArrearsService 对 inp_deposit/inp_settlement/inp_order 零写语句，
+  测试用"全额补缴前后逐字段比对"钉死（押金合计、结算快照四字段、account 四字段均不变）——
+  收欠款不会让"押金-已发生费用"口径凭空自愈。
+
+**收费员班结缴款单（V128）**：
+- fin_cashier_shift（系统收/退/净额快照 + 实点金额 + 差额 + DRAFT/SUBMITTED/CONFIRMED）；
+  预览按当前登录收费员算系统数、提交、财务确认（仅 ADMIN，条件更新防并发重复确认）；
+  CASHIER 只见自己的班结（服务端按登录态钉死，不读请求里的 cashierId）。错误码 5020-5024。
+- **口径抽成唯一 SQL 常量** `CASHIER_DAY_ROWS`，reconciliation 与 preview 共用同一份 where
+  （两者不可能各算一套）；测试交叉断言 preview 与 reconciliation 逐项一致。
+- **顺带修真 bug**：`sys_menu_id_seq` 自 V1 停在 100，其后各期显式插 100-104，任何走 nextval 的
+  建菜单都会撞主键——V128 末尾 setval 到 max(id) 纠偏。
+
+**科室月报 + 医保基金监测（无迁移）**：
+- `GET /api/stats/dept-monthly[.csv]`：门诊/住院按科室×月的收入/人次/均次 + 医生工作量 TOP50；
+  **住院侧只认 settle_type='FINAL'**（INTERIM 会重复计费——v30 踩过的坑），测试断言"删掉该过滤必红"。
+- `GET /api/insurance/fund-monitor`：近 12 月基金占比（**排除 reversed 冲销行**，测试走真实退费路径
+  验证三项回落基线）+ 超封顶线预警（**cap=0 时返回 null 并注明"未启用"**，不按 0 算成全员超限）。
+
+**床位效率趋势（无迁移，补验收已承诺项）**：
+- `GET /api/mrstats/dept-bed-trend?months=`：按科室×月的出院人次/平均住院日/占用床日/**床位周转次数/
+  床位使用率**——技术偏离表标"平台已实现"但此前代码不存在（与 v29 病案首页诚信声明同性质），本版补齐真实实现。
+- **口径近似诚实标注**（端点 javadoc 与报表页 alert 同步）：占用床日按出院病例归集到出院月（跨月长住
+  计入出院月）；床位数取当前开放床位数（无历史快照），历史月份增减床位会有偏差。
+
+**顺带修复既有测试静默失效**：Phase113FinanceTest 用 jdbc 直改 `insurance_type`，但
+PatientService.register 在 save 后再 setPatientNo 保存，Hibernate 全列 UPDATE 把它覆盖回 'SELF'——
+两个"医保场景"用例实际跑的是自费患者。改为建档时写入（同 InsuranceSplitTest 写法）。
+
+新增测试 V41ArrearsTest 11 / V41ShiftCloseTest 2 / V41MgmtReportTest 6 / V41BedTrendTest 2；
+新 E2E e2e-v41-finance 接入 CI（30 套）。
+
 ## 1.4.0（2026-08-31）
 
 v40 上线首周断链补齐（功能充实审阅第一版）。四域并行开发，全部是**既有后端能力缺前端/端点入口**

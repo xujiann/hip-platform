@@ -69,6 +69,26 @@
           <el-table-column prop="percentage" label="构成比(%)" width="110" />
         </el-table>
       </el-tab-pane>
+
+      <!-- v41 床位效率：出院人次/平均住院日/占用床日/周转次数/使用率（按科室×月） -->
+      <el-tab-pane label="床位效率趋势" name="bed">
+        <el-alert type="info" :closable="false" show-icon style="margin-bottom: 8px"
+                  title="口径说明：占用床日按出院病例住院天数归集到出院月（跨月长住计入出院月）；床位数取该科室当前开放床位数（无历史快照），历史月份增减过床位会有偏差。" />
+        <el-table :data="bedTrend" size="small" border>
+          <el-table-column prop="month" label="月份" width="90" />
+          <el-table-column prop="dept_name" label="科室" width="120" />
+          <el-table-column prop="discharges" label="出院人次" width="100" />
+          <el-table-column prop="avg_stay_days" label="平均住院日" width="110" />
+          <el-table-column prop="bed_days" label="占用床日" width="100" />
+          <el-table-column prop="bed_count" label="床位数" width="90" />
+          <el-table-column prop="turnover" label="周转次数" width="100">
+            <template #default="{ row }">{{ row.turnover ?? '—' }}</template>
+          </el-table-column>
+          <el-table-column label="使用率(%)" width="110">
+            <template #default="{ row }">{{ row.occupancy_pct ?? '—' }}</template>
+          </el-table-column>
+        </el-table>
+      </el-tab-pane>
     </el-tabs>
   </el-card>
 </template>
@@ -83,6 +103,7 @@ const diseaseTop = ref<Record<string, unknown>[]>([])
 const surgeryStats = ref<Record<string, unknown>[]>([])
 const deptDischarge = ref<Record<string, unknown>[]>([])
 const icdComposition = ref<Record<string, unknown>[]>([])
+const bedTrend = ref<Record<string, unknown>[]>([])   // v41 床位效率趋势
 
 async function load() {
   overview.value = (await client.get('/mrstats/overview')).data.data
@@ -114,6 +135,7 @@ watch(tab, async (t) => {
   if (t === 'dept') deptDischarge.value = (await client.get('/mrstats/dept-discharge')).data.data
   if (t === 'icd') icdComposition.value = (await client.get('/mrstats/icd-composition')).data.data
   if (t === 'death') await loadDeathCards()
+  if (t === 'bed') bedTrend.value = (await client.get('/mrstats/dept-bed-trend', { params: { months: 12 } })).data.data
 })
 onMounted(load)
 </script>

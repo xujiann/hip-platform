@@ -144,6 +144,48 @@
         </el-table>
       </el-tab-pane>
 
+      <el-tab-pane label="科室月报" name="deptMonthly">
+        <el-form inline size="small">
+          <el-form-item label="月份">
+            <el-date-picker v-model="reportMonth" type="month" value-format="YYYY-MM"
+                            :clearable="false" style="width: 140px" @change="loadDeptMonthly" />
+          </el-form-item>
+          <el-button type="primary" size="small" @click="loadDeptMonthly" :loading="deptMonthlyLoading">查询</el-button>
+          <el-button size="small" @click="exportDeptMonthly">导出 CSV</el-button>
+        </el-form>
+        <el-descriptions v-if="deptMonthly" :column="5" border size="small" style="margin-bottom: 8px">
+          <el-descriptions-item label="门诊收入">￥{{ deptMonthly.totals.outpRevenue }}</el-descriptions-item>
+          <el-descriptions-item label="门诊人次">{{ deptMonthly.totals.outpVisits }}</el-descriptions-item>
+          <el-descriptions-item label="住院收入">￥{{ deptMonthly.totals.inpRevenue }}</el-descriptions-item>
+          <el-descriptions-item label="出院人次">{{ deptMonthly.totals.inpDischarges }}</el-descriptions-item>
+          <el-descriptions-item label="合计收入">
+            <b style="color: #2563eb">￥{{ deptMonthly.totals.totalRevenue }}</b>
+          </el-descriptions-item>
+        </el-descriptions>
+        <el-alert v-if="deptMonthly" :title="deptMonthly.note" type="info" show-icon :closable="false"
+                  style="margin-bottom: 8px" />
+        <el-table :data="deptMonthly?.depts ?? []" size="small" border max-height="360">
+          <el-table-column prop="dept_name" label="科室" width="150" />
+          <el-table-column prop="outp_revenue" label="门诊收入" width="110" />
+          <el-table-column prop="outp_visits" label="门诊人次" width="90" />
+          <el-table-column prop="outp_avg_cost" label="门诊均次费用" width="120" />
+          <el-table-column prop="inp_revenue" label="住院收入" width="110" />
+          <el-table-column prop="inp_discharges" label="出院人次" width="90" />
+          <el-table-column prop="inp_avg_cost" label="住院均次费用" width="120" />
+          <el-table-column label="合计收入" width="120">
+            <template #default="{ row }"><b>￥{{ row.total_revenue }}</b></template>
+          </el-table-column>
+        </el-table>
+        <h4>医生工作量（接诊量 TOP50）</h4>
+        <el-table :data="deptMonthly?.byDoctor ?? []" size="small" border max-height="320">
+          <el-table-column type="index" label="#" width="55" />
+          <el-table-column prop="doctor_name" label="医生" width="120" />
+          <el-table-column prop="dept_name" label="科室" width="150" />
+          <el-table-column prop="visits" label="接诊量" width="100" />
+          <el-table-column prop="order_amount" label="处方金额" width="120" />
+        </el-table>
+      </el-tab-pane>
+
       <el-tab-pane label="预防保健" name="phc">
         <el-form inline size="small">
           <el-form-item><el-input v-model="phc.patientId" placeholder="患者ID" style="width: 100px" /></el-form-item>
@@ -198,6 +240,35 @@ const shift = reactive({ deptId: '', nurseName: '', shiftDate: today, shiftType:
 const score = reactive({ deptId: '', item: '', score: 90 })
 const cred = reactive({ staffName: '', certType: '定期考核', certNo: '', expireDate: '' })
 const phc = reactive({ patientId: '', recordType: 'VACCINATION', content: '' })
+
+// v41 科室月度经营报表 + 医生工作量
+interface DeptMonthly {
+  month: string
+  note: string
+  depts: Record<string, unknown>[]
+  byDoctor: Record<string, unknown>[]
+  totals: Record<string, unknown>
+}
+const reportMonth = ref(today.slice(0, 7))
+const deptMonthly = ref<DeptMonthly | null>(null)
+const deptMonthlyLoading = ref(false)
+async function loadDeptMonthly() {
+  deptMonthlyLoading.value = true
+  try {
+    deptMonthly.value = (await client.get('/stats/dept-monthly',
+      { params: { month: reportMonth.value } })).data.data
+  } finally { deptMonthlyLoading.value = false }
+}
+async function exportDeptMonthly() {
+  const resp = await client.get('/stats/dept-monthly.csv',
+    { params: { month: reportMonth.value }, responseType: 'blob' })
+  const url = URL.createObjectURL(resp.data as Blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `科室月报_${reportMonth.value}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+}
 
 const shiftText = (s: string) => ({ DAY: '白班', MID: '中班', NIGHT: '夜班' }[s] ?? s)
 const cssdText = (s: string) => ({ PACKED: '已打包', STERILIZED: '已灭菌', ISSUED: '已发放', USED: '已使用' }[s] ?? s)
@@ -309,6 +380,7 @@ watch(tab, (t) => {
   if (t === 'abx') loadAbx()
   if (t === 'cssd') loadCssd()
   if (t === 'phc') loadPhc()
+  if (t === 'deptMonthly' && !deptMonthly.value) loadDeptMonthly()
 })
 onMounted(loadShifts)
 </script>

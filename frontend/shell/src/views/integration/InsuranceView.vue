@@ -120,6 +120,46 @@
         </el-table>
       </el-tab-pane>
 
+      <el-tab-pane label="基金监测" name="fund">
+        <h4>近 12 个月基金使用（已排除冲销行）</h4>
+        <el-table :data="fund?.monthly ?? []" size="small" border max-height="360">
+          <el-table-column prop="month" label="月份" width="100" />
+          <el-table-column label="业务" width="90">
+            <template #default="{ row }">{{ row.biz_type === 'INP' ? '住院' : '门诊' }}</template>
+          </el-table-column>
+          <el-table-column prop="bills" label="笔数" width="90" />
+          <el-table-column prop="total" label="结算总额" width="120" />
+          <el-table-column label="统筹基金支付" width="130">
+            <template #default="{ row }"><b style="color: #2563eb">￥{{ row.fund_pay }}</b></template>
+          </el-table-column>
+          <el-table-column prop="self_pay" label="个人支付" width="120" />
+          <el-table-column label="基金占比" width="110">
+            <template #default="{ row }">{{ row.fund_ratio }}%</template>
+          </el-table-column>
+        </el-table>
+
+        <h4>超封顶线预警（{{ fund?.capYear }} 年度统筹已用达封顶线 90%）</h4>
+        <el-alert v-if="fund && fund.capAlerts === null" :title="fund.capAlertNote" type="info"
+                  show-icon :closable="false" />
+        <template v-else-if="fund">
+          <el-alert :title="fund.capAlertNote" type="warning" show-icon :closable="false"
+                    style="margin-bottom: 8px" />
+          <el-table :data="fund.capAlerts ?? []" size="small" border max-height="320">
+            <el-table-column prop="patient_name" label="患者" width="110" />
+            <el-table-column prop="patient_no" label="病案号" width="120" />
+            <el-table-column prop="insurance_type" label="参保类型" width="120" />
+            <el-table-column prop="fund_used" label="年度统筹已用" width="130" />
+            <el-table-column prop="cap" label="封顶线" width="120" />
+            <el-table-column label="已用比例" width="120">
+              <template #default="{ row }">
+                <el-tag :type="Number(row.used_ratio) >= 100 ? 'danger' : 'warning'" size="small">
+                  {{ row.used_ratio }}%</el-tag>
+              </template>
+            </el-table-column>
+          </el-table>
+        </template>
+      </el-tab-pane>
+
       <el-tab-pane label="医保对账" name="recon">
         <el-form inline size="small">
           <el-date-picker v-model="reconDate" type="date" value-format="YYYY-MM-DD" style="width: 150px" />
@@ -192,6 +232,17 @@ const mapForm = reactive({ itemType: 'DRUG', itemCode: '', itemName: '', ybCode:
 const catalogStats = ref<Record<string, number> | null>(null)
 const csvInput = ref<HTMLInputElement>()
 
+// v41 医保基金使用监测：capAlerts === null 表示封顶线未启用（cap=0），不是"没有超限患者"
+interface FundMonitor {
+  monthly: Record<string, unknown>[]
+  caps: Record<string, unknown>
+  capYear: number
+  capAlerts: Record<string, unknown>[] | null
+  capAlertNote: string
+}
+const fund = ref<FundMonitor | null>(null)
+async function loadFund() { fund.value = (await client.get('/insurance/fund-monitor')).data.data }
+
 const mappedRate = computed(() => {
   const s = catalogStats.value
   if (!s) return 0
@@ -261,6 +312,7 @@ watch(tab, (t) => {
   if (t === 'splits') loadSplits()
   if (t === 'audits') loadAudits()
   if (t === 'recon') loadBatches()
+  if (t === 'fund') loadFund()
 })
 onMounted(loadSummary)
 </script>

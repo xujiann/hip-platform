@@ -36,6 +36,7 @@ public class InpatientService {
     private final cn.hip.platform.core.service.ConfigReader configReader;
     private final cn.hip.platform.core.config.ModuleGate moduleGate;
     private final EmrIntegrityService emrIntegrityService;
+    private final ArrearsService arrearsService;
 
     private final jakarta.persistence.EntityManager entityManager;
 
@@ -414,6 +415,13 @@ public class InpatientService {
                 configReader.get("billno_prefix_settle", "CY"),
                 BusinessDates.today().format(DateTimeFormatter.BASIC_ISO_DATE), s.getId()));
         s = settlementRepo.save(s);
+        // v41 欠费挂账（纯追加，不改上文任何逻辑与时序）：balance<0 即欠费出院——
+        // 医疗行为不因欠费停摆（见 InpatientController#account），但追缴必须留下台账。
+        // 位置刻意排在医保上传**之前**：渠道成功后不允许再有可失败的本地步骤（1.1.6 B-3 同款纪律）。
+        // flush 先落 settlement 的 INSERT/UPDATE，下游原生 SQL 的 FK(settle_id) 才引用得到该行。
+        // 幂等由 admission_id 唯一 + on conflict 保证：冲销召回后重结算是更新而非重复挂账。
+        entityManager.flush();
+        arrearsService.syncOnDischarge(admissionId, s.getId(), s.getBalance());
         // 必须用抢占**之后**重读的床位：adm 是 claim 前的快照且已被 clearAutomatically detach，
         // 期间若发生转床，用旧 bedId 释放会影响 0 行 → 新床永久 OCCUPIED 无法再收治。
         // 床位释放在医保上传**之前**（1.1.6 B-3）：9018 是本方法自定义的失败路径，

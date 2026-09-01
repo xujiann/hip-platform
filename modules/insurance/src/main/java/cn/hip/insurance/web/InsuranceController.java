@@ -24,6 +24,7 @@ public class InsuranceController {
 
     private final JdbcTemplate jdbc;
     private final InsuranceReconService reconService;
+    private final cn.hip.platform.core.service.ConfigReader configReader;
 
     // ---- 目录对照 ----
     public record MapReq(String itemType, String itemCode, String itemName,
@@ -193,5 +194,87 @@ public class InsuranceController {
         m.put("lastRecon", jdbc.queryForList(
                 "select * from yb_recon_batch order by id desc limit 1"));
         return R.ok(m);
+    }
+
+    // ---- v41 医保基金使用监测（近 12 个月趋势 + 超封顶线预警，纯只读） ----
+
+    /**
+     * 近 12 个月 × biz_type 的结算总额/统筹支付/基金占比。
+     *
+     * <p><b>排除 reversed = true 的冲销行</b>：退费冲正时 InsuranceSplitService.reverse 会
+     * 抢占式打上该标记并回退患者年度累计（分割留痕行本身保留，不物理删除）。基金监测若把冲销行
+     * 一起 sum，等于把已经退给医保的钱继续算成基金支出——占比与总额双双虚高。
+     * 时间窗写成 `created_at >= ?` 半开区间（列上不套函数），走 idx_yb_split_created（V57 B-9）；
+     * 分组用的 date_trunc 只作用在结果集上，不影响索引选择。
+     */
+    @GetMapping("/fund-monitor")
+    public R<Map<String, Object>> fundMonitor() {
+        String today = BusinessDates.today().toString();
+        var m = new LinkedHashMap<String, Object>();
+        m.put("monthly", jdbc.queryForList("""
+                select to_char(date_trunc('month', created_at), 'YYYY-MM') as month,
+                       biz_type,
+                       count(*)                    as bills,
+                       coalesce(sum(total), 0)     as total,
+                       coalesce(sum(fund_pay), 0)  as fund_pay,
+                       coalesce(sum(self_pay), 0)  as self_pay,
+                       coalesce(round(sum(fund_pay) * 100 / nullif(sum(total), 0), 1), 0) as fund_ratio
+                from yb_settle_split
+                where not reversed
+                  and created_at >= date_trunc('month', ?::date) - interval '11 months'
+                  and created_at <  date_trunc('month', ?::date) + interval '1 month'
+                group by 1, 2
+                order by 1, 2
+                """, today, today));
+
+        // 封顶线：0 = 未启用（V41 默认值）。按 0 判定会让**全部**参保患者 fund_used >= 0 命中，
+        // 一开报表就是"全员超封顶"的假警报——故未启用时该项显式返回 null 并注明，不做判定。
+        java.math.BigDecimal capStaff = cap("yb_cap_staff");
+        java.math.BigDecimal capResident = cap("yb_cap_resident");
+        var caps = new LinkedHashMap<String, Object>();
+        caps.put("staff", capStaff.signum() > 0 ? capStaff : null);
+        caps.put("resident", capResident.signum() > 0 ? capResident : null);
+        caps.put("warnAt", "封顶线的 90%");
+        m.put("caps", caps);
+
+        int year = BusinessDates.today().getYear();
+        m.put("capYear", year);
+        if (capStaff.signum() == 0 && capResident.signum() == 0) {
+            m.put("capAlerts", null);
+            m.put("capAlertNote", "未启用封顶线（sys_config 的 yb_cap_staff / yb_cap_resident 均为 0），不做超限判定");
+        } else {
+            m.put("capAlerts", jdbc.queryForList("""
+                    select p.id as patient_id, p.name as patient_name, p.patient_no,
+                           p.insurance_type, a.year, a.fund_used, c.cap,
+                           round(a.fund_used * 100 / nullif(c.cap, 0), 1) as used_ratio
+                    from yb_patient_annual a
+                    join empi_patient p on p.id = a.patient_id
+                    join lateral (select case
+                              when coalesce(p.insurance_type, '') in ('YB_STAFF', 'YB_EMPLOYEE') then ?::numeric
+                              when coalesce(p.insurance_type, '') = 'YB_RESIDENT'                then ?::numeric
+                              else 0 end as cap) c on true
+                    where a.year = ? and c.cap > 0 and a.fund_used >= c.cap * 0.9
+                    order by a.fund_used desc
+                    limit 200
+                    """, capStaff, capResident, year));
+            m.put("capAlertNote", "%s；名单为年度统筹已用达封顶线 90%% 及以上的参保人".formatted(
+                    (capStaff.signum() > 0 ? "职工封顶线 " + capStaff.toPlainString() : "职工封顶线未启用")
+                            + "，" + (capResident.signum() > 0
+                                    ? "居民封顶线 " + capResident.toPlainString() : "居民封顶线未启用")));
+        }
+        return R.ok(m);
+    }
+
+    /**
+     * 封顶线读取走 ConfigReader（1.1.6 B-1 缓存口径）。坏值按 0（=未启用）处理：
+     * 只读监测宁可少报也不能把全员打成超限——分割服务侧对坏值已有 error 级告警，不在此重复刷屏。
+     */
+    private java.math.BigDecimal cap(String key) {
+        String v = configReader.get(key, "0");
+        try {
+            return new java.math.BigDecimal(v.trim());
+        } catch (NumberFormatException e) {
+            return java.math.BigDecimal.ZERO;
+        }
     }
 }

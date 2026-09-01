@@ -42,9 +42,20 @@ class Phase113FinanceTest {
     @Autowired cn.hip.platform.core.web.SysConfigController sysConfigController;
 
     private Long newPatient(String name) {
+        return newPatient(name, null);
+    }
+
+    /**
+     * v41 修正：参保类型必须**建档时写入**，不能建档后用 jdbc 直改。
+     * PatientService.register 在 save 后还会 setPatientNo 再 save，该实体仍在持久化上下文中——
+     * 随后 Hibernate flush 的全列 UPDATE 会把 jdbc 直改的 insurance_type 覆盖回默认 'SELF'，
+     * 于是"医保场景"用例实际跑的是自费患者（静默失效，断言照绿）。同 InsuranceSplitTest 写法。
+     */
+    private Long newPatient(String name, String insuranceType) {
         Patient p = new Patient();
         p.setName(name);
         p.setSex("M");
+        if (insuranceType != null) p.setInsuranceType(insuranceType);
         return patientService.register(p).getId();
     }
 
@@ -123,8 +134,7 @@ class Phase113FinanceTest {
     /** B-3 失败路径：通道金额与业务金额不符必须判为不一致（修复前带着金额从不比较，100% 判一致） */
     @Test
     void reconFlagsAmountMismatch() {
-        Long pid = newPatient("对账金额113");
-        jdbc.update("update empi_patient set insurance_type = 'YB_STAFF' where id = ?", pid);
+        Long pid = newPatient("对账金额113", "YB_STAFF");
         Long regId = regWithOrder(pid);
         var charge = chargeService.settle(regId, "YB", null);
         entityManager.flush();
@@ -177,8 +187,7 @@ class Phase113FinanceTest {
     /** B-5 医保侧：YB 结算冲销必须回退年度累计（reverse 此前全仓只有门诊一个调用点） */
     @Test
     void inpatientCancelReversesInsurance() {
-        Long pid = newPatient("住院医保冲销113");
-        jdbc.update("update empi_patient set insurance_type = 'YB_STAFF' where id = ?", pid);
+        Long pid = newPatient("住院医保冲销113", "YB_STAFF");
         Long bedId = jdbc.queryForObject("select id from inp_bed where status = 'FREE' limit 1", Long.class);
         Long admId = inpatientService.admit(pid, 1L, bedId, null, "J18.9", "肺炎",
                 new BigDecimal("500"), "CASH", null).getId();
