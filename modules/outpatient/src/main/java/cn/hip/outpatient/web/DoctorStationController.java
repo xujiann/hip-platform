@@ -32,20 +32,34 @@ public class DoctorStationController {
     private final OutpOrderRepository orderRepository;
     private final PatientRepository patientRepository;
     private final CurrentUserService currentUserService;
+    private final cn.hip.platform.core.repository.SysUserRepository userRepository;
     private final cn.hip.platform.integration.signature.SignatureAdapter signatureAdapter;
 
-    /** 接诊队列：当日挂号（含已诊，医生可回看） */
+    /**
+     * 接诊队列：当日挂号（含已诊，医生可回看）。
+     *
+     * <p>v43 追加 emrWritten/emrSigned 两个只读标志，队列上直接标「未签」——这是诊毕未签提示
+     * 的常驻可见面（本版不阻断任何写路径，只提示）。批量取病历，不做逐行 N+1。
+     */
     @GetMapping("/worklist")
     public R<List<Map<String, Object>>> worklist(
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
-        return R.ok(registrationRepository.findByVisitDateOrderByIdDesc(date).stream()
+        var regs = registrationRepository.findByVisitDateOrderByIdDesc(date).stream()
                 .filter(r -> !"CANCELLED".equals(r.getStatus()))
+                .toList();
+        Map<Long, OutpEmr> emrByReg = regs.isEmpty() ? Map.of()
+                : emrRepository.findByRegistrationIdIn(regs.stream().map(r -> r.getId()).toList()).stream()
+                        .collect(java.util.stream.Collectors.toMap(OutpEmr::getRegistrationId, e -> e));
+        return R.ok(regs.stream()
                 .map(r -> {
                     var m = new LinkedHashMap<String, Object>();
                     m.put("registrationId", r.getId());
                     m.put("regNo", r.getRegNo());
                     m.put("status", r.getStatus());
                     m.put("deptId", r.getDeptId());
+                    OutpEmr e = emrByReg.get(r.getId());
+                    m.put("emrWritten", e != null);
+                    m.put("emrSigned", e != null && e.getSignature() != null);
                     patientRepository.findById(r.getPatientId()).ifPresent(p -> {
                         m.put("patientId", p.getId());
                         m.put("patientNo", p.getPatientNo());
@@ -68,11 +82,20 @@ public class DoctorStationController {
         }
     }
 
-    /** 病历+诊断+医嘱一次取全（工作区加载） */
+    /**
+     * 病历+诊断+医嘱一次取全（工作区加载）。
+     *
+     * <p>v43 追加 emrSignerName：签名冻结态要在页面上写明「谁签的」，
+     * 只加这一个附加键，emr 本体形状与既有三键顺序一律不动。
+     */
     @GetMapping("/{registrationId}/workspace")
     public R<Map<String, Object>> workspace(@PathVariable Long registrationId) {
         var m = new LinkedHashMap<String, Object>();
-        m.put("emr", emrRepository.findByRegistrationId(registrationId).orElse(null));
+        OutpEmr emr = emrRepository.findByRegistrationId(registrationId).orElse(null);
+        m.put("emr", emr);
+        m.put("emrSignerName", emr == null || emr.getSignature() == null || emr.getDoctorId() == null ? null
+                : userRepository.findById(emr.getDoctorId())
+                        .map(cn.hip.platform.core.entity.SysUser::getRealName).orElse(null));
         m.put("diagnoses", diagnosisRepository.findByRegistrationIdOrderByPrimaryDiagDescIdAsc(registrationId));
         m.put("orders", orderRepository.findByRegistrationIdOrderByIdAsc(registrationId));
         return R.ok(m);
@@ -91,6 +114,13 @@ public class DoctorStationController {
         }
     }
 
+    /**
+     * 门诊病历 CA 签名（签名即冻结原文，之后只能走 /emr/amend 补正）。
+     *
+     * <p>端点自 1.0 起就在，v43 车道A 之前前端没有任何签名按钮，正常路径走不到——
+     * 连带使「已签名才显示」的补正区块永远不可达。本版只补入口与两条缺失校验
+     * （4022 空病历 / 4023 非书写医师），<b>成功返回体 {signature, signedAt} 保持不变</b>。
+     */
     @PostMapping("/{registrationId}/emr/sign")
     public R<Object> signEmr(@PathVariable Long registrationId, Authentication auth) {
         try {

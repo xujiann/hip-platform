@@ -8,16 +8,24 @@
       <el-table :data="worklist" highlight-current-row height="calc(100vh - 220px)" @current-change="openPatient">
         <el-table-column prop="regNo" label="号" width="50" />
         <el-table-column prop="patientName" label="姓名" width="80" />
-        <el-table-column label="性别/年龄" width="90">
+        <el-table-column label="性别/年龄" width="76">
           <template #default="{ row }">
             {{ { M: '男', F: '女', U: '?' }[row.sex as string] }}/{{ row.age ?? '?' }}
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="80">
+        <el-table-column label="状态" width="66">
           <template #default="{ row }">
             <el-tag :type="row.status === 'REGISTERED' ? 'warning' : 'success'" size="small">
               {{ row.status === 'REGISTERED' ? '待诊' : '已诊' }}
             </el-tag>
+          </template>
+        </el-table-column>
+        <!-- v43：诊毕未签一目了然（病历已写但未签名即标红） -->
+        <el-table-column label="病历" width="62">
+          <template #default="{ row }">
+            <el-tag v-if="row.emrSigned" type="success" size="small">已签</el-tag>
+            <el-tag v-else-if="row.emrWritten" type="danger" size="small">未签</el-tag>
+            <span v-else class="dim">—</span>
           </template>
         </el-table-column>
       </el-table>
@@ -40,13 +48,16 @@
 
       <el-tabs v-model="tab">
         <el-tab-pane label="病历" name="emr">
+          <!-- v43：签名冻结态——原文只读，页首写明签名人与签名时间 -->
+          <el-alert v-if="emrSigned" type="success" :closable="false" show-icon style="margin-bottom: 10px"
+                    :title="`本次病历已签名冻结 · 签名人：${emrSignerName || '—'} · 签名时间：${emrSignedAtText || '—'}`" />
           <el-form :model="emr" label-width="80px">
-            <el-form-item label="主诉"><el-input v-model="emr.chiefComplaint" /></el-form-item>
-            <el-form-item label="现病史"><el-input v-model="emr.presentIllness" type="textarea" :rows="3" /></el-form-item>
-            <el-form-item label="既往史"><el-input v-model="emr.pastHistory" type="textarea" :rows="2" /></el-form-item>
-            <el-form-item label="体格检查"><el-input v-model="emr.physicalExam" type="textarea" :rows="2" /></el-form-item>
+            <el-form-item label="主诉"><el-input v-model="emr.chiefComplaint" :disabled="emrSigned" /></el-form-item>
+            <el-form-item label="现病史"><el-input v-model="emr.presentIllness" type="textarea" :rows="3" :disabled="emrSigned" /></el-form-item>
+            <el-form-item label="既往史"><el-input v-model="emr.pastHistory" type="textarea" :rows="2" :disabled="emrSigned" /></el-form-item>
+            <el-form-item label="体格检查"><el-input v-model="emr.physicalExam" type="textarea" :rows="2" :disabled="emrSigned" /></el-form-item>
             <el-form-item label="诊断">
-              <el-select v-model="diagCodes" multiple filterable remote reserve-keyword
+              <el-select v-model="diagCodes" multiple filterable remote reserve-keyword :disabled="emrSigned"
                          :remote-method="searchIcd" placeholder="搜索 ICD（名称/编码/拼音首字母），第一项为主诊断"
                          style="width: 100%">
                 <el-option v-for="i in icdOptions" :key="i.code" :label="`${i.name} (${i.code})`" :value="i.code" />
@@ -56,8 +67,11 @@
               <el-alert v-for="(tip, i) in cdssTips" :key="i" :title="tip" type="warning" show-icon
                         :closable="false" style="margin-bottom: 4px" />
             </el-form-item>
-            <el-form-item label="处理意见"><el-input v-model="emr.advice" type="textarea" :rows="2" /></el-form-item>
+            <el-form-item label="处理意见"><el-input v-model="emr.advice" type="textarea" :rows="2" :disabled="emrSigned" /></el-form-item>
             <el-button type="primary" :loading="savingEmr" :disabled="emrSigned" @click="saveEmr">保存病历</el-button>
+            <!-- v43：门诊病历签名入口（此前端点齐备但界面无按钮，签名与补正在正常路径上都走不到） -->
+            <el-button v-if="!emrSigned" type="warning" :loading="signing" @click="signEmr">签 名</el-button>
+            <span v-if="!emrSigned" class="sign-tip">签名后原文冻结，如需更正只能追加补正记录</span>
           </el-form>
 
           <!-- 阻塞4：签名冻结病历的合规补正入口 -->
@@ -155,6 +169,31 @@
         </el-tab-pane>
 
         <el-tab-pane :label="`已开医嘱(${orders.length})`" name="orders">
+          <!-- v43 合版补：车道B 的五种日常单据打印入口（PrintView 分支由车道B 落地，非死链）
+               与车道D 的皮试结果只读入口（端点已放开 DOCTOR_OUTP，前端此前无入口）。
+               两项均跨车道，按车道纪律由合版统一加。 -->
+          <div class="doc-bar no-print">
+            <el-dropdown @command="printDoc">
+              <el-button size="small" type="primary">打印单据<el-icon class="el-icon--right"><ArrowDown /></el-icon></el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="prescription">处方笺</el-dropdown-item>
+                  <el-dropdown-item command="lab-request">检验申请单</el-dropdown-item>
+                  <el-dropdown-item command="exam-request">检查申请单</el-dropdown-item>
+                  <el-dropdown-item command="treat-sheet">治疗单</el-dropdown-item>
+                  <el-dropdown-item command="guide-sheet">导诊单</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+            <el-button size="small" @click="loadSkinTests">皮试结果</el-button>
+            <span v-if="skinTests.length" class="skin-inline">
+              <el-tag v-for="st in skinTests" :key="st.id as number" size="small"
+                      :type="st.positive ? 'danger' : (st.result === 'PENDING' ? 'info' : 'success')"
+                      style="margin-right: 6px">
+                {{ st.drug_name }}{{ st.category ? '（' + st.category + '）' : '' }}：{{ st.result_text }}
+              </el-tag>
+            </span>
+          </div>
           <el-table :data="orders" size="small">
             <el-table-column prop="groupNo" label="单号" width="140" />
             <el-table-column label="类型" width="70">
@@ -204,7 +243,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { todayLocal } from '../../utils/date'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
 
 const categoryNames: Record<string, string> = { LAB: '检验', EXAM: '检查', TREAT: '治疗', MATERIAL: '材料' }
@@ -233,6 +272,9 @@ const submitting = ref(false)
 
 const emr = reactive({ chiefComplaint: '', presentIllness: '', pastHistory: '', physicalExam: '', advice: '' })
 const emrSigned = ref(false)
+const emrSignerName = ref('')
+const emrSignedAtText = ref('')
+const signing = ref(false)
 const amendForm = reactive({ amendText: '', reason: '' })
 const amending = ref(false)
 const amendments = ref<Record<string, unknown>[]>([])
@@ -264,6 +306,7 @@ async function loadWorklist() {
 }
 
 async function openPatient(row: Record<string, unknown> | null) {
+  warnIfLeavingUnsigned(row)
   current.value = row
   if (!row) return
   const resp = await client.get(`/outpatient/doctor/${row.registrationId}/workspace`)
@@ -279,12 +322,31 @@ async function openPatient(row: Record<string, unknown> | null) {
   icdOptions.value = (ws.diagnoses ?? []).map((d: { icdCode: string; icdName: string }) => ({ code: d.icdCode, name: d.icdName }))
   orders.value = ws.orders ?? []
   emrSigned.value = !!ws.emr?.signature
+  emrSignerName.value = (ws.emrSignerName as string) ?? ''
+  emrSignedAtText.value = ws.emr?.signedAt ? new Date(ws.emr.signedAt as string).toLocaleString('zh-CN') : ''
   stockWarnings.value = []
   amendForm.amendText = ''
   amendForm.reason = ''
   amendments.value = emrSigned.value ? await loadAmendments(row.registrationId as number) : []
+  skinTests.value = []   // v43：切患者清空，避免上一位的皮试结果串到本位
   rxLines.value = []
   labLines.value = []
+}
+
+/** v43：五种日常单据打印（车道B 端点 /api/print/doc/{docType}/{registrationId}） */
+function printDoc(docType: string) {
+  if (!current.value) return
+  window.open(`/print?type=${docType}&id=${current.value.registrationId}`, '_blank')
+}
+
+/** v43：皮试结果只读查看（车道D 端点，仅放开读；登记与出结果仍限护士） */
+const skinTests = ref<Record<string, unknown>[]>([])
+async function loadSkinTests() {
+  if (!current.value) return
+  const resp = await client.get('/outpatient/nurse/skin-tests/for-doctor',
+    { params: { registrationId: current.value.registrationId } })
+  skinTests.value = resp.data.data ?? []
+  if (skinTests.value.length === 0) ElMessage.info('本次就诊暂无皮试记录')
 }
 
 async function loadAmendments(registrationId: number) {
@@ -346,6 +408,58 @@ async function saveEmr() {
   } finally {
     savingEmr.value = false
   }
+}
+
+function emrHasContent() {
+  return [emr.chiefComplaint, emr.presentIllness, emr.pastHistory, emr.physicalExam, emr.advice]
+    .some((v) => (v ?? '').trim().length > 0)
+}
+
+/**
+ * v43 门诊病历签名（偏离表 991）。端点 POST /emr/sign 早已齐备，此前界面无按钮，
+ * 医生签不了名；而「已签名」才显示的补正区块因此永远不可达。签名成功后本页转冻结态。
+ */
+async function signEmr() {
+  if (!current.value) return
+  if (!emrHasContent()) {
+    ElMessage.warning('病历内容为空，请先书写并保存病历后再签名')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      '签名后本次病历原文即冻结，不能再修改，只能追加补正记录。确认签名？', '病历签名',
+      { type: 'warning', confirmButtonText: '确认签名', cancelButtonText: '再改改' })
+  } catch {
+    return   // 医生取消，不做任何事
+  }
+  signing.value = true
+  try {
+    const resp = await client.post(`/outpatient/doctor/${current.value.registrationId}/emr/sign`)
+    if (resp.data.code !== 0) {
+      ElMessage.error(resp.data.message)
+      return
+    }
+    ElMessage.success('病历已签名')
+    await openPatient(current.value)
+    await loadWorklist()
+  } finally {
+    signing.value = false
+  }
+}
+
+/**
+ * v43 诊毕未签提示：切换患者时若上一位的病历已书写却未签名，给一条提示。
+ * 本版是零写路径阻断——只提示，不拦截切换，也不改任何保存/开单逻辑。
+ */
+function warnIfLeavingUnsigned(next: Record<string, unknown> | null) {
+  const prev = current.value
+  if (!prev || emrSigned.value || !emrHasContent()) return
+  if (next && (next.registrationId as number) === (prev.registrationId as number)) return
+  ElMessage({
+    type: 'warning',
+    duration: 6000,
+    message: `患者「${prev.patientName}」本次病历已书写但尚未签名，请回到该患者完成签名。`,
+  })
 }
 
 // CDSS：按主诊断给出诊疗建议
@@ -426,10 +540,21 @@ onMounted(loadWorklist)
 </script>
 
 <style scoped>
+/* v43 合版：已开医嘱页签的单据打印与皮试结果工具条 */
+.doc-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.skin-inline { display: inline-flex; flex-wrap: wrap; align-items: center; }
+
 .doctor-page {
   display: grid;
-  grid-template-columns: 320px 1fr;
+  /* v43：队列多一列「病历（已签/未签）」，360px 才放得下不横向滚 */
+  grid-template-columns: 360px 1fr;
   gap: 12px;
+}
+.dim { color: var(--el-text-color-placeholder); }
+.sign-tip {
+  margin-left: 10px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 .hist-line { margin: 2px 0; font-size: 13px; color: var(--el-text-color-regular); }
 .add-row {

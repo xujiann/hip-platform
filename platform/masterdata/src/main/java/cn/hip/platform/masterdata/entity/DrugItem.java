@@ -72,4 +72,19 @@ public class DrugItem {
 
     @Column(nullable = false)
     private Boolean enabled = true;
+
+    /**
+     * v43 停用留痕（V134）。三列全部可空：<b>历史停用行必然为 null</b>——本版之前没有任何
+     * 启停入口，实施期若有人直接 update md_drug set enabled=false，留痕无从追溯，
+     * 严禁用当前时间/任意管理员回填伪造。启用时三列一并清空（见 MasterDataController.enableDrug）。
+     */
+    @Column(length = 200)
+    private String disableReason;
+
+    @Column
+    private java.time.Instant disabledAt;
+
+    /** 停用操作人 sys_user.id（不存用户名，v42 已就人字段立规） */
+    @Column
+    private Long disabledBy;
 }

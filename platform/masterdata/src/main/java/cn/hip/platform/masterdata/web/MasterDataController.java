@@ -1,16 +1,19 @@
 package cn.hip.platform.masterdata.web;
 
 import cn.hip.platform.core.common.R;
+import cn.hip.platform.core.security.CurrentUserService;
 import cn.hip.platform.masterdata.entity.ChargeItem;
 import cn.hip.platform.masterdata.entity.DrugItem;
 import cn.hip.platform.masterdata.entity.Icd10;
 import cn.hip.platform.masterdata.repository.ChargeItemRepository;
 import cn.hip.platform.masterdata.repository.DrugItemRepository;
 import cn.hip.platform.masterdata.repository.Icd10Repository;
+import jakarta.persistence.EntityManager;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.Authentication;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -37,11 +40,26 @@ public class MasterDataController {
     private final ChargeItemRepository chargeItemRepository;
     private final Icd10Repository icd10Repository;
     private final JdbcTemplate jdbc;
+    private final EntityManager entityManager;
+    private final CurrentUserService currentUserService;
 
     /** 产品化一期：药品目录 CSV 批量导入（实施工具，按 code upsert）
      *  列：code,name,spec,unit,dose_form,price,stock[,antibiotic 0/1][,fee_category_code][,self_pay 0/1]
      *
-     *  <p>v42 起可带费用类别与自费标记两列。费用类别走**软校验**（见 importChargeItems 注释）。 */
+     *  <p>v42 起可带费用类别与自费标记两列。费用类别走**软校验**（见 importChargeItems 注释）。
+     *
+     *  <p><b>v43 停用药品的导入口径（同一套行级 errors 纪律）</b>：upsert 命中一条**已停用**的
+     *  药品时——
+     *  <ol>
+     *    <li><b>该行照常导入</b>（名称/规格/价格等照更），<b>但不复活它</b>：
+     *        原先 do update 里写死的 {@code enabled = true} 已去掉，改为不动 enabled 列。
+     *        批量导入是实施期每周都在跑的动作，让它静默把药师刚停掉的药一次次重新上架，
+     *        比不导入危险得多——而且没有任何日志能说明药是怎么活过来的。</li>
+     *    <li><b>记一条行级错误</b>进 errors 数组（与"列数不足"、v42"未知费用类别"同一模式），
+     *        告诉实施方这行的状态没被覆盖，要复活请走「基础数据 → 药品目录 → 启用」。</li>
+     *    <li><b>整批不阻断</b>（本仓既定纪律，v42 费用类别同款）。</li>
+     *  </ol>
+     *  新增行仍按 enabled=true 落库（insert 分支的字面量未动）。 */
     @PostMapping(value = "/drugs/import", consumes = "text/plain")
     @PreAuthorize("hasRole('ADMIN')")
     @Transactional
@@ -49,6 +67,9 @@ public class MasterDataController {
         int ok = 0;
         List<String> errors = new ArrayList<>();
         Set<String> categories = enabledCategoryCodes();
+        // 一次查全量停用码（同 enabledCategoryCodes 的取舍：逐行查会把批量导入变成 N 次往返）
+        Set<String> disabledCodes = new HashSet<>(jdbc.queryForList(
+                "select code from md_drug where not enabled", String.class));
         String[] lines = csv.split("\\r?\\n");
         for (int i = 0; i < lines.length; i++) {
             String line = lines[i].strip();
@@ -60,6 +81,11 @@ public class MasterDataController {
             }
             String cat = softCategory(field(f, 8), categories, i + 1, errors);
             Boolean selfPay = flag(field(f, 9));
+            if (disabledCodes.contains(f[0].strip())) {
+                errors.add("第" + (i + 1) + "行：药品「" + f[0].strip() + "」当前为停用状态，"
+                        + "本次导入已更新其名称/规格/价格等资料，但**未改变停用状态**"
+                        + "（如需恢复，请在「基础数据 → 药品目录」中显式启用）");
+            }
             try {
                 jdbc.update("""
                         insert into md_drug(code, name, spec, unit, dose_form, price, stock, antibiotic,
@@ -69,8 +95,7 @@ public class MasterDataController {
                             unit = excluded.unit, dose_form = excluded.dose_form, price = excluded.price,
                             antibiotic = excluded.antibiotic,
                             fee_category_code = coalesce(?::varchar, md_drug.fee_category_code),
-                            self_pay = coalesce(?::boolean, md_drug.self_pay),
-                            enabled = true
+                            self_pay = coalesce(?::boolean, md_drug.self_pay)
                         """, f[0].strip(), f[1].strip(), f[2].strip(), f[3].strip(), f[4].strip(),
                         f[5].strip(), f.length > 6 && !f[6].strip().isEmpty() ? f[6].strip() : "0",
                         f.length > 7 && "1".equals(f[7].strip()),
@@ -132,9 +157,43 @@ public class MasterDataController {
         return R.ok(Map.of("imported", ok, "errorCount", errors.size(), "errors", errors));
     }
 
+    /**
+     * 药品检索（top 20）。
+     *
+     * <p><b>v43：默认行为逐字节不变——不带参数时仍只返回启用中的药品。</b>
+     * 这不是保守，是必需：本端点是**开单侧药品选择器**的唯一数据源
+     * （DoctorStationView:367 门诊医生站、InpDoctorView:476 住院医生站，另有 InventoryView /
+     * StockTakeView 两处药库页与 15 个 E2E 脚本在用）。若把默认改成"返回全部"，
+     * 停用药品会立刻回到医生的下拉框里，医生选中→开单→撞 8016，
+     * 等于用一个"能查到但开不了"的选项去惩罚使用者，与本车道的目的正相反。
+     *
+     * <p>维护页（DrugsView）需要看到停用药品，走显式参数——与本类
+     * {@link #feeCategories(boolean)} 的 {@code all=true} 同一套既定约定：
+     * <ul>
+     *   <li>不带参数：仅启用（历史默认，走原仓储方法，一行未改）</li>
+     *   <li>{@code all=true}：全部（维护页默认视图）</li>
+     *   <li>{@code enabled=true|false}：仅启用 / <b>仅停用</b>（维护页状态筛选）</li>
+     * </ul>
+     *
+     * @param all     true 时返回全部状态（enabled 未指定时生效）
+     * @param enabled 显式状态筛选，优先于 all；null 表示不按状态筛
+     */
     @GetMapping("/drugs")
-    public R<List<DrugItem>> drugs(@RequestParam(defaultValue = "") String keyword) {
-        return R.ok(drugRepository.findTop20ByEnabledTrueAndNameContainingOrderByCode(keyword));
+    public R<List<DrugItem>> drugs(@RequestParam(defaultValue = "") String keyword,
+                                   @RequestParam(defaultValue = "false") boolean all,
+                                   @RequestParam(required = false) Boolean enabled) {
+        if (enabled == null && !all) {
+            return R.ok(drugRepository.findTop20ByEnabledTrueAndNameContainingOrderByCode(keyword));
+        }
+        String jpql = "select d from DrugItem d where d.name like :kw"
+                + (enabled == null ? "" : " and d.enabled = :en") + " order by d.code";
+        var q = entityManager.createQuery(jpql, DrugItem.class)
+                .setParameter("kw", "%" + keyword + "%")
+                .setMaxResults(20);
+        if (enabled != null) {
+            q.setParameter("en", enabled);
+        }
+        return R.ok(q.getResultList());
     }
 
     @GetMapping("/charge-items")
@@ -148,6 +207,75 @@ public class MasterDataController {
     @GetMapping("/icd10")
     public R<List<Icd10>> icd10(@RequestParam(defaultValue = "") String keyword) {
         return R.ok(icd10Repository.search(keyword, PageRequest.of(0, 20)));
+    }
+
+    // ==================== v43 药品启用/停用（V134，错误码 8013–8016） ====================
+
+    /** 停用入参：reason 必填（8015） */
+    public record DrugDisableReq(String reason) {}
+
+    /**
+     * 停用药品（偏离表 1162★）。enabled=false + 落停用原因/时间/人三列留痕。
+     *
+     * <p><b>并发口径</b>：走**条件更新 + 受影响行数**判定"是否已停用"，不做读-判-写——
+     * 两个药师同时点停用时，读-判-写会双双通过、后写者覆盖前写者的原因与时间
+     * （同 {@link #createFeeCategory} 的判定方式，本仓既定纪律）。
+     *
+     * <p><b>停用是可逆的软状态</b>：既不删行、不动 stock、也不碰任何在途医嘱/处方——
+     * 已开出但未发药的处方照常执行（药已经在架上，拒发只会把患者堵在药房窗口）；
+     * 停用只作用于**新开单**（8016）。
+     *
+     * <p>权限：ADMIN + PHARMACIST。药品目录菜单 /masterdata/drugs 自 V36:29-30 起本就
+     * 授权给药师，停用/启用是药事管理动作，把它锁死在 ADMIN 会让真正的责任人做不了。
+     */
+    @PutMapping("/drugs/{id}/disable")
+    @PreAuthorize("hasAnyRole('ADMIN','PHARMACIST')")
+    @Transactional
+    public R<Void> disableDrug(@PathVariable Long id,
+                               @RequestBody(required = false) DrugDisableReq req,
+                               Authentication auth) {
+        var rows = jdbc.queryForList("select name from md_drug where id = ?", id);
+        if (rows.isEmpty()) {
+            return R.fail(8013, "药品不存在");
+        }
+        String name = String.valueOf(rows.get(0).get("name"));
+        String reason = nullIfBlank(req == null ? null : req.reason());
+        if (reason == null) {
+            // 停用原因是本条诚信补齐的核心：没有原因的停用等于「有列没功能」换个地方复现——
+            // 事后没人说得清这药是招标掉标、是效期召回、还是临床暂停使用。
+            return R.fail(8015, "停用原因必填");
+        }
+        if (reason.length() > 200) {
+            reason = reason.substring(0, 200);   // 列宽 200，截断而非报错（原因是备注不是主键）
+        }
+        int n = jdbc.update("""
+                update md_drug set enabled = false, disable_reason = ?, disabled_at = now(), disabled_by = ?
+                where id = ? and enabled
+                """, reason, uidOf(auth), id);
+        return n == 0 ? R.fail(8014, "药品「" + name + "」已是停用状态，无需重复停用") : R.ok();
+    }
+
+    /** 取消停用。留痕三列一并清空——留着旧原因会让下次停用前的展示自相矛盾（已启用却显示停用原因）。 */
+    @PutMapping("/drugs/{id}/enable")
+    @PreAuthorize("hasAnyRole('ADMIN','PHARMACIST')")
+    @Transactional
+    public R<Void> enableDrug(@PathVariable Long id) {
+        int n = jdbc.update("""
+                update md_drug set enabled = true, disable_reason = null, disabled_at = null, disabled_by = null
+                where id = ? and not enabled
+                """, id);
+        if (n > 0) {
+            return R.ok();
+        }
+        var rows = jdbc.queryForList("select name from md_drug where id = ?", id);
+        return rows.isEmpty()
+                ? R.fail(8013, "药品不存在")
+                : R.fail(8014, "药品「" + rows.get(0).get("name") + "」已是启用状态，无需重复启用");
+    }
+
+    /** 登录态用户 id；测试/内部调用可能无 Authentication，此时留痕人为 null（列可空） */
+    private Long uidOf(Authentication auth) {
+        return auth == null ? null : currentUserService.idOf(auth);
     }
 
     // ==================== v42 费用类别字典（md_fee_category，错误码 4860–4864） ====================

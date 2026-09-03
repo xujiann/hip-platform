@@ -26,6 +26,18 @@
       </el-table>
       <div class="settle-bar">
         <span class="total">合计：¥{{ detail.total }}</span>
+        <!-- 缴费前也要能出单：导诊单/申请单本就是让患者拿着去跑流程的 -->
+        <el-dropdown trigger="click" @command="printDoc">
+          <el-button>打印单据<el-icon><ArrowDown /></el-icon></el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item v-for="d in CLINICAL_DOCS" :key="d.type"
+                                :command="{ docType: d.type, regId: detail.registrationId as number }">
+                {{ d.label }}
+              </el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
         <el-select v-model="payMethod" style="width: 120px">
           <el-option label="现金" value="CASH" />
           <el-option label="微信" value="WECHAT" />
@@ -60,10 +72,23 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="140">
+        <el-table-column label="操作" width="230">
           <template #default="{ row }">
             <!-- v40：票据打印/补打（打印数据集与版式早已就绪，此前收费台无入口） -->
             <el-button link type="primary" @click="printCharge(row.chargeId as number)">打印</el-button>
+            <!-- v43 车道B：五种日常单据（处方笺/申请单/治疗单/导诊单）按挂号打印，
+                 与票据不同源——它们取 registrationId 而不是 chargeId，也不写财务票据留痕表 -->
+            <el-dropdown trigger="click" style="margin: 0 8px" @command="printDoc">
+              <el-button link type="primary">打印单据<el-icon><ArrowDown /></el-icon></el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item v-for="d in CLINICAL_DOCS" :key="d.type"
+                                    :command="{ docType: d.type, regId: row.registrationId as number }">
+                    {{ d.label }}
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
             <el-button v-if="row.status === 'PAID' && auth.hasPerm('outp:charge:refund')" link type="danger"
                        :loading="refunding === row.chargeId" @click="refund(row)">退费</el-button>
           </template>
@@ -127,6 +152,27 @@ async function printCharge(chargeId: number) {
   await client.post('/print/log', null, { params: { docType: 'CHARGE', docId: chargeId } })
   if (reprintRows.value.length) await searchCharges()
 }
+/**
+ * v43 车道B：五种日常单据打印入口（偏离表 1026★）。
+ * 与票据打印的两点不同：① 按 registrationId 取数（一次就诊的医嘱可能跨多张结算单）；
+ * ② **不写 fin_print_log**——那是财务票据留痕表，补打次数是财务口径，
+ * 临床单据一次就诊天然要打好几张，混进去会把该口径污染成"打印动作计数"。
+ */
+const CLINICAL_DOCS = [
+  { type: 'prescription', label: '处方笺' },
+  { type: 'lab-request', label: '检验申请单' },
+  { type: 'exam-request', label: '检查申请单' },
+  { type: 'treat-sheet', label: '治疗单' },
+  { type: 'guide-sheet', label: '导诊单' },
+]
+function printDoc(cmd: { docType: string; regId: number }) {
+  if (!cmd.regId) {
+    ElMessage.warning('该行缺少挂号信息，无法打印单据')
+    return
+  }
+  window.open(`/print?type=${cmd.docType}&id=${cmd.regId}`, '_blank')
+}
+
 const payMethod = ref('CASH')
 const settling = ref(false)
 const refunding = ref<unknown>(null)

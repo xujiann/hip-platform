@@ -125,6 +125,18 @@ public class InpatientService {
         if (!"IN_HOSPITAL".equals(adm.getStatus())) {
             throw new InpException(9005, "已出院不能开医嘱");
         }
+        // v43 车道C（8016）：停用药品不可开医嘱。**本方法唯一的新增判断，且是纯只读预检**——
+        // 放在 nextGroupSeq()／orderRepo.save()／generateExecLines() 之前，
+        // 失败时零副作用（无序列、无 inp_order、无 inp_order_exec、无库存变动）。
+        // 药品不存在仍留给下方既有的 9006 路径处理，此处只管"存在但已停用"。
+        for (OrderLine line : lines) {
+            if (!"DRUG".equals(line.orderType())) continue;
+            DrugItem d = drugRepository.findById(line.itemId()).orElse(null);
+            if (d != null && !Boolean.TRUE.equals(d.getEnabled())) {
+                throw new InpException(8016, "药品已停用，不可开单：" + d.getName()
+                        + (d.getDisableReason() == null ? "" : "（停用原因：" + d.getDisableReason() + "）"));
+            }
+        }
         // v34 自费医嘱知情同意 gate（试点期可配 emr.gate.consent.selfpay，默认 warn）。
         // 仅 block 模式才查（warn/off 只读一次缓存配置、零额外开销、零打断）；含自费项而无有效自费
         // 同意书时硬拦。self_pay 标记由主数据维护补齐，未标记则天然无自费项、gate 空转。

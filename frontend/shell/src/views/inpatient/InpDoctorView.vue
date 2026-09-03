@@ -1,8 +1,38 @@
 <template>
   <div class="inp-doctor">
     <el-card class="list">
-      <template #header>在院患者</template>
-      <el-table :data="admissions" highlight-current-row height="calc(100vh - 220px)" @current-change="open">
+      <template #header>
+        在院患者
+        <el-button link type="primary" size="small" style="float: right" @click="openOrderSearch">医嘱检索</el-button>
+      </template>
+      <!-- 2012★/2013★：多维检索区。后端 GET /admissions 的过滤参数全部可选，
+           一个都不填时与旧行为逐字相同（不会因为挂了这个区块就改变默认列表）。 -->
+      <div class="filters">
+        <el-input v-model="q.keyword" size="small" clearable placeholder="姓名 / 住院号"
+                  @keyup.enter="loadList" @clear="loadList" />
+        <el-select v-model="q.deptId" size="small" clearable placeholder="科室" @change="loadList">
+          <el-option v-for="d in clinicalDepts" :key="d.id" :label="d.name" :value="d.id" />
+        </el-select>
+        <el-select v-model="q.careLevel" size="small" clearable placeholder="护理级别" @change="loadList">
+          <el-option v-for="l in careLevels" :key="l" :label="`${l}护理`" :value="l" />
+        </el-select>
+        <el-select v-model="q.transferred" size="small" clearable placeholder="是否转科" @change="loadList">
+          <el-option label="转过科" :value="true" />
+          <el-option label="未转科" :value="false" />
+        </el-select>
+        <el-select v-model="q.doctorId" size="small" clearable filterable placeholder="主管医生" @change="loadList">
+          <el-option v-for="d in doctorOptions" :key="d.id as number"
+                     :label="String(d.real_name)" :value="d.id as number" />
+        </el-select>
+        <div class="filter-row">
+          <el-checkbox v-model="q.mine" size="small" @change="loadList">只看我的病人</el-checkbox>
+          <el-button link size="small" @click="resetFilters">重置</el-button>
+        </div>
+      </div>
+      <el-alert v-if="listError" type="warning" show-icon :closable="false" :title="listError"
+                style="margin-bottom: 6px" />
+      <div class="list-count">共 {{ admissions.length }} 人{{ filterActive ? '（已筛选）' : '' }}</div>
+      <el-table :data="admissions" highlight-current-row height="calc(100vh - 400px)" @current-change="open">
         <el-table-column prop="bedNo" label="床" width="50" />
         <el-table-column prop="patientName" label="姓名" width="80" />
         <el-table-column prop="admitDiagName" label="诊断" show-overflow-tooltip />
@@ -12,6 +42,11 @@
     <el-card v-if="current" class="workspace">
       <template #header>
         <b>{{ current.patientName }}</b>（{{ current.admissionNo }} · {{ current.wardName }} {{ current.bedNo }}床）
+        <!-- 2013★：doctor_id 此前建了表却无任何读写路径，主管医生在界面上完全不存在 -->
+        <el-tag size="small" :type="current.doctorName ? 'success' : 'info'" style="margin-left: 8px">
+          主管医生：{{ current.doctorName ?? '未指定' }}
+        </el-tag>
+        <el-button size="small" style="margin-left: 8px" @click="openAttending">设主管医生</el-button>
         <el-button size="small" style="margin-left: 8px" @click="openTransfer">转科</el-button>
         <span class="fees">
           费用 ¥{{ totalAmount }} / 押金 ¥{{ depositAmount }} /
@@ -161,6 +196,87 @@
     </el-card>
     <el-empty v-else class="workspace" description="选择在院患者" />
 
+    <!-- 2013★：设置/变更主管医生（入院后唯一的修改路径；只 update doctor_id 一列） -->
+    <el-dialog v-model="attendingVisible" title="设置主管医生" width="420px">
+      <el-form label-width="90px">
+        <el-form-item label="患者">
+          <span>{{ current?.patientName }}（{{ current?.admissionNo }}）</span>
+        </el-form-item>
+        <el-form-item label="当前主管">
+          <span>{{ current?.doctorName ?? '未指定' }}</span>
+        </el-form-item>
+        <el-form-item label="设为" required>
+          <el-select v-model="attendingDoctorId" filterable placeholder="选择主管医生" style="width: 100%">
+            <el-option v-for="d in doctorOptions" :key="d.id as number"
+                       :label="`${d.real_name}${d.title ? '（' + d.title + '）' : ''}`" :value="d.id as number" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="attendingVisible = false">取消</el-button>
+        <el-button type="primary" :loading="attendingSaving" @click="saveAttending">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 2028★：跨患者的病区级医嘱检索（按床号 / 姓名 / 医嘱内容）。
+         此前住院医嘱只能"先选患者再看该患者医嘱"，"3 床那瓶头孢是谁开的"无从查起。 -->
+    <el-dialog v-model="orderSearchVisible" title="医嘱检索（按床号 / 姓名 / 医嘱内容）" width="1000px">
+      <div class="add-row">
+        <el-input v-model="oq.bedNo" placeholder="床号" style="width: 90px" @keyup.enter="doOrderSearch" />
+        <el-input v-model="oq.patientName" placeholder="患者姓名" style="width: 130px" @keyup.enter="doOrderSearch" />
+        <el-input v-model="oq.keyword" placeholder="医嘱内容（药品名 / 项目名）" style="width: 240px"
+                  @keyup.enter="doOrderSearch" />
+        <el-select v-model="oq.deptId" clearable placeholder="科室" style="width: 130px">
+          <el-option v-for="d in clinicalDepts" :key="d.id" :label="d.name" :value="d.id" />
+        </el-select>
+        <el-select v-model="oq.status" clearable placeholder="状态" style="width: 110px">
+          <el-option label="未执行" value="CREATED" />
+          <el-option label="已执行" value="EXECUTED" />
+          <el-option label="作废" value="CANCELLED" />
+        </el-select>
+        <el-checkbox v-model="oq.includeDischarged">含已出院</el-checkbox>
+        <el-button type="primary" :loading="orderSearching" @click="doOrderSearch">检索</el-button>
+      </div>
+      <el-alert v-if="orderSearchMsg" type="warning" show-icon :closable="false" :title="orderSearchMsg"
+                style="margin-bottom: 8px" />
+      <!-- 照抄 mr-workqueue 纪律：硬限 200 条 + truncated 提示，不做翻页 -->
+      <el-alert v-if="orderTruncated" type="info" show-icon :closable="false" style="margin-bottom: 8px"
+                title="命中超过 200 条，仅显示前 200 条——请收窄检索条件（加床号或姓名），本页不提供翻页" />
+      <el-table :data="orderHits" size="small" height="420" empty-text="输入条件后检索">
+        <el-table-column prop="bed_no" label="床" width="55" />
+        <el-table-column prop="patient_name" label="姓名" width="85" />
+        <el-table-column prop="ward_name" label="病区" width="100" />
+        <el-table-column label="类型" width="55">
+          <template #default="{ row }">{{ orderTypeNames[row.order_type as string] ?? row.order_type }}</template>
+        </el-table-column>
+        <el-table-column prop="item_name" label="医嘱内容" show-overflow-tooltip />
+        <el-table-column label="用法" width="140">
+          <template #default="{ row }">
+            <span v-if="row.order_type === 'DRUG'">{{ row.usage_route }} {{ row.dose_per_time }} {{ row.frequency }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="amount" label="金额" width="80" />
+        <el-table-column label="状态" width="80">
+          <template #default="{ row }">
+            <el-tag size="small" :type="{ CREATED: 'warning', EXECUTED: 'success', CANCELLED: 'info' }[row.status as string]">
+              {{ { CREATED: '未执行', EXECUTED: '已执行', CANCELLED: '作废' }[row.status as string] }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="order_doctor_name" label="开单医师" width="90" />
+        <el-table-column prop="executor_name" label="执行人" width="90" />
+        <el-table-column label="操作" width="80">
+          <template #default="{ row }">
+            <el-button link type="primary" size="small" @click="jumpToPatient(row)">打开患者</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <span class="fees">共 {{ orderHits.length }} 条</span>
+        <el-button @click="orderSearchVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 收尾环·阻塞3：转科转床（选目标科室 + 空床 + 原因，调已有 transfer 接口） -->
     <el-dialog v-model="transferVisible" title="转科转床" width="600px">
       <el-form label-width="90px">
@@ -288,6 +404,43 @@ const transferBeds = ref<{ id: number; bedNo: string; status: string; patientNam
 const transferHistory = ref<Record<string, unknown>[]>([])
 const tf = reactive({ toDeptId: null as number | null, toBedId: null as number | null, reason: '' })
 
+// 2012★/2013★：在院患者多维检索（全部可选；一个都不填 = 旧的"全院在院一览"）
+const careLevels = ['特级', '一级', '二级', '三级']
+const q = reactive({
+  keyword: '',
+  deptId: null as number | null,
+  careLevel: null as string | null,
+  transferred: null as boolean | null,
+  doctorId: null as number | null,
+  mine: false,
+})
+const listError = ref('')
+const filterActive = computed(() =>
+  !!q.keyword.trim() || q.deptId != null || !!q.careLevel || q.transferred != null
+  || q.doctorId != null || q.mine)
+
+// 2013★：主管医生字典 + 设置主管医生
+const doctorOptions = ref<Record<string, unknown>[]>([])
+const attendingVisible = ref(false)
+const attendingSaving = ref(false)
+const attendingDoctorId = ref<number | null>(null)
+
+// 2028★：跨患者医嘱检索
+const orderTypeNames: Record<string, string> = { DRUG: '药', LAB: '验', EXAM: '查', TREAT: '治' }
+const orderSearchVisible = ref(false)
+const orderSearching = ref(false)
+const orderSearchMsg = ref('')
+const orderTruncated = ref(false)
+const orderHits = ref<Record<string, unknown>[]>([])
+const oq = reactive({
+  bedNo: '',
+  patientName: '',
+  keyword: '',
+  deptId: null as number | null,
+  status: null as string | null,
+  includeDischarged: false,
+})
+
 // 病历补正（阻塞4）
 const amendVisible = ref(false)
 const amending = ref(false)
@@ -295,9 +448,119 @@ const amendTarget = ref<Record<string, unknown> | null>(null)
 const amendForm = reactive({ amendText: '', reason: '' })
 const recordAmendments = ref<Record<string, unknown>[]>([])
 
+/**
+ * 2012★/2013★ 多维检索。
+ *
+ * <p>只把**填了的**条件放进 params——后端"零条件 = 旧行为"的契约由此在前端侧也成立：
+ * 空条件时这里发出的就是一个不带任何 query 的 GET /inpatient/admissions。
+ */
 async function loadList() {
-  const resp = await client.get('/inpatient/admissions')
+  const params: Record<string, unknown> = {}
+  if (q.keyword.trim()) params.keyword = q.keyword.trim()
+  if (q.deptId != null) params.deptId = q.deptId
+  if (q.careLevel) params.careLevel = q.careLevel
+  if (q.transferred != null) params.transferred = q.transferred
+  if (q.doctorId != null) params.doctorId = q.doctorId
+  if (q.mine) params.mine = true
+  const resp = await client.get('/inpatient/admissions', { params })
+  if (resp.data.code !== 0) {
+    // 4880 检索条件非法 / 4881 护理级别非法：就地提示，不清空已有列表
+    listError.value = resp.data.message
+    return
+  }
+  listError.value = ''
   admissions.value = resp.data.data
+}
+
+function resetFilters() {
+  q.keyword = ''
+  q.deptId = null
+  q.careLevel = null
+  q.transferred = null
+  q.doctorId = null
+  q.mine = false
+  loadList()
+}
+
+/** 主管医生字典：/system/users 是 ADMIN 专属，医生站用住院线的只读字典端点 */
+async function loadDoctorOptions() {
+  doctorOptions.value = (await client.get('/inpatient/doctors')).data.data
+}
+
+function openAttending() {
+  attendingDoctorId.value = (current.value?.doctorId as number | null) ?? null
+  attendingVisible.value = true
+}
+
+async function saveAttending() {
+  if (!current.value || !attendingDoctorId.value) {
+    ElMessage.warning('请选择主管医生')
+    return
+  }
+  attendingSaving.value = true
+  try {
+    const resp = await client.put(`/inpatient/admissions/${current.value.id}/attending-doctor`,
+      { doctorId: attendingDoctorId.value })
+    if (resp.data.code !== 0) {
+      ElMessage.error(resp.data.message)
+      return
+    }
+    ElMessage.success('主管医生已更新')
+    attendingVisible.value = false
+    const id = current.value.id
+    await loadList()
+    // 列表行带 doctorName，重新指向刷新后的那一行以更新表头
+    current.value = admissions.value.find((a) => a.id === id) ?? current.value
+  } finally {
+    attendingSaving.value = false
+  }
+}
+
+function openOrderSearch() {
+  orderSearchVisible.value = true
+}
+
+/** 2028★：跨患者医嘱检索。后端要求至少一个条件（否则 4880），提示直接透传 */
+async function doOrderSearch() {
+  const params: Record<string, unknown> = {}
+  if (oq.bedNo.trim()) params.bedNo = oq.bedNo.trim()
+  if (oq.patientName.trim()) params.patientName = oq.patientName.trim()
+  if (oq.keyword.trim()) params.keyword = oq.keyword.trim()
+  if (oq.deptId != null) params.deptId = oq.deptId
+  if (oq.status) params.status = oq.status
+  if (oq.includeDischarged) params.includeDischarged = true
+  orderSearching.value = true
+  try {
+    const resp = await client.get('/inpatient/orders/search', { params })
+    if (resp.data.code !== 0) {
+      orderSearchMsg.value = resp.data.message
+      orderHits.value = []
+      orderTruncated.value = false
+      return
+    }
+    orderSearchMsg.value = ''
+    orderHits.value = resp.data.data.items
+    orderTruncated.value = resp.data.data.truncated
+  } finally {
+    orderSearching.value = false
+  }
+}
+
+/** 从医嘱检索结果跳回该患者工作区（命中的可能是当前未加载/被筛掉的患者，故先按 id 兜底拉全量） */
+async function jumpToPatient(row: Record<string, unknown>) {
+  const admissionId = Number(row.admission_id)
+  let hit = admissions.value.find((a) => Number(a.id) === admissionId)
+  if (!hit) {
+    resetFilters()
+    await loadList()
+    hit = admissions.value.find((a) => Number(a.id) === admissionId)
+  }
+  if (!hit) {
+    ElMessage.warning('该患者已不在当前在院列表（可能已出院）')
+    return
+  }
+  orderSearchVisible.value = false
+  await open(hit)
 }
 
 async function loadAccount(id: unknown) {
@@ -517,12 +780,16 @@ async function addItem() {
 
 onMounted(async () => {
   depts.value = (await client.get('/system/depts')).data.data
+  await loadDoctorOptions()
   await loadList()
 })
 </script>
 
 <style scoped>
-.inp-doctor { display: grid; grid-template-columns: 300px 1fr; gap: 12px; }
+.inp-doctor { display: grid; grid-template-columns: 340px 1fr; gap: 12px; }
+.filters { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.filter-row { display: flex; justify-content: space-between; align-items: center; }
+.list-count { color: #909399; font-size: 12px; margin-bottom: 4px; }
 .add-row { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
 .fees { float: right; color: #909399; font-size: 13px; }
 .owed { color: #d03050; font-weight: 700; }

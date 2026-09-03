@@ -103,6 +103,18 @@ public class DoctorStationService {
         if (!"VISITED".equals(reg.getStatus())) {
             throw new BizException(4003, "请先接诊后再开单");
         }
+        // v43 车道C（8016）：停用药品不可开单。**本方法唯一的新增判断，且是纯只读预检**——
+        // 刻意放在 nextGroupSeq() 之前：那是 nextval，事务回滚也退不回去，
+        // 拒绝一张不该开的单不该消耗掉一个处方组号。失败时零副作用（无序列、无订单、无库存变动）。
+        // 药品不存在仍留给下方既有的 4004 路径处理，此处只管"存在但已停用"。
+        for (OrderLine line : lines) {
+            if (!"DRUG".equals(line.orderType())) continue;
+            DrugItem d = drugRepository.findById(line.itemId()).orElse(null);
+            if (d != null && !Boolean.TRUE.equals(d.getEnabled())) {
+                throw new BizException(8016, "药品已停用，不可开单：" + d.getName()
+                        + (d.getDisableReason() == null ? "" : "（停用原因：" + d.getDisableReason() + "）"));
+            }
+        }
         String stamp = BusinessDates.today().format(DateTimeFormatter.BASIC_ISO_DATE);
         String drugGroupNo = configReader.get("billno_prefix_rx", "CF") + stamp + "-" + nextGroupSeq();
 
@@ -231,7 +243,26 @@ public class DoctorStationService {
         }
     }
 
-    /** 病历签名：内容摘要签名后冻结 */
+    /** 病历五段正文是否全空（签一份空病历等同签白纸，v43 起不予签名） */
+    private static boolean blankEmr(OutpEmr emr) {
+        return java.util.stream.Stream.of(emr.getChiefComplaint(), emr.getPresentIllness(),
+                        emr.getPastHistory(), emr.getPhysicalExam(), emr.getAdvice())
+                .allMatch(s -> s == null || s.isBlank());
+    }
+
+    /**
+     * 病历签名：内容摘要签名后冻结。
+     *
+     * <p>v43 车道A（偏离表 991★）补两条此前缺失的校验——端点自 1.0 起就在，但只挡了「病历不存在」
+     * 与「已签名」，任何登录医生都能替别人签、空白病历也照签：
+     * <ul>
+     *   <li><b>4023</b> 仅病历书写医师本人可签名（saveEmr 落的 doctorId 即书写人）。
+     *       两侧 id 任一为 null（历史数据、无登录上下文的服务层直调）时不判——
+     *       把新校验倒灌进这些既有调用会直接打断 E2E 与既有单测；</li>
+     *   <li><b>4022</b> 五段正文全空不可签名。</li>
+     * </ul>
+     * 既有 4009/4010/4011 三码与成功返回体一律不动（E2E e2e-phase48/e2e-emr-closure 与前端已在消费）。
+     */
     @Transactional
     public OutpEmr signEmr(Long registrationId, Long doctorId,
                            cn.hip.platform.integration.signature.SignatureAdapter signatureAdapter) {
@@ -239,6 +270,12 @@ public class DoctorStationService {
                 .orElseThrow(() -> new BizException(4009, "病历不存在，请先书写保存"));
         if (emr.getSignature() != null) {
             throw new BizException(4010, "病历已签名");
+        }
+        if (emr.getDoctorId() != null && doctorId != null && !emr.getDoctorId().equals(doctorId)) {
+            throw new BizException(4023, "仅病历书写医师本人可签名");
+        }
+        if (blankEmr(emr)) {
+            throw new BizException(4022, "病历内容为空，不可签名");
         }
         String content = String.join("|",
                 String.valueOf(emr.getChiefComplaint()), String.valueOf(emr.getPresentIllness()),

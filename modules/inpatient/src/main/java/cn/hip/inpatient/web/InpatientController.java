@@ -283,10 +283,274 @@ public class InpatientController {
         }
     }
 
+    // ===== v43 车道D：住院患者与医嘱多维检索（2012★/2013★/2028★）=====
+
+    /**
+     * 合法护理级别（分级护理制度四档）。
+     * <p>刻意<b>不</b>引用 {@code NursingQualityController.CARE_LEVELS}：qualitycare 依赖 inpatient
+     * （EmrIntegrityService），反向 import 会成环。四档取值是国家分级护理制度的常量，不是可配置项。
+     */
+    private static final List<String> CARE_LEVELS = List.of("特级", "一级", "二级", "三级");
+
+    /** 医嘱检索结果上限（照抄 mr-workqueue 纪律：硬限 + truncated 标记，不做翻页） */
+    private static final int ORDER_SEARCH_LIMIT = 200;
+
+    /**
+     * 在院患者列表 + 多维检索（2012★ 按科室/护理级别/是否转科等条件检索、2013★ 当前医生主管的病人）。
+     *
+     * <p><b>契约保护（本方法最重要的一条）</b>：所有参数均可选，<b>一个都不传时逐字走 v43 之前的老路径</b>
+     * ——同一个 {@code findByStatusOrderByIdDesc("IN_HOSPITAL")}、同一个 id 降序、同一个 {@link #toDto}。
+     * 既有前端（AdmissionView/DischargeView/InpNurseView/MobileWorkView/ConsentView/SurgeryView）
+     * 与 E2E（{@code e2elib.ensure_not_admitted}）全部依赖当前行为，
+     * 单测 {@code V43InpSearchTest#noParamsMeansExactlyTheOldBehaviour} 钉死这一条。
+     *
+     * <p><b>唯一的返回体增量</b>：每行尾部追加 {@code doctorId}/{@code doctorName} 两个键。
+     * 2013★ 要求列表能看见"谁主管"，而 {@code inp_admission.doctor_id} 此前建了表却无任何读路径；
+     * 增量只追加在既有键之后、既有键的名称/顺序/取值逐字未动（单测按白名单断言这两个键是仅有的新增）。
+     * {@link #toDto} 本身一行未改——admit / cancelSettlement 的返回体因此完全不受影响。
+     *
+     * @param deptId      收治科室
+     * @param wardId      病区
+     * @param careLevel   护理级别（特级/一级/二级/三级）
+     * @param transferred 是否转科（true 只看转过科的，false 只看没转过的）
+     * @param doctorId    主管医生
+     * @param keyword     患者姓名或住院号（参数化 ilike，通配符已转义）
+     * @param mine        true = 只看当前登录医生主管的病人（2013★）
+     */
     @GetMapping("/admissions")
-    public R<List<Map<String, Object>>> inHospital() {
-        return R.ok(admissionRepo.findByStatusOrderByIdDesc("IN_HOSPITAL").stream()
-                .map(this::toDto).toList());
+    public R<List<Map<String, Object>>> inHospital(
+            @RequestParam(required = false) Long deptId,
+            @RequestParam(required = false) Long wardId,
+            @RequestParam(required = false) String careLevel,
+            @RequestParam(required = false) Boolean transferred,
+            @RequestParam(required = false) Long doctorId,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) Boolean mine,
+            Authentication auth) {
+        String kw = keyword == null ? "" : keyword.trim();
+        String level = careLevel == null ? "" : careLevel.trim();
+        boolean filtered = deptId != null || wardId != null || !level.isEmpty()
+                || transferred != null || doctorId != null || !kw.isEmpty()
+                || Boolean.TRUE.equals(mine);
+
+        // ★ 零条件 = 旧行为：不进检索分支，连 SQL 都不换
+        if (!filtered) {
+            return R.ok(withAttendingDoctor(admissionRepo.findByStatusOrderByIdDesc("IN_HOSPITAL")));
+        }
+
+        if (deptId != null && deptId <= 0) return R.fail(4880, "科室条件非法");
+        if (wardId != null && wardId <= 0) return R.fail(4880, "病区条件非法");
+        if (doctorId != null && doctorId <= 0) return R.fail(4880, "主管医生条件非法");
+        if (kw.length() > 64) return R.fail(4880, "关键词过长（最多 64 字）");
+        if (!level.isEmpty() && !CARE_LEVELS.contains(level)) {
+            return R.fail(4881, "护理级别非法（特级/一级/二级/三级）");
+        }
+
+        Long effectiveDoctorId = doctorId;
+        if (Boolean.TRUE.equals(mine)) {
+            Long meId = auth == null ? null : currentUserService.idOf(auth);
+            if (meId == null) return R.fail(4880, "无法识别当前登录用户，不能按「我的病人」检索");
+            if (doctorId != null && !doctorId.equals(meId)) {
+                return R.fail(4880, "mine=true 与 doctorId 冲突，请只传其一");
+            }
+            effectiveDoctorId = meId;
+        }
+
+        // 子句是固定字面量、取值一律占位符绑定——keyword 不参与任何字符串拼接
+        var sql = new StringBuilder("""
+                select a.id from inp_admission a
+                join empi_patient p on p.id = a.patient_id
+                where a.status = 'IN_HOSPITAL'
+                """);
+        var args = new java.util.ArrayList<Object>();
+        if (deptId != null) { sql.append(" and a.dept_id = ?"); args.add(deptId); }
+        if (wardId != null) { sql.append(" and a.ward_id = ?"); args.add(wardId); }
+        if (!level.isEmpty()) { sql.append(" and a.care_level = ?"); args.add(level); }
+        if (effectiveDoctorId != null) { sql.append(" and a.doctor_id = ?"); args.add(effectiveDoctorId); }
+        if (!kw.isEmpty()) {
+            sql.append(" and (p.name ilike ? escape '\\' or a.admission_no ilike ? escape '\\')");
+            String like = "%" + escapeLike(kw) + "%";
+            args.add(like);
+            args.add(like);
+        }
+        if (transferred != null) {
+            sql.append(transferred
+                    ? " and exists (select 1 from inp_transfer_log t where t.admission_id = a.id)"
+                    : " and not exists (select 1 from inp_transfer_log t where t.admission_id = a.id)");
+        }
+        sql.append(" order by a.id desc");   // 与旧行为同序
+
+        List<Long> ids = jdbcTemplate.queryForList(sql.toString(), Long.class, args.toArray());
+        if (ids.isEmpty()) return R.ok(List.of());
+        // 一趟取实体（不逐条 findById），再按 id 降序还原顺序
+        var byId = new LinkedHashMap<Long, InpAdmission>();
+        admissionRepo.findAllById(ids).forEach(a -> byId.put(a.getId(), a));
+        return R.ok(withAttendingDoctor(ids.stream().map(byId::get)
+                .filter(java.util.Objects::nonNull).toList()));
+    }
+
+    /** ilike 通配符转义：keyword 里的 % _ \ 按字面匹配（值仍走占位符，转义只为语义正确） */
+    private static String escapeLike(String s) {
+        return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
+    }
+
+    /**
+     * 患者列表行 = {@link #toDto} 原样 + 尾部追加 doctorId/doctorName。
+     * 主管医生姓名一趟 in 查询解决，不做 N+1。
+     */
+    private List<Map<String, Object>> withAttendingDoctor(List<InpAdmission> rows) {
+        var doctorIds = rows.stream().map(InpAdmission::getDoctorId)
+                .filter(java.util.Objects::nonNull).distinct().toList();
+        var names = new java.util.HashMap<Long, String>();
+        if (!doctorIds.isEmpty()) {
+            String placeholders = String.join(",", java.util.Collections.nCopies(doctorIds.size(), "?"));
+            for (var r : jdbcTemplate.queryForList(
+                    "select id, real_name from sys_user where id in (" + placeholders + ")",
+                    doctorIds.toArray())) {
+                names.put(((Number) r.get("id")).longValue(), (String) r.get("real_name"));
+            }
+        }
+        return rows.stream().map(a -> {
+            Map<String, Object> m = toDto(a);
+            m.put("doctorId", a.getDoctorId());
+            m.put("doctorName", a.getDoctorId() == null ? null : names.get(a.getDoctorId()));
+            return m;
+        }).toList();
+    }
+
+    public record AttendingDoctorReq(Long doctorId) {}
+
+    /**
+     * 2013★：设置/变更主管医生。
+     *
+     * <p>{@code inp_admission.doctor_id} 自 V8 就存在，入院端点也一直接受 doctorId 参数，
+     * 但<b>入院后无任何修改路径</b>——换主管医生只能改库。本端点是本车道唯一的写路径，
+     * 且只 update 这一列：不碰入院/转科/出院/结算任何既有逻辑，也不改床位与费用。
+     *
+     * <p>出院后仍允许改：病案整理阶段补录主管医生是常规工作（与 discharge-diag 补录同理）。
+     */
+    @PutMapping("/admissions/{id}/attending-doctor")
+    public R<Void> setAttendingDoctor(@PathVariable Long id, @RequestBody AttendingDoctorReq req) {
+        if (req == null || req.doctorId() == null || req.doctorId() <= 0) {
+            return R.fail(4884, "主管医生必填");
+        }
+        Integer hit = jdbcTemplate.queryForObject(
+                "select count(*) from sys_user where id = ? and enabled = true", Integer.class, req.doctorId());
+        if (hit == null || hit == 0) return R.fail(4884, "主管医生不存在或已停用");
+        int n = jdbcTemplate.update("update inp_admission set doctor_id = ? where id = ?", req.doctorId(), id);
+        return n == 0 ? R.fail(9003, "住院记录不存在") : R.ok();
+    }
+
+    /**
+     * 可选主管医生列表（只读字典，供"设为主管医生"与"按主管医生检索"两个下拉用）。
+     * <p>{@code /api/system/users} 是 ADMIN 专属，医生站取不到人员字典；本端点只回
+     * id/姓名/职称/科室三列，不含账号与权限信息。含 ADMIN 角色是因为小院区与演示环境
+     * 常由 admin 账号兼任医生，排除掉会让下拉空掉。
+     */
+    @GetMapping("/doctors")
+    public R<List<Map<String, Object>>> doctors(@RequestParam(required = false) Long deptId) {
+        String sql = """
+                select u.id, u.real_name, u.title, u.dept_id, d.name as dept_name
+                from sys_user u
+                join sys_user_role ur on ur.user_id = u.id
+                join sys_role r on r.id = ur.role_id
+                left join sys_dept d on d.id = u.dept_id
+                where u.enabled = true and r.code in ('DOCTOR_OUTP', 'ADMIN')
+                """
+                + (deptId == null ? "" : " and u.dept_id = ?")
+                + """
+                group by u.id, u.real_name, u.title, u.dept_id, d.name
+                order by u.id
+                """;
+        return R.ok(deptId == null
+                ? jdbcTemplate.queryForList(sql)
+                : jdbcTemplate.queryForList(sql, deptId));
+    }
+
+    /**
+     * 2028★：按床号 / 患者姓名 / 医嘱内容（药品名或项目名）检索医嘱——<b>跨患者</b>的病区级检索。
+     *
+     * <p>此前住院医嘱只能"先选患者、再看该患者医嘱"（{@code /admissions/{id}/workspace}），
+     * 护士台"3 床那瓶头孢是谁开的"这类问法全仓无实现。
+     *
+     * <p><b>性能边界</b>：一条 SQL 全 join 取完（无 N+1），并照抄 mr-workqueue 的纪律——
+     * 硬上限 {@value #ORDER_SEARCH_LIMIT} 条 + {@code truncated} 标记，不做翻页：
+     * 命中超过 200 条说明条件太宽（例如只填了病区），应收窄条件而非翻页。
+     * 同理<b>要求至少一个检索条件</b>，否则等于全表扫描。
+     */
+    @GetMapping("/orders/search")
+    public R<Map<String, Object>> searchOrders(
+            @RequestParam(required = false) String bedNo,
+            @RequestParam(required = false) String patientName,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) Long wardId,
+            @RequestParam(required = false) Long deptId,
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) Boolean includeDischarged) {
+        String bed = bedNo == null ? "" : bedNo.trim();
+        String name = patientName == null ? "" : patientName.trim();
+        String kw = keyword == null ? "" : keyword.trim();
+        String st = status == null ? "" : status.trim();
+
+        if (bed.isEmpty() && name.isEmpty() && kw.isEmpty() && wardId == null && deptId == null) {
+            return R.fail(4880, "请至少指定一个检索条件（床号/姓名/医嘱内容/病区/科室）");
+        }
+        if (bed.length() > 16 || name.length() > 64 || kw.length() > 64) {
+            return R.fail(4880, "检索条件过长");
+        }
+        if (wardId != null && wardId <= 0) return R.fail(4880, "病区条件非法");
+        if (deptId != null && deptId <= 0) return R.fail(4880, "科室条件非法");
+        if (!st.isEmpty() && !List.of("CREATED", "EXECUTED", "CANCELLED").contains(st)) {
+            return R.fail(4880, "医嘱状态非法（CREATED/EXECUTED/CANCELLED）");
+        }
+
+        var sql = new StringBuilder("""
+                select o.id, o.group_no, o.order_type, o.order_nature, o.item_name, o.spec,
+                       o.qty, o.unit, o.unit_price, o.amount, o.usage_route, o.frequency,
+                       o.dose_per_time, o.status, o.stop_at, o.created_at, o.executed_at,
+                       a.id as admission_id, a.admission_no, a.status as admission_status, a.care_level,
+                       p.name as patient_name,
+                       b.bed_no, w.name as ward_name, d.name as dept_name,
+                       du.real_name as order_doctor_name, eu.real_name as executor_name,
+                       au.real_name as attending_doctor_name
+                from inp_order o
+                join inp_admission a on a.id = o.admission_id
+                join empi_patient p on p.id = a.patient_id
+                left join inp_bed  b  on b.id = a.bed_id
+                left join sys_dept w  on w.id = a.ward_id
+                left join sys_dept d  on d.id = a.dept_id
+                left join sys_user du on du.id = o.doctor_id
+                left join sys_user eu on eu.id = o.executor_id
+                left join sys_user au on au.id = a.doctor_id
+                where 1 = 1
+                """);
+        var args = new java.util.ArrayList<Object>();
+        if (!Boolean.TRUE.equals(includeDischarged)) sql.append(" and a.status = 'IN_HOSPITAL'");
+        if (!bed.isEmpty()) { sql.append(" and b.bed_no = ?"); args.add(bed); }
+        if (!name.isEmpty()) {
+            sql.append(" and p.name ilike ? escape '\\'");
+            args.add("%" + escapeLike(name) + "%");
+        }
+        if (!kw.isEmpty()) {
+            sql.append(" and o.item_name ilike ? escape '\\'");
+            args.add("%" + escapeLike(kw) + "%");
+        }
+        if (wardId != null) { sql.append(" and a.ward_id = ?"); args.add(wardId); }
+        if (deptId != null) { sql.append(" and a.dept_id = ?"); args.add(deptId); }
+        if (!st.isEmpty()) { sql.append(" and o.status = ?"); args.add(st); }
+        sql.append(" order by o.id desc limit ?");
+        args.add(ORDER_SEARCH_LIMIT + 1);
+
+        var rows = jdbcTemplate.queryForList(sql.toString(), args.toArray());
+        boolean truncated = rows.size() > ORDER_SEARCH_LIMIT;
+        if (truncated) rows = rows.subList(0, ORDER_SEARCH_LIMIT);
+
+        var m = new LinkedHashMap<String, Object>();
+        m.put("items", rows);
+        m.put("total", rows.size());
+        m.put("limit", ORDER_SEARCH_LIMIT);
+        m.put("truncated", truncated);
+        return R.ok(m);
     }
 
     /** 住院工作区：医嘱 + 押金 + 费用汇总 */

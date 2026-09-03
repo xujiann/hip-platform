@@ -72,6 +72,48 @@ public class OutpNurseStationController {
                 : jdbc.queryForList(base + " where t.registration_id = ? order by t.id desc", registrationId));
     }
 
+    /**
+     * 1050 皮试结果回诊室：<b>医生可读</b>的皮试结果查询。
+     *
+     * <p>问题不在"没有端点"，而在<b>角色被挡</b>：本类类级 {@code @PreAuthorize} 是
+     * {@code hasAnyRole('ADMIN','NURSE')}，医生调 {@code GET /skin-tests} 一律 1005 无权限，
+     * 于是"护士做完皮试、医生在诊室看结果"这条最基本的闭环走不通——开药的人看不到皮试结论。
+     *
+     * <p>方法级注解覆盖类级，<b>只放开读、不放开写</b>：登记（POST /skin-tests）与
+     * 出结果（PUT /skin-tests/{id}/result）仍是护士职能，医生角色进不去。
+     *
+     * <p>与 {@code GET /skin-tests} 的差别：本端点<b>强制</b>按 registrationId 取本次就诊，
+     * 不提供"最近 100 条全院皮试"的宽表——诊室场景只需要眼前这位患者，
+     * 给医生角色开一个全院列表是没必要的越权面。
+     *
+     * @return 皮试项目（drugName/category）、结果（result/resultText）、时间（testedAt/createdAt）、
+     *         执行人（nurseName），外加患者姓名，供门诊医生站直接渲染
+     */
+    @GetMapping("/skin-tests/for-doctor")
+    @PreAuthorize("hasAnyRole('ADMIN','NURSE','DOCTOR_OUTP')")
+    public R<List<Map<String, Object>>> skinTestsForDoctor(@RequestParam Long registrationId) {
+        if (registrationId == null || registrationId <= 0) return R.fail(4500, "registrationId 必填");
+        var rows = jdbc.queryForList("""
+                select t.id, t.registration_id, t.drug_name, t.result, t.tested_at, t.created_at,
+                       u.real_name as nurse_name, p.name as patient_name
+                from outp_skin_test t
+                join outp_registration r on r.id = t.registration_id
+                join empi_patient p on p.id = r.patient_id
+                left join sys_user u on u.id = t.nurse_id
+                where t.registration_id = ?
+                order by t.id desc
+                """, registrationId);
+        return R.ok(rows.stream().map(r -> {
+            var m = new java.util.LinkedHashMap<String, Object>(r);
+            String result = (String) r.get("result");
+            m.put("category", skinTestCategory((String) r.get("drug_name")));
+            m.put("result_text", "NEG".equals(result) ? "阴性"
+                    : "POS".equals(result) ? "阳性" : "待出结果");
+            m.put("positive", "POS".equals(result));
+            return (Map<String, Object>) m;
+        }).toList());
+    }
+
     // ---- 输液执行 ----
 
     /** 待建输液单：已收费/已发药的静脉用药医嘱 */
