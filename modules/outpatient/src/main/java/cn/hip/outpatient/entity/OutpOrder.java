@@ -93,6 +93,46 @@ public class OutpOrder {
     @Column(nullable = false, updatable = false)
     private Instant createdAt = Instant.now();
 
+    // ==================== v44 车道G：医嘱附属字段（V137，偏离表 1006★/1013★/1014★/1016★） ====================
+    // 七列全部可空、无 CHECK、无索引，历史医嘱行必然为 null（迁移头注释写明为何不回填）。
+    // 适用范围由**界面**决定（哪类医嘱显示哪几栏），不由数据库约束焊死——真实院内会出现
+    // EXAM 类要送检标本、TREAT 类要写注意事项的情况。
+
+    /** 医嘱备注（1006★「所有医嘱均有备注功能」）。全类型医嘱通用，如"饭后半小时服""患者自备药已带"。 */
+    @Column(length = 200)
+    private String remark;
+
+    /**
+     * 加急标志（1013★ 检验申请单加急）。默认 false；V137 的 default 已把历史行一并置 false
+     * ——"未标加急"是历史行的真实状态，不是伪造。
+     */
+    private Boolean urgent = false;
+
+    /**
+     * 临床/病情摘要（1014★ 检查申请单临床摘要、1016★ 检验申请自动获取病情摘要）。
+     * 语义是**开单当时的一份快照**：由界面从本次门诊病历（主诉/现病史）自动带入后医生可改写，
+     * 落在医嘱行上而不是每次打印时现查病历——病历此后还会被续写/修改，
+     * 而申请单该印的是"申请这一刻医生给医技科室交代的病情"，两者不能混为一谈。
+     */
+    @Column(length = 500)
+    private String clinicalSummary;
+
+    /** 检查目的（1014★），如"排除肺部占位""术前评估"。 */
+    @Column(length = 200)
+    private String examPurpose;
+
+    /** 注意事项（1014★），给医技科室与患者看，如"空腹""检查前排空膀胱"。 */
+    @Column(length = 200)
+    private String notice;
+
+    /** 标本类型（1016★），如 血液/尿液/痰/分泌物。 */
+    @Column(length = 32)
+    private String specimenType;
+
+    /** 采样部位（1016★），如 肘正中静脉/指尖/咽拭子。 */
+    @Column(length = 32)
+    private String samplingSite;
+
     /**
      * 库存预警（阻塞6，非持久化）：开药嘱时若药品当前库存低于本次开量则置为当前库存值，
      * 否则为 null。开单不因此拦截（医生可能有临时进药安排），仅在返回结果里带出，

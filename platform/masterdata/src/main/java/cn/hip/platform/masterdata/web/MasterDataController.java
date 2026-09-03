@@ -42,6 +42,7 @@ public class MasterDataController {
     private final JdbcTemplate jdbc;
     private final EntityManager entityManager;
     private final CurrentUserService currentUserService;
+    private final cn.hip.platform.core.service.ConfigReader configReader;
 
     /** 产品化一期：药品目录 CSV 批量导入（实施工具，按 code upsert）
      *  列：code,name,spec,unit,dose_form,price,stock[,antibiotic 0/1][,fee_category_code][,self_pay 0/1]
@@ -207,6 +208,141 @@ public class MasterDataController {
     @GetMapping("/icd10")
     public R<List<Icd10>> icd10(@RequestParam(defaultValue = "") String keyword) {
         return R.ok(icd10Repository.search(keyword, PageRequest.of(0, 20)));
+    }
+
+    // ==================== v44 车道G：开单资料提示（偏离表 1001★/1002★，兼 1003★ 的库存数据） ====================
+    //
+    // 参数原文：开单时应展示**费用资料**（项目名称/规格/价格/医保费用类别/数量）与
+    // **药品资料**（商品名/通用名/规格/价格/库存量/医保费用类别）。
+    // 全量核对的判定是「数据都在，缺的是在开单界面展示」——本端点即"一次拿全"的读侧契约。
+    //
+    // 【为什么另开端点而不是扩 /drugs 与 /charge-items】
+    // 那两个端点是**开单侧药品/项目选择器的唯一数据源**（门诊医生站、住院医生站、两处药库页、
+    // 15 个 E2E 脚本在用），返回的是 JPA 实体，扩字段就要改实体或换返回类型，
+    // 一改全线连坐——v43 车道C 已就此立过规（见 drugs() 注释）。本端点只读、只新增，
+    // 那两个端点**一个字节未动**。
+    //
+    // 【不伪造字段（本仓诚信纪律）】本端点返回体带一个 `unavailable` 映射，
+    // 逐个点名"参数要求、但本平台表里根本没有对应列"的字段及原因。宁可让开单界面少一栏，
+    // 也不返回一个恒为空的假字段去凑参数——那正是本轮全量核对判负 2123 条的成因。
+
+    /** 资料提示：库存/价格/类别一次取全时用到的 md_drug 侧字段（含 v42 费用类别名） */
+    private static final String HINT_DRUG_SQL = """
+            select 'DRUG' as type, d.id, d.code, d.name, d.spec, d.unit, d.dose_form, d.price,
+                   d.stock, d.antibiotic, d.abx_level, d.drug_class, d.self_pay, d.enabled,
+                   d.fee_category_code, fc.name as fee_category_name,
+                   null::varchar as item_category, null::bigint as exec_dept_id,
+                   null::varchar as exec_dept_name, d.disable_reason
+            from md_drug d
+            left join md_fee_category fc on fc.code = d.fee_category_code
+            """;
+
+    /** 资料提示：md_charge_item 侧。exec_dept 即 1016★「按流向自动取执行科室」的数据来源。 */
+    private static final String HINT_ITEM_SQL = """
+            select 'ITEM' as type, ci.id, ci.code, ci.name, null::varchar as spec, ci.unit,
+                   null::varchar as dose_form, ci.price,
+                   null::int as stock, null::boolean as antibiotic, null::smallint as abx_level,
+                   null::varchar as drug_class, ci.self_pay, ci.enabled,
+                   ci.fee_category_code, fc.name as fee_category_name,
+                   ci.category as item_category, ci.exec_dept_id, ed.name as exec_dept_name,
+                   null::varchar as disable_reason
+            from md_charge_item ci
+            left join md_fee_category fc on fc.code = ci.fee_category_code
+            left join sys_dept ed on ed.id = ci.exec_dept_id
+            """;
+
+    /**
+     * 返回体中**恒为 null 的字段及原因**——其中 tradeName/genericName/spec(ITEM) 三项是
+     * "参数明文要求、但本平台表里根本没有对应列"，如实点名，不造列去凑。
+     * 前端据此隐藏对应栏位（而不是渲染一个永远空着的"通用名："）。
+     */
+    private static final Map<String, String> HINT_UNAVAILABLE_DRUG = Map.of(
+            "tradeName", "md_drug 只有单一 name 列（V4:6），商品名与通用名未分列，"
+                    + "本平台无法区分二者；界面请标「药品名称」而不是「商品名/通用名」",
+            "genericName", "同 tradeName：无独立通用名列。真要分列须先立项改主数据形态"
+                    + "（md_drug 加列 + CSV 导入格式 + 存量目录逐条回填），不属本车道");
+
+    private static final Map<String, String> HINT_UNAVAILABLE_ITEM = Map.of(
+            "spec", "md_charge_item 无 spec 列（V4:16-24），收费项目规格本平台不落库；"
+                    + "返回体的 spec 恒为 null，界面请隐藏该栏而不是留空",
+            "stock", "收费项目（检验/检查/治疗）无库存概念，库存量只对药品有意义");
+
+    /**
+     * 开单资料提示：{@code GET /api/masterdata/order-hints}。
+     *
+     * <p><b>只读，不写任何表，不触碰开单/收费/发药任何逻辑。</b>
+     *
+     * <p>三种取数形态（同一返回体形状，开单界面用同一个提示组件渲染）：
+     * <ul>
+     *   <li>{@code ?type=DRUG&keyword=阿莫} —— 药品检索（下拉即带出规格/价格/库存/费用类别）</li>
+     *   <li>{@code ?type=ITEM&category=LAB&keyword=血} —— 收费项目检索，category 可选
+     *       （LAB/EXAM/TREAT/MATERIAL，与 md_charge_item.category 同一套值）</li>
+     *   <li>{@code ?type=DRUG&ids=12,15} —— 按 id 批量取已选行的资料（开单表格里每行的悬浮提示）</li>
+     * </ul>
+     *
+     * <p><b>enabled 的两套口径（刻意不同）</b>：检索式默认只出启用项——把停用药品放进医生的
+     * 下拉框，选中后必撞 8016，等于用"能查到但开不了"的选项惩罚使用者（v43 车道C 已立此规）。
+     * 而 {@code ids} 形态**不按 enabled 过滤**：那是给"已经在开单表里的行"做资料提示的，
+     * 药品若已被药师停用，医生更需要当场看见（返回体带 enabled 与 disable_reason）。
+     *
+     * <p><b>{@code stockGate}</b>：随返回体带出 {@code outp.gate.stock.shortage}（默认 warn），
+     * 供开单界面决定缺药提示的呈现强度。<b>本版它只影响提示，不拦截开单</b>——
+     * 参数要求"缺药不准继续开方"，但开单与发药之间隔着缴费、库存又只是聚合快照，
+     * 硬拦会让已挂号的患者拿不到处方，比现状更糟。收紧与否由院方改此键决定（详见 V137 注释）。
+     *
+     * @param type    DRUG 药品 / ITEM 收费项目（大小写不敏感）
+     * @param ids     逗号分隔的主键；给出时忽略 keyword/category 与 enabled 过滤
+     * @param limit   条数上限，1–200，默认 20（与既有两个检索端点的 top20 口径一致）
+     */
+    @GetMapping("/order-hints")
+    public R<Map<String, Object>> orderHints(@RequestParam(defaultValue = "DRUG") String type,
+                                             @RequestParam(defaultValue = "") String keyword,
+                                             @RequestParam(required = false) String category,
+                                             @RequestParam(required = false) String ids,
+                                             @RequestParam(defaultValue = "20") int limit) {
+        boolean drug = !"ITEM".equalsIgnoreCase(trim(type));
+        List<Long> idList = parseIds(ids);
+        int cap = Math.max(1, Math.min(200, limit));
+
+        List<Map<String, Object>> rows;
+        if (!idList.isEmpty()) {
+            String base = drug ? HINT_DRUG_SQL : HINT_ITEM_SQL;
+            String alias = drug ? "d" : "ci";
+            String ph = String.join(",", java.util.Collections.nCopies(idList.size(), "?"));
+            rows = jdbc.queryForList(base + " where " + alias + ".id in (" + ph + ") order by " + alias + ".code",
+                    idList.toArray());
+        } else if (drug) {
+            rows = jdbc.queryForList(HINT_DRUG_SQL + " where d.enabled and d.name like ? order by d.code limit ?",
+                    "%" + trim(keyword) + "%", cap);
+        } else {
+            String cat = nullIfBlank(category);
+            rows = jdbc.queryForList(HINT_ITEM_SQL + " where ci.enabled and ci.name like ?"
+                            + (cat == null ? "" : " and ci.category = ?") + " order by ci.code limit ?",
+                    cat == null ? new Object[]{"%" + trim(keyword) + "%", cap}
+                                : new Object[]{"%" + trim(keyword) + "%", cat, cap});
+        }
+        var body = new java.util.LinkedHashMap<String, Object>();
+        body.put("type", drug ? "DRUG" : "ITEM");
+        body.put("rows", rows);
+        body.put("unavailable", drug ? HINT_UNAVAILABLE_DRUG : HINT_UNAVAILABLE_ITEM);
+        body.put("stockGate", configReader.get("outp.gate.stock.shortage", "warn"));
+        return R.ok(body);
+    }
+
+    /** 逗号分隔主键解析：非数字段静默丢弃（提示接口不该因一个脏参数整体失败），最多 100 个 */
+    private static List<Long> parseIds(String raw) {
+        String v = nullIfBlank(raw);
+        if (v == null) return List.of();
+        var out = new ArrayList<Long>();
+        for (String s : v.split(",")) {
+            try {
+                out.add(Long.parseLong(s.strip()));
+            } catch (NumberFormatException ignored) {
+                // 丢弃即可：本端点是只读提示，没有"参数非法"这一档业务语义
+            }
+            if (out.size() >= 100) break;
+        }
+        return out;
     }
 
     // ==================== v43 药品启用/停用（V134，错误码 8013–8016） ====================

@@ -56,12 +56,89 @@
             <el-form-item label="现病史"><el-input v-model="emr.presentIllness" type="textarea" :rows="3" :disabled="emrSigned" /></el-form-item>
             <el-form-item label="既往史"><el-input v-model="emr.pastHistory" type="textarea" :rows="2" :disabled="emrSigned" /></el-form-item>
             <el-form-item label="体格检查"><el-input v-model="emr.physicalExam" type="textarea" :rows="2" :disabled="emrSigned" /></el-form-item>
+            <!-- v44 车道E：诊断录入区（偏离表 977 自定义名称 / 982 前后缀 / 983 确诊疑诊 /
+                 1084 中西医 + 常用诊断 / 979 诊断助手三源）。第一条仍是主诊断，口径不变。 -->
             <el-form-item label="诊断">
-              <el-select v-model="diagCodes" multiple filterable remote reserve-keyword :disabled="emrSigned"
-                         :remote-method="searchIcd" placeholder="搜索 ICD（名称/编码/拼音首字母），第一项为主诊断"
-                         style="width: 100%">
-                <el-option v-for="i in icdOptions" :key="i.code" :label="`${i.name} (${i.code})`" :value="i.code" />
-              </el-select>
+              <div class="diag-block">
+                <!-- 特殊病种院内登记提示（984）：只提示，不参与任何拦截 -->
+                <el-alert v-if="specialDiseases.length" type="warning" :closable="false" show-icon
+                          style="margin-bottom: 6px"
+                          :title="`该患者已登记特殊病种（院内）：${specialDiseases.map((s) => s.diseaseName).join('、')}`" />
+
+                <div class="diag-add">
+                  <el-radio-group v-model="diagSystem" size="small" :disabled="emrSigned">
+                    <el-radio-button value="ICD10">西医</el-radio-button>
+                    <el-radio-button value="TCM">中医</el-radio-button>
+                  </el-radio-group>
+                  <el-select v-if="diagSystem === 'ICD10'" v-model="icdPick" filterable remote reserve-keyword
+                             :disabled="emrSigned" :remote-method="searchIcd" placeholder="搜索 ICD（名称/编码/拼音）"
+                             style="width: 300px" @change="addDiagFromIcd">
+                    <el-option v-for="i in icdOptions" :key="i.code" :label="`${i.name} (${i.code})`" :value="i.code" />
+                  </el-select>
+                  <el-input v-else v-model="tcmName" :disabled="emrSigned" style="width: 300px"
+                            placeholder="中医诊断名称（本平台不预置中医码表，按名称录入）"
+                            @keyup.enter="addDiagCustom" />
+                  <el-button v-if="diagSystem === 'TCM'" :disabled="emrSigned || !tcmName.trim()"
+                             type="primary" size="small" @click="addDiagCustom">加入</el-button>
+                  <el-button size="small" :disabled="emrSigned" @click="openAssist">诊断助手</el-button>
+                  <el-button size="small" :disabled="emrSigned" @click="specialVisible = true">特殊病种</el-button>
+                </div>
+
+                <el-table v-if="diagList.length" :data="diagList" size="small" style="margin-top: 6px">
+                  <el-table-column label="主/次" width="58">
+                    <template #default="{ $index }">
+                      <el-tag :type="$index === 0 ? 'danger' : 'info'" size="small">
+                        {{ $index === 0 ? '主' : '次' }}
+                      </el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="体系" width="58">
+                    <template #default="{ row }">
+                      <el-tag size="small" :type="row.diagSystem === 'TCM' ? 'success' : 'primary'">
+                        {{ row.diagSystem === 'TCM' ? '中医' : '西医' }}
+                      </el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="前缀" width="96">
+                    <template #default="{ row }">
+                      <el-input v-model="row.prefix" size="small" :disabled="emrSigned" placeholder="如 疑似" />
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="诊断名称" min-width="180">
+                    <template #default="{ row }">
+                      {{ row.icdName }}<span v-if="row.icdCode" class="dim"> ({{ row.icdCode }})</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="后缀" width="96">
+                    <template #default="{ row }">
+                      <el-input v-model="row.suffix" size="small" :disabled="emrSigned" placeholder="如 术后" />
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="确诊/疑诊" width="128">
+                    <template #default="{ row }">
+                      <el-select v-model="row.certainty" size="small" clearable :disabled="emrSigned"
+                                 placeholder="未标">
+                        <el-option label="确诊" value="CONFIRMED" />
+                        <el-option label="疑诊" value="SUSPECTED" />
+                      </el-select>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="自定义描述" min-width="150">
+                    <template #default="{ row }">
+                      <el-input v-model="row.customName" size="small" :disabled="emrSigned"
+                                placeholder="临床诊断名称描述（与标准名并存）" />
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="" width="104">
+                    <template #default="{ row, $index }">
+                      <el-button link type="warning" :disabled="emrSigned" @click="starDiag(row)">加星</el-button>
+                      <el-button link type="danger" :disabled="emrSigned" @click="diagList.splice($index, 1)">
+                        移除
+                      </el-button>
+                    </template>
+                  </el-table-column>
+                </el-table>
+              </div>
             </el-form-item>
             <el-form-item v-if="cdssTips.length" label="CDSS">
               <el-alert v-for="(tip, i) in cdssTips" :key="i" :title="tip" type="warning" show-icon
@@ -98,6 +175,11 @@
         </el-tab-pane>
 
         <el-tab-pane label="处方" name="rx">
+          <!-- v44/984：开单时提示该患者的特殊病种院内登记（只提示，不参与任何开单拦截） -->
+          <el-alert v-if="specialDiseases.length" type="warning" :closable="false" show-icon
+                    style="margin-bottom: 8px"
+                    :title="`特殊病种（院内登记）：${specialDiseases.map((s) => s.diseaseName).join('、')}
+                             —— 开药请留意是否在该病种用药范围内`" />
           <div class="add-row">
             <el-select v-model="rxDrugId" filterable remote :remote-method="searchDrugs"
                        placeholder="搜索药品" style="width: 260px">
@@ -115,6 +197,21 @@
             <el-input-number v-model="rxQty" :min="1" :max="999" style="width: 100px" /><span>盒/瓶</span>
             <el-button type="primary" @click="addRxLine">加入</el-button>
           </div>
+          <!-- v44 合版补：车道F 的处方模板/协定处方套用入口（跨车道，按纪律由合版统一加）。
+               纪律：套用**只是填充下方开单表单**，医生仍点「开立处方」走原 createOrders——
+               过敏/重复用药/抗菌药分级/CDSS/停用药预检全部照常执行。绝不另开批量提交路径。 -->
+          <div class="tpl-bar">
+            <el-select v-model="tplPicked" placeholder="套用处方模板 / 协定处方" clearable filterable
+                       style="width: 300px" @change="applyTemplate">
+              <el-option v-for="tp in rxTemplates" :key="tp.id as number"
+                         :label="String(tp.name)" :value="tp.id as number">
+                <span>{{ tp.name }}</span>
+                <el-tag v-if="tp.linesLocked" size="small" type="danger" style="margin-left: 6px">协定</el-tag>
+                <span style="color: #999; margin-left: 6px">{{ scopeNames[tp.scope as string] }} · {{ tp.line_count }} 行</span>
+              </el-option>
+            </el-select>
+            <span v-if="tplHint" class="tpl-hint">{{ tplHint }}</span>
+          </div>
           <el-table :data="rxLines" size="small">
             <el-table-column prop="itemName" label="药品" />
             <el-table-column prop="dosePerTime" label="单次量" width="80" />
@@ -123,8 +220,10 @@
             <el-table-column prop="days" label="天数" width="60" />
             <el-table-column prop="qty" label="数量" width="60" />
             <el-table-column label="" width="60">
-              <template #default="{ $index }">
-                <el-button link type="danger" @click="rxLines.splice($index, 1)">移除</el-button>
+              <template #default="{ row, $index }">
+                <!-- v44：协定处方由药事委员会固定，要么整组用要么整组撤，不许单行删 -->
+                <el-button v-if="!row.locked" link type="danger" @click="rxLines.splice($index, 1)">移除</el-button>
+                <el-button v-else link type="warning" @click="dropAgreedGroup(row)">撤组</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -237,6 +336,84 @@
         </el-timeline-item>
       </el-timeline>
     </el-drawer>
+
+    <!-- v44 诊断助手（979）：历史 / 常用 / 高频 三源，点一下带入诊断表 -->
+    <el-drawer v-model="assistVisible" title="诊断助手" size="460px">
+      <el-input v-model="assistKeyword" placeholder="按名称或编码筛选三段结果" clearable
+                style="margin-bottom: 10px" @keyup.enter="loadAssist" @clear="loadAssist">
+        <template #append><el-button @click="loadAssist">筛选</el-button></template>
+      </el-input>
+      <el-tabs v-model="assistTab">
+        <el-tab-pane :label="`历史诊断(${assist.history.length})`" name="history">
+          <el-empty v-if="!assist.history.length" description="该患者无历史诊断" :image-size="60" />
+          <div v-for="(e, i) in assist.history" :key="'h' + i" class="assist-row">
+            <span class="assist-name" @click="addDiagFrom(e)">{{ e.icdName }}
+              <span v-if="e.icdCode" class="dim">({{ e.icdCode }})</span></span>
+            <span class="dim">{{ e.lastVisitDate }}</span>
+            <el-button link type="warning" size="small" @click="starDiag(e)">加星</el-button>
+          </div>
+        </el-tab-pane>
+        <el-tab-pane :label="`常用诊断(${assist.favorite.length})`" name="favorite">
+          <el-empty v-if="!assist.favorite.length" description="尚无常用诊断（保存病历时自动累积）" :image-size="60" />
+          <div v-for="e in assist.favorite" :key="'f' + e.id" class="assist-row">
+            <span class="assist-name" @click="addDiagFrom(e)">{{ e.icdName }}
+              <span v-if="e.icdCode" class="dim">({{ e.icdCode }})</span></span>
+            <span class="dim">用过 {{ e.useCount }} 次</span>
+            <el-button link type="danger" size="small" @click="removeFavorite(e.id)">删除</el-button>
+          </div>
+        </el-tab-pane>
+        <el-tab-pane :label="`高频诊断(${assist.frequent.length})`" name="frequent">
+          <el-empty v-if="!assist.frequent.length" description="近半年暂无可聚合的诊断数据" :image-size="60" />
+          <div v-for="(e, i) in assist.frequent" :key="'q' + i" class="assist-row">
+            <span class="assist-name" @click="addDiagFrom(e)">{{ e.icdName }}
+              <span v-if="e.icdCode" class="dim">({{ e.icdCode }})</span></span>
+            <span class="dim">全院 {{ e.useCount }} 例</span>
+            <el-button link type="warning" size="small" @click="starDiag(e)">加星</el-button>
+          </div>
+        </el-tab-pane>
+      </el-tabs>
+    </el-drawer>
+
+    <!-- v44 医保特殊病种「院内登记」（984）：只登记，不报送 -->
+    <el-dialog v-model="specialVisible" title="医保特殊病种（慢特病）· 院内登记" width="640px">
+      <el-alert type="info" :closable="false" show-icon style="margin-bottom: 10px"
+                title="本功能为院内登记：记录患者已认定的特殊病种与院内认定有效期，供诊断与开单时提示。
+                       向医保经办机构备案报送需走当地医保接口，属外部对接条件，本平台不提供。" />
+      <el-table :data="specialDiseases" size="small" empty-text="暂无登记">
+        <el-table-column prop="diseaseName" label="病种" min-width="140" />
+        <el-table-column prop="diseaseCode" label="病种编码" width="110" />
+        <el-table-column prop="insuranceType" label="医保类别" width="100" />
+        <el-table-column label="有效期" min-width="170">
+          <template #default="{ row }">{{ row.startDate }} ~ {{ row.endDate || '长期' }}</template>
+        </el-table-column>
+        <el-table-column label="" width="64">
+          <template #default="{ row }">
+            <el-button link type="danger" @click="removeSpecialDisease(row.id)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-form :model="specialForm" label-width="86px" style="margin-top: 12px">
+        <el-form-item label="病种名称">
+          <el-input v-model="specialForm.diseaseName" placeholder="如 原发性高血压（Ⅱ级以上）" />
+        </el-form-item>
+        <el-form-item label="病种编码">
+          <el-input v-model="specialForm.diseaseCode" placeholder="院内自定义或当地医保病种码（平台不预置码表）" />
+        </el-form-item>
+        <el-form-item label="医保类别">
+          <el-input v-model="specialForm.insuranceType" placeholder="如 职工医保 / 居民医保" />
+        </el-form-item>
+        <el-form-item label="有效期">
+          <el-date-picker v-model="specialForm.startDate" type="date" value-format="YYYY-MM-DD" placeholder="起始" />
+          <span style="margin: 0 6px">~</span>
+          <el-date-picker v-model="specialForm.endDate" type="date" value-format="YYYY-MM-DD" placeholder="截止（可空=长期）" />
+        </el-form-item>
+        <el-form-item label="备注"><el-input v-model="specialForm.remark" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="specialVisible = false">关 闭</el-button>
+        <el-button type="primary" :loading="savingSpecial" @click="addSpecialDisease">登 记</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -279,10 +456,44 @@ const amendForm = reactive({ amendText: '', reason: '' })
 const amending = ref(false)
 const amendments = ref<Record<string, unknown>[]>([])
 const stockWarnings = ref<string[]>([])
-const diagCodes = ref<string[]>([])
 const cdssTips = ref<string[]>([])
 const icdOptions = ref<{ code: string; name: string }[]>([])
 const knownIcd = new Map<string, string>()
+
+/**
+ * v44 车道E 诊断行（偏离表 977/982/983/1084）。
+ * icdCode/icdName/primaryDiag 三个既有字段口径不变——列表顺序第一条即主诊断，后端照旧按下标定主次；
+ * 其余五项都是本版新加的可空字段，不填就不传值，后端存 null。
+ */
+type DiagRow = {
+  icdCode: string
+  icdName: string
+  diagSystem: string
+  prefix: string
+  suffix: string
+  certainty: string
+  customName: string
+}
+const diagList = ref<DiagRow[]>([])
+const diagSystem = ref<'ICD10' | 'TCM'>('ICD10')
+const icdPick = ref<string | null>(null)
+const tcmName = ref('')
+
+type AssistEntry = { id?: number; icdCode?: string | null; icdName: string; diagSystem?: string | null
+                     useCount?: number; lastVisitDate?: string }
+const assistVisible = ref(false)
+const assistTab = ref('history')
+const assistKeyword = ref('')
+const assist = ref<{ history: AssistEntry[]; favorite: AssistEntry[]; frequent: AssistEntry[] }>(
+  { history: [], favorite: [], frequent: [] })
+
+type SpecialDisease = { id: number; diseaseCode?: string; diseaseName: string; insuranceType?: string
+                        startDate?: string; endDate?: string; remark?: string }
+const specialDiseases = ref<SpecialDisease[]>([])
+const specialVisible = ref(false)
+const savingSpecial = ref(false)
+const specialForm = reactive({ diseaseName: '', diseaseCode: '', insuranceType: '',
+  startDate: todayLocal(), endDate: '', remark: '' })
 
 const drugOptions = ref<Record<string, unknown>[]>([])
 const rxDrugId = ref<number | null>(null)
@@ -291,6 +502,52 @@ const rxFreq = ref('tid')
 const rxRoute = ref('口服')
 const rxDays = ref(3)
 const rxQty = ref(1)
+// ===== v44 合版：处方模板 / 协定处方套用（车道F 契约） =====
+const rxTemplates = ref<Record<string, unknown>[]>([])
+const tplPicked = ref<number | undefined>(undefined)
+const tplHint = ref('')
+const scopeNames: Record<string, string> = { PERSONAL: '个人', DEPT: '科室', HOSPITAL: '全院' }
+
+async function loadRxTemplates() {
+  const resp = await client.get('/outpatient/rx-templates', { params: { includeDisabled: false } })
+  rxTemplates.value = resp.data.data ?? []
+}
+
+/** 套用：按 orderType 分流、**追加而非覆盖**（医生常先手工加一行再套模板）。 */
+async function applyTemplate(id: number | undefined) {
+  if (!id) return
+  const resp = await client.get(`/outpatient/rx-templates/${id}/lines`)
+  if (resp.data.code !== 0) {
+    ElMessage.error(resp.data.message)
+    await loadRxTemplates()   // 4060：多半是被停用了，刷新列表
+    tplPicked.value = undefined
+    return
+  }
+  const lines = (resp.data.data ?? []) as Record<string, unknown>[]
+  const warn: string[] = []
+  for (const ln of lines) {
+    // 落地提示，不拦截——真正的判定仍在开单端点
+    if (ln.itemExists === false) warn.push(`${ln.itemName ?? ln.itemId}：项目已不存在，请移除该行`)
+    else if (ln.itemEnabled === false) warn.push(`${ln.itemName}：该药已停用，开单时会被拒`)
+    else if (typeof ln.stock === 'number' && typeof ln.qty === 'number' && ln.stock < ln.qty) {
+      warn.push(`${ln.itemName}：库存不足（余 ${ln.stock}）`)
+    }
+    if (ln.orderType === 'DRUG') rxLines.value.push({ ...ln })
+    else labLines.value.push({ ...ln })
+  }
+  tplHint.value = `已套用 ${lines.length} 行` + (warn.length ? `；${warn.length} 行需注意` : '')
+  if (warn.length) ElMessage.warning(warn.join('；'))
+  tplPicked.value = undefined
+}
+
+/** 协定处方整组撤回（locked 行不可单行删） */
+function dropAgreedGroup(row: Record<string, unknown>) {
+  const before = rxLines.value.length
+  rxLines.value = rxLines.value.filter((l) => !(l.locked && l.tplId === row.tplId))
+  labLines.value = labLines.value.filter((l) => !(l.locked && l.tplId === row.tplId))
+  tplHint.value = `已撤回协定处方（移除 ${before - rxLines.value.length} 行）`
+}
+
 const rxLines = ref<Record<string, unknown>[]>([])
 
 const chargeItemOptions = ref<Record<string, unknown>[]>([])
@@ -315,11 +572,24 @@ async function openPatient(row: Record<string, unknown> | null) {
     chiefComplaint: ws.emr?.chiefComplaint ?? '', presentIllness: ws.emr?.presentIllness ?? '',
     pastHistory: ws.emr?.pastHistory ?? '', physicalExam: ws.emr?.physicalExam ?? '', advice: ws.emr?.advice ?? '',
   })
-  diagCodes.value = (ws.diagnoses ?? []).map((d: { icdCode: string; icdName: string }) => {
-    knownIcd.set(d.icdCode, d.icdName)
-    return d.icdCode
+  diagList.value = (ws.diagnoses ?? []).map((d: Partial<DiagRow>) => {
+    if (d.icdCode) knownIcd.set(d.icdCode, d.icdName ?? d.icdCode)
+    return {
+      icdCode: d.icdCode ?? '', icdName: d.icdName ?? '',
+      // 历史行 diagSystem 为 null：读侧按西医显示，但不回写数据库（保存时原样回传空值）
+      diagSystem: d.diagSystem ?? '',
+      prefix: d.prefix ?? '', suffix: d.suffix ?? '',
+      certainty: d.certainty ?? '', customName: d.customName ?? '',
+    }
   })
-  icdOptions.value = (ws.diagnoses ?? []).map((d: { icdCode: string; icdName: string }) => ({ code: d.icdCode, name: d.icdName }))
+  icdOptions.value = (ws.diagnoses ?? [])
+    .filter((d: { icdCode?: string }) => !!d.icdCode)
+    .map((d: { icdCode: string; icdName: string }) => ({ code: d.icdCode, name: d.icdName }))
+  diagSystem.value = 'ICD10'
+  icdPick.value = null
+  tcmName.value = ''
+  assistVisible.value = false
+  await loadSpecialDiseases()
   orders.value = ws.orders ?? []
   emrSigned.value = !!ws.emr?.signature
   emrSignerName.value = (ws.emrSignerName as string) ?? ''
@@ -329,6 +599,7 @@ async function openPatient(row: Record<string, unknown> | null) {
   amendForm.reason = ''
   amendments.value = emrSigned.value ? await loadAmendments(row.registrationId as number) : []
   skinTests.value = []   // v43：切患者清空，避免上一位的皮试结果串到本位
+  tplHint.value = ''     // v44：切患者清空模板提示
   rxLines.value = []
   labLines.value = []
 }
@@ -399,15 +670,132 @@ async function saveEmr() {
   if (!current.value) return
   savingEmr.value = true
   try {
-    await client.put(`/outpatient/doctor/${current.value.registrationId}/emr`, {
+    const resp = await client.put(`/outpatient/doctor/${current.value.registrationId}/emr`, {
       emr,
-      diagnoses: diagCodes.value.map((code) => ({ icdCode: code, icdName: knownIcd.get(code) ?? code })),
+      // v44：既有三键（icdCode/icdName + 顺序定主诊断）原样保留，新增五键留空即传空
+      // （后端 blank 视同 null，历史数据与旧调用方不受影响）
+      diagnoses: diagList.value.map((d) => ({
+        icdCode: d.icdCode, icdName: d.icdName,
+        prefix: d.prefix || null, suffix: d.suffix || null,
+        certainty: d.certainty || null, diagSystem: d.diagSystem || null,
+        customName: d.customName || null,
+      })),
     })
+    if (resp.data.code !== 0) {
+      ElMessage.error(resp.data.message)
+      return
+    }
     ElMessage.success('病历已保存')
     await loadCdssTips()
   } finally {
     savingEmr.value = false
   }
+}
+
+// ===================== v44 车道E：诊断录入 / 诊断助手 / 常用诊断 / 特殊病种 =====================
+
+/** 同一诊断（编码相同，或都无编码而名称相同）不重复加入 */
+function alreadyPicked(code: string, name: string) {
+  return diagList.value.some((d) => (code ? d.icdCode === code : !d.icdCode && d.icdName === name))
+}
+
+function pushDiag(code: string, name: string, system: string) {
+  if (!name || alreadyPicked(code, name)) return
+  diagList.value.push({ icdCode: code, icdName: name, diagSystem: system,
+    prefix: '', suffix: '', certainty: '', customName: '' })
+}
+
+function addDiagFromIcd(code: string) {
+  if (!code) return
+  pushDiag(code, knownIcd.get(code) ?? code, 'ICD10')
+  icdPick.value = null
+}
+
+/**
+ * 中医/自定义诊断加入。**本平台不预置中医诊断码表**（无权威码表授权，也不编造编码），
+ * 故中医诊断只录名称，icdCode 传空串——后端 icd_code 列非空约束不变，存空串不存假码。
+ */
+function addDiagCustom() {
+  const name = tcmName.value.trim()
+  if (!name) return
+  pushDiag('', name, 'TCM')
+  tcmName.value = ''
+}
+
+function addDiagFrom(e: AssistEntry) {
+  pushDiag(e.icdCode ?? '', e.icdName, e.diagSystem || (e.icdCode ? 'ICD10' : 'TCM'))
+}
+
+async function openAssist() {
+  assistVisible.value = true
+  await loadAssist()
+}
+
+async function loadAssist() {
+  if (!current.value) return
+  // patientId 可空：没有患者上下文时 history 段自然为空，常用与高频仍可用
+  const resp = await client.get('/outpatient/doctor/diagnosis-assist', {
+    params: { patientId: current.value.patientId, keyword: assistKeyword.value || undefined },
+  })
+  assist.value = resp.data.data
+}
+
+/** 加星到个人常用诊断（保存病历时本就会自动累加，这里是医生主动收藏） */
+async function starDiag(e: { icdCode?: string | null; icdName: string; diagSystem?: string | null }) {
+  await client.post('/outpatient/doctor/diagnosis-favorite', {
+    icdCode: e.icdCode || null, icdName: e.icdName, diagSystem: e.diagSystem || null,
+  })
+  ElMessage.success('已加入常用诊断')
+  if (assistVisible.value) await loadAssist()
+}
+
+async function removeFavorite(id?: number) {
+  if (!id) return
+  await client.delete(`/outpatient/doctor/diagnosis-favorite/${id}`)
+  ElMessage.success('已移出常用诊断')
+  await loadAssist()
+}
+
+async function loadSpecialDiseases() {
+  // patientId 缺失（队列行对应的患者档案已被清理）时不发请求：端点 patientId 必填，发了只会 400
+  if (!current.value?.patientId) { specialDiseases.value = []; return }
+  const resp = await client.get('/outpatient/doctor/special-disease', {
+    params: { patientId: current.value.patientId, activeOnly: true },
+  })
+  specialDiseases.value = resp.data.data ?? []
+}
+
+/**
+ * 特殊病种「院内登记」（984）。**只登记，不报送**——向医保经办机构备案需走当地医保接口，
+ * 属外部对接条件，本平台不提供，界面上也已写明，避免让院方误以为登记完就等于备案完成。
+ */
+async function addSpecialDisease() {
+  if (!current.value) return
+  savingSpecial.value = true
+  try {
+    const resp = await client.post('/outpatient/doctor/special-disease', {
+      patientId: current.value.patientId,
+      diseaseName: specialForm.diseaseName, diseaseCode: specialForm.diseaseCode,
+      insuranceType: specialForm.insuranceType, startDate: specialForm.startDate,
+      endDate: specialForm.endDate || null, remark: specialForm.remark,
+    })
+    if (resp.data.code !== 0) {
+      ElMessage.error(resp.data.message)
+      return
+    }
+    ElMessage.success('已登记（院内）')
+    specialForm.diseaseName = ''
+    specialForm.diseaseCode = ''
+    specialForm.remark = ''
+    await loadSpecialDiseases()
+  } finally {
+    savingSpecial.value = false
+  }
+}
+
+async function removeSpecialDisease(id: number) {
+  await client.delete(`/outpatient/doctor/special-disease/${id}`)
+  await loadSpecialDiseases()
 }
 
 function emrHasContent() {
@@ -465,7 +853,8 @@ function warnIfLeavingUnsigned(next: Record<string, unknown> | null) {
 // CDSS：按主诊断给出诊疗建议
 async function loadCdssTips() {
   cdssTips.value = []
-  const primary = diagCodes.value[0]
+  // 主诊断口径不变：列表第一条即主诊断。中医/自定义诊断无 ICD 编码，CDSS 按编码检索，跳过
+  const primary = diagList.value[0]?.icdCode
   if (!primary) return
   // CDSS 可按院整体关闭（模块开关返回 404）——辅助提示拿不到就不显示，
   // 不能让开关状态打断接诊主流程（v27-B：此前无 catch，关闭 cdss 后接诊必弹全局错误）
@@ -536,10 +925,15 @@ async function cancelOrder(row: Record<string, unknown>) {
   await openPatient(current.value)
 }
 
-onMounted(loadWorklist)
+onMounted(async () => {
+  await loadWorklist()
+  await loadRxTemplates()   // v44：进页时拉一次可见模板（后端已按登录人算好可见范围，前端不再过滤）
+})
 </script>
 
 <style scoped>
+.tpl-bar { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+.tpl-hint { color: #909399; font-size: 12px; }
 /* v43 合版：已开医嘱页签的单据打印与皮试结果工具条 */
 .doc-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
 .skin-inline { display: inline-flex; flex-wrap: wrap; align-items: center; }
@@ -564,6 +958,19 @@ onMounted(loadWorklist)
   margin-bottom: 8px;
   flex-wrap: wrap;
 }
+/* v44 车道E：诊断录入区与诊断助手 */
+.diag-block { width: 100%; }
+.diag-add { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.assist-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+.assist-name { flex: 1; cursor: pointer; color: var(--el-color-primary); }
+.assist-name:hover { text-decoration: underline; }
+
 .amend-block {
   margin-top: 16px;
   padding-top: 12px;

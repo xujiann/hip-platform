@@ -73,6 +73,12 @@ public class DoctorStationService {
         if (emr.getSignature() != null) {
             throw new BizException(4008, "病历已签名冻结，不可修改");
         }
+        // v44 车道E：新增字段的取值前置校验（4033/4034）。**纯只读、零副作用**，刻意放在
+        // 任何 save 之前——旧调用方只传既有 5 个字段时新列为 null，validateDiagnoses 全部放行，
+        // 行为与返回体逐字不变（V44DiagnosisTest#legacyFiveFieldSaveContractUnchanged 钉死）。
+        // 既有 icdCode/icdName/primaryDiag 一概不校验：md_icd10 只有几十条种子，
+        // 给 icdCode 加"字典必须存在"会当场打断 V43PrintDocsTest（用的 J00 就不在种子里）与实施期数据。
+        validateDiagnoses(diagnoses);
         emr.setChiefComplaint(data.getChiefComplaint());
         emr.setPresentIllness(data.getPresentIllness());
         emr.setPastHistory(data.getPastHistory());
@@ -89,11 +95,269 @@ public class DoctorStationService {
             d.setPrimaryDiag(i == 0);
             diagnosisRepository.save(d);
         }
+        // v44 车道E（979/1084）：常用诊断使用次数累加。**追加在既有落库逻辑之后，一行未改**，
+        // 写的是新表 outp_diagnosis_favorite，对所有既有下游（CDR/打印/病案/DRG）完全不可见。
+        // doctorId 为 null（服务层直调、无登录上下文的既有单测与 E2E）时整段跳过。
+        bumpFavorites(doctorId, diagnoses);
         return emr;
     }
 
+    // ==================== v44 车道E：门诊诊断域完整化（977/979/982/983/984/1084） ====================
+
+    /**
+     * 诊断新增字段取值校验（v44）。只看 v44 新列，既有列一概不碰。
+     * 全部允许 null / 空串——历史与旧调用方不填即放行，这是"只加不改"的前提。
+     */
+    private static void validateDiagnoses(List<OutpDiagnosis> diagnoses) {
+        if (diagnoses == null) {
+            return;
+        }
+        for (OutpDiagnosis d : diagnoses) {
+            String certainty = blankToNull(d.getCertainty());
+            if (certainty != null
+                    && !OutpDiagnosis.CERTAINTY_CONFIRMED.equals(certainty)
+                    && !OutpDiagnosis.CERTAINTY_SUSPECTED.equals(certainty)) {
+                throw new BizException(4033, "确诊/疑诊标记取值非法：" + certainty
+                        + "（只接受 CONFIRMED 确诊 / SUSPECTED 疑诊）");
+            }
+            String system = blankToNull(d.getDiagSystem());
+            if (system != null
+                    && !OutpDiagnosis.SYSTEM_ICD10.equals(system)
+                    && !OutpDiagnosis.SYSTEM_TCM.equals(system)) {
+                throw new BizException(4034, "诊断体系取值非法：" + system
+                        + "（只接受 ICD10 西医 / TCM 中医）");
+            }
+        }
+    }
+
+    private static String blankToNull(String s) {
+        return s == null || s.isBlank() ? null : s.trim();
+    }
+
+    /** 保存诊断时累加个人常用诊断（upsert）；无编码的中医/自定义诊断按名称去重 */
+    private void bumpFavorites(Long doctorId, List<OutpDiagnosis> diagnoses) {
+        if (doctorId == null || diagnoses == null || diagnoses.isEmpty()) {
+            return;
+        }
+        for (OutpDiagnosis d : diagnoses) {
+            String name = blankToNull(d.getIcdName());
+            if (name == null) {
+                continue;
+            }
+            upsertFavorite(doctorId, blankToNull(d.getIcdCode()), name, blankToNull(d.getDiagSystem()));
+        }
+    }
+
+    /**
+     * 常用诊断 upsert：有编码走 (user_id, icd_code) 唯一约束，
+     * 无编码（中医/自定义）走部分唯一索引 (user_id, icd_name) where icd_code is null。
+     * 分两条语句是因为 ON CONFLICT 的冲突目标必须与索引谓词一致。
+     */
+    public void upsertFavorite(Long userId, String icdCode, String icdName, String diagSystem) {
+        if (userId == null || icdName == null || icdName.isBlank()) {
+            return;
+        }
+        if (icdCode == null || icdCode.isBlank()) {
+            jdbc.update("""
+                    insert into outp_diagnosis_favorite(user_id, icd_code, icd_name, diag_system)
+                    values (?, null, ?, ?)
+                    on conflict (user_id, icd_name) where icd_code is null
+                    do update set use_count = outp_diagnosis_favorite.use_count + 1,
+                                  last_used_at = now(),
+                                  diag_system = coalesce(excluded.diag_system, outp_diagnosis_favorite.diag_system)
+                    """, userId, icdName, diagSystem);
+        } else {
+            jdbc.update("""
+                    insert into outp_diagnosis_favorite(user_id, icd_code, icd_name, diag_system)
+                    values (?, ?, ?, ?)
+                    on conflict (user_id, icd_code)
+                    do update set use_count = outp_diagnosis_favorite.use_count + 1,
+                                  last_used_at = now(),
+                                  icd_name = excluded.icd_name,
+                                  diag_system = coalesce(excluded.diag_system, outp_diagnosis_favorite.diag_system)
+                    """, userId, icdCode, icdName, diagSystem);
+        }
+    }
+
+    /** 删除一条个人常用诊断（只能删自己的；删不存在的按幂等处理，不报错） */
+    @Transactional
+    public void deleteFavorite(Long userId, Long favoriteId) {
+        if (userId == null || favoriteId == null) {
+            return;
+        }
+        jdbc.update("delete from outp_diagnosis_favorite where id = ? and user_id = ?", favoriteId, userId);
+    }
+
+    /** 诊断助手每段的条数上限——三段各 20 条，界面一屏放得下，也挡住全院聚合的长尾 */
+    private static final int ASSIST_LIMIT = 20;
+
+    /** 高频诊断的统计窗口：近半年。窗口内没有数据就自然返回空，不硬编码任何"常见病"清单 */
+    private static final int FREQUENT_WINDOW_DAYS = 180;
+
+    /**
+     * 诊断助手（偏离表 979★ + 1084★ 的"可从中挑选"）：一次返回三段。
+     *
+     * <ul>
+     *   <li><b>history</b> 该患者历史诊断，按编码+名称去重、按最近就诊倒序；</li>
+     *   <li><b>favorite</b> 当前医生的常用诊断（outp_diagnosis_favorite），按使用次数倒序；</li>
+     *   <li><b>frequent</b> 全院高频诊断，<b>按 outp_diagnosis 真实数据聚合</b>（近 180 天），
+     *       不是硬编码清单——没数据就是空的。</li>
+     * </ul>
+     *
+     * <p>三段各一条聚合 SQL、各限 {@value #ASSIST_LIMIT} 条，无 N+1。纯只读。
+     * keyword 为空时不加过滤条件（不写 {@code ? = '' or ...}：PG 对该形态推不出参数类型，
+     * 1.1 期已经踩过一次）。
+     */
+    public java.util.Map<String, Object> diagnosisAssist(Long patientId, String keyword, Long doctorId) {
+        String kw = blankToNull(keyword);
+        String like = kw == null ? null : "%" + kw + "%";
+
+        List<java.util.Map<String, Object>> history = List.of();
+        if (patientId != null) {
+            var args = new java.util.ArrayList<Object>();
+            var sql = new StringBuilder("""
+                    select d.icd_code as "icdCode", d.icd_name as "icdName",
+                           d.diag_system as "diagSystem", max(r.visit_date) as "lastVisitDate"
+                    from outp_diagnosis d
+                    join outp_registration r on r.id = d.registration_id
+                    where r.patient_id = ? and r.status <> 'CANCELLED'
+                    """);
+            args.add(patientId);
+            if (like != null) {
+                sql.append(" and (d.icd_name ilike ? or d.icd_code ilike ?) ");
+                args.add(like);
+                args.add(like);
+            }
+            sql.append(" group by d.icd_code, d.icd_name, d.diag_system")
+               .append(" order by max(r.visit_date) desc, max(r.id) desc limit ").append(ASSIST_LIMIT);
+            history = jdbc.queryForList(sql.toString(), args.toArray());
+        }
+
+        List<java.util.Map<String, Object>> favorite = List.of();
+        if (doctorId != null) {
+            var args = new java.util.ArrayList<Object>();
+            var sql = new StringBuilder("""
+                    select id, icd_code as "icdCode", icd_name as "icdName",
+                           diag_system as "diagSystem", use_count as "useCount"
+                    from outp_diagnosis_favorite where user_id = ?
+                    """);
+            args.add(doctorId);
+            if (like != null) {
+                sql.append(" and (icd_name ilike ? or icd_code ilike ?) ");
+                args.add(like);
+                args.add(like);
+            }
+            sql.append(" order by use_count desc, last_used_at desc limit ").append(ASSIST_LIMIT);
+            favorite = jdbc.queryForList(sql.toString(), args.toArray());
+        }
+
+        var freqArgs = new java.util.ArrayList<Object>();
+        var freqSql = new StringBuilder("""
+                select d.icd_code as "icdCode", d.icd_name as "icdName", count(*) as "useCount"
+                from outp_diagnosis d
+                join outp_registration r on r.id = d.registration_id
+                where r.visit_date >= ? and r.status <> 'CANCELLED' and coalesce(d.icd_name, '') <> ''
+                """);
+        freqArgs.add(java.sql.Date.valueOf(BusinessDates.today().minusDays(FREQUENT_WINDOW_DAYS)));
+        if (like != null) {
+            freqSql.append(" and (d.icd_name ilike ? or d.icd_code ilike ?) ");
+            freqArgs.add(like);
+            freqArgs.add(like);
+        }
+        freqSql.append(" group by d.icd_code, d.icd_name order by count(*) desc, d.icd_name limit ")
+               .append(ASSIST_LIMIT);
+        var frequent = jdbc.queryForList(freqSql.toString(), freqArgs.toArray());
+
+        var m = new java.util.LinkedHashMap<String, Object>();
+        m.put("history", history);
+        m.put("favorite", favorite);
+        m.put("frequent", frequent);
+        return m;
+    }
+
+    /**
+     * 医保特殊病种（慢特病）<b>院内登记</b>——偏离表 984★。
+     *
+     * <p><b>边界（务必照实说）</b>：本平台做的是「院内登记」，即在诊间记下患者已认定的
+     * 特殊病种与院内认定有效期，供诊断与开单时提示；<b>不包含向医保经办机构备案报送</b>。
+     * 报送要走当地医保接口（报文规范、CA、专网），属外部条件，本仓没有也不假装有——
+     * 表结构里刻意不留 approve_status / filing_no 这类永远停在"待报送"的假状态列。
+     */
+    @Transactional
+    public Long addSpecialDisease(Long patientId, String diseaseCode, String diseaseName,
+                                  String insuranceType, LocalDate startDate, LocalDate endDate,
+                                  String remark, Long operatorId) {
+        if (patientId == null || blankToNull(diseaseName) == null || startDate == null) {
+            throw new BizException(4035, "特殊病种登记信息不全：患者、病种名称、有效期起始均为必填");
+        }
+        if (endDate != null && endDate.isBefore(startDate)) {
+            throw new BizException(4035, "特殊病种登记信息不全：有效期止不能早于有效期起");
+        }
+        jdbc.update("""
+                insert into outp_special_disease(patient_id, disease_code, disease_name,
+                                                 insurance_type, start_date, end_date, remark, created_by)
+                values (?,?,?,?,?,?,?,?)
+                """, patientId, blankToNull(diseaseCode), blankToNull(diseaseName).trim(),
+                blankToNull(insuranceType), java.sql.Date.valueOf(startDate),
+                endDate == null ? null : java.sql.Date.valueOf(endDate),
+                blankToNull(remark), operatorId);
+        return jdbc.queryForObject(
+                "select max(id) from outp_special_disease where patient_id = ?", Long.class, patientId);
+    }
+
+    /**
+     * 患者的特殊病种登记（院内）。activeOnly=true 时只返回业务日期仍在有效期内的，
+     * 供诊断与开单界面提示。
+     */
+    public List<java.util.Map<String, Object>> listSpecialDiseases(Long patientId, boolean activeOnly) {
+        if (patientId == null) {
+            return List.of();
+        }
+        if (!activeOnly) {
+            return jdbc.queryForList("""
+                    select id, disease_code as "diseaseCode", disease_name as "diseaseName",
+                           insurance_type as "insuranceType", start_date as "startDate",
+                           end_date as "endDate", remark, created_by as "createdBy", created_at as "createdAt"
+                    from outp_special_disease where patient_id = ? order by start_date desc, id desc
+                    """, patientId);
+        }
+        return jdbc.queryForList("""
+                select id, disease_code as "diseaseCode", disease_name as "diseaseName",
+                       insurance_type as "insuranceType", start_date as "startDate",
+                       end_date as "endDate", remark, created_by as "createdBy", created_at as "createdAt"
+                from outp_special_disease
+                where patient_id = ? and start_date <= ? and (end_date is null or end_date >= ?)
+                order by start_date desc, id desc
+                """, patientId, java.sql.Date.valueOf(BusinessDates.today()),
+                java.sql.Date.valueOf(BusinessDates.today()));
+    }
+
+    /** 删除一条特殊病种院内登记（登记错了直接删；本表不承担法定留痕职责） */
+    @Transactional
+    public void deleteSpecialDisease(Long id) {
+        if (id != null) {
+            jdbc.update("delete from outp_special_disease where id = ?", id);
+        }
+    }
+
+    /**
+     * 开单行。v44 合版：在既有 7 个分量之后追加 7 个 v44 字段（remark/urgent/clinicalSummary/
+     * examPurpose/notice/specimenType/samplingSite），并保留**原 7 参兼容构造器**——
+     * 全仓 78 个调用点（含大量单测与 import 工具）一行不用改，新字段一律补 null。
+     * 手法同 v39 给 InpatientService.OrderLine 加 orderNature 时的兼容构造器。
+     */
     public record OrderLine(String orderType, Long itemId, Integer qty,
-                            String usageRoute, String frequency, String dosePerTime, Integer days) {}
+                            String usageRoute, String frequency, String dosePerTime, Integer days,
+                            String remark, Boolean urgent, String clinicalSummary,
+                            String examPurpose, String notice, String specimenType, String samplingSite) {
+
+        /** 兼容构造器：既有 7 参调用点保持原样，v44 字段留空。 */
+        public OrderLine(String orderType, Long itemId, Integer qty,
+                         String usageRoute, String frequency, String dosePerTime, Integer days) {
+            this(orderType, itemId, qty, usageRoute, frequency, dosePerTime, days,
+                    null, null, null, null, null, null, null);   // 7 个 v44 字段全部留空
+        }
+    }
 
     /** 开立一组医嘱（药品成一张处方，检查检验各自成申请单） */
     @Transactional
@@ -151,6 +415,16 @@ public class DoctorStationService {
             o.setOrderType(line.orderType());
             o.setQty(line.qty() == null || line.qty() <= 0 ? 1 : line.qty());
             o.setDoctorId(doctorId);
+            // v44 合版：7 个新字段统一在此落库（药品/检验/检查/治疗共用一段，不按类型焊死——
+            // V137 刻意没加 CHECK，真实院内会有 EXAM 送病理、TREAT 写注意事项）。
+            // 纯 setter，不改任何既有分支逻辑；调用方不传即为 null。
+            o.setRemark(line.remark());
+            o.setUrgent(Boolean.TRUE.equals(line.urgent()));
+            o.setClinicalSummary(line.clinicalSummary());
+            o.setExamPurpose(line.examPurpose());
+            o.setNotice(line.notice());
+            o.setSpecimenType(line.specimenType());
+            o.setSamplingSite(line.samplingSite());
             Integer stockWarn = null;
             if ("DRUG".equals(line.orderType())) {
                 DrugItem drug = drugRepository.findById(line.itemId())

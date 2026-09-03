@@ -165,11 +165,20 @@ public class PrintReportController {
      * 两张字典表主键会撞号，故 join 条件里必须带 order_type 判别，否则药品会错挂上收费项目的执行科室。
      * exec_dept 即"这张单去哪儿做"（md_charge_item.exec_dept_id），是导诊单/申请单的核心信息。
      * lis_sample 只在检验采样后才有行，left join 后为 null 属正常（未采样），版式上留手填位。
+     *
+     * <p><b>v44 车道G</b>：补取 V137 新增的七个医嘱字段（remark 备注 1006★ / urgent 加急 1013★ /
+     * clinical_summary 临床摘要、exam_purpose 检查目的、notice 注意事项 1014★ /
+     * specimen_type 标本类型、sampling_site 采样部位 1016★）。
+     * v43 车道B 出这五种单据时这些字段还不存在，版式上只能留手填栏；现在**有值就印值、
+     * 无值仍留手填栏**——历史医嘱行这七列必然为 null（V137 不回填任何猜测值），
+     * 版式不能因为多了字段就把手填栏拿掉，否则老单据会变成印不出也写不了。
      */
     private static final String DOC_ORDER_SQL = """
             select o.id, o.group_no, o.order_type, o.item_code, o.item_name, o.spec, o.unit, o.qty,
                    o.unit_price, o.amount, o.usage_route, o.frequency, o.dose_per_time, o.days,
                    o.status, o.created_at,
+                   o.remark, o.urgent, o.clinical_summary, o.exam_purpose, o.notice,
+                   o.specimen_type, o.sampling_site,
                    du.real_name as order_doctor_name,
                    dr.dose_form, dr.antibiotic,
                    ci.category as item_category,
@@ -203,6 +212,11 @@ public class PrintReportController {
      * <p>返回体：页眉字段平铺（患者/科室/号序/医师）+ diagnoses 诊断 + emr 病历摘要
      * + groups 按单据号分组的明细（每组一张纸）+ rows 明细行平铺（便于断言与合计）。
      * 导诊单没有"单据号"概念，只回 rows（本次就诊尚未完成的项目清单）。
+     *
+     * <p><b>v44</b>：每个 group 另带单头级字段 {@code urgent}（组内任一行加急即 true）与
+     * {@code clinical_summary / exam_purpose / notice / specimen_type / sampling_site}
+     * （组内首个非空值，键名与 rows 内逐字一致）。<b>全部可能为 null</b>——
+     * 历史医嘱行没有这些字段，版式须"有值印值、无值仍留 v43 的手填栏"。
      *
      * <p>错误码：4892 类型不支持 / 4893 单据数据不存在（挂号不存在，或本次就诊无该类内容）。
      */
@@ -268,9 +282,35 @@ public class PrintReportController {
             g.put("total", e.getValue().stream()
                     .map(x -> x.get("amount") instanceof BigDecimal b ? b : BigDecimal.ZERO)
                     .reduce(BigDecimal.ZERO, BigDecimal::add));
+            // v44：单头级字段。加急是印在单头的红戳、临床摘要/检查目的/注意事项/标本要求
+            // 也都是"整张单一条"而非"每行一条"，版式不该逐行重复渲染。
+            // 非药品医嘱每行自成一个 group_no（createOrders 对非 DRUG 逐行取号），
+            // 故这里的"组内首个非空值"在真实数据上就是该行自己的值，无歧义。
+            g.put("urgent", e.getValue().stream().anyMatch(x -> Boolean.TRUE.equals(x.get("urgent"))));
+            for (String col : SHEET_LEVEL_COLS) {
+                g.put(col, firstNonBlank(e.getValue(), col));
+            }
             return (Map<String, Object>) g;
         }).toList());
         return R.ok(m);
+    }
+
+    /**
+     * v44：印在单头而非明细行的字段（下划线键名与 rows 内逐字一致，前端两处取值不必换写法）。
+     * 全部可能为 null——历史医嘱行没有这些字段，版式须保留 v43 的手填栏。
+     */
+    private static final List<String> SHEET_LEVEL_COLS =
+            List.of("clinical_summary", "exam_purpose", "notice", "specimen_type", "sampling_site");
+
+    /** 组内首个非空非白值；全组皆空返 null（前端据此决定印值还是留手填栏） */
+    private static Object firstNonBlank(List<Map<String, Object>> rows, String col) {
+        for (var r : rows) {
+            Object v = r.get(col);
+            if (v != null && !String.valueOf(v).isBlank()) {
+                return v;
+            }
+        }
+        return null;
     }
 
     /** 1.0.1（1028）：死亡登记卡打印数据集 */

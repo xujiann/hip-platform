@@ -79,7 +79,11 @@ public class MedTechController {
     @GetMapping("/api/lis/pending")
     public R<List<Map<String, Object>>> lisPending() {
         return R.ok(jdbc.queryForList("""
-                select o.id as order_id, o.group_no, o.item_name, p.name as patient_name, p.sex
+                -- v44 合版补：V137 给 outp_order 加了标本类型/采样部位/加急/备注，
+                -- 但本队列是显式列清单、原先取不到——字段建了采样台却看不见，等于半截功能。
+                -- 纯补 select 列，join 与 where 一字未动。
+                select o.id as order_id, o.group_no, o.item_name, p.name as patient_name, p.sex,
+                       o.specimen_type, o.sampling_site, o.urgent, o.remark
                 from outp_order o
                 join outp_registration r on r.id = o.registration_id
                 join empi_patient p on p.id = r.patient_id
@@ -128,6 +132,7 @@ public class MedTechController {
         return R.ok(jdbc.queryForList("""
                 select s.id, s.barcode, s.status, s.collected_at, s.substitute, s.substitute_name,
                        o.id as order_id, o.item_name, o.group_no,
+                       o.specimen_type, o.sampling_site, o.urgent, o.remark,   -- v44 合版补
                        p.name as patient_name
                 from lis_sample s
                 join outp_order o on o.id = s.order_id
@@ -180,7 +185,11 @@ public class MedTechController {
                 """);
         String filter = modality == null ? "" : " and e.modality = ? ";
         String sql = """
-                select e.id, e.status, e.modality, e.findings, e.impression, o.item_name, o.group_no, p.name as patient_name
+                -- v44 合版补：临床摘要/检查目的/注意事项/加急是技师写报告的依据，
+                -- V137 已建列但本队列原先不取（同 lis/pending）。
+                select e.id, e.status, e.modality, e.findings, e.impression, o.item_name, o.group_no,
+                       o.clinical_summary, o.exam_purpose, o.notice, o.urgent,
+                       p.name as patient_name
                 from ris_exam e
                 join outp_order o on o.id = e.order_id
                 join outp_registration r on r.id = o.registration_id

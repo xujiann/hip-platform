@@ -26,6 +26,7 @@ const router = createRouter({
         { path: 'outpatient/charge', component: () => import('../views/outpatient/ChargeView.vue') },
         { path: 'outpatient/refund-approval', component: () => import('../views/outpatient/RefundApprovalView.vue') },
         { path: 'finance/shift-close', component: () => import('../views/finance/ShiftCloseView.vue') },
+        { path: 'outpatient/rx-template', component: () => import('../views/outpatient/RxTemplateView.vue') },
         { path: 'outpatient/pharmacy', component: () => import('../views/outpatient/PharmacyView.vue') },
         { path: 'outpatient/exec', component: () => import('../views/outpatient/ExecStationView.vue') },
         { path: 'integration/monitor', component: () => import('../views/integration/MonitorView.vue') },

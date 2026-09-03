@@ -173,6 +173,80 @@ public class DoctorStationController {
         }
     }
 
+    // ==================== v44 车道E：门诊诊断域完整化（977/979/982/983/984/1084） ====================
+
+    /**
+     * 诊断助手（偏离表 979★）：一次返回 <b>历史 / 常用 / 高频</b> 三段，供诊断录入区点选带入。
+     *
+     * <p>三段各限 20 条、各一条聚合 SQL，无 N+1；frequent 段按 outp_diagnosis 真实数据聚合，
+     * 不是硬编码常见病清单。keyword 可空（空则不加过滤）。纯只读。
+     */
+    @GetMapping("/diagnosis-assist")
+    public R<Map<String, Object>> diagnosisAssist(@RequestParam(required = false) Long patientId,
+                                                  @RequestParam(required = false) String keyword,
+                                                  Authentication auth) {
+        return R.ok(doctorStationService.diagnosisAssist(patientId, keyword, currentUserService.idOf(auth)));
+    }
+
+    public record FavoriteRequest(String icdCode, String icdName, String diagSystem) {}
+
+    /**
+     * 手动加星到常用诊断（偏离表 1084★「存储常用诊断」）。
+     * 保存病历时已自动累加，本端点是医生主动收藏的入口。
+     */
+    @PostMapping("/diagnosis-favorite")
+    public R<Void> addFavorite(@RequestBody FavoriteRequest req, Authentication auth) {
+        doctorStationService.upsertFavorite(currentUserService.idOf(auth),
+                req.icdCode(), req.icdName(), req.diagSystem());
+        return R.ok();
+    }
+
+    /** 删除一条个人常用诊断（只能删自己的） */
+    @DeleteMapping("/diagnosis-favorite/{favoriteId}")
+    public R<Void> deleteFavorite(@PathVariable Long favoriteId, Authentication auth) {
+        doctorStationService.deleteFavorite(currentUserService.idOf(auth), favoriteId);
+        return R.ok();
+    }
+
+    /** 日期走 JSON body，由 Jackson JSR-310 按 ISO 解析（同 InventoryController.StockInRequest 口径） */
+    public record SpecialDiseaseRequest(Long patientId, String diseaseCode, String diseaseName,
+                                        String insuranceType, LocalDate startDate, LocalDate endDate,
+                                        String remark) {}
+
+    /**
+     * 医保特殊病种（慢特病）<b>院内登记</b>——偏离表 984★。
+     *
+     * <p><b>做到哪儿、没做哪儿，写在这里防止后来人误读</b>：本组端点只做院内登记
+     * （记下患者已认定的特殊病种与院内认定有效期，诊断/开单界面据此提示），
+     * <b>不含向医保经办机构备案报送</b>——报送要走当地医保接口（报文规范 + CA + 专网），
+     * 属外部条件。本仓不提供、也不留假的"报送/审批"状态。
+     */
+    @PostMapping("/special-disease")
+    public R<Object> addSpecialDisease(@RequestBody SpecialDiseaseRequest req, Authentication auth) {
+        try {
+            Long id = doctorStationService.addSpecialDisease(req.patientId(), req.diseaseCode(),
+                    req.diseaseName(), req.insuranceType(), req.startDate(), req.endDate(),
+                    req.remark(), currentUserService.idOf(auth));
+            return R.ok(Map.of("id", id));
+        } catch (BizException e) {
+            return R.fail(e.code, e.getMessage());
+        }
+    }
+
+    /** 患者的特殊病种院内登记；activeOnly=true 只返回业务日期仍在有效期内的（开单提示用） */
+    @GetMapping("/special-disease")
+    public R<List<Map<String, Object>>> specialDiseases(@RequestParam Long patientId,
+                                                        @RequestParam(defaultValue = "false") boolean activeOnly) {
+        return R.ok(doctorStationService.listSpecialDiseases(patientId, activeOnly));
+    }
+
+    /** 删除一条特殊病种院内登记 */
+    @DeleteMapping("/special-disease/{id}")
+    public R<Void> deleteSpecialDisease(@PathVariable Long id) {
+        doctorStationService.deleteSpecialDisease(id);
+        return R.ok();
+    }
+
     /**
      * v37 门诊病历连续调阅：患者历次就诊（近 50 次，剔除已退号）+ 各次诊断与病历摘要。
      * 医生站接诊时看既往——此前 findTop50ByPatientIdOrderByIdDesc 定义后零调用者，本端点接上。
