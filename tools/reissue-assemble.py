@@ -18,10 +18,22 @@ SCR = os.environ.get('HIP_AUDIT_DIR') or (
     r'C:\Users\drxuj\AppData\Local\Temp\claude\C--Users-drxuj------'
     r'\3a2f452a-4a0f-4bd5-aad4-9c88087196f0\scratchpad')
 
-# 对外文本内部词扫描。不含裸 ":\d+"——那会误伤 "00:00" 这类时间；file:line 由扩展名子句与
-# "V25:43" 迁移引用子句覆盖，裸类名由 Controller/Service/Repository 覆盖。
-INTERNAL = re.compile(r'(\.java\b|\.vue\b|\.sql\b|\.ts\b|\bV\d{1,3}:\d+|grep|零命中|file:line|Controller|Service|'
-                      r'Repository|\b[a-z]+_[a-z]+_[a-z]+\b|V\d{2,3}__|\bagent\b|审计判定|判定为)', re.I)
+# 对外文本扫描规则。经三轮实测校准（合法 12 / 内部 10 / 承诺 4，零误伤零漏检）：
+#  - 不用裸类名后缀：会误伤 WebService；不用裸「审计」：审计日志/审计员是真实产品功能；
+#  - 不用裸「N 天内」：证照到期前 90 天预警是产品功能，不是交付承诺；承诺须带时间量词。
+INTERNAL = re.compile(
+    r'(\.java\b|\.vue\b|\.sql\b|\.tsx?\b'
+    r'|\b[A-Z][A-Za-z]*(?:Controller|Repository|Service|Adapter)\s*[.:]\s*[A-Za-z_]\w*'
+    r'|\b[A-Z][A-Za-z]*(?:Controller|Repository)\b'
+    r'|\bV\d{1,3}__|\bV\d{1,3}:\d+'
+    r'|grep|零命中|file:line|全仓(?:库)?(?:无|零|仅|只)|代码(?:里|中)(?:无|不存在|查不到)'
+    r'|\b[a-z]+_[a-z]+_[a-z]+\b'
+    r'|审计判定|判定为(?:不符合|部分符合|符合)|本条判定)', re.I)
+COMMIT = re.compile(
+    r'((?:\d+\s*(?:个)?(?:工作日|天|周|月)|下一?版本|近期|年底|季度)\s*(?:内|前)?\s*'
+    r'(?:完成|交付|上线|发布)'
+    r'|承诺(?:于|在)?\s*\d+\s*(?:个)?(?:工作日|天|周|月)|承诺(?:于|在)\s*下一?版本'
+    r'|\bv\d+\.\d+\b|版本号)', re.I)
 
 def load_rewrites():
     rw = {}
@@ -64,8 +76,9 @@ def main():
             oc, on = r[4], r[5]
             r[4], r[5] = x['new_conclusion'], x['new_note']
             changed[(oc, r[4])] += 1
-            if INTERNAL.search(x['new_note']):
-                violations.append((no, x['new_note'][:120]))
+            m = INTERNAL.search(x['new_note']) or COMMIT.search(x['new_note'])
+            if m:
+                violations.append((no, m.group(0), x['new_note'][:110]))
             diff.append([no, '★' if r[1].strip() else '', '▲' if r[2].strip() else '', clean(r[3])[:80],
                          oc, r[4], on[:80], x['new_note'], '是' if x['needs_human'] else '', x['human_reason']])
             if x['needs_human']:
@@ -103,8 +116,8 @@ def main():
         w('| %d | %s | %s → %s | %s | %s |' % (s['no'], s['param'].replace('|', '/'), s['from'], s['to'],
                                               s['note'][:140].replace('|', '/'), s['why'][:80].replace('|', '/')))
     w(''); w('## 三、对外语言违规（%d 条，须人工改写后方可对外）' % len(violations)); w('')
-    for no, t in violations:
-        w('- **%d**：%s' % (no, t.replace('|', '/')))
+    for no, hit, t in violations:
+        w('- **%d**（命中「%s」）：%s' % (no, hit, t.replace('|', '/')))
     w(''); w('## 四、纪律'); w('')
     w('- 本表**不含任何交付时限与版本承诺**，「列入后续开发计划」的具体承诺由商务决定后另行补入。')
     w('- 签认完成前，v3 不得对外；v2 不得继续使用。')
