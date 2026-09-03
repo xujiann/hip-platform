@@ -25,7 +25,9 @@ import org.springframework.transaction.annotation.Transactional;
 import java.lang.reflect.RecordComponent;
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -574,16 +576,41 @@ class V44RxTemplateTest {
         assertEquals(ordersBefore, jdbc.queryForObject("select count(*) from outp_order", Long.class),
                 "「列模板/取明细」是纯只读，一行 outp_order 都不该产生");
 
-        // —— 反射断言：OrderLine 的每个分量在返回体里都有同名键，并原样构造出 OrderLine ——
+        // —— 反射断言：OrderLine 的**核心开单分量**在返回体里都有同名键，并原样构造出 OrderLine ——
+        //
+        // 为什么只断言核心 7 分量、而不是 OrderLine 的全部分量：
+        // v44 合版把 OrderLine 从 7 扩到 14（remark/urgent/clinicalSummary/examPurpose/notice/
+        // specimenType/samplingSite），这 7 个是**逐患者逐次填写**的，模板刻意不承载：
+        //   * clinicalSummary（临床摘要）是本患者本次的病情描述，**预置即错**——
+        //     把上一个患者的病情摘要带进下一张申请单，是比不填更糟的数据事故；
+        //   * urgent/specimenType/samplingSite/examPurpose/notice 预置**有一定价值**
+        //     （检验模板预设标本类型确实省事），但那要给 rx_template_line 加列并改前端，
+        //     属独立增量，列为 v45 候选；本版不做，也不在此假装已做。
+        // 本用例保护的是「取明细返回体能直接喂给 createOrders、前端无需转换表」这条契约——
+        // 核心 7 分量就是这条契约的全部内容；新分量由前端传 null、医生按患者填写。
+        Set<String> CORE = Set.of("orderType", "itemId", "qty",
+                "usageRoute", "frequency", "dosePerTime", "days");
         RecordComponent[] comps = DoctorStationService.OrderLine.class.getRecordComponents();
-        var ctor = DoctorStationService.OrderLine.class.getDeclaredConstructors()[0];
+        assertTrue(Arrays.stream(comps).map(RecordComponent::getName).collect(java.util.stream.Collectors.toSet())
+                        .containsAll(CORE),
+                "OrderLine 的核心开单分量被改名或删除了——模板套用契约会断，请同步本用例与 rx_template_line");
+        // 必须按分量数精确取**规范构造器**：v44 给 OrderLine 加了 7 参兼容构造器
+        // （保 78 个既有调用点不改），getDeclaredConstructors()[0] 可能取到那个短的。
+        var ctor = Arrays.stream(DoctorStationService.OrderLine.class.getDeclaredConstructors())
+                .filter(c -> c.getParameterCount() == comps.length)
+                .findFirst().orElseThrow(() -> new AssertionError("找不到 OrderLine 的规范构造器"));
         List<DoctorStationService.OrderLine> orderLines = new ArrayList<>();
         for (Map<String, Object> line : lines) {
             Object[] args = new Object[comps.length];
             for (int i = 0; i < comps.length; i++) {
                 RecordComponent c = comps[i];
+                if (!CORE.contains(c.getName())) {
+                    // v44 新分量：模板不承载，构造 OrderLine 时留 null（见上方说明）
+                    args[i] = null;
+                    continue;
+                }
                 assertTrue(line.containsKey(c.getName()),
-                        "取明细返回体缺少 OrderLine 分量「" + c.getName() + "」——套用时前端就得手工转换了");
+                        "取明细返回体缺少 OrderLine 核心分量「" + c.getName() + "」——套用时前端就得手工转换了");
                 Object v = line.get(c.getName());
                 if (v instanceof Number n) {
                     v = c.getType() == Long.class ? (Object) n.longValue() : (Object) n.intValue();
