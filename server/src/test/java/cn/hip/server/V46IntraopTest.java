@@ -83,6 +83,14 @@ class V46IntraopTest {
     }
 
     /** 只写 V140 的时间点列（本车道<b>一列都不改 inp_surgery</b>，写值是为了构造时间窗用例） */
+    /**
+     * 设手术时间窗。**时间串必须带显式偏移**（如 2026-09-04T09:00:00+08:00）。
+     *
+     * <p>否则会踩一个只在 CI 现形的坑：本方法的 {@code ?::timestamptz} 由 **PostgreSQL 按会话时区**
+     * 解析，而事件时间走 {@code SurgeryIntraopController.parseTime} 按 **JVM 时区**解析——
+     * 两者时区一致时相安无事（本地 UTC+8 全绿），CI 跑 UTC 就整整错开 8 小时，
+     * 时间窗校验（4925）随之失效。带上偏移后两侧都是绝对时刻，与运行时区无关。
+     */
     private void setWindow(Long surgeryId, String inRoom, String outRoom) {
         jdbc.update("update inp_surgery set in_room_at = ?::timestamptz, out_room_at = ?::timestamptz where id = ?",
                 inRoom, outRoom, surgeryId);
@@ -130,7 +138,7 @@ class V46IntraopTest {
     @Test
     void tubeCrud() {
         Long sid = surgery();
-        long id = addTube(sid, "中心静脉导管", "2026-09-04 08:30:00", null);
+        long id = addTube(sid, "中心静脉导管", "2026-09-04T08:30:00+08:00", null);
 
         var rows = controller.tubes(sid).getData();
         assertEquals(1, rows.size());
@@ -147,12 +155,12 @@ class V46IntraopTest {
 
         // 改：补拔管时间
         assertEquals(0, controller.updateTube(id, new TubeReq(sid, "中心静脉导管", "右颈内静脉",
-                new BigDecimal("13.0"), "2026-09-04 08:30:00", "2026-09-04 11:00:00", "术毕拔除")).getCode());
+                new BigDecimal("13.0"), "2026-09-04T08:30:00+08:00", "2026-09-04T11:00:00+08:00", "术毕拔除")).getCode());
         assertEquals(0, num(summaryBlock(sid, "tubeSummary"), "unremoved"));
 
         // 拔除时间录错要能改回未拔除（故 removed_at 不能用 coalesce 保留旧值）
         assertEquals(0, controller.updateTube(id, new TubeReq(sid, "中心静脉导管", "右颈内静脉",
-                new BigDecimal("13.0"), "2026-09-04 08:30:00", null, "撤销误录的拔管")).getCode());
+                new BigDecimal("13.0"), "2026-09-04T08:30:00+08:00", null, "撤销误录的拔管")).getCode());
         assertEquals(1, num(summaryBlock(sid, "tubeSummary"), "unremoved"));
 
         assertEquals(0, controller.deleteTube(id).getCode());
@@ -175,10 +183,10 @@ class V46IntraopTest {
     void removalBeforeInsertionIs4921() {
         Long sid = surgery();
         assertEquals(4921, controller.addTube(new TubeReq(sid, "动脉置管", "左桡动脉", null,
-                "2026-09-04 10:00:00", "2026-09-04 09:00:00", null), auth).getCode());
-        long id = addTube(sid, "动脉置管", "2026-09-04 10:00:00", null);
+                "2026-09-04T10:00:00+08:00", "2026-09-04T09:00:00+08:00", null), auth).getCode());
+        long id = addTube(sid, "动脉置管", "2026-09-04T10:00:00+08:00", null);
         assertEquals(4921, controller.updateTube(id, new TubeReq(sid, "动脉置管", "左桡动脉", null,
-                "2026-09-04 10:00:00", "2026-09-04 09:59:59", null)).getCode());
+                "2026-09-04T10:00:00+08:00", "2026-09-04T09:59:59+08:00", null)).getCode());
     }
 
     // ===== ② 术中输血（1432★–1435★）=====
@@ -278,7 +286,7 @@ class V46IntraopTest {
     @Test
     void eventCrud() {
         Long sid = surgery();
-        long id = addEvent(sid, "PAIN_PUMP_ON", "2026-09-04 10:30:00", null);
+        long id = addEvent(sid, "PAIN_PUMP_ON", "2026-09-04T10:30:00+08:00", null);
 
         var rows = controller.events(sid, null).getData();
         assertEquals(1, rows.size());
@@ -287,13 +295,13 @@ class V46IntraopTest {
         assertNull(rows.get(0).get("planned"), "无计划性可言的事件留 null，不逼录假值");
 
         // 拆泵：1437★ 要的是「新增」与「拆除」两个数，同表按 event_type 区分
-        addEvent(sid, "PAIN_PUMP_OFF", "2026-09-06 09:00:00", null);
+        addEvent(sid, "PAIN_PUMP_OFF", "2026-09-06T09:00:00+08:00", null);
         assertEquals(1, controller.events(sid, "PAIN_PUMP_ON").getData().size());
         assertEquals(1, controller.events(sid, "PAIN_PUMP_OFF").getData().size());
         assertEquals(2, controller.events(sid, null).getData().size());
 
         assertEquals(0, controller.updateEvent(id,
-                new EventReq(sid, "RESCUE", "2026-09-04 10:40:00", "室颤除颤一次", null, "已复律")).getCode());
+                new EventReq(sid, "RESCUE", "2026-09-04T10:40:00+08:00", "室颤除颤一次", null, "已复律")).getCode());
         assertEquals(1, controller.events(sid, "RESCUE").getData().size());
         assertEquals(0, controller.events(sid, "PAIN_PUMP_ON").getData().size());
 
@@ -320,10 +328,10 @@ class V46IntraopTest {
     @Test
     void plannedAndUnplannedAreCountedSeparately() {
         Long sid = surgery();
-        addEvent(sid, "TO_ICU", "2026-09-04 12:00:00", true);
-        addEvent(sid, "TO_ICU", "2026-09-04 12:10:00", false);
-        addEvent(sid, "TO_ICU", "2026-09-04 12:20:00", false);
-        addEvent(sid, "RESCUE", "2026-09-04 12:30:00", null);
+        addEvent(sid, "TO_ICU", "2026-09-04T12:00:00+08:00", true);
+        addEvent(sid, "TO_ICU", "2026-09-04T12:10:00+08:00", false);
+        addEvent(sid, "TO_ICU", "2026-09-04T12:20:00+08:00", false);
+        addEvent(sid, "RESCUE", "2026-09-04T12:30:00+08:00", null);
 
         var icu = summaryList(sid, "eventSummary").stream()
                 .filter(r -> "TO_ICU".equals(r.get("event_type"))).findFirst().orElseThrow();
@@ -371,14 +379,14 @@ class V46IntraopTest {
     @Test
     void eventBeforeInRoomTimeIs4925() {
         Long sid = surgery();
-        setWindow(sid, "2026-09-04 09:00:00", "2026-09-04 11:00:00");
+        setWindow(sid, "2026-09-04T09:00:00+08:00", "2026-09-04T11:00:00+08:00");
         var r = controller.addEvent(
-                new EventReq(sid, "TO_ICU", "2026-09-04 08:00:00", null, false, null), auth);
+                new EventReq(sid, "TO_ICU", "2026-09-04T08:00:00+08:00", null, false, null), auth);
         assertEquals(4925, r.getCode(), r.getMessage());
         assertTrue(r.getMessage().contains("入室"));
         // 窗内合法
         assertEquals(0, controller.addEvent(
-                new EventReq(sid, "TO_ICU", "2026-09-04 10:00:00", null, false, null), auth).getCode());
+                new EventReq(sid, "TO_ICU", "2026-09-04T10:00:00+08:00", null, false, null), auth).getCode());
     }
 
     /**
@@ -389,21 +397,21 @@ class V46IntraopTest {
     @Test
     void onlyInRoomEventsAreBoundedByOutRoomTime() {
         Long sid = surgery();
-        setWindow(sid, "2026-09-04 09:00:00", "2026-09-04 11:00:00");
+        setWindow(sid, "2026-09-04T09:00:00+08:00", "2026-09-04T11:00:00+08:00");
 
         var inRoom = controller.addEvent(
-                new EventReq(sid, "INTUBATE_OR", "2026-09-04 11:30:00", null, null, null), auth);
+                new EventReq(sid, "INTUBATE_OR", "2026-09-04T11:30:00+08:00", null, null, null), auth);
         assertEquals(4925, inRoom.getCode(), inRoom.getMessage());
         assertTrue(inRoom.getMessage().contains("出室"));
 
         assertEquals(0, controller.addEvent(
-                        new EventReq(sid, "TO_ICU", "2026-09-04 11:05:00", null, false, null), auth).getCode(),
+                        new EventReq(sid, "TO_ICU", "2026-09-04T11:05:00+08:00", null, false, null), auth).getCode(),
                 "转入 ICU 必然在出室之后");
         assertEquals(0, controller.addEvent(
-                        new EventReq(sid, "INTUBATE_PACU", "2026-09-04 11:20:00", null, false, null), auth).getCode(),
+                        new EventReq(sid, "INTUBATE_PACU", "2026-09-04T11:20:00+08:00", null, false, null), auth).getCode(),
                 "苏醒室插管必然在出室之后");
         assertEquals(0, controller.addEvent(
-                        new EventReq(sid, "PAIN_PUMP_OFF", "2026-09-06 09:00:00", null, null, null), auth).getCode(),
+                        new EventReq(sid, "PAIN_PUMP_OFF", "2026-09-06T09:00:00+08:00", null, null, null), auth).getCode(),
                 "拆镇痛泵常在术后 48 小时");
     }
 
@@ -418,9 +426,9 @@ class V46IntraopTest {
         assertNull(jdbc.queryForMap("select in_room_at from inp_surgery where id = ?", sid).get("in_room_at"));
 
         assertEquals(0, controller.addEvent(
-                new EventReq(sid, "INTUBATE_OR", "2001-01-01 00:00:00", null, null, null), auth).getCode());
+                new EventReq(sid, "INTUBATE_OR", "2001-01-01T00:00:00+08:00", null, null, null), auth).getCode());
         assertEquals(0, controller.addEvent(
-                new EventReq(sid, "TO_ICU", "2099-12-31 23:59:00", null, true, null), auth).getCode());
+                new EventReq(sid, "TO_ICU", "2099-12-31T23:59:00+08:00", null, true, null), auth).getCode());
         assertEquals(2, controller.events(sid, null).getData().size());
     }
 
@@ -428,11 +436,11 @@ class V46IntraopTest {
     @Test
     void openEndedWindowStillGuardsLowerBound() {
         Long sid = surgery();
-        setWindow(sid, "2026-09-04 09:00:00", null);
+        setWindow(sid, "2026-09-04T09:00:00+08:00", null);
         assertEquals(4925, controller.addEvent(
-                new EventReq(sid, "INVASIVE", "2026-09-04 08:59:00", "右桡动脉穿刺置管", null, null), auth).getCode());
+                new EventReq(sid, "INVASIVE", "2026-09-04T08:59:00+08:00", "右桡动脉穿刺置管", null, null), auth).getCode());
         assertEquals(0, controller.addEvent(
-                new EventReq(sid, "INVASIVE", "2026-09-04 09:30:00", "右桡动脉穿刺置管", null, null), auth).getCode());
+                new EventReq(sid, "INVASIVE", "2026-09-04T09:30:00+08:00", "右桡动脉穿刺置管", null, null), auth).getCode());
     }
 
     // ===== ⑤ 不存在与格式 =====
