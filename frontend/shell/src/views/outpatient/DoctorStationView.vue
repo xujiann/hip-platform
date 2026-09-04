@@ -51,6 +51,41 @@
           <!-- v43：签名冻结态——原文只读，页首写明签名人与签名时间 -->
           <el-alert v-if="emrSigned" type="success" :closable="false" show-icon style="margin-bottom: 10px"
                     :title="`本次病历已签名冻结 · 签名人：${emrSignerName || '—'} · 签名时间：${emrSignedAtText || '—'}`" />
+
+          <!-- v45 车道J：1092★ 新建病历自动带出 + 992★ 引用抽屉入口 + 1082★ 跨患者粘贴管控档位 -->
+          <div class="ref-bar no-print">
+            <span v-if="basicBrought" class="ref-auto" :title="basicBrought">已自动带出：{{ basicBrought }}</span>
+            <span v-else class="dim">—</span>
+            <span class="ref-spacer" />
+            <span class="dim">插入到</span>
+            <el-select v-model="insertTarget" size="small" style="width: 112px" :disabled="emrSigned">
+              <el-option v-for="s in EMR_SECTIONS" :key="s.key" :label="s.label" :value="s.key" />
+            </el-select>
+            <el-button size="small" @click="refVisible = true">引用资料</el-button>
+            <!-- 档位常驻可见：医生该知道院里此刻是"需确认"还是"禁止"，而不是粘贴时才被弹一脸 -->
+            <el-tag v-if="copyMode !== 'off'" size="small" :type="copyMode === 'block' ? 'danger' : 'warning'">
+              跨患者粘贴：{{ copyMode === 'block' ? '禁止' : '需确认' }}
+            </el-tag>
+          </div>
+          <el-alert v-if="prefilledNote" type="info" show-icon style="margin-bottom: 10px"
+                    :title="prefilledNote" @close="prefilledNote = ''" />
+
+          <!-- 989★/1075★ 结构化录入：只有当院里真的维护了病历模板时才出现这一行，不留死入口 -->
+          <div v-if="emrTemplates.length" class="ref-bar no-print">
+            <el-select v-model="structTemplateId" clearable filterable :disabled="emrSigned"
+                       placeholder="结构化模板（按模板定义的元素录入）" style="width: 300px"
+                       @change="loadStructFields">
+              <el-option v-for="t in emrTemplates" :key="t.id as number"
+                         :label="`${t.name}${t.dept_id ? '' : '（通用）'}`" :value="t.id as number" />
+            </el-select>
+            <span v-if="structHint" class="dim">{{ structHint }}</span>
+          </div>
+          <StructuredFieldForm v-if="structFields.length" v-model="structValues" :fields="structFields"
+                               :disabled="emrSigned" preview-label="保存后写入现病史" />
+
+          <!-- 1082★ 复制粘贴管控挂在正文输入区的外层容器上：copy/cut/paste 从内部 textarea 冒泡上来，
+               一处绑定覆盖全部五段正文。**纯前端行为，保存端点一行未改。** -->
+          <div @copy="onCopy" @cut="onCopy" @paste="onPaste">
           <el-form :model="emr" label-width="80px">
             <el-form-item label="主诉"><el-input v-model="emr.chiefComplaint" :disabled="emrSigned" /></el-form-item>
             <el-form-item label="现病史"><el-input v-model="emr.presentIllness" type="textarea" :rows="3" :disabled="emrSigned" /></el-form-item>
@@ -150,6 +185,7 @@
             <el-button v-if="!emrSigned" type="warning" :loading="signing" @click="signEmr">签 名</el-button>
             <span v-if="!emrSigned" class="sign-tip">签名后原文冻结，如需更正只能追加补正记录</span>
           </el-form>
+          </div>
 
           <!-- 阻塞4：签名冻结病历的合规补正入口 -->
           <div v-if="emrSigned" class="amend-block">
@@ -414,6 +450,10 @@
         <el-button type="primary" :loading="savingSpecial" @click="addSpecialDisease">登 记</el-button>
       </template>
     </el-dialog>
+
+    <!-- v45 车道J：临床资料引用抽屉（992★ 基本资料/检验/检查/历史病历，点条目插入正文） -->
+    <EmrRefDrawer v-model="refVisible" :registration-id="(current?.registrationId as number) ?? null"
+                  :disabled="emrSigned" @insert="insertText" />
   </div>
 </template>
 
@@ -422,6 +462,8 @@ import { onMounted, reactive, ref } from 'vue'
 import { todayLocal } from '../../utils/date'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
+import EmrRefDrawer, { useEmrPasteGuard } from '../../components/EmrRefDrawer.vue'
+import StructuredFieldForm, { type EmrTemplateField } from '../../components/StructuredFieldForm.vue'
 
 const categoryNames: Record<string, string> = { LAB: '检验', EXAM: '检查', TREAT: '治疗', MATERIAL: '材料' }
 const typeNames: Record<string, string> = { DRUG: '药品', LAB: '检验', EXAM: '检查', TREAT: '治疗' }
@@ -448,6 +490,107 @@ const savingEmr = ref(false)
 const submitting = ref(false)
 
 const emr = reactive({ chiefComplaint: '', presentIllness: '', pastHistory: '', physicalExam: '', advice: '' })
+
+// ===================== v45 车道J：引用带出 / 结构化录入 / 跨患者粘贴管控 =====================
+
+/** 引用片段与结构化内容的落点（门诊病历是五段定长列，不像住院那样只有一个正文框） */
+const EMR_SECTIONS = [
+  { key: 'chiefComplaint', label: '主诉' },
+  { key: 'presentIllness', label: '现病史' },
+  { key: 'pastHistory', label: '既往史' },
+  { key: 'physicalExam', label: '体格检查' },
+  { key: 'advice', label: '处理意见' },
+] as const
+type EmrSectionKey = (typeof EMR_SECTIONS)[number]['key']
+
+const refVisible = ref(false)
+const insertTarget = ref<EmrSectionKey>('presentIllness')
+/** 1092★：进患者时自动带出的基础信息摘要（来源是只读引用端点，不是队列行里那份） */
+const basicBrought = ref('')
+const prefilledNote = ref('')
+
+/** 结构化录入（车道 I 的字段定义 + 保存端点的可空 fields 参数） */
+const emrTemplates = ref<Record<string, unknown>[]>([])
+const structTemplateId = ref<number | null>(null)
+const structFields = ref<EmrTemplateField[]>([])
+const structValues = ref<Record<string, unknown>>({})
+const structHint = ref('')
+
+/**
+ * 1082★ 跨患者复制粘贴管控。**只在前端**：block 档也只是拒绝这一次粘贴动作，
+ * 病历保存端点一行未改、服务端不做任何拦截（诚实边界见 useEmrPasteGuard 的注释）。
+ */
+const { mode: copyMode, loadPolicy: loadCopyPolicy, onCopy, onPaste } = useEmrPasteGuard(() => ({
+  patientId: (current.value?.patientId as number | undefined) ?? null,
+  patientName: String(current.value?.patientName ?? ''),
+}))
+
+/** 把引用片段/资料写进选定的正文段（已签名冻结时不写） */
+function insertText(text: string) {
+  if (!text.trim()) return
+  if (emrSigned.value) {
+    ElMessage.warning('病历已签名冻结，不能再插入内容；如需更正请追加补正记录')
+    return
+  }
+  const k = insertTarget.value
+  emr[k] = emr[k] ? `${emr[k]}\n${text}` : text
+  ElMessage.success(`已插入「${EMR_SECTIONS.find((s) => s.key === k)?.label}」`)
+}
+
+/**
+ * 1092★ 新建病历自动带出：进患者时取一次只读的 BASIC 引用段。
+ * 摘要常驻显示；**只有本次尚未写过病历**且既往史为空、患者又有过敏记录时，
+ * 才把过敏史预填进既往史——门诊病历五段里只有它有对应落点，姓名/门诊号没有列可填，
+ * 故以"已自动带出"摘要 + 一键插入呈现，而不是硬塞进某段临床叙述里。
+ */
+async function loadBasicRef(isNewEmr: boolean) {
+  basicBrought.value = ''
+  prefilledNote.value = ''
+  if (!current.value?.registrationId) return
+  try {
+    const resp = await client.get('/outpatient/emr-ref', {
+      params: { registrationId: current.value.registrationId, kind: 'BASIC' },
+    })
+    const seg = resp.data.data as { prefill?: Record<string, unknown> }
+    const p = seg.prefill ?? {}
+    basicBrought.value = [p.patientName, p.sexText, p.age == null ? '' : `${p.age} 岁`,
+      p.patientNo ? `门诊号 ${p.patientNo}` : '', p.allergyHistory ? `过敏 ${p.allergyHistory}` : '']
+      .filter((s) => !!s).join(' · ')
+    const allergy = String(p.allergyHistory ?? '').trim()
+    if (isNewEmr && allergy && !emr.pastHistory.trim()) {
+      emr.pastHistory = `过敏史：${allergy}`
+      prefilledNote.value = '已按引用数据源自动带出患者基础信息；其中过敏史已预填进「既往史」，'
+        + '医生可修改或删除后再保存。'
+    }
+  } catch {
+    /* 引用端点不可用/无权：摘要留空即可，不打断接诊主流程 */
+  }
+}
+
+/** 本科室可用的病历模板（沿用住院侧同一个冻结契约端点；本页只用来挑结构化模板） */
+async function loadEmrTemplates() {
+  try {
+    emrTemplates.value = (await client.get('/emr-templates', { params: { type: 'EMR' } })).data.data ?? []
+  } catch {
+    emrTemplates.value = []
+  }
+}
+
+/** 取模板的结构化字段定义（车道 I：GET /api/emr/templates/{id}/fields，只回启用中的） */
+async function loadStructFields() {
+  structFields.value = []
+  structValues.value = {}
+  structHint.value = ''
+  if (!structTemplateId.value) return
+  try {
+    const resp = await client.get(`/emr/templates/${structTemplateId.value}/fields`)
+    structFields.value = (resp.data.data ?? []) as EmrTemplateField[]
+    if (!structFields.value.length) structHint.value = '该模板尚未定义结构化元素（在「病历模板」维护）'
+  } catch {
+    structHint.value = '结构化元素定义暂不可读，本次仍可按自由文本书写病历'
+  }
+}
+
 const emrSigned = ref(false)
 const emrSignerName = ref('')
 const emrSignedAtText = ref('')
@@ -602,6 +745,14 @@ async function openPatient(row: Record<string, unknown> | null) {
   tplHint.value = ''     // v44：切患者清空模板提示
   rxLines.value = []
   labLines.value = []
+  // v45：切患者清空引用抽屉与结构化录入状态（串患者是病历事故的常见来源）
+  refVisible.value = false
+  insertTarget.value = 'presentIllness'
+  structTemplateId.value = null
+  structFields.value = []
+  structValues.value = {}
+  structHint.value = ''
+  await loadBasicRef(!ws.emr)   // 1092★：带出放在正文赋值之后，才知道既往史是不是空的
 }
 
 /** v43：五种日常单据打印（车道B 端点 /api/print/doc/{docType}/{registrationId}） */
@@ -670,6 +821,10 @@ async function saveEmr() {
   if (!current.value) return
   savingEmr.value = true
   try {
+    // v45：只有真的填了结构化元素才上送 templateId/fields——不传时后端整段短路，
+    // content_json 与 template_id 连碰都不碰（既有病历上的侧车值不会被一次自由文本保存抹掉）
+    const usingStruct = structFields.value.length > 0 && Object.values(structValues.value).some(
+      (v) => v !== null && v !== undefined && v !== '' && !(Array.isArray(v) && v.length === 0))
     const resp = await client.put(`/outpatient/doctor/${current.value.registrationId}/emr`, {
       emr,
       // v44：既有三键（icdCode/icdName + 顺序定主诊断）原样保留，新增五键留空即传空
@@ -680,6 +835,8 @@ async function saveEmr() {
         certainty: d.certainty || null, diagSystem: d.diagSystem || null,
         customName: d.customName || null,
       })),
+      templateId: usingStruct ? structTemplateId.value : undefined,
+      fields: usingStruct ? structValues.value : undefined,
     })
     if (resp.data.code !== 0) {
       ElMessage.error(resp.data.message)

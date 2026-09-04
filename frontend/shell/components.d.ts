@@ -64,8 +64,10 @@ declare module 'vue' {
     ElTimelineItem: typeof import('element-plus/es')['ElTimelineItem']
     ElTooltip: typeof import('element-plus/es')['ElTooltip']
     ElTree: typeof import('element-plus/es')['ElTree']
+    EmrRefDrawer: typeof import('./src/components/EmrRefDrawer.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    StructuredFieldForm: typeof import('./src/components/StructuredFieldForm.vue')['default']
     TempSheetSvg: typeof import('./src/components/TempSheetSvg.vue')['default']
     VitalsChart: typeof import('./src/components/VitalsChart.vue')['default']
   }

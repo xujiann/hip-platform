@@ -1,5 +1,6 @@
 package cn.hip.medtech.web;
 
+import cn.hip.medtech.service.EmrTemplateService;
 import cn.hip.platform.core.common.R;
 import cn.hip.platform.core.security.CurrentUserService;
 import cn.hip.platform.integration.event.LabResultReceivedEvent;
@@ -24,6 +25,8 @@ public class MedTechController {
     private final CurrentUserService currentUserService;
     private final ApplicationEventPublisher eventPublisher;
     private final cn.hip.platform.core.service.ConfigReader configReader;
+    /** v45 车道H：病历模板体系（作用范围/授权/编辑停用/科室默认/存为模板），见文件末尾那一组端点 */
+    private final cn.hip.medtech.service.EmrTemplateService emrTemplateService;
 
     @org.springframework.beans.factory.annotation.Value("${hip.integration.pacs-url:}")
     private String pacsUrl;
@@ -354,23 +357,91 @@ public class MedTechController {
         return n == 0 ? R.fail(9946, "手术不存在或已完成") : R.ok();
     }
 
-    // ===== 病历模板 =====
+    // ==================================================================
+    // 病历模板（v45 车道H：987★/988★/1073★/1078★/1079★/1095★）
+    //
+    // 端点分两层，**刻意不合并**：
+    //  · 下面这两条（POST/GET /api/emr-templates）是 v17 起的**冻结契约**——
+    //    RisView.vue:67（type=RIS）、住院医生站模板下拉（InpDoctorView.vue:579）、
+    //    v42 维护页、e2e-phase1316.py、e2e-outp-appt.py、V38RisExpTest、V42EmrTemplateTest
+    //    全都在用它，连方法签名都被单测按 2 参/1 参写死。**本版一个参数、一行取数口径都没动。**
+    //  · 其余 /api/emr-templates/** 是本版新开的通道，四级作用范围（1073）、授权（1078）、
+    //    编辑停用（v42 起欠了三版的账）、科室默认模板（988）、存为模板（1095）、
+    //    按既往病历取正文（1079）都落在那里。
+    //
+    // 权限：类级 @PreAuthorize 是 ADMIN/TECHNICIAN/DOCTOR_OUTP/NURSE，**不含 QUALITY**，
+    // 而 V133:29-32 把病历模板菜单授给了 ADMIN/DOCTOR_OUTP/**QUALITY**——质控点得进菜单、
+    // 调接口却吃 1005。这是 v42 遗留的一处菜单与接口权限对不齐，本版在端点级补齐（只放宽本组端点，
+    // 不动类级注解，免得把 LIS/RIS/手麻端点一并对质控开放）。
+    // ==================================================================
 
+    /** 本组端点的权限门槛（角色只是门槛，可见/可维护按四级作用范围逐条判，见 EmrTemplateService） */
+    private static final String EMR_TPL_ROLES =
+            "hasAnyRole('ADMIN','DOCTOR_OUTP','QUALITY','NURSE','TECHNICIAN')";
+
+    /**
+     * <b>冻结契约</b>：分量集合自 v17 起未变，v38 加 templateType 后再未动。
+     * 加一个分量就会让 V38RisExpTest / V42EmrTemplateTest 当场编译失败，
+     * 带作用范围的建模板另走 {@link EmrTemplateService.TemplateReq}。
+     */
     public record EmrTemplateReq(Long deptId, String name, String content, String templateType) {}
 
+    /**
+     * 建模板（<b>冻结契约</b>：请求体、返回体、校验口径一律照旧——它历来不校验名称与正文，
+     * 本版也不补，补了就会打断 v42 维护页与两条 E2E；写入校验收口是 v43b 的事）。
+     *
+     * <p>v45 只在**落库时补齐新列**，对调用方完全透明：
+     * <ul>
+     *   <li>{@code owner_id}/{@code created_by} 取当前登录人（取不到就留空，不报错）；</li>
+     *   <li>{@code scope} 按既有语义推定——<b>dept_id 有值 = 科室专属（DEPT），为空 = 全院通用
+     *       （HOSPITAL）</b>，这正是下面 GET 的过滤口径，推定结果与旧行为完全一致；</li>
+     *   <li>DEPT 的模板顺手写一条自动授权（1078 参数原话「新建的时候自动完成授权给构建科室」）。</li>
+     * </ul>
+     * <b>刻意不加范围权限判定</b>：本端点历来允许任何持有本控制器权限的角色建全院可见的模板，
+     * 加判定就是改契约。带判定的通道是新端点 {@code POST /api/emr-templates/scoped}。
+     */
     @PostMapping("/api/emr-templates")
+    @PreAuthorize(EMR_TPL_ROLES)
     public R<Void> createTemplate(@RequestBody EmrTemplateReq req) {
-        jdbc.update("insert into emr_template(dept_id, name, content, template_type) values (?,?,?,?)",
-                req.deptId(), req.name(), req.content(),
-                req.templateType() == null || req.templateType().isBlank() ? "EMR" : req.templateType());
+        // 签名被单测按 1 参写死，当前用户只能从 SecurityContext 里取（不能加 Authentication 形参）
+        var ctxAuth = org.springframework.security.core.context.SecurityContextHolder
+                .getContext().getAuthentication();
+        Long uid = ctxAuth == null ? null : currentUserService.idOf(ctxAuth);
+        String scope = req.deptId() == null ? "HOSPITAL" : "DEPT";
+        Long id = jdbc.queryForObject("""
+                insert into emr_template(dept_id, name, content, template_type, scope, owner_id, created_by)
+                values (?,?,?,?,?,?,?) returning id
+                """, Long.class, req.deptId(), req.name(), req.content(),
+                req.templateType() == null || req.templateType().isBlank() ? "EMR" : req.templateType(),
+                scope, uid, uid);
+        if (req.deptId() != null) {
+            jdbc.update("""
+                    insert into emr_template_grant(template_id, grantee_type, grantee_id, granted_by)
+                    values (?, 'DEPT', ?, ?) on conflict (template_id, grantee_type, grantee_id) do nothing
+                    """, id, req.deptId(), uid);
+        }
         return R.ok();
     }
 
-    /** v38：type 过滤（EMR 病历 / CONSENT 同意书 / RIS 报告模板），缺省全量向后兼容 */
+    /**
+     * v38：type 过滤（EMR 病历 / CONSENT 同意书 / RIS 报告模板），缺省全量向后兼容。
+     *
+     * <p><b>冻结契约</b>：参数、dept_id 过滤口径（本科室 <b>或</b> 全院通用）、
+     * {@code select *}、{@code order by id} 一律照旧，返回体的既有 5 个键
+     * （id/dept_id/name/content/template_type）逐字不变——V45TemplateScopeTest §① 逐键钉死。
+     *
+     * <p><b>唯一的行为变化，是这一版补 enabled 的全部意义所在</b>：已停用的模板不再返回。
+     * 若不加这一句，"停用"就只是维护页上的一个标记——RisView 与住院医生站的下拉照样把停用模板
+     * 端给医生（v44 建 rx_template 时把这条写成了建表纪律："停用了还能被套用等于没做"）。
+     * 影响面为零：{@code enabled} 默认 true，升级前的每一行都是启用态，
+     * 既有单测、两条 E2E、三处前端消费方的行数与内容<b>一行不差</b>；只有本版新开的
+     * 「停用」动作才会让某一行消失，而那正是维护人按下那个按钮时想要的结果。
+     */
     @GetMapping("/api/emr-templates")
+    @PreAuthorize(EMR_TPL_ROLES)
     public R<List<Map<String, Object>>> templates(@RequestParam(required = false) Long deptId,
                                                   @RequestParam(required = false) String type) {
-        var where = new StringBuilder(" where 1=1 ");
+        var where = new StringBuilder(" where enabled ");
         var args = new java.util.ArrayList<Object>();
         if (deptId != null) {
             where.append(" and (dept_id = ? or dept_id is null) ");
@@ -381,5 +452,177 @@ public class MedTechController {
             args.add(type);
         }
         return R.ok(jdbc.queryForList("select * from emr_template" + where + " order by id", args.toArray()));
+    }
+
+    // ---------- v45 新通道：作用范围 / 授权 / 编辑停用 / 默认模板 / 存为模板 ----------
+
+    /** 当前登录人的判权画像：建模板对话框据此决定哪些作用范围可选、科室默认填谁 */
+    @GetMapping("/api/emr-templates/actor")
+    @PreAuthorize(EMR_TPL_ROLES)
+    public R<Map<String, Object>> templateActor(Authentication auth) {
+        return R.ok(emrTemplateService.actorInfo(currentUserService.idOf(auth)));
+    }
+
+    /**
+     * 按登录人可见范围列模板（1073★）：GLOBAL/HOSPITAL 人人可见；DEPT 本科室 + 被授权科室；
+     * PERSONAL 本人 + 被授权个人。行内附 {@code editable}/{@code scopeName}/{@code grant_count}。
+     */
+    @GetMapping("/api/emr-templates/visible")
+    @PreAuthorize(EMR_TPL_ROLES)
+    public R<List<Map<String, Object>>> visibleTemplates(@RequestParam(required = false) String type,
+                                                         @RequestParam(required = false) String recordType,
+                                                         @RequestParam(required = false) String scope,
+                                                         @RequestParam(required = false) String keyword,
+                                                         @RequestParam(defaultValue = "false") boolean includeDisabled,
+                                                         Authentication auth) {
+        return R.ok(emrTemplateService.listVisible(currentUserService.idOf(auth),
+                type, recordType, scope, keyword, includeDisabled));
+    }
+
+    /** 套用：按 id 取模板正文。不可见或已停用返 4066。**只读**——写病历仍走既有病历保存端点。 */
+    @GetMapping("/api/emr-templates/{id}")
+    @PreAuthorize(EMR_TPL_ROLES)
+    public R<Map<String, Object>> useTemplate(@PathVariable Long id, Authentication auth) {
+        return R.ok(emrTemplateService.use(currentUserService.idOf(auth), id));
+    }
+
+    /** 带作用范围与自动授权的建模板（新通道；老通道 POST /api/emr-templates 保持原样） */
+    @PostMapping("/api/emr-templates/scoped")
+    @PreAuthorize(EMR_TPL_ROLES)
+    public R<Long> createScopedTemplate(@RequestBody EmrTemplateService.TemplateReq req, Authentication auth) {
+        return R.ok(emrTemplateService.create(currentUserService.idOf(auth), req));
+    }
+
+    /**
+     * 改模板 —— <b>v42 发现、v43 确认、欠了三个版本的那件事</b>。
+     * 与下面的 disable/enable 是同批交付的，不留"下一版再补编辑"的尾巴。
+     */
+    @PutMapping("/api/emr-templates/{id}")
+    @PreAuthorize(EMR_TPL_ROLES)
+    public R<Void> updateTemplate(@PathVariable Long id,
+                                  @RequestBody EmrTemplateService.TemplateReq req, Authentication auth) {
+        emrTemplateService.update(currentUserService.idOf(auth), id, req);
+        return R.ok();
+    }
+
+    /** 停用（软开关，不删行）：停用后不再出现在任何下拉，按 id 套用也返 4066 */
+    @PutMapping("/api/emr-templates/{id}/disable")
+    @PreAuthorize(EMR_TPL_ROLES)
+    public R<Void> disableTemplate(@PathVariable Long id, Authentication auth) {
+        emrTemplateService.setEnabled(currentUserService.idOf(auth), id, false);
+        return R.ok();
+    }
+
+    /** 启用 */
+    @PutMapping("/api/emr-templates/{id}/enable")
+    @PreAuthorize(EMR_TPL_ROLES)
+    public R<Void> enableTemplate(@PathVariable Long id, Authentication auth) {
+        emrTemplateService.setEnabled(currentUserService.idOf(auth), id, true);
+        return R.ok();
+    }
+
+    // ----- 授权（1078★） -----
+
+    @GetMapping("/api/emr-templates/{id}/grants")
+    @PreAuthorize(EMR_TPL_ROLES)
+    public R<List<Map<String, Object>>> templateGrants(@PathVariable Long id, Authentication auth) {
+        return R.ok(emrTemplateService.grants(currentUserService.idOf(auth), id));
+    }
+
+    public record GrantReq(String granteeType, Long granteeId) {}
+
+    /** 授予到科室或个人。重复授予幂等（"再授权一次"业务上就是无操作，不该弹错误框）。 */
+    @PostMapping("/api/emr-templates/{id}/grants")
+    @PreAuthorize(EMR_TPL_ROLES)
+    public R<Void> grantTemplate(@PathVariable Long id, @RequestBody GrantReq req, Authentication auth) {
+        emrTemplateService.grant(currentUserService.idOf(auth), id, req.granteeType(), req.granteeId());
+        return R.ok();
+    }
+
+    /** 撤销授权。建模板时自动写的那条撤不掉（撤了模板对自己科室/自己都不可见，是自伤路径）。 */
+    @DeleteMapping("/api/emr-templates/{id}/grants/{grantId}")
+    @PreAuthorize(EMR_TPL_ROLES)
+    public R<Void> revokeTemplateGrant(@PathVariable Long id, @PathVariable Long grantId, Authentication auth) {
+        emrTemplateService.revoke(currentUserService.idOf(auth), id, grantId);
+        return R.ok();
+    }
+
+    /** 授权对象候选字典（/api/system/users 是 ADMIN 专属，质控与医生取不到人员字典） */
+    @GetMapping("/api/emr-templates/grantee-candidates")
+    @PreAuthorize(EMR_TPL_ROLES)
+    public R<List<Map<String, Object>>> granteeCandidates(@RequestParam(defaultValue = "DEPT") String granteeType,
+                                                          @RequestParam(required = false) String keyword) {
+        return R.ok(emrTemplateService.granteeCandidates(granteeType, keyword));
+    }
+
+    // ----- 科室默认模板（988★） -----
+
+    /**
+     * 设为科室默认模板。唯一性由 {@code uq_emr_tpl_default} 部分唯一索引在数据库层保证，
+     * 不是应用层读-判-写（两位质控同时点会双双通过，之后医生站随机取到其中一张）。
+     *
+     * @param replace true=先让出原默认位再设（同一事务内，无并发窗口）；false=撞车返 4067
+     */
+    @PutMapping("/api/emr-templates/{id}/default")
+    @PreAuthorize(EMR_TPL_ROLES)
+    public R<Void> setTemplateDefault(@PathVariable Long id,
+                                      @RequestParam(defaultValue = "false") boolean replace,
+                                      Authentication auth) {
+        emrTemplateService.setDefault(currentUserService.idOf(auth), id, replace);
+        return R.ok();
+    }
+
+    /** 取消默认 */
+    @DeleteMapping("/api/emr-templates/{id}/default")
+    @PreAuthorize(EMR_TPL_ROLES)
+    public R<Void> unsetTemplateDefault(@PathVariable Long id, Authentication auth) {
+        emrTemplateService.unsetDefault(currentUserService.idOf(auth), id);
+        return R.ok();
+    }
+
+    /** 按科室 + 病历类型取默认模板（988★ 的取数口径）。没设默认返回 data=null，不报错。 */
+    @GetMapping("/api/emr-templates/default")
+    @PreAuthorize(EMR_TPL_ROLES)
+    public R<Map<String, Object>> defaultTemplate(@RequestParam Long deptId,
+                                                  @RequestParam String recordType,
+                                                  Authentication auth) {
+        return R.ok(emrTemplateService.defaultTemplate(currentUserService.idOf(auth), deptId, recordType));
+    }
+
+    // ----- 病历存为模板（1095★）/ 按既往病历建新病历（1079★） -----
+
+    /**
+     * 把一份既有病历的正文存成模板。返回 {@code {id, truncated, contentLength, sourceLength}}——
+     * {@code emr_template.content} 仍是 varchar(4000)（本版刻意不动列宽），
+     * 超长时截断并显式回 {@code truncated=true}，<b>不做无声截断</b>。
+     */
+    @PostMapping("/api/emr-templates/from-record")
+    @PreAuthorize(EMR_TPL_ROLES)
+    public R<Map<String, Object>> saveRecordAsTemplate(@RequestBody EmrTemplateService.FromRecordReq req,
+                                                       Authentication auth) {
+        return R.ok(emrTemplateService.saveAsTemplate(currentUserService.idOf(auth), req));
+    }
+
+    /**
+     * 该患者的既往病历清单（1079★ 的选择列表）。
+     *
+     * <p><b>这里只有"取正文"这半条路</b>：医生挑一份 → 取正文 → 在编辑器里改 →
+     * <b>仍走既有病历保存端点写入</b>。本车道没有、也不许有任何新的写病历路径
+     * （零核心写路径改动是 v45 的硬约束）。
+     */
+    @GetMapping("/api/emr-templates/prior-records")
+    @PreAuthorize(EMR_TPL_ROLES)
+    public R<List<Map<String, Object>>> priorRecords(@RequestParam Long patientId,
+                                                     @RequestParam(required = false) Integer limit) {
+        return R.ok(emrTemplateService.priorRecords(patientId, limit));
+    }
+
+    /** 取一份既往病历的正文。{@code patientId} 是归属校验参数不是过滤条件：不属于该患者一律 4068。 */
+    @GetMapping("/api/emr-templates/prior-records/content")
+    @PreAuthorize(EMR_TPL_ROLES)
+    public R<Map<String, Object>> priorRecordContent(@RequestParam Long patientId,
+                                                     @RequestParam String source,
+                                                     @RequestParam Long recordId) {
+        return R.ok(emrTemplateService.priorRecordContent(patientId, source, recordId));
     }
 }

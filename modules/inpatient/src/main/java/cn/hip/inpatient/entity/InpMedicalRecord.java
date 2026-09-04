@@ -43,6 +43,21 @@ public class InpMedicalRecord {
 
     private Long doctorId;
 
+    /**
+     * v45（V139）结构化录入**侧车列**：{@code {"fieldCode": 值}} 扁平对象，text 存 JSON（本仓惯例，不开 jsonb）。
+     *
+     * <p><b>它不是正文。</b>被 CA 签名的仍是 {@link #content}（{@code signRecord} 直接签 content 原文），
+     * 结构化值在保存时已按 sort_no 渲染成可读全文追加进 content——侧车只服务前端回填与
+     * 1098★ 的结构化元素检索，不参与签名/补正快照/CDR 抽取/病案首页。
+     *
+     * <p>旧调用方不传 {@code fields} 时**本列保持 null**（历史病历亦永远为 null，反解正文回填即伪造）。
+     */
+    @Column(columnDefinition = "text")
+    private String contentJson;
+
+    /** v45（V139）：本份病历用的病历模板 id（emr_template）。不传 fields 时为 null。 */
+    private Long templateId;
+
     /** v34 三级查房结构化（仅 record_type=ROUND 行使用）：级别/查房医师/查房意见/上级修正意见 */
     @Column(length = 16)
     private String roundLevel;

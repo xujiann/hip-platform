@@ -101,14 +101,31 @@ public class DoctorStationController {
         return R.ok(m);
     }
 
-    public record SaveEmrRequest(OutpEmr emr, List<OutpDiagnosis> diagnoses) {}
+    /**
+     * 病历保存请求体。
+     *
+     * <p>v45 车道 I 追加两个<b>可空</b>参数 {@code templateId} / {@code fields}（989★/1075★）——
+     * <b>刻意不新建"结构化病历"端点</b>：另开一条写路径就等于把签名冻结（4008/4010）、
+     * 诊断整表替换、常用诊断累加、CDSS 触发这几件事各维护两份，迟早漂移。
+     *
+     * <p>旧请求体（只有 emr + diagnoses）经 Jackson 反序列化后两个新字段为 null，
+     * 服务层整段短路，行为逐字节不变；两参构造器保留是为让既有单测/E2E 源码零改动。
+     */
+    public record SaveEmrRequest(OutpEmr emr, List<OutpDiagnosis> diagnoses,
+                                 Long templateId, Map<String, Object> fields) {
+        /** v45 之前的两参形态（V42/V43/V44 三批既有单测与前端旧版本按此调用） */
+        public SaveEmrRequest(OutpEmr emr, List<OutpDiagnosis> diagnoses) {
+            this(emr, diagnoses, null, null);
+        }
+    }
 
     @PutMapping("/{registrationId}/emr")
     public R<OutpEmr> saveEmr(@PathVariable Long registrationId, @RequestBody SaveEmrRequest req,
                               Authentication auth) {
         try {
             return R.ok(doctorStationService.saveEmr(registrationId, req.emr(),
-                    req.diagnoses() == null ? List.of() : req.diagnoses(), currentUserService.idOf(auth)));
+                    req.diagnoses() == null ? List.of() : req.diagnoses(), currentUserService.idOf(auth),
+                    req.templateId(), req.fields()));
         } catch (BizException e) {
             return R.fail(e.code, e.getMessage());
         }

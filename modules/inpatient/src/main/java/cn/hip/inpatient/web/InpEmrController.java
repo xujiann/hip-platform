@@ -25,25 +25,58 @@ public class InpEmrController {
     private final CurrentUserService currentUserService;
     private final cn.hip.platform.integration.signature.SignatureAdapter signatureAdapter;
     private final org.springframework.jdbc.core.JdbcTemplate jdbc;
+    private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
 
     @GetMapping("/records")
     public R<List<InpMedicalRecord>> records(@PathVariable Long admissionId) {
         return R.ok(recordRepo.findByAdmissionIdOrderByIdDesc(admissionId));
     }
 
-    public record SaveRecordRequest(String recordType, String title, String content) {}
+    /**
+     * 住院病历保存请求体。
+     *
+     * <p>v45 车道 I 追加两个<b>可空</b>参数 {@code templateId} / {@code fields}（989★/1075★）——
+     * 与门诊侧同口径：<b>不新建"结构化病历"端点</b>，只给既有端点加可空入参。
+     * 旧请求体反序列化后两者为 null，整段结构化逻辑短路，落库与返回体逐字节不变；
+     * 三参构造器保留是为让既有单测（V42EmrTemplateTest:74,98）源码零改动。
+     */
+    public record SaveRecordRequest(String recordType, String title, String content,
+                                    Long templateId, java.util.Map<String, Object> fields) {
+        /** v45 之前的三参形态 */
+        public SaveRecordRequest(String recordType, String title, String content) {
+            this(recordType, title, content, null, null);
+        }
+    }
 
     @PostMapping("/records")
     public R<InpMedicalRecord> addRecord(@PathVariable Long admissionId,
                                          @RequestBody SaveRecordRequest req, Authentication auth) {
-        if (req.content() == null || req.content().isBlank()) {
+        String content = req.content();
+        String contentJson = null;
+        // v45 车道 I：结构化录入。fields == null 时整段跳过，下面就是 v44 的原逻辑一字未改。
+        if (req.fields() != null) {
+            StructuredEmr.Rendered out;
+            try {
+                out = StructuredEmr.validateAndRender(
+                        StructuredEmr.load(jdbc, req.templateId()), req.fields(), objectMapper);
+            } catch (StructuredEmr.StructuredError e) {
+                return R.fail(e.code, e.getMessage());
+            }
+            // **先渲染正文再存侧车**：住院签名摘要就是 content 原文（见 signRecord），
+            // 只写 content_json 不渲染正文等于让 CA 签了个空壳。content 是 text（V133），无长度上限。
+            content = StructuredEmr.merge(content, out.text());
+            contentJson = out.json();
+        }
+        if (content == null || content.isBlank()) {
             return R.fail(9101, "病历内容不能为空");
         }
         InpMedicalRecord r = new InpMedicalRecord();
         r.setAdmissionId(admissionId);
         r.setRecordType(req.recordType() == null ? "PROGRESS" : req.recordType());
         r.setTitle(req.title() == null || req.title().isBlank() ? "病程记录" : req.title());
-        r.setContent(req.content());
+        r.setContent(content);
+        r.setContentJson(contentJson);
+        r.setTemplateId(req.fields() == null ? null : req.templateId());
         r.setDoctorId(currentUserService.idOf(auth));
         return R.ok(recordRepo.save(r));
     }
@@ -365,5 +398,278 @@ public class InpEmrController {
         if (v instanceof java.time.LocalDateTime l) return l.toLocalDate();
         if (v instanceof java.time.LocalDate l) return l;
         return java.time.LocalDate.parse(String.valueOf(v).substring(0, 10));
+    }
+
+    // ==================== v45 车道 I：结构化字段录入（989★/1075★/1098★） ====================
+
+    /**
+     * 结构化元素的定义装载、校验、渲染与序列化。
+     *
+     * <p><b>刻意与 {@code DoctorStationService.StructuredEmr} 逐行同源的一份复制</b>，原因是模块依赖：
+     * hip-inpatient 与 hip-outpatient 的唯一公共依赖是 hip-platform-core，而本车道不持有
+     * platform/core 的改动权（v45 车道纪律：一个文件只有一个车道能改）。下沉到 platform/core
+     * 属跨车道动作，记入技术债在合版后统一做。两份代码的行为由同一批单测
+     * （V45StructuredEmrTest 的门诊/住院两组对称用例）钉死，任何一侧漂移都会先红。
+     *
+     * <p>唯一的实现差异：门诊侧直接抛模块内既有的 {@code BizException}，住院侧本模块无同类基类，
+     * 故用下面这个只带错误码的 {@link StructuredError}，由 {@code addRecord} 转成 {@code R.fail}。
+     *
+     * <p>错误码：4024 字段定义不存在或已停用 / 4025 必填未填 / 4026 取值不在值域 / 4027 类型不匹配。
+     */
+    static final class StructuredEmr {
+
+        /** 结构化校验失败（只带业务码，调用方转 R.fail；不做 GlobalExceptionHandler 兜底） */
+        static final class StructuredError extends RuntimeException {
+            final int code;
+
+            StructuredError(int code, String message) {
+                super(message);
+                this.code = code;
+            }
+        }
+
+        /** 1075★ 明文六型，一个不少一个不多（与 V139 的 CHECK 约束同源） */
+        static final List<String> DATATYPES = List.of("TEXT", "NUMBER", "CHECKBOX", "RADIO", "MULTI", "DATE");
+
+        /** 渲染块的包裹标记：写入前先剥旧块再追加新块，保证"表单→正文"往返幂等 */
+        static final String BLOCK_BEGIN = "【结构化记录】";
+        static final String BLOCK_END = "【结构化记录结束】";
+        private static final java.util.regex.Pattern BLOCK =
+                java.util.regex.Pattern.compile("\\n?" + BLOCK_BEGIN + ".*?" + BLOCK_END + "\\n?",
+                        java.util.regex.Pattern.DOTALL);
+
+        /** 单个 TEXT 元素的长度上限（与门诊侧同值，两侧口径必须一致） */
+        static final int TEXT_MAX = 1000;
+
+        /** value_set 解析专用（只读 JSON 数组，无需 Spring 的定制配置），避免逐行 new */
+        private static final com.fasterxml.jackson.databind.ObjectMapper VALUE_SET_MAPPER =
+                new com.fasterxml.jackson.databind.ObjectMapper();
+
+        private StructuredEmr() {}
+
+        /** 一条字段定义（只取启用中的） */
+        record FieldDef(long id, String fieldCode, String label, String datatype,
+                        boolean required, List<String> valueSet, String unit) {}
+
+        /** 渲染产物：{@code text} 进正文（参与签名）、{@code json} 进 content_json 侧车 */
+        record Rendered(String text, String json) {}
+
+        /** 取模板下启用中的字段定义，按 sort_no 排（sort_no 同时是 989★ 快速跳转的 Tab 序） */
+        static List<FieldDef> load(org.springframework.jdbc.core.JdbcTemplate jdbc, Long templateId) {
+            if (templateId == null) {
+                throw new StructuredError(4024, "未指定病历模板，无法解析结构化字段（templateId 必填）");
+            }
+            var rows = jdbc.queryForList("""
+                    select id, field_code, label, datatype, required, value_set, unit
+                    from emr_template_field
+                    where template_id = ? and enabled = true
+                    order by sort_no, id
+                    """, templateId);
+            return rows.stream().map(r -> new FieldDef(
+                    ((Number) r.get("id")).longValue(),
+                    (String) r.get("field_code"),
+                    (String) r.get("label"),
+                    (String) r.get("datatype"),
+                    Boolean.TRUE.equals(r.get("required")),
+                    parseValueSet((String) r.get("value_set")),
+                    (String) r.get("unit"))).toList();
+        }
+
+        /** value_set 是 text 存的 JSON 数组（本仓惯例）；解析失败按"未配置候选值"处理，由 4026 兜住 */
+        static List<String> parseValueSet(String raw) {
+            if (raw == null || raw.isBlank()) {
+                return List.of();
+            }
+            try {
+                var node = VALUE_SET_MAPPER.readTree(raw);
+                if (!node.isArray()) {
+                    return List.of();
+                }
+                var out = new java.util.ArrayList<String>();
+                node.forEach(n -> {
+                    String v = n.asText();
+                    if (v != null && !v.isBlank()) {
+                        out.add(v.trim());
+                    }
+                });
+                return List.copyOf(out);
+            } catch (Exception e) {
+                return List.of();
+            }
+        }
+
+        /**
+         * 逐字段校验 + 渲染 + 序列化。
+         *
+         * <p>顺序刻意是「先认全部键、再逐字段校验」：传了一个模板里没有的 fieldCode 时先报 4024，
+         * 而不是被必填检查抢先报 4025——前者才是真正的错因（多半是模板选错了）。
+         */
+        static Rendered validateAndRender(List<FieldDef> defs, java.util.Map<String, Object> fields,
+                                          com.fasterxml.jackson.databind.ObjectMapper mapper) {
+            var byCode = new java.util.LinkedHashMap<String, FieldDef>();
+            for (FieldDef d : defs) {
+                byCode.put(d.fieldCode(), d);
+            }
+            for (String k : fields.keySet()) {
+                if (!byCode.containsKey(k)) {
+                    throw new StructuredError(4024, "模板字段定义不存在或已停用：" + k);
+                }
+            }
+            var values = new java.util.LinkedHashMap<String, Object>();
+            var lines = new java.util.ArrayList<String>();
+            for (FieldDef d : defs) {
+                Object raw = fields.get(d.fieldCode());
+                if (isEmpty(raw)) {
+                    if (d.required()) {
+                        throw new StructuredError(4025,
+                                "必填结构化字段未填：" + d.label() + "（" + d.fieldCode() + "）");
+                    }
+                    continue;   // 未填的可选字段既不进侧车也不进正文——不写空行、不编造默认值
+                }
+                Object v = coerce(d, raw);
+                values.put(d.fieldCode(), v);
+                lines.add(d.label()
+                        + (d.unit() == null || d.unit().isBlank() ? "" : "（" + d.unit() + "）")
+                        + "：" + display(d, v));
+            }
+            String text = lines.isEmpty() ? "" : BLOCK_BEGIN + "\n" + String.join("\n", lines) + "\n" + BLOCK_END;
+            try {
+                return new Rendered(text, mapper.writeValueAsString(values));
+            } catch (Exception e) {
+                throw new StructuredError(4027, "结构化字段序列化失败：" + e.getMessage());
+            }
+        }
+
+        private static boolean isEmpty(Object raw) {
+            if (raw == null) {
+                return true;
+            }
+            if (raw instanceof String s) {
+                return s.isBlank();
+            }
+            return raw instanceof java.util.Collection<?> c && c.isEmpty();
+        }
+
+        /** 按 datatype 把前端传来的原始值收敛成 JSON 原生型；不匹配一律 4027，值域不符 4026 */
+        static Object coerce(FieldDef d, Object raw) {
+            String s = raw instanceof String str ? str.trim() : String.valueOf(raw);
+            switch (d.datatype()) {
+                case "TEXT" -> {
+                    if (raw instanceof java.util.Collection<?> || raw instanceof java.util.Map<?, ?>) {
+                        throw typeErr(d, raw);
+                    }
+                    if (s.length() > TEXT_MAX) {
+                        throw new StructuredError(4027, "字段「" + d.label() + "」文本超过 " + TEXT_MAX + " 字上限");
+                    }
+                    return s;
+                }
+                case "NUMBER" -> {
+                    try {
+                        return new java.math.BigDecimal(s);
+                    } catch (NumberFormatException e) {
+                        throw typeErr(d, raw);
+                    }
+                }
+                case "CHECKBOX" -> {
+                    if (raw instanceof Boolean b) {
+                        return b;
+                    }
+                    return switch (s) {
+                        case "true", "1", "是", "Y", "y" -> Boolean.TRUE;
+                        case "false", "0", "否", "N", "n" -> Boolean.FALSE;
+                        default -> throw typeErr(d, raw);
+                    };
+                }
+                case "DATE" -> {
+                    try {
+                        return java.time.LocalDate.parse(s).toString();
+                    } catch (Exception e) {
+                        throw typeErr(d, raw);
+                    }
+                }
+                case "RADIO" -> {
+                    if (raw instanceof java.util.Collection<?> || raw instanceof java.util.Map<?, ?>) {
+                        throw typeErr(d, raw);
+                    }
+                    requireInValueSet(d, s);
+                    return s;
+                }
+                case "MULTI" -> {
+                    List<String> picked = toList(d, raw);
+                    picked.forEach(x -> requireInValueSet(d, x));
+                    return picked;
+                }
+                default -> throw new StructuredError(4027,
+                        "字段「" + d.label() + "」数据类型非法：" + d.datatype() + "（只接受 " + DATATYPES + "）");
+            }
+        }
+
+        /** MULTI 兼容两种回传形态：JSON 数组，或以 , ; 、 分隔的字符串（前端老表单常见） */
+        private static List<String> toList(FieldDef d, Object raw) {
+            if (raw instanceof java.util.Collection<?> c) {
+                var out = new java.util.ArrayList<String>();
+                for (Object o : c) {
+                    if (o instanceof java.util.Collection<?> || o instanceof java.util.Map<?, ?>) {
+                        throw typeErr(d, raw);
+                    }
+                    String v = String.valueOf(o).trim();
+                    if (!v.isEmpty() && !out.contains(v)) {
+                        out.add(v);
+                    }
+                }
+                return out;
+            }
+            if (raw instanceof java.util.Map<?, ?>) {
+                throw typeErr(d, raw);
+            }
+            var out = new java.util.ArrayList<String>();
+            for (String v : String.valueOf(raw).split("[,;、]")) {
+                String t = v.trim();
+                if (!t.isEmpty() && !out.contains(t)) {
+                    out.add(t);
+                }
+            }
+            return out;
+        }
+
+        private static void requireInValueSet(FieldDef d, String v) {
+            if (d.valueSet().isEmpty()) {
+                throw new StructuredError(4026, "字段「" + d.label() + "」未配置候选值，无法校验取值");
+            }
+            if (!d.valueSet().contains(v)) {
+                throw new StructuredError(4026, "字段「" + d.label() + "」取值不在值域内：" + v
+                        + "（候选：" + String.join("/", d.valueSet()) + "）");
+            }
+        }
+
+        private static StructuredError typeErr(FieldDef d, Object raw) {
+            return new StructuredError(4027, "字段「" + d.label() + "」数据类型不匹配："
+                    + raw + " 不是合法的 " + d.datatype());
+        }
+
+        /** 正文里的显示形态：复选渲染成是/否、多选顿号连接——正文要给人读，不是给机器读 */
+        static String display(FieldDef d, Object v) {
+            if (v instanceof Boolean b) {
+                return b ? "是" : "否";
+            }
+            if (v instanceof java.util.Collection<?> c) {
+                return c.stream().map(String::valueOf).collect(java.util.stream.Collectors.joining("、"));
+            }
+            return String.valueOf(v);
+        }
+
+        /** 剥掉正文里已有的结构化块（幂等的前提：前端回传的正文含上一次渲染结果） */
+        static String strip(String body) {
+            return body == null ? null : BLOCK.matcher(body).replaceAll("").stripTrailing();
+        }
+
+        /** 医生手打正文 + 结构化块 = 送去签名的那份全文 */
+        static String merge(String body, String block) {
+            String kept = strip(body);
+            if (block == null || block.isEmpty()) {
+                return kept;
+            }
+            return kept == null || kept.isBlank() ? block : kept + "\n" + block;
+        }
     }
 }
