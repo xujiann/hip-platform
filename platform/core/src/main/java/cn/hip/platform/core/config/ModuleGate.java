@@ -44,7 +44,12 @@ public class ModuleGate {
                     List.of("/api/insurance/splits", "/api/insurance/audits", "/api/insurance/reconcile")),
             "blood",     new ModuleDef(List.of("/inpatient/blood"), List.of("/api/inpatient/blood")),
             "hr",        new ModuleDef(List.of("/hr"),              List.of("/api/hr")),
-            "surgery",   new ModuleDef(List.of("/surgery"),         List.of("/api/inpatient/surgeries", "/api/anes")),
+            // v46 合版补漏：新增的术中记录页/麻醉质控页与 /api/anes-qc、/api/surgery/intraop
+            // 原先都在开关之外——`/api/anes` 前缀按路径段边界匹配，`/api/anes-qc` 不是它的子段，
+            // 于是关掉手术模块后这两个页面照样能进、接口照样能调。整段开关必须覆盖同域新入口。
+            "surgery",   new ModuleDef(
+                    List.of("/surgery", "/inpatient/surgery-intraop", "/anes-qc"),
+                    List.of("/api/inpatient/surgeries", "/api/anes", "/api/anes-qc", "/api/surgery")),
             // v27-B 扩表：独占前缀、无跨模块页面调用，经侦察确认可安全整段开关。
             // 第六轮审阅 P1-C：menuPaths 不得含 "/cdr"——那是「数据中心」DIR 的 path，
             // 质控/数据治理/DRG/病案统计等 9 个无关模块的菜单都挂它下面，

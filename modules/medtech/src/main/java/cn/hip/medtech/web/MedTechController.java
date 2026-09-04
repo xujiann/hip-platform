@@ -27,6 +27,8 @@ public class MedTechController {
     private final cn.hip.platform.core.service.ConfigReader configReader;
     /** v45 车道H：病历模板体系（作用范围/授权/编辑停用/科室默认/存为模板），见文件末尾那一组端点 */
     private final cn.hip.medtech.service.EmrTemplateService emrTemplateService;
+    /** v46 车道K：手术域地基（时间点/术中信息/取消四阶段/手术间排程视图），见「手术麻醉」那一组端点 */
+    private final cn.hip.medtech.service.SurgeryService surgeryService;
 
     @org.springframework.beans.factory.annotation.Value("${hip.integration.pacs-url:}")
     private String pacsUrl;
@@ -355,6 +357,59 @@ public class MedTechController {
                 where id = ? and status in ('REQUESTED', 'SCHEDULED')
                 """, req.opNote(), req.anesNote(), id);
         return n == 0 ? R.fail(9946, "手术不存在或已完成") : R.ok();
+    }
+
+    // ==================================================================
+    // 手术域地基（v46 车道K：1397★/1426★/1428★/1429★/1438★/1439★/1441★）
+    //
+    // **上面那三条端点是 v17 起的冻结契约，本版一个字节没动**——请求体、返回体、SQL、
+    // 状态机口径全部原样。尤其是 completeSurgery 的 `status='DONE'` 与 op_note：
+    // v35 出院/归档完整性 gate（EmrIntegrityService:93-100）判"手术病例是否缺手术记录"
+    // 正是查 `status='DONE' and op_note is not null` 与 `status <> 'CANCELLED'`，
+    // **动它就是连带改出院 gate**，所以本版所有新能力一律另开端点、只写 V140 新加的可空列。
+    //
+    // 新端点全部委派 SurgeryService（白名单、时间点顺序、取消四阶段的判定都在那里，
+    // 类注释里有完整的取值白名单表与错误码表）。
+    // ==================================================================
+
+    /** 时间点打点：入室/开台/结束/出室（不传 at 即当前时刻）。顺序颠倒返 4902 */
+    @PutMapping("/api/inpatient/surgeries/{id}/timepoint")
+    public R<Map<String, Object>> registerSurgeryTimepoint(
+            @PathVariable Long id, @RequestBody cn.hip.medtech.service.SurgeryService.TimepointReq req) {
+        return surgeryService.registerTimepoint(id, req);
+    }
+
+    /** 术中信息维护：手术间 / 手术级别 / ASA / 切口等级 / 手术类别 / 非计划再次手术 */
+    @PutMapping("/api/inpatient/surgeries/{id}/op-info")
+    public R<Void> updateSurgeryOpInfo(
+            @PathVariable Long id, @RequestBody cn.hip.medtech.service.SurgeryService.OpInfoReq req) {
+        return surgeryService.updateOpInfo(id, req);
+    }
+
+    /** 取消手术（1426★ 四阶段）。**取消不删除记录**——统计要按阶段计数；已完成的手术不可取消 */
+    @PutMapping("/api/inpatient/surgeries/{id}/cancel")
+    public R<Void> cancelSurgery(
+            @PathVariable Long id, @RequestBody cn.hip.medtech.service.SurgeryService.CancelReq req) {
+        return surgeryService.cancel(id, req);
+    }
+
+    /** 手术间排程视图（1397★「以手术间为核心维度进行患者信息展示」），不传 date 即业务今天 */
+    @GetMapping("/api/inpatient/surgeries/room-board")
+    public R<List<Map<String, Object>>> surgeryRoomBoard(@RequestParam(required = false) String date,
+                                                         @RequestParam(required = false) String roomNo) {
+        return surgeryService.roomBoard(date, roomNo);
+    }
+
+    /** 单台手术全字段详情（只读；术中信息维护对话框回填当前值用，既有列表端点分量不动） */
+    @GetMapping("/api/inpatient/surgeries/{id}/detail")
+    public R<Map<String, Object>> surgeryDetail(@PathVariable Long id) {
+        return surgeryService.detail(id);
+    }
+
+    /** 手术域取值白名单字典（前端下拉唯一来源，杜绝前后端两份白名单漂移） */
+    @GetMapping("/api/inpatient/surgeries/dict")
+    public R<Map<String, Object>> surgeryDict() {
+        return surgeryService.dict();
     }
 
     // ==================================================================
