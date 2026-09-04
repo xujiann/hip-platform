@@ -58,6 +58,12 @@
           <el-input v-model="vital.spo2" placeholder="SpO2" />
         </div>
         <el-button type="primary" style="width: 100%; margin-top: 8px" :loading="saveVitalLoading" @click="saveVital">保存体征</el-button>
+        <!-- v47：服务端校验 warn 档告警（黄字，**不阻断**——记录已落库，只是请护士核对） -->
+        <el-alert v-if="vitalWarnings.length" type="warning" show-icon closable
+                  title="体征已记录，但请核对" style="margin-top: 8px"
+                  @close="vitalWarnings = []">
+          <div v-for="(w, i) in vitalWarnings" :key="i">· {{ w }}</div>
+        </el-alert>
         <h4>最近体征</h4>
         <el-card v-for="(v, i) in vitals.slice(-5).reverse()" :key="i" class="pt-card" shadow="never">
           <span class="muted">{{ String(v.measuredAt).slice(5, 16).replace('T', ' ') }}</span>
@@ -141,7 +147,15 @@ async function open(a: Record<string, unknown>) {
   rounds.value = r.data.data
 }
 
-/** 体征校验统一走 utils/vitals（1.2.5）：桌面与移动端量程曾各写一套，同一患者两端结果不同 */
+/**
+ * 体征校验统一走 utils/vitals（1.2.5）：桌面与移动端量程曾各写一套，同一患者两端结果不同。
+ *
+ * v47：服务端补了同一套量程 + 时序/测量部位/未测原因校验（gate `emr.gate.vital.range`，默认 warn）。
+ * **前端不重复实现校验逻辑**——下面 parseVital 的既有拦截保留（省一次往返），服务端是兜底：
+ * warn 档记录照常落库并回带 warnings（黄字显示，不阻断）；block 档由拦截器统一弹红字，
+ * 服务端消息里已写明是哪一项越界、合法区间是多少。
+ */
+const vitalWarnings = ref<string[]>([])
 
 async function saveVital() {
   if (!current.value) return
@@ -160,8 +174,13 @@ async function saveVital() {
   }
   saveVitalLoading.value = true
   try {
-    await client.post(`/inpatient/admissions/${current.value.id}/vitals`, payload)
-    ElMessage.success('已录入')
+    const resp = await client.post(`/inpatient/admissions/${current.value.id}/vitals`, payload)
+    vitalWarnings.value = (resp.data?.data?.warnings ?? []) as string[]
+    if (vitalWarnings.value.length) {
+      ElMessage.warning('已录入，但有校验告警，请核对')
+    } else {
+      ElMessage.success('已录入')
+    }
     vitals.value = (await client.get(`/inpatient/admissions/${current.value.id}/vitals`)).data.data
   } finally { saveVitalLoading.value = false }
 }

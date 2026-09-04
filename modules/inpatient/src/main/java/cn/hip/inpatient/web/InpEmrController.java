@@ -23,6 +23,7 @@ public class InpEmrController {
     private final MedicalRecordRepo recordRepo;
     private final VitalSignRepo vitalRepo;
     private final CurrentUserService currentUserService;
+    private final cn.hip.inpatient.service.VitalValidator vitalValidator;
     private final cn.hip.platform.integration.signature.SignatureAdapter signatureAdapter;
     private final org.springframework.jdbc.core.JdbcTemplate jdbc;
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
@@ -48,9 +49,29 @@ public class InpEmrController {
         }
     }
 
+    /**
+     * v47：住院病历类型白名单。
+     *
+     * <p>此前 {@code req.recordType()} 是<b>任意字符串直落库</b>，而下游
+     * {@link cn.hip.inpatient.service.EmrIntegrityService} 与病历时限质控<b>全是精确等值判定</b>
+     * （{@code record_type = 'ADMISSION'} / {@code in ('PROGRESS','ROUND','FIRST_PROGRESS')} …），
+     * 写错一个字母就 <b>100% 漏判且零报错</b>——病历完整性看着"通过"，其实那条记录谁也统计不到。
+     *
+     * <p><b>刻意不给 record_type 加数据库 CHECK</b>（v42 已定此口径）：试点库的历史脏类型
+     * 会挡住 Flyway，迁移失败的代价远高于脏数据。收口只做在写入端。
+     */
+    private static final List<String> RECORD_TYPES =
+            List.of("ADMISSION", "FIRST_PROGRESS", "PROGRESS", "ROUND", "DISCHARGE", "PREOP");
+
     @PostMapping("/records")
     public R<InpMedicalRecord> addRecord(@PathVariable Long admissionId,
                                          @RequestBody SaveRecordRequest req, Authentication auth) {
+        // v47：**不传仍默认 PROGRESS（既有行为逐字不动）**，只有显式传了非白名单值才拒。
+        // 挡在结构化渲染之前，避免类型非法时先报模板校验码（4024–4027）造成误导。
+        if (req.recordType() != null && !RECORD_TYPES.contains(req.recordType())) {
+            return R.fail(9129, "病历类型非法：" + req.recordType()
+                    + "（合法值 " + String.join("/", RECORD_TYPES) + "）");
+        }
         String content = req.content();
         String contentJson = null;
         // v45 车道 I：结构化录入。fields == null 时整段跳过，下面就是 v44 的原逻辑一字未改。
@@ -184,16 +205,58 @@ public class InpEmrController {
         return R.ok(vitalRepo.findByAdmissionIdOrderByMeasuredAtAsc(admissionId));
     }
 
+    /**
+     * v47 写入校验收口后的返回体：<b>仅在有告警时</b>用这个子类回带 {@code warnings}。
+     *
+     * <p>没有告警时照旧返回裸的 {@link InpVitalSign}，返回体<b>逐字节</b>与 v46 相同——
+     * 存量对接方（e2e-phase3234 等）不会因为多出一个 null 字段而变形。
+     * 用子类而不是换成 Map，是为了让既有调用方的 {@code getData().getId()} 源码零改动。
+     */
+    public static class VitalSaved extends InpVitalSign {
+        private final List<String> warnings;
+
+        private VitalSaved(InpVitalSign saved, List<String> warnings) {
+            org.springframework.beans.BeanUtils.copyProperties(saved, this);
+            this.warnings = warnings;
+        }
+
+        public List<String> getWarnings() {
+            return warnings;
+        }
+    }
+
+    /**
+     * 录一条生命体征。
+     *
+     * <p><b>v47 起有服务端校验</b>（此前是 {@code setId(null)} 后直接 save 的零校验写路径）：
+     * 六项量程 4824 / 测量时间 4825 / 测量部位 4822 / 未测原因 4823，
+     * 三态 gate {@code emr.gate.vital.range} <b>默认 warn</b>——
+     * warn 档<b>照常落库</b>只回带 warnings（护士当场看见"体温 999 已记录，请核对"），
+     * block 档才拒。判定规则与默认档位的理由见 {@link cn.hip.inpatient.service.VitalValidator}。
+     *
+     * <p>合法值下这个方法与 v46 行为完全一致：落库字段、measuredAt 缺省补 now()、返回体全都不变。
+     */
     @PostMapping("/vitals")
     public R<InpVitalSign> addVital(@PathVariable Long admissionId,
                                     @RequestBody InpVitalSign vital, Authentication auth) {
         vital.setId(null);
         vital.setAdmissionId(admissionId);
+
+        // 校验在补 now() **之前**做：measuredAt 为 null 是"这次不传"，由服务端补当前时刻，
+        // 天然合法；补完再校验等于永远校验不到调用方真正传了什么。
+        var violations = vitalValidator.validate(admissionId, vital);
+        if (!violations.isEmpty() && "block".equals(vitalValidator.gate())) {
+            return R.fail(violations.get(0).code(), violations.get(0).message());
+        }
+
         if (vital.getMeasuredAt() == null) {
             vital.setMeasuredAt(java.time.Instant.now());
         }
         vital.setRecorderId(currentUserService.idOf(auth));
-        return R.ok(vitalRepo.save(vital));
+        InpVitalSign saved = vitalRepo.save(vital);
+        if (violations.isEmpty()) return R.ok(saved);   // 无告警：返回体逐字节不变
+        return R.ok(new VitalSaved(saved,
+                violations.stream().map(cn.hip.inpatient.service.VitalValidator.Violation::message).toList()));
     }
 
     // ===================== v42 车道1：体温单（三测单）出纸数据集 =====================

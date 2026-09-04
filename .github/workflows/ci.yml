@@ -169,6 +169,7 @@ jobs:
           python3 tools/e2e-v44-outpdoctor.py
           python3 tools/e2e-v45-structured.py
           python3 tools/e2e-v46-surgery.py
+          python3 tools/e2e-v47-writeguard.py
 
       - name: 失败时输出服务端日志
         if: failure()

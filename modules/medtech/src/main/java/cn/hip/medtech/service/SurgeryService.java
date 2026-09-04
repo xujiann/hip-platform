@@ -150,7 +150,13 @@ public class SurgeryService {
         }
         Instant at;
         if (req.at() == null || req.at().isBlank()) {
-            at = Instant.now();
+            // **截断到微秒**：Instant.now() 在本平台是 100ns 粒度（实测 200/200 采样都带亚微秒尾数），
+            // 而 PG timestamptz 只存到微秒并**四舍五入**——尾数 >=500ns 会向上进位，
+            // 回读值比真实时刻**晚最多 500ns**。于是"先打入室、再打开台"两次连续调用，
+            // 开台的 now() 可能比回读到的入室存值更早，被单调校验判成颠倒（4902）。
+            // 这个 flake 约 1/4 概率在合并跑时现形（单跑几乎必绿，因为间隔更长）。
+            // 截断后写入值与回读值恒等，比较的两侧同精度，问题从根上消失。
+            at = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
         } else {
             at = parseInstant(req.at());
             if (at == null) return R.fail(4909, "手术时间点时间格式非法，请用 ISO-8601（如 2026-09-04T09:30:00+08:00）");

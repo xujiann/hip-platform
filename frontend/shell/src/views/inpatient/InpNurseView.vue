@@ -42,6 +42,13 @@
       </el-form-item>
       <el-button type="primary" @click="saveVital">保存</el-button>
     </el-form>
+    <!-- v47：服务端校验的 warn 档告警（黄字，**不阻断**——记录已经存进去了，只是请护士核对）。
+         校验逻辑一律在服务端，前端不复算：这里只负责把 warnings 显示出来。 -->
+    <el-alert v-if="vitalWarnings.length" type="warning" show-icon closable
+              title="体征已记录，但请核对以下内容" style="margin-bottom: 10px"
+              @close="vitalWarnings = []">
+      <div v-for="(w, i) in vitalWarnings" :key="i">· {{ w }}</div>
+    </el-alert>
     <!-- 保存后曲线回显：护士站此前录完无任何反馈，异常趋势要到医生站才看得见 -->
     <VitalsChart v-if="vitals.length" :vitals="vitals" />
     <el-empty v-else-if="vitalAdmissionId" description="该患者暂无体征记录" :image-size="60" />
@@ -109,7 +116,7 @@ import client from '../../api/client'
 import VitalsChart from '../../components/VitalsChart.vue'
 import { VITAL_RANGES } from '../../utils/vitals'
 
-/** 三测单测量部位（与后端 measure_site 同码；取值校验推 v43，本版不动写路径） */
+/** 三测单测量部位（与后端 measure_site 同码；v47 起服务端亦按此白名单校验，非法返 4822） */
 const MEASURE_SITES = [
   { value: 'ORAL', label: '口温' },
   { value: 'AXILLARY', label: '腋温' },
@@ -175,13 +182,28 @@ async function load() {
   admissions.value = adm.data.data
 }
 
+/**
+ * v47：服务端校验的 warn 档告警。
+ *
+ * 量程/时序/测量部位/未测原因的判定**只在服务端**（gate `emr.gate.vital.range`，默认 warn）：
+ * warn 档记录照常落库、返回体带 warnings；block 档由拦截器统一弹红字，
+ * 消息里已含"哪一项、合法区间是多少"（如「体温(℃) 超出合理范围（30–45）：999.0」），
+ * 前端不重复实现校验逻辑——上方 el-input-number 的 VITAL_RANGES 限位保留即可，服务端是兜底。
+ */
+const vitalWarnings = ref<string[]>([])
+
 async function saveVital() {
   if (!vitalAdmissionId.value) {
     ElMessage.warning('请选择患者')
     return
   }
-  await client.post(`/inpatient/admissions/${vitalAdmissionId.value}/vitals`, vital)
-  ElMessage.success('体征已记录')
+  const resp = await client.post(`/inpatient/admissions/${vitalAdmissionId.value}/vitals`, vital)
+  vitalWarnings.value = (resp.data?.data?.warnings ?? []) as string[]
+  if (vitalWarnings.value.length) {
+    ElMessage.warning('体征已记录，但有校验告警，请核对')
+  } else {
+    ElMessage.success('体征已记录')
+  }
   await loadVitals()
 }
 
