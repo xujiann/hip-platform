@@ -8,7 +8,32 @@
   ② 自体血只认 is_auto 不比 product_type —— 自体洗涤红细胞按 RBC+is_auto 录，字符串比对会漏统计；
   ③ 缺数据源的指标必须 available:false 而不是返回一个看起来像真的的 0。
 """
+import datetime as _dt  # noqa: E402
+
 from e2elib import call, find_free_bed, login, new_patient, ok, q, today_bj  # noqa: E402
+
+
+def _iso(dt):
+    """转成服务端 parseTime 认的带偏移 ISO-8601。"""
+    return dt.strftime('%Y-%m-%dT%H:%M:%S') + '+00:00'
+
+
+def _parse(v):
+    """detail 端点回的是 '2026-09-05T03:01:39.716+00:00'（JdbcTemplate 直出 + Jackson）。"""
+    return _dt.datetime.fromisoformat(v.replace('Z', '+00:00'))
+
+
+def timeline(sid, token):
+    """读手术真实时间线。
+
+    **为什么必须派生而不能写死墙钟字面量**：本套原先把术中事件时间硬编码成 `T10:00:00Z`，
+    而入室时间走的是服务端 `Instant.now()`。于是这套的成败取决于**跑在一天里的什么时辰**——
+    10:00 UTC 之前跑，事件晚于入室，绿；之后跑，事件早于入室，撞 4925 红。
+    v46 交付那次 CI 恰好跑在 10:00 UTC 前，纯属运气；v47 这次跑在 15:32 UTC 就炸了。
+    时间断言一律**从被测对象自己的时间线派生**，别拿墙钟当基准。
+    """
+    d = ok(call('GET', f'/inpatient/surgeries/{sid}/detail', token=token), '读时间线')
+    return _parse(d['in_room_at']), _parse(d['out_room_at'])
 
 t = login()
 today = today_bj().isoformat()
@@ -75,31 +100,49 @@ assert call('PUT', f'/inpatient/surgeries/{s3}/cancel',
 print('[2] 取消四阶段 OK（取消不删记录 / 4907 阶段非法 / **已 DONE 不可取消，出院 gate 保护**）')
 
 # ---- 3) 术中记录：管路 / 输血（自体血）/ 事件（计划性三态）----
+# 时间一律从手术自己的时间线派生——绝不写墙钟字面量（详见 timeline() 的注释）
+in_room, out_room = timeline(sid, t)
+during = _iso(in_room + _dt.timedelta(seconds=10))      # 术中
+after_out = _iso(out_room + _dt.timedelta(hours=48))    # 术后 48 小时（拆镇痛泵的真实场景）
+before_in = _iso(in_room - _dt.timedelta(hours=1))      # 入室前
+
 ok(call('POST', '/surgery/intraop/tubes',
         {'surgeryId': sid, 'tubeType': '静脉通道', 'position': '左前臂', 'depthCm': 3.5,
-         'insertedAt': today + 'T09:00:00Z'}, t), '管路')
+         'insertedAt': during}, t), '管路')
 assert call('POST', '/surgery/intraop/tubes',
-            {'surgeryId': sid, 'tubeType': 'BOGUS', 'insertedAt': today + 'T09:00:00Z'}, t)['code'] == 4920, \
+            {'surgeryId': sid, 'tubeType': 'BOGUS', 'insertedAt': during}, t)['code'] == 4920, \
     '管路类型非法应 4920'
 # 自体洗涤红细胞：product_type=RBC 但 is_auto=true —— 统计只认 is_auto，比对 'AUTO' 会漏掉这条
 ok(call('POST', '/surgery/intraop/transfusions',
         {'surgeryId': sid, 'productType': 'RBC', 'volumeMl': 300, 'isAuto': True,
-         'transfusedAt': today + 'T09:30:00Z'}, t), '自体洗涤红细胞')
+         'transfusedAt': during}, t), '自体洗涤红细胞')
 ok(call('POST', '/surgery/intraop/transfusions',
         {'surgeryId': sid, 'productType': 'RBC', 'volumeMl': 400, 'isAuto': False,
-         'transfusedAt': today + 'T09:40:00Z'}, t), '异体红细胞')
+         'transfusedAt': during}, t), '异体红细胞')
 assert call('POST', '/surgery/intraop/transfusions',
             {'surgeryId': sid, 'productType': 'RBC', 'volumeMl': 0, 'isAuto': False,
-             'transfusedAt': today + 'T09:40:00Z'}, t)['code'] == 4923, '输血量须>0 应 4923'
+             'transfusedAt': during}, t)['code'] == 4923, '输血量须>0 应 4923'
 # 事件：计划性三态都录一条
 for et, planned in (('PAIN_PUMP_ON', None), ('TO_ICU', True), ('TO_PACU', False)):
-    body = {'surgeryId': sid, 'eventType': et, 'eventTime': today + 'T10:00:00Z'}
+    body = {'surgeryId': sid, 'eventType': et, 'eventTime': during}
     if planned is not None:
         body['planned'] = planned
     ok(call('POST', '/surgery/intraop/events', body, t), f'事件 {et}')
 assert call('POST', '/surgery/intraop/events',
-            {'surgeryId': sid, 'eventType': 'BOGUS', 'eventTime': today + 'T10:00:00Z'}, t)['code'] == 4924, \
+            {'surgeryId': sid, 'eventType': 'BOGUS', 'eventTime': during}, t)['code'] == 4924, \
     '事件类型非法应 4924'
+# ---- 时间窗上下界：这次 CI 撞出来的语义，就地钉死，别再靠运气 ----
+# 下界对**全部**事件生效——入室前不可能有术中事件
+assert call('POST', '/surgery/intraop/events',
+            {'surgeryId': sid, 'eventType': 'PAIN_PUMP_ON', 'eventTime': before_in}, t)['code'] == 4925,     '入室前的术中事件应被 4925 拒'
+# 上界**只对室内事件**生效：插管属 IN_ROOM_ONLY，出室后不成立
+assert call('POST', '/surgery/intraop/events',
+            {'surgeryId': sid, 'eventType': 'INTUBATE_OR', 'eventTime': after_out}, t)['code'] == 4925,     '室内事件（插管）晚于出室应被 4925 拒'
+# **但拆镇痛泵/转运常在术后**——上界一刀切会把真实记录全拦掉，这条是防过度收紧的锚
+ok(call('POST', '/surgery/intraop/events',
+        {'surgeryId': sid, 'eventType': 'PAIN_PUMP_ON', 'eventTime': after_out}, t),
+   '术后 48 小时拆镇痛泵')
+
 summ = ok(call('GET', f'/surgery/intraop/summary?surgeryId={sid}', token=t), '术中汇总')
 assert summ, summ
 print('[3] 术中记录 OK（管路 4920 / 输血 4923 / **自体洗涤红细胞按 RBC+isAuto 录** / 事件 4924 / 计划性三态）')
