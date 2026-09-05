@@ -470,6 +470,18 @@ public class SurgeryIntraopController {
      * 宽容解析前端时间：ISO 带时区 / ISO 本地 / "yyyy-MM-dd HH:mm[:ss]" / 纯日期。
      * 解析不出返 null，由调用方回 4928——不静默吃成 now()，否则倒填的置管时间会悄悄变成此刻。
      */
+    /**
+     * 业务时区。<b>不能用 {@code ZoneId.systemDefault()}</b>——那取的是 JVM 默认时区，
+     * 而本平台的「今天」全域按 {@link cn.hip.platform.core.config.BusinessDates} 的
+     * {@code Asia/Shanghai} 归集。两者在生产上碰巧一致（部署 JVM 设的就是东八区），
+     * 于是这个错一直没现形；但只要部署方 JVM 时区不同（容器默认 UTC 就是），
+     * <b>无时区偏移的时间串会被解析到错误的时刻</b>，且不报任何错。
+     *
+     * <p>v48 发布前跑 {@code -Duser.timezone=UTC} 在护理记录处先暴露，
+     * 顺手全仓扫出同构的复制品——这一处即是。见 CHANGELOG 与 test-time-literals。
+     */
+    private static final ZoneId BIZ_ZONE = ZoneId.of(cn.hip.platform.core.config.HipProfiles.ZONE);
+
     static Timestamp parseTime(String v) {
         if (v == null || v.isBlank()) return null;
         String s = v.trim();
@@ -480,12 +492,12 @@ public class SurgeryIntraopController {
         }
         String iso = s.contains(" ") ? s.replace(' ', 'T') : s;
         try {
-            return Timestamp.from(LocalDateTime.parse(iso).atZone(ZoneId.systemDefault()).toInstant());
+            return Timestamp.from(LocalDateTime.parse(iso).atZone(BIZ_ZONE).toInstant());
         } catch (Exception ignored) {
             // 继续尝试纯日期
         }
         try {
-            return Timestamp.from(LocalDate.parse(s).atStartOfDay(ZoneId.systemDefault()).toInstant());
+            return Timestamp.from(LocalDate.parse(s).atStartOfDay(BIZ_ZONE).toInstant());
         } catch (Exception ignored) {
             return null;
         }

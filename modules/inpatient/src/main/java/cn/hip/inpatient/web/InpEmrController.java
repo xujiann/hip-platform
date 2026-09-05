@@ -250,7 +250,14 @@ public class InpEmrController {
         }
 
         if (vital.getMeasuredAt() == null) {
-            vital.setMeasuredAt(java.time.Instant.now());
+            // **截断到微秒**，与 v47 修 SurgeryService 的时间点是同一个根因：
+            // Instant.now() 在本平台是 100ns 粒度，而 PG timestamptz 只存到微秒并四舍五入。
+            // 入院时刻早已被 PG 舍入过（可能变大），这里补的测量时刻若带纳秒尾数，
+            // 就会出现「测量时间 …708798700Z 早于入院时间 …708799Z」这种差 100ns 的假越界，
+            // 让一条刚录入的正常体征撞 4825。截断后两侧同精度，问题从根上消失。
+            // v47 只修了手术那一处，没扫同类——这是补上的第二处。
+            vital.setMeasuredAt(java.time.Instant.now()
+                    .truncatedTo(java.time.temporal.ChronoUnit.MICROS));
         }
         vital.setRecorderId(currentUserService.idOf(auth));
         InpVitalSign saved = vitalRepo.save(vital);

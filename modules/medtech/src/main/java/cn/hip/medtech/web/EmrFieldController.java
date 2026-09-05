@@ -418,7 +418,11 @@ public class EmrFieldController {
         if (v instanceof java.sql.Timestamp ts) return ts.toInstant();
         if (v instanceof java.time.Instant i) return i;
         if (v instanceof java.time.OffsetDateTime o) return o.toInstant();
-        if (v instanceof java.time.LocalDateTime l) return l.atZone(java.time.ZoneId.systemDefault()).toInstant();
+        // **业务时区**而非 JVM 时区：无偏移的 LocalDateTime 按机器时区解析，
+        // 容器默认 UTC 时会整体偏 8 小时且不报错。同 NursingRecordController 的修法。
+        if (v instanceof java.time.LocalDateTime l) {
+            return l.atZone(java.time.ZoneId.of(cn.hip.platform.core.config.HipProfiles.ZONE)).toInstant();
+        }
         return null;
     }
 }

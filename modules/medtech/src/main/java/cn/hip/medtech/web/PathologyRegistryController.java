@@ -339,7 +339,8 @@ public class PathologyRegistryController {
                 nullIfBlank(req.clinicalDiagnosis()), nullIfBlank(req.fixative()), fixedAt,
                 Boolean.TRUE.equals(req.urgent()),
                 manual ? "RECEIVED" : "COLLECTED",
-                manual ? Timestamp.from(Instant.now()) : null);
+                manual ? Timestamp.from(Instant.now()
+                        .truncatedTo(java.time.temporal.ChronoUnit.MICROS)) : null);
 
         if (manual) {
             jdbc.update("""
@@ -395,7 +396,11 @@ public class PathologyRegistryController {
             return R.fail(5208, "标本状态不允许核收（当前 " + row.get("status") + "）");
         }
 
-        Instant received = Instant.now();
+        // **截断到微秒**：collected_at 由 PG 的 now()/入库时被舍入到微秒（可能变大），
+        // 而这里的 Instant.now() 是 100ns 粒度。不截断就会出现「接收/拒收时刻比取材时刻早
+        // 100 纳秒」的假越界，让一条刚登记就核收的标本撞 5210。
+        // 同 v47 修 SurgeryService 时间点、本轮修 InpEmrController 体征——同一个根因的第三、四处。
+        Instant received = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
         if (req != null && !trim(req.receivedAt()).isEmpty()) {
             Instant t = parseInstant(req.receivedAt());
             if (t == null) return R.fail(5210, "接收时刻格式非法（ISO-8601，如 2026-09-06T09:30）");
@@ -446,7 +451,11 @@ public class PathologyRegistryController {
         if (row.get("rejected_at") != null) return R.fail(5208, "标本已拒收，不能重复拒收");
         if ("DIAGNOSED".equals(row.get("status"))) return R.fail(5208, "已出诊断的标本不能拒收");
 
-        Instant rejected = Instant.now();
+        // **截断到微秒**：collected_at 由 PG 的 now()/入库时被舍入到微秒（可能变大），
+        // 而这里的 Instant.now() 是 100ns 粒度。不截断就会出现「接收/拒收时刻比取材时刻早
+        // 100 纳秒」的假越界，让一条刚登记就核收的标本撞 5210。
+        // 同 v47 修 SurgeryService 时间点、本轮修 InpEmrController 体征——同一个根因的第三、四处。
+        Instant rejected = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
         if (!trim(req.rejectedAt()).isEmpty()) {
             Instant t = parseInstant(req.rejectedAt());
             if (t == null) return R.fail(5210, "拒收时刻格式非法（ISO-8601，如 2026-09-06T09:30）");
