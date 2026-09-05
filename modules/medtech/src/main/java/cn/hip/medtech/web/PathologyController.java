@@ -50,17 +50,35 @@ public class PathologyController {
         return n == 0 ? R.fail(4550, "申请不存在/未收费/已取材") : R.ok(Map.of("barcode", barcode));
     }
 
+    /**
+     * 核收。
+     *
+     * <p><b>v48 加了 {@code rejected_at is null}</b>：v48 的拒收<b>刻意不改 status</b>
+     * （拒收不删记录、也不占用状态值域，下游按 {@code rejected_at} 判断），
+     * 于是被拒收的标本仍是 {@code COLLECTED}，这条 update 原样能命中——
+     * 实测可走通「拒收 → 核收 → 诊断」，台账上出现<b>「已拒收却已发报告」</b>的标本。
+     * 这个洞是 v48 引入的（拒收是本版新功能，本端点不知道它存在），故本版必须堵。
+     *
+     * <p><b>返回键与错误码值域未变</b>：仍是 {@code R<Void>} 与 4551，
+     * 改的只是 4551 的触发时机（多了一种「已拒收」的情形）。
+     */
     @PutMapping("/specimens/{barcode}/receive")
     public R<Void> receive(@PathVariable String barcode) {
         int n = jdbc.update(
-                "update path_specimen set status = 'RECEIVED', received_at = now() where barcode = ? and status = 'COLLECTED'",
+                "update path_specimen set status = 'RECEIVED', received_at = now() "
+                        + "where barcode = ? and status = 'COLLECTED' and rejected_at is null",
                 barcode);
-        return n == 0 ? R.fail(4551, "标本不存在或状态不符") : R.ok();
+        return n == 0 ? R.fail(4551, "标本不存在、状态不符或已拒收") : R.ok();
     }
 
     public record DiagnoseReq(String grossFinding, String microFinding, String diagnosis) {}
 
-    /** 病理诊断报告：发布后联动医嘱执行 */
+    /**
+     * 病理诊断报告：发布后联动医嘱执行。
+     *
+     * <p><b>v48 加了 {@code rejected_at is null}</b>——理由同 {@link #receive(String)}：
+     * 已拒收的标本不得出报告。返回键与 4553 值域未变，只是多了一种触发情形。
+     */
     @PutMapping("/specimens/{barcode}/diagnose")
     @Transactional
     public R<Void> diagnose(@PathVariable String barcode, @RequestBody DiagnoseReq req, Authentication auth) {
@@ -68,10 +86,10 @@ public class PathologyController {
         int n = jdbc.update("""
                 update path_specimen set status = 'DIAGNOSED', gross_finding = ?, micro_finding = ?,
                        diagnosis = ?, pathologist_id = ?, diagnosed_at = now()
-                where barcode = ? and status = 'RECEIVED'
+                where barcode = ? and status = 'RECEIVED' and rejected_at is null
                 """, req.grossFinding(), req.microFinding(), req.diagnosis(),
                 currentUserService.idOf(auth), barcode);
-        if (n == 0) return R.fail(4553, "标本不存在或未核收");
+        if (n == 0) return R.fail(4553, "标本不存在、未核收或已拒收");
         jdbc.update("""
                 update outp_order set status = 'EXECUTED'
                 where id = (select order_id from path_specimen where barcode = ?) and status = 'CHARGED'

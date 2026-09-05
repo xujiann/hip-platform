@@ -166,9 +166,18 @@ class V47WriteGuardTest {
         assertFalse(saved.isAfter(Instant.now().plusSeconds(2)));
     }
 
-    /** 三项都不传的极简报文（历史对接方形态）仍然成立：六项全空 + 未测原因，v42 之前就允许 */
+    /**
+     * 三项都不传的极简报文（历史对接方形态）仍然成立：整行全空 + 未测原因，v42 之前就允许。
+     *
+     * <p><b>显式置 warn 而不是靠「默认就是 warn」</b>：本类别的用例会把 gate 改到 block，
+     * 而 {@code ConfigReader} 是进程内缓存、事务回滚清不掉——合并跑时本用例会读到上一个
+     * 用例留下的 block 档，于是「带了未测原因就不该告警」这条断言随机失败
+     * （单跑必绿、合并跑偶红，最容易被误当成偶发而重跑过关）。
+     * <b>依赖隐式默认值的测试，在共享进程内缓存的场景下就是不稳定测试。</b>
+     */
     @Test
     void bareRecordWithOnlyNotMeasuredReasonStillSaves() {
+        gate("warn");
         Long admId = admission();
         InpVitalSign v = new InpVitalSign();
         v.setNotMeasuredReason("外出检查");

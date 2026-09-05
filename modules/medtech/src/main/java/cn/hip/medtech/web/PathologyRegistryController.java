@@ -309,10 +309,13 @@ public class PathologyRegistryController {
         // 部位重复预检。真并发下最终仍由 V144 的部分唯一索引兜底（走全局异常处理返 4090），
         // 这里预检是为了给出「这个部位已经登记过」这句人话，而不是一句数据库约束名
         Integer dup = jdbc.queryForObject(outp
-                        ? "select count(*) from path_specimen where order_id = ? and part_no = ?"
-                        : "select count(*) from path_specimen where inp_order_id = ? and part_no = ?",
+                        // **排除已拒收行**（V145）：拒收后临床重送同一部位是常态，
+                        // 不排除的话拒收就等于把这个部位序号永久烧掉、只能被迫顺延，
+                        // 而部位序号正是蜡块编码与报告上「3 号蜡块」的来源。
+                        ? "select count(*) from path_specimen where order_id = ? and part_no = ? and rejected_at is null"
+                        : "select count(*) from path_specimen where inp_order_id = ? and part_no = ? and rejected_at is null",
                 Integer.class, outp ? req.orderId() : req.inpOrderId(), partNo);
-        if (dup != null && dup > 0) return R.fail(5202, "该申请的第 " + partNo + " 个部位已登记");
+        if (dup != null && dup > 0) return R.fail(5202, "该申请的第 " + partNo + " 个部位已登记（已拒收的不算，可重新登记）");
 
         String pathNo;
         try {
