@@ -1,5 +1,6 @@
 package cn.hip.server;
 
+import cn.hip.platform.core.config.BusinessDates;
 import cn.hip.inpatient.service.InpatientService;
 import cn.hip.inpatient.web.InpatientController;
 import cn.hip.outpatient.entity.OutpSchedule;
@@ -185,7 +186,7 @@ class V40PortalTest {
         Long pidB = newPatient("住院B");
         Long pidA = newPatient("旁人A");
         Long admB = admit(pidB, new BigDecimal("1000"));
-        String day = LocalDate.now().toString();
+        String day = BusinessDates.today().toString();
         executedOrder(admB, day, "输液", "120.00");
 
         assertEquals(9505, portal.myDailyFees(admB, LocalDate.parse(day), tokenOf(pidA)).getCode(),
@@ -208,7 +209,7 @@ class V40PortalTest {
     void dailyFeesAndBalanceMatchWardSideFigures() {
         Long pid = newPatient("住院口径");
         Long admId = admit(pid, new BigDecimal("500"));
-        String day = LocalDate.now().toString();
+        String day = BusinessDates.today().toString();
         executedOrder(admId, day, "抗生素", "300.00");
         executedOrder(admId, day, "床位费", "50.00");
         // 未执行医嘱：只作预判展示，不进余额

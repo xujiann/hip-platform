@@ -717,7 +717,7 @@ class V45StructuredEmrTest {
 
         // 时间区间：今天之后的窗口应为空
         var future = emrFieldController.fieldSearch(c, null,
-                LocalDate.now().plusDays(3), LocalDate.now().plusDays(5), null).getData();
+                BusinessDates.today().plusDays(3), BusinessDates.today().plusDays(5), null).getData();
         assertEquals(0, future.get("total"));
 
         // 另一个元素码不该串味
@@ -752,7 +752,7 @@ class V45StructuredEmrTest {
         assertEquals(4028, emrFieldController.fieldSearch("a".repeat(65), null, null, null, null).getCode());
         assertEquals(4028, emrFieldController.fieldSearch("ok_code", "v".repeat(129), null, null, null).getCode());
         assertEquals(4028, emrFieldController.fieldSearch("ok_code", null,
-                LocalDate.now(), LocalDate.now().minusDays(1), null).getCode(), "起始晚于截止");
+                BusinessDates.today(), BusinessDates.today().minusDays(1), null).getCode(), "起始晚于截止");
         assertEquals(4028, emrFieldController.fieldSearch("ok_code", null, null, null, "EMERGENCY").getCode());
     }
 

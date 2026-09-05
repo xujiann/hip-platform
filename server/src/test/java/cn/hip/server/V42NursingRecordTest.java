@@ -1,5 +1,6 @@
 package cn.hip.server;
 
+import cn.hip.platform.core.config.BusinessDates;
 import cn.hip.inpatient.service.InpatientService;
 import cn.hip.platform.empi.entity.Patient;
 import cn.hip.platform.empi.service.PatientService;
@@ -101,7 +102,7 @@ class V42NursingRecordTest {
                 new HandoverReq(1L, "DAY", "当班平稳", "留观 2 床", null), admin).getCode());
         Long id = jdbc.queryForObject("select max(id) from shift_handover", Long.class);
         var row = jdbc.queryForMap("select * from shift_handover where id = ?", id);
-        assertEquals(LocalDate.now(), ((java.sql.Date) row.get("shift_date")).toLocalDate());
+        assertEquals(BusinessDates.today(), ((java.sql.Date) row.get("shift_date")).toLocalDate());
         assertEquals("admin", row.get("author"), "交班人取登录名（既有 varchar 口径，本版未改）");
         assertEquals("当班平稳", row.get("summary"));
         assertNull(row.get("receiver_id"), "新交的班默认未签收");
@@ -115,11 +116,11 @@ class V42NursingRecordTest {
     /** v42 口径修复：夜班跨零点补录必须能指定班次日期，否则永远记到次日 */
     @Test
     void handoverAcceptsExplicitShiftDateForNightShiftBackfill() {
-        String yesterday = LocalDate.now().minusDays(1).toString();
+        String yesterday = BusinessDates.today().minusDays(1).toString();
         assertEquals(0, nursingPlusController.addHandover(
                 new HandoverReq(1L, "NIGHT", "夜班平稳，晨 8:30 补录", null, yesterday), admin).getCode());
         Long id = jdbc.queryForObject("select max(id) from shift_handover", Long.class);
-        assertEquals(LocalDate.now().minusDays(1), jdbc.queryForObject(
+        assertEquals(BusinessDates.today().minusDays(1), jdbc.queryForObject(
                 "select shift_date from shift_handover where id = ?", java.sql.Date.class, id).toLocalDate(),
                 "夜班补录须落在班次当日，不能吃 current_date 记到次日");
 
@@ -221,10 +222,10 @@ class V42NursingRecordTest {
         assertEquals(4801, nursingRecordController.list(admId, "PATROL", null, null).getCode());
 
         // 时间窗右端按「当日 24 点」闭合——填今天必须包含今天写的记录
-        String today = LocalDate.now().toString();
+        String today = BusinessDates.today().toString();
         assertEquals(3, nursingRecordController.list(admId, null, today, today).getData().size());
         assertEquals(0, nursingRecordController.list(admId, null, null,
-                LocalDate.now().minusDays(1).toString()).getData().size());
+                BusinessDates.today().minusDays(1).toString()).getData().size());
         assertEquals(4811, nursingRecordController.list(admId, null, "2026/09/01", null).getCode());
     }
 
@@ -233,12 +234,17 @@ class V42NursingRecordTest {
     void explicitRecordTimeIsHonoured() {
         Long admId = admit("倒填时间");
         var r = nursingRecordController.add(new RecordReq(admId, "ROUNDS",
-                LocalDate.now().minusDays(1) + " 23:30:00", null, "夜间巡视，患者入睡", null, null), admin);
+                BusinessDates.today().minusDays(1) + " 23:30:00", null, "夜间巡视，患者入睡", null, null), admin);
         assertEquals(0, r.getCode());
         Long id = ((Number) r.getData().get("id")).longValue();
-        var t = jdbc.queryForObject("select record_time from nur_record where id = ?",
-                java.sql.Timestamp.class, id).toLocalDateTime();
-        assertEquals(LocalDate.now().minusDays(1), t.toLocalDate());
+        // **回读也必须按业务时区**：Timestamp.toLocalDateTime() 用的是 JVM 默认时区，
+        // 而写入是按 Asia/Shanghai 解析的——JVM 设成 UTC 时两者差 8 小时，
+        // 断言 23 点会读出 15 点。本地 UTC+8 永远碰不到，只有 -Duser.timezone=UTC 才现形。
+        var t = java.time.LocalDateTime.ofInstant(
+                jdbc.queryForObject("select record_time from nur_record where id = ?",
+                        java.sql.Timestamp.class, id).toInstant(),
+                java.time.ZoneId.of(cn.hip.platform.core.config.HipProfiles.ZONE));
+        assertEquals(BusinessDates.today().minusDays(1), t.toLocalDate());
         assertEquals(23, t.getHour());
 
         assertEquals(4811, nursingRecordController.add(
@@ -406,7 +412,7 @@ class V42NursingRecordTest {
                 + "where id = ?", legacy);
 
         var d = nursingQualityController.careLevelDays(
-                LocalDate.now().minusDays(7).toString(), LocalDate.now().toString()).getData();
+                BusinessDates.today().minusDays(7).toString(), BusinessDates.today().toString()).getData();
         @SuppressWarnings("unchecked")
         var items = (List<Map<String, Object>>) d.get("items");
         var special = items.stream().filter(i -> "特级".equals(i.get("careLevel"))).findFirst().orElseThrow();
