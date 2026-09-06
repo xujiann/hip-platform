@@ -173,6 +173,7 @@ jobs:
           python3 tools/e2e-v48-pathology.py
           python3 tools/e2e-v49-anesqc.py
           python3 tools/e2e-v50-pharmacy.py
+          python3 tools/e2e-v51-cdss.py
 
       - name: 失败时输出服务端日志
         if: failure()

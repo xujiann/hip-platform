@@ -64,6 +64,34 @@ class RationalDrugRulesTest {
         assertEquals(4012, e.code);
     }
 
+    /**
+     * <b>「皮试阴性」不得被误判成过敏而拦截</b>（v51 修的反向拦截）。
+     *
+     * <p>缺陷实证：过敏史写「青霉素皮试阴性」的患者开阿莫西林，旧逻辑会 4012 硬拦——
+     * 「青霉素皮试阴性」含「青霉素」、「阿莫西林」含「西林」，关键词匹配两条都成立。
+     * 而<b>皮试阴性恰恰是可以用的证据</b>，这是彻底的反向拦截：该拦的不拦、不该拦的拦住。
+     *
+     * <p>假阳性的杀伤不比假阴性小：医生发现十次提示七次不成立，
+     * 就会养成不读内容直接点「继续」的肌肉记忆，<b>第八次那个真警告也被一起点掉</b>。
+     * 一个被无视的拦截等于没有拦截，还骗走了本可以投在别处的注意力。
+     */
+    @Test
+    void skinTestNegativeIsNotTreatedAsAllergy() {
+        Long rid = visitedRegistration("青霉素皮试阴性");
+        assertDoesNotThrow(() -> doctorStationService.createOrders(rid,
+                List.of(new OrderLine("DRUG", drugId("阿莫西林"), 1, "口服", "tid", "1粒", 3)), null),
+                "「青霉素皮试阴性」是可以用的证据，不是过敏——关键词匹配把它当成过敏是反向拦截");
+    }
+
+    /** 「否认药物过敏史」同理：这是最常见的过敏史写法，含药名时更不能误拦 */
+    @Test
+    void deniedAllergyHistoryIsNotTreatedAsAllergy() {
+        Long rid = visitedRegistration("否认药物过敏史，青霉素类既往使用无不良反应");
+        assertDoesNotThrow(() -> doctorStationService.createOrders(rid,
+                List.of(new OrderLine("DRUG", drugId("阿莫西林"), 1, "口服", "tid", "1粒", 3)), null),
+                "「否认…过敏史」是明确的否定语境，含药名也不得按过敏拦");
+    }
+
     @Test
     void cephalosporinAllergyBlocksCefDrugs() {
         Long rid = visitedRegistration("头孢类过敏");

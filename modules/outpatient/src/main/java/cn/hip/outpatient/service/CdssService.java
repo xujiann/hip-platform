@@ -26,8 +26,18 @@ public class CdssService {
     public record DrugLine(String drugName, Integer days) {}
 
     /** 开单前审查：本次新开药品 vs 同诊全部在用药品 */
-    public void checkPrescription(Long registrationId, Long patientId, List<DrugLine> newDrugs) {
-        if (newDrugs.isEmpty()) return;
+    /**
+     * <b>v51：改为返回 CAUTION 档的提示文本</b>，好让调用方随返回体下发给医生。
+     *
+     * <p>此前是 {@code void}——CAUTION 命中只往 {@code cdss_alert} 写一行，
+     * <b>医生开完单什么都看不见</b>。躺在一张要另外去查的表里的提示等于没有提示，
+     * 那不是 warn，那是记了个账。FORBID 档抛异常拦截的行为<b>逐字不变</b>。
+     *
+     * @return CAUTION 档命中的提示文本；无命中返回空列表（不返 null）
+     */
+    public List<String> checkPrescription(Long registrationId, Long patientId, List<DrugLine> newDrugs) {
+        List<String> warns = new ArrayList<>();
+        if (newDrugs.isEmpty()) return warns;
         List<String> existing = orderRepository.findByRegistrationIdOrderByIdAsc(registrationId).stream()
                 .filter(o -> "DRUG".equals(o.getOrderType()) && !"CANCELLED".equals(o.getStatus()))
                 .map(OutpOrder::getItemName)
@@ -50,6 +60,7 @@ public class CdssService {
                         throw new BizException(4015, "CDSS 拦截 " + msg);
                     }
                     alert(registrationId, "DDI", "CAUTION", msg);
+                    warns.add(msg);
                 }
             }
         }
@@ -61,8 +72,10 @@ public class CdssService {
             for (var r : doseRules) {
                 if (nd.drugName().contains((String) r.get("drug_keyword"))
                         && nd.days() > ((Number) r.get("max_days")).intValue()) {
-                    alert(registrationId, "DOSE", "CAUTION",
-                            "【疗程】%s 开具 %d 天：%s".formatted(nd.drugName(), nd.days(), r.get("message")));
+                    String doseMsg = "【疗程】%s 开具 %d 天：%s"
+                            .formatted(nd.drugName(), nd.days(), r.get("message"));
+                    alert(registrationId, "DOSE", "CAUTION", doseMsg);
+                    warns.add(doseMsg);
                 }
             }
         }
@@ -85,6 +98,7 @@ public class CdssService {
                 }
             }
         }
+        return warns;
     }
 
     private void alert(Long registrationId, String type, String severity, String message) {

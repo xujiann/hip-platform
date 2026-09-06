@@ -32,6 +32,16 @@ public class InventoryService {
     private final InvStockTakeRepository stockTakeRepository;
     private final InvStockTakeLineRepository stockTakeLineRepository;
     private final jakarta.persistence.EntityManager entityManager;
+    /**
+     * v51：盘点确认时核对批次层用。**只在 confirmStockTake 那一段使用**，其余方法一字未动。
+     *
+     * <p>为什么这里直接读 {@code pharm_batch}/{@code pharm_stock} 而不调
+     * {@code PharmStockService}：模块依赖是 outpatient → masterdata 单向的，
+     * 本类在 masterdata，反过来调会形成环。两张表同库同 schema，读它们只是一次只读查询，
+     * 本类<b>不写、不改批次层任何一个数</b>——那正是本次收敛的纪律所在。
+     */
+    private final org.springframework.jdbc.core.JdbcTemplate jdbc;
+    private final cn.hip.platform.core.service.ConfigReader configReader;
 
     public static class InventoryException extends RuntimeException {
         public final int code;
@@ -149,10 +159,18 @@ public class InventoryService {
     public record StockTakeLineView(Long lineId, Long drugId, String drugName,
                                     int bookQty, Integer actualQty, Integer diff) {}
 
+    /**
+     * @param batchCheckWarnings v51 新增，<b>纯追加、其余组件与顺序逐字不变</b>。
+     *        warn 档下盘点确认时批次层核对的提示，随返回体下发给药师。
+     *        非确认路径（建单/录数/作废/查询）恒为空列表——不是"没问题"，是"这条路径不做核对"。
+     *        <p>为什么必须随返回体下发而不是只落审计表：warn 档的全部价值就在于把问题
+     *        <b>真的给到人</b>。只写进表、不进返回体，等于换了个地方静默。
+     */
     public record StockTakeView(Long id, String takeNo, String status, String remark,
                                 Instant createdAt, Instant confirmedAt,
                                 List<StockTakeLineView> lines,
-                                int lineCount, int countedLines, int gainLines, int lossLines, int netDiff) {}
+                                int lineCount, int countedLines, int gainLines, int lossLines, int netDiff,
+                                List<String> batchCheckWarnings) {}
 
     public record CountEntry(Long drugId, Integer actualQty) {}
 
@@ -208,6 +226,51 @@ public class InventoryService {
      * 确认盘点：对每条有实盘数且盈亏≠0 的行，按「账面=快照」条件更新到实盘数并写 STOCKTAKE 流水。
      * 任一药品账面在盘点期间被并发出入库改动（条件更新影响 0 行）即整单回滚、报 8008，
      * 迫使重新盘点——保证盈亏账实对账口径不被期间正常业务污染。
+     *
+     * <h2>v51 收敛：盘点不再静默抹平批次层差异（5680–5699）</h2>
+     * <b>v50 由 {@code V50PharmacyTest.DECLARED_OUT_OF_SCOPE「ADJ 盘点调整」}署名登记的欠账。</b>
+     * 原行为：本方法把 {@code md_drug.stock} 条件更新到实盘数，<b>完全不看批次层</b>。
+     * v50 已把发药/退药收敛进批次账，日常两本账一致；但仍有三条只动汇总、不动批次层的路径
+     * （实测：{@code PharmOpsService.dispenseSplit} 拆零开盒直接 update md_drug.stock；
+     * {@code acceptStockIn} 走 V82 待验收页入库只加汇总不建批次；{@code adjust} 单药直调），
+     * 每走一次就多一分漂移。而盘点会把汇总一把拉到实存，<b>把差额永久抹平</b>，
+     * 批次层的错账原地不动、无人知晓——「看起来一直对得上、实际每次靠盘点擦屁股」。
+     *
+     * <h3>为什么选「确认时核对并报出差异」而不是「盘点单加批次维度」</h3>
+     * 后者更彻底但本版不能选，两个理由（详见 V155 迁移注释）：
+     * ① 它要重写建单/录数/视图构造，而本次口径是「只改盘点确认那一段」；
+     * ② 更实质的一条——批次管理是<b>逐药逐批增量启用</b>的，V147 零回填，
+     * 绝大多数药品在批次层一粒都没有；强上批次维度会让未纳管药品<b>无法被盘点</b>。
+     * 盘不了的账不会变对，只会变成盘不了。
+     *
+     * <h3>核对口径</h3>
+     * <ul>
+     *   <li><b>只对已纳管药品生效</b>（有 {@code pharm_batch} 记录，口径与
+     *       {@code DispenseService.batchManaged} / {@code PharmStockService.coverage()} 逐字一致）。
+     *       未纳管药品行为<b>逐字不变</b>——否则存量药品会在启用批次管理当天全部盘不了。</li>
+     *   <li>事前漂移 {@code preDrift = 批次层合计 - 账面}（与 {@code /balance} 的 drift 同号同义）；
+     *       本次盈亏 {@code countDelta = 实盘 - 账面}。两者任一非 0 即为「有差异」。</li>
+     *   <li><b>盈亏本身也算差异（5681）</b>：已纳管药品盘出差额时，只写汇总就是当场制造一笔新漂移；
+     *       而把差额摊到某个批次上是<b>不可以</b>的——盘亏时「少的是哪一批」没人知道，
+     *       按 FEFO 挑一批扣掉总数对得上但<b>批次追溯从此是错的且看不出来</b>，
+     *       召回时会照着错批号下架真药（V151 拒绝为历史订单补分配明细，同一条理由）。
+     *       正确落账路径本仓已有且是批次感知的：盘亏走 {@code POST /api/pharm/stock/scrap}、
+     *       盘盈走 {@code POST /api/pharm/stock/stock-in}，两者都批次+汇总同事务双写。</li>
+     * </ul>
+     *
+     * <h3>gate {@code pharm.gate.stocktake.batch}（三态，默认 warn，坏值回落 warn）</h3>
+     * <ul>
+     *   <li><b>block</b>：有差异即拒绝确认（5680 事前漂移 / 5681 盈亏未落批次层），整单回滚，
+     *       差异明细写在异常消息里，药师当场看得见，据此先跑 {@code GET /api/pharm/stock/reconcile}。</li>
+     *   <li><b>warn（默认）</b>：确认照常，但<b>不静默</b>——每条被核对的行落一行
+     *       {@code inv_stock_take_batch_check}（<b>含核对通过的 OK 行</b>，
+     *       这样「没有行」只可能意味着「该药未纳管」，不会与「查过了没问题」混淆），
+     *       差异摘要随返回体 {@code batchCheckWarnings} 下发。
+     *       默认不是 block 的理由与本版其余 gate 一致：此前从无此校验，
+     *       而上面三条漏账路径今天仍在跑，直接 block 会让已纳管药品的盘点大面积失败。</li>
+     *   <li><b>off</b>：完全旁路。留给尚未启用批次管理的院区，且必须是<b>显式选择</b>。</li>
+     * </ul>
+     * <b>任何档位下本方法都不改动批次层的任何一个数</b>：盘点不去动它，也不假装它不存在。
      */
     @Transactional
     public StockTakeView confirmStockTake(Long takeId, Long operatorId) {
@@ -222,6 +285,10 @@ public class InventoryService {
         List<InvStockTakeLine> lines = stockTakeLineRepository.findByTakeIdOrderById(takeId);
         List<InvStockTakeLine> counted = lines.stream().filter(l -> l.getActualQty() != null).toList();
         if (counted.isEmpty()) throw new InventoryException(8009, "盘点单没有已录实盘数的盘点行，无法确认");
+
+        // ---- v51：批次层核对**前置**，check-then-act。block 档在动任何一个数之前就顶回去 ----
+        List<String> batchCheckWarnings = checkBatchLedgerBeforeApply(takeId, counted, operatorId);
+
         for (InvStockTakeLine line : counted) {
             int book = line.getBookQty();
             int actual = line.getActualQty();
@@ -246,7 +313,145 @@ public class InventoryService {
         InvStockTake fresh = stockTakeRepository.findById(takeId).orElseThrow();
         fresh.setConfirmedAt(Instant.now());
         stockTakeRepository.saveAndFlush(fresh);
-        return buildTakeView(takeId);
+        StockTakeView v = buildTakeView(takeId);
+        // v51：warn 档的提示必须**随返回体下发**，只落审计表等于换个地方静默
+        return new StockTakeView(v.id(), v.takeNo(), v.status(), v.remark(), v.createdAt(), v.confirmedAt(),
+                v.lines(), v.lineCount(), v.countedLines(), v.gainLines(), v.lossLines(), v.netDiff(),
+                batchCheckWarnings);
+    }
+
+    // ================= v51：盘点确认时的批次层核对（5680–5699）=================
+
+    /** 批次层账面与汇总账面不一致（事前漂移），block 档拒绝确认 */
+    public static final int E_BATCH_DRIFT = 5680;
+    /** 已纳管药品盘出盈亏，差额无法落到批次层，block 档拒绝确认 */
+    public static final int E_BATCH_UNAPPLIED = 5681;
+
+    /** 盘点批次层核对 gate。**刻意不叫 cdss.gate.***：这是库存点位，与临床决策支持无关，
+     *  同族既有键是 pharm.gate.expiry.dispense（V150）与 pharm.gate.batch.required（V147）。 */
+    public static final String GATE_STOCKTAKE_BATCH = "pharm.gate.stocktake.batch";
+
+    /** 当前档位；未知/坏值回落 warn（不是 off——宁可多提示，不可静默失效） */
+    public String batchCheckGate() {
+        String v = configReader.get(GATE_STOCKTAKE_BATCH, "warn");
+        return switch (v == null ? "" : v.trim().toLowerCase(java.util.Locale.ROOT)) {
+            case "off" -> "off";
+            case "block" -> "block";
+            default -> "warn";
+        };
+    }
+
+    /**
+     * 在改动任何一个数之前核对批次层。返回 warn 档要随返回体下发的提示（block 档直接抛，不返回）。
+     *
+     * <p><b>本方法只读批次层、只写自己的核对留痕表，绝不改 pharm_stock / pharm_stock_flow。</b>
+     * 盘点不去替批次层做决定——批次层的差额该按批号走 /scrap 或 /stock-in 补，
+     * 由知道「少的是哪一批」的人来补。
+     */
+    private List<String> checkBatchLedgerBeforeApply(Long takeId, List<InvStockTakeLine> counted, Long operatorId) {
+        String gate = batchCheckGate();
+        if ("off".equals(gate)) return List.of();
+
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        List<String> warnings = new ArrayList<>();
+        List<String> blocking = new ArrayList<>();
+        int blockCode = 0;
+
+        for (InvStockTakeLine line : counted) {
+            Long drugId = line.getDrugId();
+            if (!isBatchManaged(drugId)) continue;   // 未纳管：行为逐字不变，连留痕行都不建
+
+            int book = line.getBookQty();
+            int actual = line.getActualQty();
+            int batchQty = batchLedgerQty(drugId);
+            int preDrift = batchQty - book;          // 与 /balance 的 drift 同号同义
+            int countDelta = actual - book;
+            String name = drugRepository.findById(drugId).map(DrugItem::getName).orElse("");
+
+            String verdict = preDrift != 0
+                    ? (countDelta != 0 ? "DRIFT_AND_DIFF" : "DRIFT")
+                    : (countDelta != 0 ? "UNAPPLIED_DIFF" : "OK");
+            String note = buildBatchCheckNote(name, book, actual, batchQty, preDrift, countDelta);
+            boolean bad = !"OK".equals(verdict);
+            boolean blocked = bad && "block".equals(gate);
+
+            writeBatchCheckRow(takeId, line, drugId, book, actual, batchQty, preDrift, countDelta,
+                    verdict, gate, blocked, note, operatorId, now);
+
+            if (!bad) continue;
+            if (blocked) {
+                blocking.add(note);
+                // 事前漂移比本次盈亏更根本（它说明账已经错了，不是这次盘出来的），故优先报 5680
+                blockCode = preDrift != 0 ? E_BATCH_DRIFT
+                        : (blockCode == 0 ? E_BATCH_UNAPPLIED : blockCode);
+            } else {
+                warnings.add(note);
+            }
+        }
+
+        if (!blocking.isEmpty()) {
+            throw new InventoryException(blockCode, "盘点确认被拒：批次层与汇总账面不一致，"
+                    + "本次盘点若照常确认会把差额永久抹平而批次层错账无人知晓。\n"
+                    + String.join("\n", blocking)
+                    + "\n请先跑 GET /api/pharm/stock/reconcile 与 GET /api/pharm/stock/balance 查清，"
+                    + "差额按批号走 POST /api/pharm/stock/scrap（盘亏）或 POST /api/pharm/stock/stock-in（盘盈）"
+                    + "在批次层如实登记后重新盘点。"
+                    + "（本校验档位 pharm.gate.stocktake.batch=block；调为 warn 可放行并留痕）");
+        }
+        return List.copyOf(warnings);
+    }
+
+    private String buildBatchCheckNote(String name, int book, int actual, int batchQty,
+                                       int preDrift, int countDelta) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("药品【").append(name).append("】汇总账面 ").append(book)
+                .append("、实盘 ").append(actual).append("、批次层合计 ").append(batchQty).append("。");
+        if (preDrift != 0) {
+            sb.append("事前漂移 ").append(preDrift > 0 ? "+" : "").append(preDrift)
+                    .append("（批次层").append(preDrift > 0 ? "高于" : "低于").append("汇总）——")
+                    .append(preDrift > 0
+                            ? "常见来源：拆零开盒 / 报损未按批号登记，只扣了汇总。"
+                            : "常见来源：走 V82 待验收页入库或单药直调，只加了汇总、未建批次。");
+        }
+        if (countDelta != 0) {
+            sb.append("本次盘").append(countDelta > 0 ? "盈 +" : "亏 ").append(countDelta)
+                    .append(" 已调汇总但**未落批次层**——差额该按批号补，")
+                    .append("盘点不猜「少的是哪一批」（猜错会让召回照着错批号下架真药）。");
+        }
+        int after = batchQty - actual;
+        if (after != 0) {
+            sb.append("确认后批次层与汇总仍差 ").append(after > 0 ? "+" : "").append(after).append("。");
+        }
+        return sb.toString();
+    }
+
+    /** 口径与 DispenseService.batchManaged / PharmStockService.coverage() 逐字一致：有批次记录即已纳管 */
+    private boolean isBatchManaged(Long drugId) {
+        Integer n = jdbc.queryForObject("select count(*) from pharm_batch where drug_id = ?", Integer.class, drugId);
+        return n != null && n > 0;
+    }
+
+    /** 批次层在库合计，跨全部库房/药柜。**只读** */
+    private int batchLedgerQty(Long drugId) {
+        Integer n = jdbc.queryForObject("""
+                select coalesce(sum(s.qty), 0) from pharm_stock s
+                  join pharm_batch b on b.id = s.batch_id where b.drug_id = ?
+                """, Integer.class, drugId);
+        return n == null ? 0 : n;
+    }
+
+    private void writeBatchCheckRow(Long takeId, InvStockTakeLine line, Long drugId,
+                                    int book, int actual, int batchQty, int preDrift, int countDelta,
+                                    String verdict, String gate, boolean blocked, String note,
+                                    Long operatorId, Instant checkedAt) {
+        jdbc.update("""
+                insert into inv_stock_take_batch_check(take_id, line_id, drug_id, book_qty, actual_qty,
+                        batch_qty, pre_drift, count_delta, verdict, gate, blocked, note, operator_id, checked_at)
+                values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """, takeId, line.getId(), drugId, book, actual, batchQty, preDrift, countDelta,
+                verdict, gate, blocked,
+                note.length() <= 512 ? note : note.substring(0, 512),
+                operatorId, java.sql.Timestamp.from(checkedAt));
     }
 
     /** 作废盘点单（仅草稿可作废） */
@@ -288,7 +493,9 @@ public class InventoryService {
         }
         return new StockTakeView(take.getId(), take.getTakeNo(), take.getStatus(), take.getRemark(),
                 take.getCreatedAt(), take.getConfirmedAt(), lineViews,
-                lines.size(), countedLines, gainLines, lossLines, netDiff);
+                lines.size(), countedLines, gainLines, lossLines, netDiff,
+                // 本方法是通用视图构造器，不做批次核对；confirmStockTake 会用自己的核对结果重建一次
+                List.of());
     }
 
     // ================= 效期预警（药事全链②，估算口径）=================

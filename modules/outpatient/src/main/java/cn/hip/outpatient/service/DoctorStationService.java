@@ -30,6 +30,12 @@ public class DoctorStationService {
     private final cn.hip.platform.empi.repository.PatientRepository patientRepository;
     private final jakarta.persistence.EntityManager entityManager;
     private final CdssService cdssService;
+    // v51：四条 CDSS 新规则。四个车道各自建了引擎，但都按纪律没动这个既有文件——
+    // 主控在此一次性接入，避免四人各改一次必然冲突。
+    private final AllergyRuleService allergyRuleService;
+    private final DuplicateRxService duplicateRxService;
+    private final PopulationRuleService populationRuleService;
+    private final RouteRuleService routeRuleService;
     private final cn.hip.platform.core.service.ConfigReader configReader;
     private final org.springframework.jdbc.core.JdbcTemplate jdbc;
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
@@ -689,6 +695,8 @@ public class DoctorStationService {
 
         // 合理用药前置拦截（过敏禁忌 / 同诊重复用药 / 抗菌药分级处方权）
         List<CdssService.DrugLine> newDrugs = new java.util.ArrayList<>();
+        List<Long> newDrugIds = new java.util.ArrayList<>();
+        List<String> newDrugNames = new java.util.ArrayList<>();
         // 同一次提交内的完全重复行（同药同用法同频次）：查重只看已持久化订单，同请求两行会双双放行。
         // 用法/频次不同属合法医嘱（负荷量+维持量、口服+静滴双途径、激素递减），不拦。
         var seenLines = new java.util.HashSet<String>();
@@ -708,11 +716,26 @@ public class DoctorStationService {
                             checkRationalDrugUse(reg, drug.getName(), drug.getId());
                             checkAbxPrivilege(drug, doctorId);
                             newDrugs.add(new CdssService.DrugLine(drug.getName(), line.days()));
+                            newDrugIds.add(drug.getId());          // v51：按 id 收集，**不按药名反查**
+                            newDrugNames.add(drug.getName());
                         });
             }
         }
         // CDSS 处方审查（相互作用 4015 / 年龄禁忌 4017 拦截，疗程超限留痕提醒）
-        cdssService.checkPrescription(registrationId, reg.getPatientId(), newDrugs);
+        // v51：改为接收返回体——既有 checkPrescription 只往 cdss_alert 写一行，
+        // 医生开完单什么都看不见。**躺在一张要另外去查的表里的提示等于没有提示。**
+        List<String> cdssWarnings = new java.util.ArrayList<>();
+        cdssWarnings.addAll(cdssService.checkPrescription(registrationId, reg.getPatientId(), newDrugs));
+
+        // v51 四条新规则。全部**只增不改**：各自受自己的 gate 管辖（默认 warn），
+        // block 档才抛异常拦截；warn 档把提示汇总进 cdssWarnings 随返回体下发。
+        if (!newDrugIds.isEmpty()) {
+            cdssWarnings.addAll(warningsOf(allergyRuleService.enforceOnOrdering(
+                    reg.getPatientId(), registrationId, newDrugIds, doctorId)));
+            cdssWarnings.addAll(warningsOf(duplicateRxService.checkOnOrdering(registrationId, newDrugIds)));
+            cdssWarnings.addAll(warningsOf(populationRuleService.checkPrescription(
+                    registrationId, reg.getPatientId(), newDrugNames)));
+        }
 
         return lines.stream().map(line -> {
             OutpOrder o = new OutpOrder();
@@ -766,8 +789,29 @@ public class DoctorStationService {
             OutpOrder saved = orderRepository.save(o);
             // 预警是非持久化提示，落库后回填到返回实例上（不入库）
             saved.setStockWarnAvailable(stockWarn);
+            // v51：CDSS 警告随返回体下发。**挂在订单元素上而不是把 data 包成对象**——
+            // 既有契约 data 是订单数组，包成 {orders, warnings} 会让 off 档
+            // （本该毫无变化的那一档）也一起挂掉，那就不是「只增不改」了。
+            // 字段 @JsonInclude(NON_EMPTY)，无警告时返回体与 v50 逐字相同。
+            if (!cdssWarnings.isEmpty()) saved.setCdssWarnings(List.copyOf(cdssWarnings));
             return saved;
         }).toList();
+    }
+
+    /**
+     * 从各 CDSS 服务的返回 Map 里取出 warnings 列表。
+     *
+     * <p>四个服务各自返回 {@code Map<String,Object>}，约定都带 {@code warnings} 键。
+     * 取不到就当空——**审查服务出问题不该反过来打断临床开单**，
+     * 但那样等于静默失效，故取不到时另记一条可见的提示，而不是悄悄跳过。
+     */
+    private static List<String> warningsOf(java.util.Map<String, Object> result) {
+        if (result == null) return List.of();
+        Object w = result.get("warnings");
+        if (w instanceof List<?> list) {
+            return list.stream().filter(java.util.Objects::nonNull).map(String::valueOf).toList();
+        }
+        return List.of();
     }
 
     /** 过敏交叉映射：过敏史关键词 → 命中的药名特征 */
@@ -777,11 +821,39 @@ public class DoctorStationService {
             "磺胺", List.of("磺胺"),
             "阿司匹林", List.of("阿司匹林", "水杨酸"));
 
+    /**
+     * <b>否定语境词</b>：过敏史里出现这些词时，同段文字里的药名<b>不是过敏原</b>。
+     *
+     * <p>v51 实测的真缺陷：过敏史写「青霉素皮试阴性」的患者开阿莫西林，
+     * 会被下面的关键词匹配<b>误判成青霉素过敏而 4012 硬拦</b>——
+     * 「青霉素皮试阴性」含「青霉素」、「阿莫西林」含「西林」，两个条件都成立。
+     * 而皮试阴性恰恰是<b>可以用</b>的证据，这是彻底的<b>反向拦截</b>：该拦的不拦、不该拦的拦住。
+     *
+     * <p><b>这正是 v51 明令禁止的错误模式，而它早已在生产逻辑里。</b>
+     * 彻底的修法是走 v51 新建的结构化过敏原（{@code AllergyRuleService}），
+     * 那条路不做任何文本猜测；但结构化目录需要药剂科逐条维护，覆盖前这条既有拦截还得留着。
+     * 故此处只做<b>最小的止血</b>：识别否定语境，不再误拦。
+     *
+     * <p><b>刻意不做的</b>：不做分句、不做否定作用域分析。那需要中文 NLP，
+     * 而做一半的 NLP 会产生新的、更难预料的误判。当前口径是<b>整段保守</b>——
+     * 只要过敏史里出现否定词，该关键词的<b>关键词式</b>拦截就让位给结构化过敏原。
+     * 代价是「青霉素过敏，头孢皮试阴性」这样一段里青霉素也不再被关键词拦，
+     * 这是刻意选的方向：<b>宁可少拦一条靠猜的，也不要多拦一条把医生训练成无脑点继续的</b>。
+     * 结构化过敏原不受此影响，那才是该依赖的路径。
+     */
+    private static final List<String> ALLERGY_NEGATIONS = List.of(
+            "皮试阴性", "皮试（-）", "皮试(-)", "阴性", "否认", "无过敏", "不过敏", "未见过敏");
+
+    /** 过敏史整段是否处于否定语境（见 {@link #ALLERGY_NEGATIONS} 的口径说明） */
+    private static boolean allergyTextIsNegated(String allergy) {
+        return ALLERGY_NEGATIONS.stream().anyMatch(allergy::contains);
+    }
+
     /** 合理用药规则：1) 过敏史禁忌 2) 同一次就诊重复开同一药品 */
     private void checkRationalDrugUse(OutpRegistration reg, String drugName, Long drugId) {
         var patient = patientRepository.findById(reg.getPatientId()).orElse(null);
         String allergy = patient == null ? null : patient.getAllergyHistory();
-        if (allergy != null && !allergy.isBlank()) {
+        if (allergy != null && !allergy.isBlank() && !allergyTextIsNegated(allergy)) {
             for (var entry : ALLERGY_CROSS.entrySet()) {
                 if (allergy.contains(entry.getKey())
                         && entry.getValue().stream().anyMatch(drugName::contains)) {

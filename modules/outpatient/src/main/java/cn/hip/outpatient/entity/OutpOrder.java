@@ -141,4 +141,24 @@ public class OutpOrder {
      */
     @Transient
     private Integer stockWarnAvailable;
+
+    /**
+     * <b>v51：CDSS 审查警告，随开单返回体下发给医生。</b>
+     *
+     * <p><b>为什么挂在订单元素上而不是把 data 包成 {orders, warnings}</b>：
+     * 既有契约 {@code createOrders} 返回的是<b>订单数组</b>，前端与多套 e2e 都按数组解析。
+     * 把数组包成对象会让 <b>off 档</b>（本该毫无变化的那一档）也一起挂掉——
+     * 那就不是「只增不改」了。沿用本类 {@code stockWarnAvailable} 已有的瞬态字段先例。
+     *
+     * <p><b>为什么必须随返回体下发而不是只写 cdss_alert</b>：
+     * 躺在一张要另外去查的表里的提示<b>等于没有提示</b>——那不是 warn，那是记了个账。
+     * warn 档的全部意义就是「不拦截，但医生当场看得见」。
+     *
+     * <p>不为空时才序列化（{@code @JsonInclude(NON_EMPTY)}），
+     * 故无警告时返回体与 v50 逐字相同。
+     */
+    @Transient
+    @com.fasterxml.jackson.annotation.JsonInclude(
+            com.fasterxml.jackson.annotation.JsonInclude.Include.NON_EMPTY)
+    private java.util.List<String> cdssWarnings;
 }
