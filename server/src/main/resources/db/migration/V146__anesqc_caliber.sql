@@ -1,0 +1,60 @@
+-- v49 车道 Q4：麻醉质控口径缺列补齐（技术偏离表 1426★ 取消手术四阶段构成）。
+--
+-- **文件名说明**：主控下发时写的是 V145，但 V145 已被 v48 的
+-- `V145__pathology_reject_reregister.sql` 占用（已合入 main，commit bd463bf），
+-- Flyway 版本号唯一，故本迁移落 V146。除版本号外内容与下发一致。
+--
+-- ============ 这条迁移只解决一件事：取消统计挂错了日子 ============
+-- `inp_surgery` 自 V17:45-56 建表、V140 补 12 列，**全表没有任何一列记录"什么时候取消的"**：
+-- V140 只加了 `cancel_stage`（哪个阶段取消）与 `cancel_reason`（为什么取消），
+-- 唯独没有 `cancelled_at`（哪一天取消的）。全仓 `cancelled_at` 此前只有两处：
+-- 门诊预约（V122）与挂号（V3），手术域一处也没有。
+--
+-- 后果是 1426★「取消手术四阶段构成」只能挂在 `AnesQcController.ANCHOR` 这个
+-- **全局手术锚点**上：
+--     coalesce(s.start_at, s.in_room_at, s.scheduled_at, s.created_at)
+-- 取消的手术四个时间点全空（取消了就没入室没开台），锚点实际退化成
+-- **排台日 / 建单日**。于是一台 9 月 1 日排台、9 月 20 日才取消的手术，
+-- 在「9 月 20 日当周取消了几台」里查不到，反而算进 9 月 1 日那一周。
+-- 手术室主任要看的是"**这周取消了几台、为什么**"（这周的排班要不要动），
+-- 不是"这周排的台后来有几台被取消"——两个口径都成立，但页面上写的是前者、算的是后者。
+--
+-- 修法只有加列一条路：取消发生的时刻是**独立于四个时间点的第五个事实**，
+-- 既有任何一列都推不出来（`updated_at` 是最后一次改动，术中信息维护、
+-- 时间点补录都会动它；`scheduled_at` 是计划开台时间，与取消无关）。
+--
+-- ============ 纪律：零条 update，历史取消行的 cancelled_at 永远是 NULL ============
+-- **本迁移不含任何 update 语句。** 历史上已经取消的手术，`cancelled_at` 一律为空——
+-- 那就是事实：当时根本没采集这个时刻。
+--
+-- 最诱人的一条歧路是"拿 `updated_at` 反推"：取消是一次 update，
+-- 看上去 `updated_at` 就约等于取消时刻。**不行。** `updated_at` 记的是
+-- 最后一次改动，取消之后任何一次术中信息维护（SurgeryService.updateOpInfo）
+-- 都会把它推后；而取消之前的排台改动同样会写它。用它回填等于让
+-- "取消日期"这一列**看上去列列有值、条条可疑**——比一片 NULL 危险得多：
+-- NULL 会逼着统计层标注分母，假值只会让人放心地看错数。
+-- 同 v41 床位效率、v42 archived_at、V140 四时间点：**宁可少算，不可假算。**
+--
+-- 统计层因此必须显式分两档：`cancelled_at is not null` 的按取消日归集，
+-- 为空的落「取消日期未采集」一档并在页面标注——**不许把它们静默并进锚点口径**，
+-- 那就是把新旧两种口径混在一个数里。具体怎么落由主控裁决（见本车道 cross_lane）。
+--
+-- ============ 与 V140 同纪律：可空、无 CHECK、无默认值 ============
+-- 可空是硬要求（历史行必然为空）；不加 CHECK 同 V140 纪律二
+-- （试点库实施期脏值挡住 Flyway 的代价远高于脏数据），
+-- 取值合法性落在写侧 SurgeryService.cancel。
+-- 类型 timestamptz，与 `scheduled_at` / 四个时间点 / `created_at` 同型
+-- （会话时区由 Hikari connection-init-sql 钉死 Asia/Shanghai，见 application.yml）。
+
+-- ===== 取消发生时刻（1426★） =====
+-- 写路径唯一：SurgeryService.cancel 与 status='CANCELLED' + cancel_stage 同一条 update 里落。
+-- 该 update 带 `status in ('REQUESTED','SCHEDULED')` 条件，已 DONE / 已 CANCELLED 都进不来，
+-- 所以本列**一经写入不会被二次覆盖**——它是"第一次也是唯一一次取消"的时刻。
+alter table inp_surgery add column cancelled_at timestamptz;
+
+-- ===== 取消日窗口索引 =====
+-- 1426★ 改按取消日归集后，查询形态是 `where cancelled_at >= ? and cancelled_at < ?`。
+-- 用**部分索引**（只收 not null 行）：取消是小概率事件，全院取消行占 inp_surgery 的个位数百分比，
+-- 部分索引体积只有全列索引的零头，而历史 NULL 行本来也永远不会命中这个窗口谓词。
+create index idx_inp_surgery_cancelled_at on inp_surgery (cancelled_at)
+    where cancelled_at is not null;

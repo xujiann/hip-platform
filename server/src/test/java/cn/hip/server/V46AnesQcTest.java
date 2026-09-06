@@ -467,6 +467,55 @@ class V46AnesQcTest {
         assertTrue(((String) one("1429").get("note")).contains("死亡登记卡"));
     }
 
+    /**
+     * <b>一名患者做多台手术时，死亡不得被重复计入分子</b>（v49 口径修正的回归钉）。
+     *
+     * <p><b>这条缺陷能活到 v49，正是因为上面那个用例每名患者只做一台手术</b>——
+     * 台次口径与患者口径在「一人一台」时数值完全相同，测试再多也照不出来。
+     * 主控在 v49 开工前手工造过这个场景实测：同一 ASA 分级里
+     * 一名患者做 2 台后死亡、另一名做 1 台存活，
+     * 旧口径 <b>66.67%</b>（分子 2 / 分母 3 台次）、正确口径 <b>50.00%</b>（分子 1 / 分母 2 患者），
+     * <b>虚高 16.67 个百分点</b>。ASA 分级死亡率是对外上报指标，
+     * 而「重症患者做更多台手术」恰恰是常态，故这个偏差是系统性的、不是边缘情形。
+     *
+     * <p>本用例故意让两名患者的手术台数不同（2 台 vs 1 台），
+     * 使台次口径与患者口径<b>必然分叉</b>——若有人把口径改回台次，这条会立刻变红。
+     */
+    @Test
+    void deathIsCountedPerPatientNotPerSurgery() {
+        Long deceased = newPatient("M", 70);
+        Long admD = newAdmission(deceased);
+        // 同一次住院做两台手术——重症患者的常态
+        surgery(admD, "V49-OR-A", "08:00", "08:00", "08:10", "09:00", "09:10",
+                "四级", "III", "EMERGENCY", "全身麻醉");
+        surgery(admD, "V49-OR-A", "13:00", "13:00", "13:10", "14:00", "14:10",
+                "四级", "III", "EMERGENCY", "全身麻醉");
+        // 同分级的另一名患者，一台手术，存活
+        Long admS = newAdmission(newPatient("F", 65));
+        surgery(admS, "V49-OR-A", "10:00", "10:00", "10:10", "11:00", "11:10",
+                "四级", "III", "ELECTIVE", "全身麻醉");
+        jdbc.update("""
+                insert into mr_death_card(patient_id, admission_id, died_at, direct_cause)
+                values (?, ?, now(), 'v49 粒度回归')
+                """, deceased, admD);
+
+        var iii = rows("1429").stream()
+                .filter(m -> "III".equals(m.get("asa_grade"))).findFirst().orElseThrow();
+
+        // 分子：死亡患者数 = 1（不是 2 台次）
+        assertEquals(1, num(iii, "deaths"),
+                "一名患者做两台手术且死亡，死亡数必须是 1 不是 2——"
+                + "台次口径会让重症患者的死亡被重复计入分子");
+        // 分母：患者数 = 2（台次是 3）
+        assertEquals(2, num(iii, "patients"),
+                "分母须为麻醉患者数（2 人），台次数（3 台）另以 cases 给出");
+        assertEquals(3, num(iii, "cases"), "台次口径保留为 cases，既有键不删");
+        // 率：50% 而不是 66.67%
+        assertEquals(50.0, dbl(iii, "death_rate_pct"), 0.01,
+                "死亡率 = 死亡患者数/麻醉患者数 = 1/2 = 50%；"
+                + "台次口径会算成 2/3 = 66.67%，虚高 16.67 个百分点");
+    }
+
     // ================= §⑧ 输血三条（1432★/1433★/1434★） =================
 
     @Test

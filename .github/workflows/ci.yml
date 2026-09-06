@@ -171,6 +171,7 @@ jobs:
           python3 tools/e2e-v46-surgery.py
           python3 tools/e2e-v47-writeguard.py
           python3 tools/e2e-v48-pathology.py
+          python3 tools/e2e-v49-anesqc.py
 
       - name: 失败时输出服务端日志
         if: failure()

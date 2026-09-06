@@ -277,10 +277,17 @@ public class SurgeryService {
         if (reason.isEmpty()) return R.fail(4907, "取消原因必填");
         if (reason.length() > 200) return R.fail(4907, "取消原因不超过 200 个字符");
 
+        // cancelled_at（V146）：取消**发生**的时刻，与 status/cancel_stage 同一条 update 落库。
+        // 1426★ 此前只能挂 AnesQcController.ANCHOR 那个全局手术锚点（取消的台次四时间点全空，
+        // 锚点退化成排台日/建单日），于是"9 月 1 日排台、9 月 20 日取消"被算进 9 月 1 日那一周。
+        // 截断到微秒同 registerTimepoint：PG timestamptz 只存微秒且**四舍五入**，
+        // 不截断的写入值与回读值会差最多 500ns，跨过日界或与其它时刻比较时产生假越界。
+        Instant cancelledAt = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
         int n = jdbc.update("""
-                update inp_surgery set status = 'CANCELLED', cancel_stage = ?, cancel_reason = ?
+                update inp_surgery set status = 'CANCELLED', cancel_stage = ?, cancel_reason = ?,
+                       cancelled_at = ?
                 where id = ? and status in ('REQUESTED', 'SCHEDULED')
-                """, stage, reason, id);
+                """, stage, reason, Timestamp.from(cancelledAt), id);
         return n == 0 ? R.fail(4900, "手术记录不存在，或已完成/已取消（已完成的手术不可取消）") : R.ok();
     }
 
