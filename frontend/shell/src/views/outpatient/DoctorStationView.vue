@@ -46,6 +46,35 @@
         <el-button size="small" style="float: right; margin-right: 8px" @click="openHistory">历史就诊</el-button>
       </template>
 
+      <!-- ============ v51 车道F4：CDSS 合理用药审查提示（warn 档） ============
+           后端把审查警告挂在开单返回体的**订单元素**上（字段 cdssWarnings，@JsonInclude(NON_EMPTY)）。
+           warn 档的全部意义就是「不拦截，但医生当场看得见」——前端不显示，
+           这一版的过敏/重复用药/特殊人群/相互作用提示对医生就等于不存在。
+           刻意放在页签**之外**：开单成功后页签会切到「已开医嘱」，放在处方页签里医生就看不见了。
+           无警告时（字段不出现）这一整块不渲染，页面表现与 v50 逐像素相同。 -->
+      <el-alert v-if="rxCdssWarnings.length && !cdssWarnBarClosed" type="error" show-icon :closable="true"
+                class="cdss-warn-bar" @close="cdssWarnBarClosed = true"
+                :title="`本次开单有 ${rxCdssWarnings.length} 条合理用药审查提示（不拦截开单，请逐条确认）`">
+        <template #default>
+          <div v-for="(w, i) in rxCdssWarnings" :key="i" class="cdss-warn-item">
+            <el-tag v-if="warnTag(w)" type="danger" size="small" effect="plain" class="cdss-warn-tag">
+              {{ warnTag(w) }}
+            </el-tag>
+            <span class="cdss-warn-text">{{ warnBody(w) }}</span>
+          </div>
+          <div class="cdss-warn-src">
+            以上为后端合理用药审查原文照录，前端未做任何改写、补全或推断。
+            <el-button link type="danger" @click="cdssWarnDialog = true">展开查看</el-button>
+          </div>
+        </template>
+      </el-alert>
+      <!-- 横幅关掉之后仍留一个入口：警告要能被回看，关掉一次就再也找不到等于没提示过 -->
+      <div v-else-if="rxCdssWarnings.length" class="cdss-warn-reopen">
+        <el-button link type="danger" @click="cdssWarnDialog = true">
+          本次开单有 {{ rxCdssWarnings.length }} 条合理用药审查提示，点此重看
+        </el-button>
+      </div>
+
       <el-tabs v-model="tab">
         <el-tab-pane label="病历" name="emr">
           <!-- v43：签名冻结态——原文只读，页首写明签名人与签名时间 -->
@@ -451,6 +480,31 @@
       </template>
     </el-dialog>
 
+    <!-- ============ v51 车道F4：CDSS 审查提示全文（开单成功后自动弹出，可随时重看） ============
+         刻意用对话框而不是 ElMessage：toast 几秒就没了，医生正在看下一位患者时警告已经消失，
+         那与「只写进 cdss_alert 表」没有区别。这里必须能被看完、能被回看。 -->
+    <el-dialog v-model="cdssWarnDialog" width="760px" :close-on-click-modal="false"
+               title="合理用药审查提示（不拦截开单，请逐条确认）">
+      <el-alert type="warning" show-icon :closable="false" class="cdss-dlg-note"
+                title="本次开单已成立。以下提示由后端合理用药审查（过敏 / 交叉过敏 / 重复用药 / 特殊人群 / 相互作用 / 疗程）随开单返回体下发，原文照录。">
+        <div>这些是 warn 档提示，<b>不拦截开单</b>，是否调整医嘱由医生判断。</div>
+        <div>
+          其中标注「过敏审查覆盖不全」的条目说明<b>审查本身有缺口</b>——
+          此时「未发现过敏禁忌」这句话不成立，请人工阅读原始过敏史原文后判断。
+        </div>
+      </el-alert>
+      <div v-for="(w, i) in rxCdssWarnings" :key="i" class="cdss-dlg-item">
+        <el-tag v-if="warnTag(w)" type="danger" size="small" effect="plain" class="cdss-warn-tag">
+          {{ warnTag(w) }}
+        </el-tag>
+        <span class="cdss-warn-text">{{ warnBody(w) }}</span>
+      </div>
+      <el-empty v-if="!rxCdssWarnings.length" description="本次开单无审查提示" :image-size="60" />
+      <template #footer>
+        <el-button type="primary" @click="cdssWarnDialog = false">我已逐条阅读</el-button>
+      </template>
+    </el-dialog>
+
     <!-- v45 车道J：临床资料引用抽屉（992★ 基本资料/检验/检查/历史病历，点条目插入正文） -->
     <EmrRefDrawer v-model="refVisible" :registration-id="(current?.registrationId as number) ?? null"
                   :disabled="emrSigned" @insert="insertText" />
@@ -600,6 +654,36 @@ const amending = ref(false)
 const amendments = ref<Record<string, unknown>[]>([])
 const stockWarnings = ref<string[]>([])
 const cdssTips = ref<string[]>([])
+
+/**
+ * v51 车道F4：**本次开单**返回体带回的 CDSS 合理用药审查警告（原文照录）。
+ *
+ * <p>与 {@link cdssTips} 是两回事，别混：cdssTips 是按主诊断查来的诊疗建议（GET /cdss/suggestions），
+ * 这里是开单那一刻的处方审查结论（POST .../orders 的返回体，挂在订单元素的 cdssWarnings 字段上）。
+ *
+ * <p>后端 `@JsonInclude(NON_EMPTY)`：没有警告时字段根本不出现，本数组恒为空，页面与 v50 完全一致。
+ */
+const rxCdssWarnings = ref<string[]>([])
+/** 常驻横幅是否已被医生手动关掉（只关横幅，不清空警告——关掉还能从入口重新打开） */
+const cdssWarnBarClosed = ref(false)
+const cdssWarnDialog = ref(false)
+
+/**
+ * 把后端自己写在句首的【类别】标记拆出来单独当标签显示。
+ *
+ * <p><b>只做这一件事</b>：`warnTag(w) + warnBody(w)` 与原文<b>逐字相同</b>，
+ * 前端不做关键词匹配、不做相似度、不做严重度推断、不改一个字——
+ * 提示文案是后端各审查服务连「凭什么」一起拼好的整句，改写就等于伪造依据。
+ */
+function warnTag(w: string): string {
+  const m = /^【([^】]+)】/.exec(w)
+  return m ? m[1] : ''
+}
+
+function warnBody(w: string): string {
+  const m = /^【[^】]+】/.exec(w)
+  return m ? w.slice(m[0].length) : w
+}
 const icdOptions = ref<{ code: string; name: string }[]>([])
 const knownIcd = new Map<string, string>()
 
@@ -738,6 +822,11 @@ async function openPatient(row: Record<string, unknown> | null) {
   emrSignerName.value = (ws.emrSignerName as string) ?? ''
   emrSignedAtText.value = ws.emr?.signedAt ? new Date(ws.emr.signedAt as string).toLocaleString('zh-CN') : ''
   stockWarnings.value = []
+  // v51 车道F4：切患者清空上一位的 CDSS 审查提示。
+  // 用药警告串到别的患者名下，比不显示更危险——那会让医生按 A 的过敏史判断 B 的处方。
+  rxCdssWarnings.value = []
+  cdssWarnBarClosed.value = false
+  cdssWarnDialog.value = false
   amendForm.amendText = ''
   amendForm.reason = ''
   amendments.value = emrSigned.value ? await loadAmendments(row.registrationId as number) : []
@@ -1060,6 +1149,22 @@ async function submitOrders(kind: 'rx' | 'lab') {
     // 阻塞6：开单返回值带库存预警（stockWarnAvailable 非空即库存低于开量）
     const created = (resp.data.data ?? []) as Record<string, unknown>[]
     const warns = created.filter((o) => o.stockWarnAvailable !== null && o.stockWarnAvailable !== undefined)
+    // v51 车道F4：CDSS 审查警告随返回体下发，挂在**每一条**订单元素上（后端 List.copyOf 同一份），
+    // 故跨订单合并后按原文去重，保持后端给出的先后次序。
+    // 字段 @JsonInclude(NON_EMPTY)——无警告时字段不出现，cdssWarn 恒为空数组，下方分支一条不走。
+    const seenWarn = new Set<string>()
+    const cdssWarn: string[] = []
+    for (const o of created) {
+      const list = o.cdssWarnings
+      if (!Array.isArray(list)) continue
+      for (const w of list) {
+        const text = String(w)
+        if (!seenWarn.has(text)) {
+          seenWarn.add(text)
+          cdssWarn.push(text)
+        }
+      }
+    }
     if (kind === 'rx') rxLines.value = []
     else labLines.value = []
     await openPatient(current.value)
@@ -1070,6 +1175,15 @@ async function submitOrders(kind: 'rx' | 'lab') {
         message: '部分药品库存不足，缴费后可能无法发药，请查看处方页提示' })
     } else {
       tab.value = 'orders'
+    }
+    // v51 车道F4：CDSS 审查提示。**整段放在既有库存预警分支之后、且不参与页签判断**——
+    // 既有行为一字不改：cdssWarn 为空时（无警告的全部情况）这里什么都不做，与 v50 完全一致。
+    // 不用 ElMessage：一闪而过的 toast 等于没提示。弹出可回看的对话框，关掉后横幅还在。
+    // openPatient() 里会清空这三个状态，故必须放在 openPatient 之后赋值。
+    if (cdssWarn.length) {
+      rxCdssWarnings.value = cdssWarn
+      cdssWarnBarClosed.value = false
+      cdssWarnDialog.value = true
     }
   } finally {
     submitting.value = false
@@ -1089,6 +1203,17 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+/* v51 车道F4：CDSS 审查提示。字号不缩、行距放开——这是要被逐条读完的东西，不是脚注。 */
+.cdss-warn-bar { margin-bottom: 10px; }
+.cdss-warn-item { line-height: 1.7; margin-top: 4px; }
+.cdss-dlg-item { line-height: 1.8; padding: 8px 0; border-bottom: 1px solid #f0f0f0; }
+.cdss-dlg-item:last-child { border-bottom: none; }
+.cdss-dlg-note { margin-bottom: 10px; }
+.cdss-warn-tag { margin-right: 6px; vertical-align: 1px; }
+.cdss-warn-text { white-space: pre-wrap; word-break: break-word; }
+.cdss-warn-src { margin-top: 8px; font-size: 12px; color: #909399; }
+.cdss-warn-reopen { margin-bottom: 8px; }
+
 .tpl-bar { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
 .tpl-hint { color: #909399; font-size: 12px; }
 /* v43 合版：已开医嘱页签的单据打印与皮试结果工具条 */

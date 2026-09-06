@@ -36,7 +36,18 @@ public class ModuleGate {
     /** 可开关模块注册表（均为独立菜单 + 独立 API 前缀的功能域） */
     public static final Map<String, ModuleDef> MODULES = Map.of(
             "drg",       new ModuleDef(List.of("/drg"),             List.of("/api/drg")),
-            "cdss",      new ModuleDef(List.of("/cdss"),            List.of("/api/cdss")),
+            // v52 合版补漏：v51 的六个 CDSS 页面全部挂在 /cdss/** 下，而
+            // AuthController.me 的菜单过滤是 disabledPaths.contains(m.getPath()) —— **精确等值**，不是前缀。
+            // 只登记 "/cdss" 时，关掉 CDSS 模块后「CDSS 提醒」消失、六个新页面照旧留在导航里，
+            // 点进去每个接口都被 ModuleGateFilter 判 404（且该 404 刻意不弹全局红字），
+            // 用户看到的是六张没有任何解释的空白页。菜单 path 必须逐条登记。
+            // API 侧无需扩表：/api/cdss/{allergy,duplicate,population,route} 都是 "/api/cdss" 的子段，
+            // hit() 的 startsWith(prefix + "/") 已覆盖（对照 v46 的 /api/anes 与 /api/anes-qc：
+            // 那两条互不为子段，才必须各写一条）。
+            "cdss",      new ModuleDef(
+                    List.of("/cdss", "/cdss/allergy-review", "/cdss/allergy-profile", "/cdss/allergy-rules",
+                            "/cdss/duplicate", "/cdss/population", "/cdss/route"),
+                    List.of("/api/cdss")),
             "insurance", new ModuleDef(List.of("/insurance"),       List.of("/api/insurance"),
                     // 核查豁免：停用后历史分割/审核/对账仍可用（冲销的依据）。
                     // POST /reconcile（重跑对账）随豁免放行是有意的——它读业务数据写对账结果，

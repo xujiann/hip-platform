@@ -28,6 +28,11 @@ const router = createRouter({
         { path: 'finance/shift-close', component: () => import('../views/finance/ShiftCloseView.vue') },
         { path: 'outpatient/rx-template', component: () => import('../views/outpatient/RxTemplateView.vue') },
         { path: 'outpatient/pharmacy', component: () => import('../views/outpatient/PharmacyView.vue') },
+        // v1.5.2 车道 F2：v50 药房调剂四个控制器的前端入口（此前后端已交付、页面为零）
+        { path: 'outpatient/pharmacy/stock', component: () => import('../views/outpatient/pharmacy/PharmStockView.vue') },
+        { path: 'outpatient/pharmacy/picking', component: () => import('../views/outpatient/pharmacy/PharmPickingView.vue') },
+        { path: 'outpatient/pharmacy/check', component: () => import('../views/outpatient/pharmacy/DispenseCheckView.vue') },
+        { path: 'outpatient/pharmacy/ops', component: () => import('../views/outpatient/pharmacy/PharmOpsView.vue') },
         { path: 'outpatient/exec', component: () => import('../views/outpatient/ExecStationView.vue') },
         { path: 'integration/monitor', component: () => import('../views/integration/MonitorView.vue') },
         { path: 'cdr/patient360', component: () => import('../views/cdr/Patient360View.vue') },
@@ -49,6 +54,12 @@ const router = createRouter({
         { path: 'surgery', component: () => import('../views/inpatient/SurgeryView.vue') },
         { path: 'inpatient/surgery-intraop', component: () => import('../views/inpatient/SurgeryIntraopView.vue') },
         { path: 'anes-qc', component: () => import('../views/medtech/AnesQcView.vue') },
+        // v48 病理 PIS：路径与 V144 已 seed 的菜单 168/169 逐字对齐（本车道不插 sys_menu）
+        {
+          path: 'pathology/workbench',
+          component: () => import('../views/medtech/pathology/PathologyWorkbenchView.vue'),
+        },
+        { path: 'pathology/qc', component: () => import('../views/medtech/pathology/PathQcView.vue') },
         { path: 'system/audit', component: () => import('../views/system/AuditView.vue') },
         { path: 'reports/daily', component: () => import('../views/hrp/DailyReportView.vue') },
         { path: 'print', component: () => import('../views/PrintView.vue') },
@@ -81,6 +92,13 @@ const router = createRouter({
         { path: 'insurance', component: () => import('../views/integration/InsuranceView.vue') },
         { path: 'drg', component: () => import('../views/datagov/DrgView.vue') },
         { path: 'cdss', component: () => import('../views/outpatient/CdssView.vue') },
+        // v51 CDSS 前端（车道 F3）：四个控制器此前零页面，医生与药师一个也点不进去
+        { path: 'cdss/allergy-review', component: () => import('../views/outpatient/cdss/AllergyReviewView.vue') },
+        { path: 'cdss/allergy-profile', component: () => import('../views/outpatient/cdss/AllergyProfileView.vue') },
+        { path: 'cdss/allergy-rules', component: () => import('../views/outpatient/cdss/AllergyRulesView.vue') },
+        { path: 'cdss/duplicate', component: () => import('../views/outpatient/cdss/DuplicateRxView.vue') },
+        { path: 'cdss/population', component: () => import('../views/outpatient/cdss/PopulationView.vue') },
+        { path: 'cdss/route', component: () => import('../views/outpatient/cdss/RouteRuleView.vue') },
         { path: 'pay', component: () => import('../views/outpatient/PayView.vue') },
         { path: 'mrstats', component: () => import('../views/quality/MedStatsView.vue') },
         { path: 'mrfront', component: () => import('../views/quality/MedRecordFrontPageView.vue') },
