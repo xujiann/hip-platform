@@ -368,7 +368,16 @@ class V51CdssTest {
         List<SrcFile> out = new ArrayList<>();
         for (SrcFile f : sources(".sql", "server/src/main/resources/db/migration")) {
             Matcher m = v.matcher("/" + f.rel().substring(f.rel().lastIndexOf('/') + 1));
-            if (m.find() && Integer.parseInt(m.group(1)) >= 152) out.add(f);
+            // **必须有上界**（v53 复核实测 D8）：原来只写 `>= 152`，
+            // 等于给之后**每一版**迁移都埋了雷——v53 的 V157/V158/V159 一落盘，
+            // 本类的两条断言立刻变红，而它们要管的本来只是 v51 自己那几条迁移：
+            //   · 「错误码不得越过 5699」——v53 的段是 5700–5799，本就该越过；
+            //   · 「种子不得含药学知识」——v53 的时限规则种子不是药学知识。
+            // 一个版本的测试去审后续版本的产物，红的不是被审者而是审者。
+            // 收成 152–156（v51 的 V152–V155 + 合版菜单 V156），后续版本各审各的。
+            if (!m.find()) continue;
+            int no = Integer.parseInt(m.group(1));
+            if (no >= 152 && no <= 156) out.add(f);
         }
         return out;
     }

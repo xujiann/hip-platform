@@ -30,6 +30,9 @@ public class DoctorStationService {
     private final cn.hip.platform.empi.repository.PatientRepository patientRepository;
     private final jakarta.persistence.EntityManager entityManager;
     private final CdssService cdssService;
+    // v53：病历修订留痕。接缝走**宽松档**（recordOutp → recordVersion），
+    // 留痕失败按 gate 降级、**不抛异常**——留痕是为了举证，不该反过来打断医生看病。
+    private final EmrVersionService emrVersionService;
     // v51：四条 CDSS 新规则。四个车道各自建了引擎，但都按纪律没动这个既有文件——
     // 主控在此一次性接入，避免四人各改一次必然冲突。
     private final AllergyRuleService allergyRuleService;
@@ -135,6 +138,12 @@ public class DoctorStationService {
             emr.setTemplateId(templateId);
         }
         emr = emrRepository.save(emr);
+        // v53 合规留痕：**这一行之前，医生保存第二次，第一次写的内容就永久消失了**——
+        // 库里查不到（无历史表）、审计日志也不记请求体，连捞回来的退路都没有。
+        // 《电子病历应用管理规范》第二十四条要求病历修改留痕、可追溯；
+        // 举证时「病历被改过而系统证明不了改了什么」等同于举证不能。
+        // 用宽松档：留痕写不进去也不阻断保存（gate 降级），但会留 ERROR 日志。
+        emrVersionService.recordOutp(emr, EmrVersionService.MANUAL, doctorId);
 
         diagnosisRepository.deleteByRegistrationId(registrationId);
         for (int i = 0; i < diagnoses.size(); i++) {
@@ -938,7 +947,11 @@ public class DoctorStationService {
         }
         emr.setSignature(result.signature());
         emr.setSignedAt(java.time.Instant.now());
-        return emrRepository.save(emr);
+        OutpEmr signed = emrRepository.save(emr);
+        // 签名定稿单独记一版（source=SUBMIT）：定稿版是举证时最要紧的那一版，
+        // 必须能与之前的草稿版逐版对比，说清「签的到底是哪一份」。
+        emrVersionService.recordOutp(signed, EmrVersionService.SUBMIT, doctorId);
+        return signed;
     }
 
     /** 病历原文拼接（补正留痕时快照原文，与签名摘要同口径） */
