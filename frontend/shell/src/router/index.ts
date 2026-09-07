@@ -77,6 +77,15 @@ const router = createRouter({
         { path: 'inpatient/arrears', component: () => import('../views/inpatient/ArrearsView.vue') },
         // v42 护理文书版：五条新页（菜单 105-109 由 V130-V133 各自 seed，此处只补路由）
         { path: 'inpatient/nursing-record', component: () => import('../views/inpatient/NursingRecordView.vue') },
+        // v53 车道 W2：上级审签（CountersignController 此前零前端、零菜单）。菜单 id 由合版分配，本车道不插 sys_menu。
+        {
+          path: 'inpatient/countersign',
+          component: () => import('../views/inpatient/countersign/CountersignWorkbenchView.vue'),
+        },
+        {
+          path: 'inpatient/countersign/check',
+          component: () => import('../views/inpatient/countersign/CountersignCheckView.vue'),
+        },
         { path: 'mr-qc', component: () => import('../views/quality/MrQcView.vue') },
         { path: 'masterdata/fee-category', component: () => import('../views/masterdata/FeeCategoryView.vue') },
         { path: 'finance/fee-report', component: () => import('../views/finance/FeeReportView.vue') },
@@ -85,6 +94,11 @@ const router = createRouter({
         { path: 'outpatient/nurse', component: () => import('../views/outpatient/OutpNurseView.vue') },
         { path: 'medtech/appointments', component: () => import('../views/medtech/ApptQueueView.vue') },
         { path: 'inpatient/blood', component: () => import('../views/inpatient/BloodView.vue') },
+        // v53 车道 W3：EmrTimelinessController 的前端入口（该控制器此前零页面、零菜单）
+        {
+          path: 'inpatient/timeliness',
+          component: () => import('../views/inpatient/timeliness/TimelinessView.vue'),
+        },
         { path: 'quality/single-disease', component: () => import('../views/quality/SingleDiseaseView.vue') },
         { path: 'specialty', component: () => import('../views/medtech/SpecialtyView.vue') },
         { path: 'mgmt', component: () => import('../views/quality/MgmtView.vue') },
@@ -103,6 +117,8 @@ const router = createRouter({
         { path: 'mrstats', component: () => import('../views/quality/MedStatsView.vue') },
         { path: 'mrfront', component: () => import('../views/quality/MedRecordFrontPageView.vue') },
         { path: 'emr-copy', component: () => import('../views/quality/EmrCopyView.vue') },
+        // v53 车道 W1：病历版本留痕（EmrVersionController 此前零前端、零菜单）
+        { path: 'emr-version', component: () => import('../views/outpatient/emr-version/EmrVersionView.vue') },
         { path: 'hrp/equipment', component: () => import('../views/hrp/EquipmentView.vue') },
         { path: 'nursing-plus', component: () => import('../views/quality/NursingPlusView.vue') },
         { path: 'drug-analysis', component: () => import('../views/hrp/DrugAnalysisView.vue') },
