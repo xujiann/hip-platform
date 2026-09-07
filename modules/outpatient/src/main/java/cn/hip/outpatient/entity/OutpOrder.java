@@ -91,7 +91,7 @@ public class OutpOrder {
     private Long doctorId;
 
     @Column(nullable = false, updatable = false)
-    private Instant createdAt = Instant.now();
+    private Instant createdAt = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
 
     // ==================== v44 车道G：医嘱附属字段（V137，偏离表 1006★/1013★/1014★/1016★） ====================
     // 七列全部可空、无 CHECK、无索引，历史医嘱行必然为 null（迁移头注释写明为何不回填）。

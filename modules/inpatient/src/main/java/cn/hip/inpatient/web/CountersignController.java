@@ -124,6 +124,22 @@ public class CountersignController {
         }).toList());
         body.put("warnings", v.warnings());
         body.put("requiredTypes", countersignService.requiredTypes());
+        // **口径必须随体下发**（v53 复核 D5 引出）：本平台**不判定「谁有资格当上级」**。
+        // 前提是硬的：`sys_user.title` 是 varchar(32) **自由文本**（现网取值只有空与「管理员」），
+        // 九个角色码 ADMIN/CASHIER/DOCTOR_OUTP/INTERFACE/NURSE/OPERATION/PHARMACIST/
+        // QUALITY/TECHNICIAN 里**没有任何医师职级**（DOCTOR_OUTP 不分级）。
+        // 从自由文本正则出资格，与 v51 从自由文本过敏史解析过敏原是同一类错误，
+        // 两个方向的误判都致命——本版明令禁止那种做法，这里同样不做。
+        //
+        // 但**不做不等于不说**：不写出来，读的人会以为「上级审签」真的校验了层级，
+        // 而它在证据上只成立到「另一位不同于书写人的、有医生角色的用户签过」。
+        // 这一条与「配置手册说得比代码做得多」是同一类风险，故随返回体明说。
+        body.put("caveat", "本平台不判定「谁有资格当上级」：sys_user.title 是自由文本、"
+                + "角色模型中无医师职级，从文本正则出资格属危险猜测（同 v51 过敏史解析的禁令）。"
+                + "系统能证明的是：审签人与书写人**不是同一人**（应用层 5722 + 数据库 CHECK "
+                + "chk_emr_countersign_not_self + V160 触发器跨表对账三道），"
+                + "且审签当时的职称原文已照抄进 countersigner_title 快照列供举证。"
+                + "「审签人确为上级」需由院方在人员职称维护与授权上保证，本平台不代为判定。");
         return R.ok(body);
     }
 

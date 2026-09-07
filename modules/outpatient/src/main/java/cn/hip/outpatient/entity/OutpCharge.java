@@ -50,5 +50,5 @@ public class OutpCharge {
     private String ybSettleNo;
 
     @Column(nullable = false, updatable = false)
-    private Instant createdAt = Instant.now();
+    private Instant createdAt = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
 }

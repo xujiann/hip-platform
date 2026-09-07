@@ -66,10 +66,10 @@ public class OutpEmr {
     private Instant signedAt;
 
     @Column(nullable = false)
-    private Instant updatedAt = Instant.now();
+    private Instant updatedAt = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
 
     @PreUpdate
     void onUpdate() {
-        this.updatedAt = Instant.now();
+        this.updatedAt = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
     }
 }

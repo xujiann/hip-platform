@@ -53,7 +53,19 @@ public class InpAdmission {
     private String status = "IN_HOSPITAL";
 
     @Column(nullable = false, updatable = false)
-    private Instant admitAt = Instant.now();
+    /**
+     * <b>截断到微秒</b>：{@code Instant.now()} 在本平台是 100ns 粒度，
+     * 而 PG {@code timestamptz} 只存到微秒且<b>四舍五入</b>——尾数 ≥500ns 会向上进位，
+     * 于是入库后的入院时刻可能比真实时刻<b>晚最多 500ns</b>。
+     * 随后录入的体征拿 {@code Instant.now()} 与它比，就会出现
+     * 「测量时间 …402559900Z 早于入院时间 …402560Z」这种差 100ns 的假越界，
+     * 一条刚录入的正常护理记录撞 4825。
+     *
+     * <p>这是同一根因在本仓的第五处发作（前四处：v47 手术时间点、v50 体征 measuredAt、
+     * 病理接收/拒收时刻、本处）。<b>全部实体的 {@code = Instant.now()} 字段初始化已一次扫净</b>——
+     * 修完一处必须全仓扫同构，否则等于把同样的雷换个地方埋。
+     */
+    private Instant admitAt = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
 
     private Instant dischargedAt;
 }

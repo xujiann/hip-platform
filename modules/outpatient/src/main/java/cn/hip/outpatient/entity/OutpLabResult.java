@@ -40,5 +40,5 @@ public class OutpLabResult {
     private String abnormalFlag;
 
     @Column(nullable = false, updatable = false)
-    private Instant createdAt = Instant.now();
+    private Instant createdAt = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
 }

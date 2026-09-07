@@ -52,7 +52,7 @@ public class HrpAsset {
     private String remark;
 
     @Column(nullable = false, updatable = false)
-    private Instant createdAt = Instant.now();
+    private Instant createdAt = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
 
     /** 直线折旧后净值（残值率 5%） */
     @Transient

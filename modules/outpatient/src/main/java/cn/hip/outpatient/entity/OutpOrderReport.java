@@ -27,5 +27,5 @@ public class OutpOrderReport {
     private Long executorId;
 
     @Column(nullable = false)
-    private Instant executedAt = Instant.now();
+    private Instant executedAt = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
 }

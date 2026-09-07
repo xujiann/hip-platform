@@ -51,5 +51,5 @@ public class OutpSchedule {
     private Boolean enabled = true;
 
     @Column(nullable = false, updatable = false)
-    private Instant createdAt = Instant.now();
+    private Instant createdAt = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
 }

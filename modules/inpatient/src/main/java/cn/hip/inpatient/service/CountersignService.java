@@ -207,7 +207,7 @@ public class CountersignService {
 
         String content = (String) rec.get("content");
         String sha = sha256Hex(content);
-        var ver = resolveVersion(recordId);
+        var ver = resolveVersion(recordId, content);
         Timestamp at = nowTs();
 
         int inserted = jdbc.update("""
@@ -464,6 +464,18 @@ public class CountersignService {
      * V1 落地后无需改一行代码，配置对上即自动点亮；列名若与默认不同，改配置即可。
      */
     public VersionRef resolveVersion(Long recordId) {
+        return resolveVersion(recordId, null);
+    }
+
+    /**
+     * @param currentContent 审签当时的病历正文。传入时会**校验绑定的那一版正文与它相等**——
+     *        <b>不是比哈希</b>（v53 复核 D4）：审签算的是 {@code sha256(content 单字段)}，
+     *        版本表算的是 {@code sha256(五字段规范化 JSON)}，两个数**本就永远不相等**，
+     *        而且它们**本来就该不同**——审签签的是「这份正文」，版本记的是「整条记录的全貌」。
+     *        硬把两个口径对齐反而是错的。能证明「签的就是那一版」的正确做法是
+     *        <b>直接比正文本身</b>：版本行的 content 列与审签当时的正文逐字相等即成立。
+     */
+    public VersionRef resolveVersion(Long recordId, String currentContent) {
         String table = configReader.get(VERSION_TABLE_KEY, "emr_version");
         String fk = configReader.get(VERSION_FK_KEY, "record_id");
         String no = configReader.get(VERSION_NO_KEY, "version_no");
@@ -503,6 +515,22 @@ public class CountersignService {
             }
             var row = rows.get(0);
             Integer vno = row.get("vno") == null ? null : ((Number) row.get("vno")).intValue();
+            // 正文一致性校验：绑定的那一版必须**就是**审签当时看到的正文。
+            // 不一致说明「取到了最新版，但它已经不是我签的那份」——多半是审签与保存并发，
+            // 此时宁可退回 DIGEST_ONLY（摘要仍能证明签了什么），也不要给出一个
+            // **看起来精确、实则指错版本**的 versionNo。绑错比绑不上坏。
+            if (currentContent != null) {
+                Long vid = row.get("id") == null ? null : ((Number) row.get("id")).longValue();
+                String vContent = jdbc.query(
+                        "select content from " + table + " where id = ?",
+                        rs -> rs.next() ? rs.getString(1) : null, vid);
+                if (!java.util.Objects.equals(vContent, currentContent)) {
+                    return new VersionRef(null, null, "DIGEST_ONLY",
+                            List.of("版本表最新一版的正文与本次审签的正文不一致"
+                                    + "（多为审签与保存并发），不绑定版本号以免指错版本；"
+                                    + "正文摘要仍可证明本次签的是哪一份正文"));
+                }
+            }
             return new VersionRef(asLong(row.get("id")), vno, "VERSION_TABLE", List.of());
         } catch (Exception e) {
             // 版本表结构与预期不符（列类型不对等）不应连累审签——审签本身必须永远可用

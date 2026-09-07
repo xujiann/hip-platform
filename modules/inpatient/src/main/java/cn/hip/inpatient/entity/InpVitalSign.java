@@ -22,7 +22,7 @@ public class InpVitalSign {
     private Long admissionId;
 
     @Column(nullable = false)
-    private Instant measuredAt = Instant.now();
+    private Instant measuredAt = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
 
     /** 体温 ℃ */
     @Column(precision = 4, scale = 1)
