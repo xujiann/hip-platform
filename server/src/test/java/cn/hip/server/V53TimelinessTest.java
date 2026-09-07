@@ -579,8 +579,15 @@ class V53TimelinessTest {
     /** gate 三态：坏值回落 warn（不回落 off）；off 档下 findings 照样是真的。 */
     @Test
     void gateFallsBackToWarnAndFactsSurviveEveryTier() {
-        assertEquals("warn", service.gate(), "键未登记时默认 warn");
-        assertFalse(service.gateKeyRegistered(), "V159 没有插这一行——/config 会把这个事实明说出来");
+        assertEquals("warn", service.gate(), "出厂档位是 warn");
+        // v53 合版补 V161 之后，这个键**已经登记**了。
+        // 原断言钉的是「V159 没插这一行」——那是当时的**缺陷现状**，不是应有行为：
+        // 键不在 sys_config 里时 `PUT /api/config` 只 UPDATE 不 INSERT，影响 0 行、
+        // 却返回成功，于是 block 与 off **两档不可达且不报错**，比报错更难发现。
+        // 「建了开关就要把开关接上电」——同 v52 的教训（插了菜单没插 sys_role_menu，
+        // 菜单在、点不进去、也不报错）。
+        assertTrue(service.gateKeyRegistered(),
+                "V161 已登记该键——不登记则 block/off 两档不可达，院方按手册调档位会调不动且无报错");
 
         jdbc.update("insert into sys_config(cfg_key, cfg_value, remark) values (?, 'blocked', 't') "
                 + "on conflict (cfg_key) do update set cfg_value = 'blocked'", EmrTimelinessService.GATE_KEY);

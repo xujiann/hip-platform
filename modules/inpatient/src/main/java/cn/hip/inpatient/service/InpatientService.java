@@ -36,6 +36,7 @@ public class InpatientService {
     private final cn.hip.platform.core.service.ConfigReader configReader;
     private final cn.hip.platform.core.config.ModuleGate moduleGate;
     private final EmrIntegrityService emrIntegrityService;
+    private final cn.hip.inpatient.service.CountersignService countersignService;
     private final ArrearsService arrearsService;
 
     private final jakarta.persistence.EntityManager entityManager;
@@ -389,6 +390,16 @@ public class InpatientService {
             if (!missing.isEmpty()) {
                 throw new InpException(9124, "病历不完整，不能出院结算：" + String.join("、", missing));
             }
+        }
+        // v53 合版补：**上级审签 gate 此前是死的**。CountersignService:441 的消息写着
+        // 「未完成上级审签，不能出院/归档」，但出院与归档两处**都没调过 verdict()**——
+        // 设成 block 也照走。配置手册说得比代码做得多，与偏离表过度应答同一性质，
+        // 而这一条更糟：它是**用陈述句写的现状**，读的人会当成既成事实。
+        // 与上面 emr.gate.discharge 同一位置、同一形态：只读、throw 前零副作用，
+        // 放在 claimDischarge 抢占之前，不搅动既有抢占/回滚/并发时序。
+        var csVerdict = countersignService.verdict(admissionId);
+        if (csVerdict.blocked()) {
+            throw new InpException(csVerdict.code(), csVerdict.message());
         }
         // 先抢占 DISCHARGED 再汇总：否则"读快照→置位"之间并发缴的押金既不进结算也不退还，
         // 并发开的医嘱则永不计费。抢占失败即他人已结算。
