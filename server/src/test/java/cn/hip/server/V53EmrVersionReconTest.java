@@ -308,7 +308,12 @@ class V53EmrVersionReconTest {
         List<SrcFile> out = new ArrayList<>();
         for (SrcFile f : sources(".sql", MIGRATION_DIR)) {
             Matcher m = Pattern.compile("V(\\d+)__").matcher(f.rel().substring(f.rel().lastIndexOf('/') + 1));
-            if (m.find() && Integer.parseInt(m.group(1)) >= 157 && Integer.parseInt(m.group(1)) < 10000) {
+            // **上界 160**：v53 自己的迁移是 V157–V160（V160 是合版加的审签书写人触发器）。
+            // 原来写的是 `>= 157 && < 10000`，实际是无上界——那会让 v53 的纪律检查
+            // 去审 v54 及之后每一版的迁移，重演 v51 打红 v53 的那一幕
+            // （「一个版本的测试去审后续版本的产物，红的不是被审者而是审者」）。
+            int no = m.find() ? Integer.parseInt(m.group(1)) : -1;
+            if (no >= 157 && no <= 160) {
                 out.add(f);
             }
         }

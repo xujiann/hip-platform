@@ -80,11 +80,20 @@ JAVA_DIRS = ('modules', 'platform', 'server/src/main/java', 'datacenter', 'burea
 MIGRATION_DIR = 'server/src/main/resources/db/migration'
 
 
+# v51 自己的迁移范围：V152–V155 是本版四条车道，V156 是 v52 合版菜单。
+# **必须有上界**——原来只写 `>= 152`，等于让 v51 的纪律检查去审**之后每一版**的迁移。
+# v53 的 V159 时限规则种子一落盘就撞红：它不是药学知识，只是本类的取件范围越了界。
+# 同根因在 `V51CdssTest.newMigrations()` 也有一份（Java 侧），已一并收界——
+# **修完一处必须全仓扫同构**，否则等于把同样的雷换个地方埋。
+V51_MIGRATION_LO, V51_MIGRATION_HI = 152, 156
+
+
 def _new_migrations():
-    """本版新增迁移（V152 起）。药学知识与零回填两条纪律只约束新增段，不追溯既有迁移。"""
+    """v51 新增迁移（V152–V156）。药学知识与零回填两条纪律只约束本版，
+    既不追溯既有迁移，**也不越界去管后续版本**——后续版本各审各的。"""
     for p, t in _source_files(MIGRATION_DIR, suffixes=('.sql',)):
         m = _re.match(r'V(\d+)__', _os.path.basename(p))
-        if m and int(m.group(1)) >= 152:
+        if m and V51_MIGRATION_LO <= int(m.group(1)) <= V51_MIGRATION_HI:
             yield p, t
 
 
@@ -161,7 +170,7 @@ for _p, _txt in _new_migrations():
                 _hits.append(f'{_rel(_p)}: {_stmt[:160]}')
             _i += len(_verb)
 assert not _hits, (
-    'V152+ 迁移里出现了引用 allergy_history 的写语句：\n' + '\n'.join(_hits[:10])
+    'V152–V156 迁移里出现了引用 allergy_history 的写语句：\n' + '\n'.join(_hits[:10])
     + '\n自由文本过敏史**只能被读来给人看**。原文归原文（empi_patient.allergy_history 一个字节不改），'
       '结构化归结构化，人工核对是唯一桥梁。')
 print('[0.2] 边界 OK（**迁移零条从 allergy_history 派生的写入**：V152+ 全部 insert/update 零命中）')
@@ -188,7 +197,7 @@ for _p, _txt in _new_migrations():
                 k in _stmt.upper() for k in ('SAMPLE', 'EXAMPLE')):
             _bad.append(f'{_rel(_p)} → {_table}: {_stmt[:160]}')
 assert not _bad, (
-    'V152+ 迁移往规则/字典表里灌了**没有自陈是示例**的行：\n' + '\n'.join(_bad[:10])
+    'V152–V156 迁移往规则/字典表里灌了**没有自陈是示例**的行：\n' + '\n'.join(_bad[:10])
     + '\n本版只做规则引擎，规则内容由药剂科按院内用药目录维护。'
       '种子最多给「空表 + 一条标注示例的行」。编出来的配伍禁忌会直接误导处方。')
 
