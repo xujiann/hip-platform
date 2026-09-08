@@ -45,8 +45,8 @@
             <template #default="{ row }">
               <el-button v-if="row.status === 'COLLECTED'" link type="primary" size="small" :loading="busyId === row.id" @click="receive(row)">
                 核收</el-button>
-              <el-button v-if="row.status === 'RECEIVED'" link type="success" size="small" :loading="busyId === row.id" @click="diagnose(row)">
-                诊断报告</el-button>
+              <el-button v-if="row.status === 'RECEIVED'" link type="success" size="small" @click="goWorkbench">
+                去病理工作台书写报告</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -191,7 +191,7 @@
 
     <el-table :data="rescues" size="small" border height="240">
       <el-table-column prop="rescue_start" label="开始" width="150">
-        <template #default="{ row }">{{ String(row.rescue_start).slice(0, 19).replace('T', ' ') }}</template>
+        <template #default="{ row }">{{ fmtDateTime(row.rescue_start) }}</template>
       </el-table-column>
       <el-table-column label="体征" width="150">
         <template #default="{ row }">T{{ row.temperature ?? '-' }} P{{ row.pulse ?? '-' }} GCS{{ row.gcs ?? '-' }}</template>
@@ -215,9 +215,12 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
+import { fmtDateTime } from '../../utils/date'
 
+const router = useRouter()
 const tab = ref('ecg')
 const modality = ref('ECG')
 const risList = ref<Record<string, unknown>[]>([])
@@ -323,18 +326,10 @@ async function receive(row: Record<string, unknown>) {
     await loadSpecimens()
   } finally { busyId.value = null }
 }
-async function diagnose(row: Record<string, unknown>) {
-  const res = await ElMessageBox.prompt('病理诊断', '诊断报告', { inputValue: '慢性炎症，未见恶性证据' }).catch(() => null)
-  if (!res) return
-  const { value } = res
-  busyId.value = row.id
-  try {
-    await client.put(`/pathology/specimens/${row.barcode}/diagnose`,
-      { grossFinding: '灰白组织一块', microFinding: '镜下见慢性炎细胞浸润', diagnosis: value })
-    ElMessage.success('已发布')
-    await loadSpecimens()
-  } finally { busyId.value = null }
-}
+// 2530：本页曾在这里把两段写死的大体 / 镜下所见连同诊断整体提交给诊断端点，
+// 取材工位写入的大体所见被静默抹掉，入库的还是伪造的临床文本。首次报告一律去
+// 病理工作台（菜单 168）书写——那里会预填既有大体所见再提交。
+function goWorkbench() { router.push('/pathology/workbench') }
 async function startEr() {
   if (!er.triageId || !er.bedNo) { ElMessage.warning('请填写分诊ID与留观床号'); return }
   startErLoading.value = true

@@ -9,6 +9,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -77,24 +78,60 @@ public class PathologyController {
      * 病理诊断报告：发布后联动医嘱执行。
      *
      * <p><b>v48 加了 {@code rejected_at is null}</b>——理由同 {@link #receive(String)}：
-     * 已拒收的标本不得出报告。返回键与 4553 值域未变，只是多了一种触发情形。
+     * 已拒收的标本不得出报告。4553 值域未变，只是多了一种触发情形。
+     *
+     * <p><b>v57（2530）：大体 / 镜下所见「空白即保留原值」</b>。此前这条 update 对
+     * {@code gross_finding} / {@code micro_finding} 是<b>无条件覆盖</b>：取材工位
+     * （{@code POST /api/pathology/process/grossing}，GROSSING 节点）写进 {@code gross_finding}
+     * 的大体所见，只要出报告时该字段传空就被静默抹掉，且无历史可回——旧页「专科流程」
+     * （SpecialtyView.vue，菜单 47）正是这样调的，而且传的还是写死的伪造临床文本。
+     * 现在两列改为 {@code coalesce(nullif(btrim(?::text), ''), <原列>)}：入参空白
+     * （null / 空串 / 纯空白）时保留原值；非空白时按 trim 后的内容覆盖——工作台
+     * DiagnosisPanel 预填既有大体所见再编辑提交的合法路径<b>契约不变</b>（显式传值仍能改）。
+     *
+     * <p><b>返回体从 {@code R<Void>} 改为三个事实</b>：{@code specimenId}、{@code grossKept}、
+     * {@code microKept}（Kept=true 表示本次入参空白且原值非空而被保留）。全仓调用方
+     * （DiagnosisPanel.vue、tools/e2e-*.py）此前只看 {@code code}，无人依赖 {@code data} 为空。
+     * 4552、状态守卫（RECEIVED 且未拒收）、{@code outp_order} 置 EXECUTED 一律不动。
      */
     @PutMapping("/specimens/{barcode}/diagnose")
     @Transactional
-    public R<Void> diagnose(@PathVariable String barcode, @RequestBody DiagnoseReq req, Authentication auth) {
+    public R<Map<String, Object>> diagnose(@PathVariable String barcode, @RequestBody DiagnoseReq req, Authentication auth) {
         if (req.diagnosis() == null || req.diagnosis().isBlank()) return R.fail(4552, "诊断不能为空");
+        String gross = blankToNull(req.grossFinding());
+        String micro = blankToNull(req.microFinding());
         int n = jdbc.update("""
-                update path_specimen set status = 'DIAGNOSED', gross_finding = ?, micro_finding = ?,
+                update path_specimen set status = 'DIAGNOSED',
+                       gross_finding = coalesce(nullif(btrim(?::text), ''), gross_finding),
+                       micro_finding = coalesce(nullif(btrim(?::text), ''), micro_finding),
                        diagnosis = ?, pathologist_id = ?, diagnosed_at = now()
                 where barcode = ? and status = 'RECEIVED' and rejected_at is null
-                """, req.grossFinding(), req.microFinding(), req.diagnosis(),
+                """, gross, micro, req.diagnosis(),
                 currentUserService.idOf(auth), barcode);
         if (n == 0) return R.fail(4553, "标本不存在、未核收或已拒收");
         jdbc.update("""
                 update outp_order set status = 'EXECUTED'
                 where id = (select order_id from path_specimen where barcode = ?) and status = 'CHARGED'
                 """, barcode);
-        return R.ok();
+        // 事实回读：入参空白时列值就是原值，故「入参空白 且 结果非空」即「原值非空而被保留」
+        var row = jdbc.queryForMap("""
+                select id,
+                       (gross_finding is not null and btrim(gross_finding) <> '') as gross_present,
+                       (micro_finding is not null and btrim(micro_finding) <> '') as micro_present
+                from path_specimen where barcode = ?
+                """, barcode);
+        var body = new LinkedHashMap<String, Object>();
+        body.put("specimenId", row.get("id"));
+        body.put("grossKept", gross == null && Boolean.TRUE.equals(row.get("gross_present")));
+        body.put("microKept", micro == null && Boolean.TRUE.equals(row.get("micro_present")));
+        return R.ok(body);
+    }
+
+    /** 空白（null / 空串 / 纯空白）归一为 null，非空白 trim 后入库 */
+    private static String blankToNull(String s) {
+        if (s == null) return null;
+        String t = s.strip();
+        return t.isEmpty() ? null : t;
     }
 
     /**
