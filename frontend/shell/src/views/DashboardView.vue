@@ -23,7 +23,7 @@
           </template>
           <el-table v-else :data="daily" size="small">
             <el-table-column label="日期" width="120">
-              <template #default="{ row }">{{ String(row.day).slice(0, 10) }}</template>
+              <template #default="{ row }">{{ fmtDate(row.day) }}</template>
             </el-table-column>
             <el-table-column prop="registrations" label="挂号量" width="90" />
             <el-table-column prop="revenue" label="门诊收入 ¥" width="110" />
@@ -71,6 +71,7 @@ import { BarChart, LineChart } from 'echarts/charts'
 import { GridComponent, TitleComponent, TooltipComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import client from '../api/client'
+import { fmtDate } from '../utils/date'
 
 echarts.use([BarChart, LineChart, GridComponent, TitleComponent, TooltipComponent, CanvasRenderer])
 

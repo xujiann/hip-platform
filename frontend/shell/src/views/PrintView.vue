@@ -121,7 +121,7 @@
           <tr><th style="width:14%">时间</th><th style="width:10%">类型</th><th>病情观察</th>
             <th>护理措施</th><th style="width:14%">效果评价</th><th style="width:10%">护士签名</th></tr>
           <tr v-for="(r, i) in nurRows" :key="i">
-            <td>{{ String(r.record_time ?? '').replace('T', ' ').slice(0, 16) }}</td>
+            <td>{{ fmtDateTime(r.record_time, '') }}</td>
             <td>{{ r.kind_name }}</td>
             <td>{{ r.observation || '—' }}</td>
             <td>{{ r.measure || '—' }}</td>
@@ -314,6 +314,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import client from '../api/client'
+import { fmtDate, fmtDateTime } from '../utils/date'
 import TempSheetSvg from '../components/TempSheetSvg.vue'
 
 const route = useRoute()
@@ -432,10 +433,8 @@ const records = computed(() => (data.value?.records as Record<string, unknown>[]
 const meds = computed(() => (data.value?.meds as Record<string, unknown>[]) ?? [])
 const nurRows = computed(() => (data.value?.rows as Record<string, unknown>[]) ?? [])
 
-function fmtDate(v: unknown): string {
-  if (!v) return '—'
-  return String(v).slice(0, 10)
-}
+// 日期列改走 utils/date 的 fmtDate（v57）：admit_at / discharged_at / created_at 都是 timestamptz，
+// 裸切 slice(0,10) 在北京 0–8 点会显示前一天。
 
 // 住院打印数据集在 inpatient 端点，门诊沿用 /print/{type}/{id}
 function endpoint(): string {

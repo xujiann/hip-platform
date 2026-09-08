@@ -56,7 +56,7 @@
             <template #default="{ row }">¥{{ Number(row.balance).toFixed(2) }}</template>
           </el-table-column>
           <el-table-column prop="created_at" label="时间">
-            <template #default="{ row }">{{ String(row.created_at).slice(0, 19).replace('T', ' ') }}</template>
+            <template #default="{ row }">{{ fmtDateTimeSec(row.created_at) }}</template>
           </el-table-column>
         </el-table>
       </div>
@@ -90,7 +90,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { todayLocal } from '../../utils/date'
+import { fmtDateTimeSec, todayLocal } from '../../utils/date'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
 

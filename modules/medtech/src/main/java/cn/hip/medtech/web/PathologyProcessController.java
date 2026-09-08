@@ -1152,7 +1152,7 @@ public class PathologyProcessController {
      * 只能等病理医师写完诊断才在报告里第一次见到它。本端点把 {@code path_specimen.gross_finding}
      * 连同本标本的蜡块清单与 GROSSING 流转节点一起只读回出，不分诊断状态。
      *
-     * <p><b>该列是共享列</b>：取材端点只在为空时写、既有 diagnose 端点整体覆盖写。
+     * <p><b>该列是共享列</b>：取材端点只在为空时写、既有 diagnose 端点非空即覆盖、空白即保留原值（v57 起）。
      * 库里没有「这段文字是谁写的」这一事实，本端点<b>不猜来源</b>——{@code grossingEvents}
      * 给出取材打点（谁、何时），{@code diagnosedAt} 给出诊断时刻，由读的人自己对时间线。
      */
@@ -1201,7 +1201,7 @@ public class PathologyProcessController {
         body.put("blocks", blocks);
         body.put("blockCount", blocks.size());
         body.put("grossingEvents", events);
-        body.put("note", "grossFinding 读自 path_specimen.gross_finding（取材端点只在为空时写，诊断端点整体覆盖写），"
+        body.put("note", "grossFinding 读自 path_specimen.gross_finding（取材端点只在为空时写，诊断端点非空即覆盖、空白即保留原值（v57 起）），"
                 + "库里没有「这段文字由谁写」的事实，本端点不猜来源：grossingEvents 是取材打点，"
                 + "diagnosedAt 是诊断时刻，请自行对时间线。");
         return R.ok(body);

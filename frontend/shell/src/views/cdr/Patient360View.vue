@@ -30,7 +30,7 @@
       <el-empty v-if="!current" description="从左侧选择患者" />
       <el-timeline v-else>
         <el-timeline-item v-for="d in docs" :key="d.id as number"
-                          :timestamp="String(d.docTime).slice(0, 16).replace('T', ' ')"
+                          :timestamp="fmtDateTime(d.docTime)"
                           :type="typeColor[d.docType as string]">
           <b>{{ d.title }}</b>
           <el-button link type="primary" size="small" @click="viewDoc(d)">查看</el-button>
@@ -48,6 +48,7 @@
 import { computed, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import client from '../../api/client'
+import { fmtDateTime } from '../../utils/date'
 
 const keyword = ref('')
 const patients = ref<Record<string, unknown>[]>([])

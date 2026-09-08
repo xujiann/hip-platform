@@ -29,6 +29,7 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { fmtMonthDayTime } from '../utils/date'
 
 // 体温/脉搏/呼吸量纲不同：共享时间轴的三个独立面板，不使用多轴
 // （v42：呼吸数据自 V9 就在录，此前唯独没画——补第三测曲线，纸面三测单同源）
@@ -52,7 +53,7 @@ const points = computed(() =>
   props.vitals
     .filter((v) => v.temperature != null || v.pulse != null || v.respiration != null)
     .map((v) => ({
-      time: String(v.measuredAt).slice(5, 16).replace('T', ' '),
+      time: fmtMonthDayTime(v.measuredAt, ''),
       temperature: v.temperature == null ? null : Number(v.temperature),
       pulse: v.pulse == null ? null : Number(v.pulse),
       respiration: v.respiration == null ? null : Number(v.respiration),

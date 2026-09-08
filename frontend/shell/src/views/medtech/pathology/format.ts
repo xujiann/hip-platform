@@ -389,6 +389,10 @@ const ZH: Record<string, string> = {
   ordered_by_name: '开单人',
   done_by: '完成人ID',
   done_by_name: '完成人',
+  cancelled_at: '取消时刻',
+  cancelled_by: '取消人ID',
+  cancelled_by_name: '取消人',
+  cancel_reason: '取消原因',
   median_hours_to_done: '开单→完成中位数(小时)',
   // 覆盖率段
   with_specimen_type: '已录标本类别',

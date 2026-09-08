@@ -71,26 +71,9 @@ class V57NakedIsoSliceTest {
      * 它们显示的<b>同样是</b> timestamptz，同样早 8 小时 / 早一天，不是「天然不该改」，只是本车道无权动别人的文件。
      * 修完（一行 fmtDateTime / fmtDate / fmtMonthDayTime 即可）请把对应条目删掉，本类会因「条目已对不上命中」逼你删。
      */
-    private static final List<Waiver> WAIVERS = List.of(
-            new Waiver(FRONTEND_SRC + "/views/medtech/SpecialtyView.vue",
-                    "v57 车道 A 同版在改（2558 拆车道时 SpecialtyView 归 A）：rescue_start 用 slice(0,19).replace('T',' ') 早 8 小时。"
-                            + "车道 A 合并后本条会对不上命中，届时直接删"),
-            new Waiver(FRONTEND_SRC + "/components/VitalsChart.vue",
-                    "v57 车道 B 清单外、主控未分派：measuredAt 是 timestamptz，slice(5, 16) 画 MM-DD HH:mm 早 8 小时；"
-                            + "应改 fmtMonthDayTime(v.measuredAt, '')。修完删本条"),
-            new Waiver(FRONTEND_SRC + "/views/PrintView.vue",
-                    "v57 车道 B 清单外、主控未分派：护理记录 record_time 用 replace('T',' ').slice(0,16) 早 8 小时；"
-                            + "同文件 fmtDate(v) 对 admit_at / discharged_at / created_at 裸切 slice(0,10)（扫描器按接收者 v 抓不到）。"
-                            + "应改 fmtDateTime(r.record_time, '') 与 utils/date 的 fmtDate。修完删本条"),
-            new Waiver(FRONTEND_SRC + "/views/cdr/Patient360View.vue",
-                    "v57 车道 B 清单外、主控未分派：时间线 docTime 用 slice(0,16).replace('T',' ') 早 8 小时；"
-                            + "应改 fmtDateTime(d.docTime)。修完删本条"),
-            new Waiver(FRONTEND_SRC + "/views/inpatient/AdmissionView.vue",
-                    "v57 车道 B 清单外、主控未分派：入院时间列 admitAt 裸切 slice(0,10)，北京 0–8 点入院显示前一天；"
-                            + "应改 fmtDate(row.admitAt)。修完删本条"),
-            new Waiver(FRONTEND_SRC + "/views/inpatient/DischargeView.vue",
-                    "v57 车道 B 清单外、主控未分派：结算流水 created_at 用 slice(0,19).replace('T',' ') 早 8 小时；"
-                            + "应改 fmtDateTimeSec(row.created_at)。修完删本条"));
+    // v57 合并后主控把车道 B 清单外的 6 个文件（VitalsChart/Patient360/Discharge/Print/Admission/Dashboard）与
+    // 车道 A 的 SpecialtyView 一并改走 utils/date，本表清空。再要加条目，只接受「接收者确实不是时间」这一种理由。
+    private static final List<Waiver> WAIVERS = List.of();
 
     // ==================================================================================
     // 四种语法形态

@@ -12,7 +12,7 @@
       <el-table-column prop="bedNo" label="床号" width="70" />
       <el-table-column prop="admitDiagName" label="入院诊断" />
       <el-table-column label="入院时间" width="110">
-        <template #default="{ row }">{{ String(row.admitAt).slice(0, 10) }}</template>
+        <template #default="{ row }">{{ fmtDate(row.admitAt) }}</template>
       </el-table-column>
     </el-table>
 
@@ -70,6 +70,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import client from '../../api/client'
+import { fmtDate } from '../../utils/date'
 import type { Admission, Patient } from '../../types/domain'
 
 const admissions = ref<Admission[]>([])
