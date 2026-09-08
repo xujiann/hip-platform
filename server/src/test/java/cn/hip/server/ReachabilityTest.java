@@ -9,6 +9,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -45,20 +46,28 @@ import static org.junit.jupiter.api.Assertions.fail;
  * <pre>
  *   后端控制器 ──§1→ 前端有调用 ──§2→ 有菜单入口 ──§4→ 有角色授权
  *                                  └──§3→ 菜单 path 有对应路由（点进去不 404）
+ *   后端控制器 ──§6→ 从某条菜单点进去的那一页（的组件树）真的在调它      ← v56 第二层
  *   三态 gate 键 ──§5→ 在 sys_config 登记（开关接上电）
  * </pre>
- * 链上断一环，功能就等于没交付；而这四种断法**全都不会让构建失败、也不会报错**，
+ * 链上断一环，功能就等于没交付；而这几种断法**全都不会让构建失败、也不会报错**，
  * 只会表现为「用户找不到 / 点不进去 / 调不动」。
+ * <p>
+ * §6 是 v55 核账（129 条 ★，0 可上调）逼出来的：挖出的缺陷全是同一类——<b>后端做了，前端够不着</b>，
+ * 而 §1 抓不住它。§1 只保证「全前端<b>某个文件</b>里出现过这个控制器的路径字面量」，
+ * 不保证「从菜单走到的那个页面」在调：页面在、API 被调用、§1 全绿，可医生从菜单点进去的那一页根本不调它。
+ * §6 把「谁在调」按文件归属，再从菜单 → 路由 → 组件文件 → import 传递闭包一路走到调用点。
  *
  * <h2>每条断言都配一条探针</h2>
  * 「现在是绿的」与「永远不会红」在报告里长得一模一样，这正是人工检查失效的原因。
- * 所以 §2–§5 各带一条 {@code ...ActuallyBite()} / {@code ...IsBySegment...()}：
+ * 所以 §2–§6 各带一条 {@code ...ActuallyBite()} / {@code ...IsBySegment...()} / {@code ...Distinguishes...()}：
  * 在事务里造出一条欠授权的菜单、一条断链的菜单、一个没人读的死开关、一个写错的档位值，
  * 再拿分段边界的反例喂给覆盖判定，<b>要求检测器当场点名</b>；方法结束整笔回滚，库里不留痕。
  * 探针红了说明断言本身坏了——那时候库里干净不干净根本不重要。
  * <p>
  * §1 的探针跑不进事务（要凭空长出/删掉前端文件），改由一次离线负向对照背书：
  * 把 v53 三个车道的前端目录从扫描面里摘掉，本节恰好点名那三个控制器、不多不少。
+ * §6 的探针全在内存里做手术：真实树上剔掉唯一调用文件 / 拿掉盖住那一页的菜单，
+ * 再合成孤儿文件、无菜单路由、父布局、import 环各喂一遍——不碰库、不碰文件。
  *
  * <h2>取件范围：全仓，无版本窗口（这一条是本类的硬约束）</h2>
  * v51 的 {@code V51CdssTest#newMigrations()} 曾写成「V152 及以后」而没有上界，
@@ -91,8 +100,13 @@ import static org.junit.jupiter.api.Assertions.fail;
  *       授宽了是「菜单点得进、接口 403」，授窄了是「功能等于没交付」——两者都真实存在，
  *       但要机械判定得解析 SpEL 并跨类推导方法级收紧，误判率高于它能挡住的问题。
  *       这一条留在合版的人工核对（V156 的做法：逐条读 {@code @PreAuthorize} 再写注释）。</li>
- *   <li><b>不</b>要求每个控制器都有菜单。很多控制器是页内组件的数据源（如开单页的 CDSS 预览），
- *       本来就不该有自己的导航入口。链条在 §1 只走到「前端有调用」为止。</li>
+ *   <li><b>不</b>要求每个控制器都有<b>自己的</b>菜单。很多控制器是页内组件的数据源（如开单页的 CDSS 预览），
+ *       本来就不该有自己的导航入口。§6 要求的只是：它被<b>某个</b>菜单页的组件树调到——
+ *       开单页有菜单、开单页 import 了 CDSS 预览组件、预览组件在调它，这就够了。</li>
+ *   <li><b>不</b>断言运行时语义。§6 抓得住「从菜单走到的页面根本没调这个控制器」，<b>抓不住</b>
+ *       「页面调了但用户手里没有它要的 id」（994 型：版本页要人手填 outp_emr.id）与
+ *       「页面调了但列表 where 条件把要找的记录永久排除」（2553 型）。那两类靠 {@code tools/e2e-v55-reach.py}
+ *       那样的端到端基线；静态断言与 E2E 各管一层，不互相替代。</li>
  * </ul>
  */
 @SpringBootTest
@@ -146,6 +160,18 @@ class ReachabilityTest {
 
     /** §5 豁免：允许不在 {@code sys_config} 登记、或取值不是三态的 gate 键。目前一条都不需要。 */
     private static final List<Waiver> GATE_WAIVERS = List.of();
+
+    /**
+     * §6 豁免：前端<b>有</b>调用、但天然不从任何菜单页（也不从 router 的 {@code ALWAYS_ALLOWED} 页）走到的控制器。
+     * 键 = 与 {@link #CONTROLLER_WAIVERS} 同口径的控制器基路径。
+     *
+     * <p>{@link #CONTROLLER_WAIVERS}（§1）自动带入 §6——前端一行都没有的，当然也从菜单走不到，不必重复登记；
+     * {@link #menuReachWaiverListItselfIsMaintained()} 会拒绝重复条目，也会拒绝「此刻其实走得到」的死条目。
+     * <p>共用布局里调的 API（{@code /api/auth} 由 MainLayout → stores/auth、ChangePasswordDialog 调）<b>不需要豁免</b>：
+     * MainLayout 挂在 '/' 上，所有业务页都在它里面渲染，§6 把父路由的组件并进每条子路由的闭包——
+     * 这是渲染树的事实，不是豁免。目前一条都不需要（v55 已把「后端做了前端够不着」的四类收口）。
+     */
+    private static final List<Waiver> MENU_REACH_WAIVERS = List.of();
 
     /** 三态 gate 的合法档位。坏值会被各服务静默回落到 warn——档位调不动且不报错。 */
     private static final Set<String> GATE_TIERS = Set.of("off", "warn", "block");
@@ -668,6 +694,353 @@ class ReachabilityTest {
     }
 
     // ==================================================================================
+    // §6 每个控制器都要从某条菜单点进去的那一页走得到（v56：可达性第二层）
+    // ==================================================================================
+
+    /**
+     * 菜单 → 路由 → 组件树 → 调用点。断的是「页面在、API 被调、可从菜单点进去的那一页根本不调它」这一环。
+     *
+     * <p>v55 核账挖出的全是这一类，而 §1 抓不住：§1 只保证「全前端<b>某个文件</b>里出现过这个控制器的
+     * 路径字面量」。字面量在一个没被任何路由引用的孤儿组件里、或在一个没有菜单的页面里，§1 照样绿。
+     *
+     * <h3>判据</h3>
+     * 对每个非豁免控制器，至少存在一条<b>入口路由</b>，其组件树的 import 传递闭包里有调用点字面量命中它
+     * （命中判据与 §1 同一个 {@link #anyLiteralHits}，取词法同一组 {@link #API_LITERALS}）。其中：
+     * <ul>
+     *   <li><b>入口路由</b> = 落在某条 {@code sys_menu} MENU 行之下的路由（与 §2 的 {@link #coveredByMenu}
+     *       同口径：子路由继承父菜单的覆盖）∪ router 自己放在菜单授权之外的 {@code ALWAYS_ALLOWED} 页
+     *       （落地页 /dashboard、登录页、打印页——它们对每个登录用户都可达）。后者从 router 源码里取，
+     *       是 router 的规则不是本类的豁免：谁把 /dashboard 从 ALWAYS_ALLOWED 里拿掉，
+     *       驾驶舱独占的控制器会立刻在这里红。</li>
+     *   <li><b>组件树</b> = 路由的 {@code component} 文件 + 它的父路由布局。MainLayout 挂在 '/' 上，
+     *       所有业务页都在它里面渲染，它 import 的 stores/auth、ChangePasswordDialog 在任何菜单页都在跑——
+     *       把父布局并进子路由闭包是渲染树的事实，不是豁免（所以 /api/auth 不需要豁免条目）。</li>
+     *   <li><b>传递闭包</b>沿 {@code import … from}、{@code import '…'}、{@code export … from}、{@code import('…')}
+     *       走；解析 {@code ./ ../} 相对路径与 {@code @/} 别名（→ frontend/shell/src）；无后缀依次试
+     *       .ts / .vue / .tsx / .js / index.ts / index.vue（barrel）；只跟仓内文件，node_modules 一律不跟；带环检测。</li>
+     *   <li><b>router/ 下的文件是闭包的根，不是节点</b>：api/client.ts 为了 401 跳转 import 了 router，
+     *       router 又懒加载了全部页面——跟进去，每个页面的闭包都会等于整个应用，本节就退化成 §1 的复读机。
+     *       {@link #importWalkerResolvesEveryInRepoImportAndStopsAtTheRouteTable()} 看住这一条。</li>
+     * </ul>
+     *
+     * <h3>边界：本节抓不住什么</h3>
+     * 它抓得住「从菜单走到的页面根本没调这个控制器」；<b>抓不住</b>两类运行时语义：
+     * <b>994 型</b>（页面调了，但用户手里没有它要的 id——版本页要人手填 outp_emr.id）与
+     * <b>2553 型</b>（页面调了，但列表 where 条件把要找的记录永久排除）。
+     * 那两类靠 {@code tools/e2e-v55-reach.py} 那样的端到端基线。静态断言与 E2E 各管一层，不互相替代。
+     */
+    @Test
+    void everyControllerIsReachableFromSomeMenu() {
+        Map<String, List<String>> controllers = scanControllers();
+        Set<String> waived = waivedKeys(CONTROLLER_WAIVERS);
+        waived.addAll(waivedKeys(MENU_REACH_WAIVERS));
+        Map<String, String> unreachable = menuUnreachable(controllers, frontendGraph(), enabledMenuPaths(), waived);
+        if (!unreachable.isEmpty()) {
+            fail("""
+                    【页面在、API 被调、可从菜单点进去的那一页根本不调它】%d 个 @RestController 从任何一条菜单都走不到：
+
+                    %s
+
+                    判据：sys_menu 的 MENU 行（加上 router 自己放在菜单授权之外的 ALWAYS_ALLOWED 页）→ 路由 →
+                    组件文件 → 沿 import 传递闭包（父布局并入子路由）→ 闭包里的调用点字面量。
+                    §1 只保证「全前端某个文件里调过」，本节要求「从菜单走到的那一页（或它 import 的东西）在调」。
+
+                    该怎么修（三选一）：
+                      A. 调用点所在的页面没有菜单：由合版补 sys_menu + sys_role_menu（§2 / §4 的做法，id 由合版分配）；
+                      B. 调用点在一个没被任何路由引用的孤儿文件里：把它 import 进对应页面，或给它注册路由并补菜单；
+                      C. 确实是例外（有前端调用、但天然无菜单入口）：往 MENU_REACH_WAIVERS 里加一条并写清是哪一类。
+                         §1 的 CONTROLLER_WAIVERS 自动带入，不必重复登记。
+
+                    本节抓不住两类：页面调了但用户手里没有它要的 id（994 型）、页面调了但列表条件把记录永久排除（2553 型）——
+                    那是运行时语义，由 tools/e2e-v55-reach.py 这类端到端基线看住，静态断言不替代它。
+                    """.formatted(unreachable.size(), String.join("\n\n", unreachable.values())));
+        }
+    }
+
+    /**
+     * §6 的探针（真实树）：证明这条断言此刻是绿的，是因为每个控制器真的能从菜单走到，<b>不是因为它不会红</b>。
+     *
+     * <p>在当前树上挑一个<b>只有一处调用点</b>、且那处调用点只出现在 MENU 行盖住的路由里的控制器，做两台手术，
+     * 每台都要求检测器当场点名它：
+     * <ol>
+     *   <li>把那个调用文件从闭包输入里剔除（文件还挂在路由的组件树上，但不再贡献字面量与 import 边）——
+     *       模拟「页面在、可它根本不调这个接口」；</li>
+     *   <li>把盖住那条路由的 MENU 行从菜单集合里拿掉（文件、路由、字面量原封不动）——
+     *       模拟「页面调了、可菜单没指到这一页」。这正是 v55 挖出的形态：§1 全绿，用户够不着。</li>
+     * </ol>
+     * 全在内存里做，不碰库、不碰文件；候选按当前树动态挑，不写死名字，控制器改名不会把探针弄烂。
+     */
+    @Test
+    void menuReachabilityDetectorActuallyBites() {
+        Map<String, List<String>> controllers = scanControllers();
+        FrontendGraph g = frontendGraph();
+        List<String> menus = enabledMenuPaths();
+        Set<String> waived = waivedKeys(CONTROLLER_WAIVERS);
+        waived.addAll(waivedKeys(MENU_REACH_WAIVERS));
+        Map<String, String> before = menuUnreachable(controllers, g, menus, waived);
+        MenuReach reach = menuReach(g, menus);
+
+        String target = null;
+        String caller = null;
+        List<String> owningRoutes = List.of();
+        for (Map.Entry<String, List<String>> e : new TreeMap<>(controllers).entrySet()) {
+            if (waived.contains(e.getKey()) || before.containsKey(e.getKey())) continue;
+            List<String> callers = callersOf(e.getValue(), g);
+            if (callers.size() != 1) continue;
+            List<String> owning = routesWhoseTreeContains(callers.get(0), reach);
+            if (owning.isEmpty()) continue;
+            boolean onlyViaMenu = true;
+            for (String r : owning) {
+                if (coveredByMenu(r, g.alwaysAllowed())) onlyViaMenu = false;
+            }
+            if (!onlyViaMenu) continue;
+            target = e.getKey();
+            caller = callers.get(0);
+            owningRoutes = owning;
+            break;
+        }
+        assertTrue(target != null,
+                "当前树上挑不出「只有一处调用点、且只经 MENU 行可达」的控制器，探针无从构造——换一种构造方式，别把这条测试删掉");
+
+        // 手术一：剔除唯一的调用文件
+        Map<String, String> after1 = menuUnreachable(controllers, g.withoutFile(caller), menus, waived);
+        assertTrue(after1.containsKey(target),
+                "剔除唯一调用文件 " + caller + " 后，检测器没有点名 " + target
+                        + "——它并没有在看闭包里的字面量，这条断言是空的");
+        assertTrue(after1.keySet().containsAll(before.keySet()),
+                "剔除一个文件不该让原本就走不到的控制器变绿——两次结果的口径糊了");
+
+        // 手术二：拿掉盖住那条路由的菜单（文件、路由、字面量原封不动）
+        List<String> fewerMenus = new ArrayList<>();
+        for (String m : menus) {
+            boolean covers = false;
+            for (String r : owningRoutes) {
+                if (coveredByMenu(r, List.of(m))) covers = true;
+            }
+            if (!covers) fewerMenus.add(m);
+        }
+        assertTrue(fewerMenus.size() < menus.size(), "手术二没拿掉任何菜单——候选挑选与覆盖判定的口径对不上");
+        Map<String, String> after2 = menuUnreachable(controllers, g, fewerMenus, waived);
+        assertTrue(after2.containsKey(target),
+                "拿掉盖住 " + owningRoutes + " 的菜单后，检测器没有点名 " + target
+                        + "——「页面调了、菜单没指到这一页」正是 v55 挖出的形态，抓不到等于没查");
+        String diagnosis = after2.get(target);
+        assertTrue(diagnosis.contains(caller) && diagnosis.contains(owningRoutes.get(0)),
+                "失败信息必须点名调用文件与它所在的路由，否则下一个人没法照着修。实际：\n" + diagnosis);
+    }
+
+    /**
+     * §6 的探针（合成）：检测器必须分得清<b>调用点在哪条路由的组件树里</b>，而不是「全前端有没有」。
+     *
+     * <p>{@link #menuReachabilityDetectorActuallyBites()} 在真实树上做手术，但真实树上恰好每个页面都有菜单，
+     * 证明不了「闭包没有退化成整个应用」。这里合成一组文件与路由，把机制的每一环单独喂一遍：
+     * 孤儿文件 → 红；有路由没菜单 → 红；补上菜单 → 绿；菜单在但页面不再 import 调用文件 → 红
+     * （此时字面量在全前端仍然存在，§1 会绿——这正是两层的分界）；调用挂在父布局上 → 绿；import 成环 → 不死循环且绿。
+     */
+    @Test
+    void menuReachabilityDistinguishesWhichRouteImportsTheCaller() {
+        FrontendGraph real = frontendGraph();
+        List<String> menus = enabledMenuPaths();
+        String orphan = FRONTEND_SRC + "/views/__canary/CanaryPanel.vue";
+        String page = FRONTEND_SRC + "/views/__canary/CanaryView.vue";
+        String layout = FRONTEND_SRC + "/views/__canary/CanaryLayout.vue";
+        String route = "/__canary";
+        assertFalse(real.literals().containsKey(orphan) || real.literals().containsKey(page),
+                "探针文件不该真的存在于仓里，否则这条探针没意义");
+        assertFalse(menus.contains(route) || frontendRoutes().contains(route),
+                "探针路由/菜单不该真的存在，否则这条探针没意义");
+        String key = "/api/__canary";
+        Map<String, List<String>> canary = Map.of(key, List.of("/api/__canary/ping", "/api/__canary"));
+        Set<String> literal = Set.of("/__canary/ping");
+        List<String> menusPlus = new ArrayList<>(menus);
+        menusPlus.add(route);
+
+        // 1. 孤儿文件里有调用，没有任何路由引用它 → 红
+        FrontendGraph g1 = real.withFile(orphan, literal, Set.of());
+        assertTrue(menuUnreachable(canary, g1, menus, Set.of()).containsKey(key),
+                "孤儿文件里的调用被判成可达——检测器没有按路由组件树取字面量，退化成了 §1");
+        // 2. 页面 import 了它、路由也注册了，但没有菜单 → 红（v55 形态）
+        FrontendGraph g2 = g1.withFile(page, Set.of(), Set.of(orphan)).withRoute(route, List.of(page));
+        assertTrue(menuUnreachable(canary, g2, menus, Set.of()).containsKey(key),
+                "没有菜单的路由被当成了入口——「页面在、菜单没指到」正是要抓的形态");
+        // 3. 补上菜单 → 绿
+        assertFalse(menuUnreachable(canary, g2, menusPlus, Set.of()).containsKey(key),
+                "菜单 → 路由 → 页面 → import → 调用点这条链通了，检测器却仍然点名——判据过严，后人会往豁免清单里乱塞");
+        // 4. 菜单在、路由在，但页面不再 import 调用文件 → 红（字面量在全前端仍在，§1 会绿）
+        FrontendGraph g4 = g1.withFile(page, Set.of(), Set.of()).withRoute(route, List.of(page));
+        assertTrue(menuUnreachable(canary, g4, menusPlus, Set.of()).containsKey(key),
+                "页面不 import 调用文件却被判成可达——检测器把「全前端有」当成了「这一页在调」，这正是 §1 与 §6 的分界");
+        // 5. 调用挂在父布局上、子路由有菜单 → 绿（MainLayout 的 /auth 就是这么可达的）
+        FrontendGraph g5 = g1.withFile(layout, Set.of(), Set.of(orphan))
+                .withFile(page, Set.of(), Set.of())
+                .withRoute(route, List.of(layout, page));
+        assertFalse(menuUnreachable(canary, g5, menusPlus, Set.of()).containsKey(key),
+                "父布局的调用没并进子路由的闭包——那 /api/auth 这类布局级 API 会被误判成走不到");
+        // 6. import 成环（页面 ⇄ 调用文件）→ 不死循环，且仍然绿
+        FrontendGraph g6 = real.withFile(orphan, literal, Set.of(page))
+                .withFile(page, Set.of(), Set.of(orphan))
+                .withRoute(route, List.of(page));
+        assertFalse(menuUnreachable(canary, g6, menusPlus, Set.of()).containsKey(key),
+                "import 成环时闭包算错了——环检测坏了");
+    }
+
+    /**
+     * §6 的扫描器自检：走不到的 import 边不许静默丢掉，路由表不许被当成节点跟进去。
+     *
+     * <p>三件事一起看：
+     * <ol>
+     *   <li>所有 {@code ./ ../ @/} 形态的仓内 import 都解析到了真实文件——解析不到的边会让闭包缺一块，
+     *       缺的那块里若有调用点，§6 会把一个其实走得到的控制器判成走不到（那是扫描器缺口，修扫描器，不加豁免）；</li>
+     *   <li>结构化解析出的路由集合与 §2/§3 用的 {@code path:} 字面量扫描逐字相等——两套取词法互相对账；</li>
+     *   <li>任何路由的闭包都不含 router/ 下的文件——api/client.ts → router → 全部页面这条环一旦被跟进去，
+     *       每个页面的闭包都等于整个应用，§6 就永远不会红；</li>
+     *   <li>router 的 ALWAYS_ALLOWED 数组解析到了——它是入口路由的另一半，解析不到会把驾驶舱独占的控制器误判。</li>
+     * </ol>
+     */
+    @Test
+    void importWalkerResolvesEveryInRepoImportAndStopsAtTheRouteTable() {
+        FrontendGraph g = frontendGraph();
+        List<String> bad = new ArrayList<>();
+        for (String u : g.unresolved()) {
+            bad.add("  · 解析不了的仓内 import：" + u
+                    + "（相对路径 / @/ 别名都试过 .ts .vue .tsx .js /index.ts /index.vue——若是新写法，改 resolveImport；"
+                    + "若只是注释里的一句话，改注释）");
+        }
+        if (g.alwaysAllowed().isEmpty()) {
+            bad.add("  · router 里没解析到 ALWAYS_ALLOWED 数组——它是 §6 入口路由的一半，解析不到会把驾驶舱独占的控制器误判成走不到");
+        }
+        Set<String> structural = new TreeSet<>();
+        for (RouteDef r : g.routes()) structural.add(r.path());
+        Set<String> flat = frontendRoutes();
+        if (!structural.equals(flat)) {
+            Set<String> onlyStructural = new TreeSet<>(structural);
+            onlyStructural.removeAll(flat);
+            Set<String> onlyFlat = new TreeSet<>(flat);
+            onlyFlat.removeAll(structural);
+            bad.add("  · 结构化路由解析（§6）与 path: 字面量扫描（§2/§3）对不上：只在结构化里 " + onlyStructural
+                    + "，只在字面量里 " + onlyFlat + "——router 出现了新写法，两处解析要一起改");
+        }
+        for (RouteDef r : g.routes()) {
+            for (String f : closure(g, r.components())) {
+                if (f.startsWith(FRONTEND_SRC + "/router/")) {
+                    bad.add("  · 路由 " + r.path() + " 的闭包跟进了路由表 " + f
+                            + "——路由表是闭包的根不是节点，跟进去每个页面的闭包都等于整个应用");
+                }
+            }
+        }
+        if (!bad.isEmpty()) {
+            fail("""
+                    【§6 的扫描器自己有缺口】共 %d 处：
+
+                    %s
+
+                    扫描器有缺口时，§6 的结论（不管红绿）都不算数：闭包少一块会把走得到的判成走不到，
+                    跟进路由表会把走不到的判成走得到。先修扫描器，再看 §6。
+                    """.formatted(bad.size(), String.join("\n", bad)));
+        }
+    }
+
+    /**
+     * <b>注释掉的 import 与注释掉的调用都不算数</b>（v56 对抗复核实测的两条漏洞，同一根因）。
+     *
+     * <p>此前只有 router 文本过 {@link #stripJsComments}，.vue/.ts 吃原文。复核用对照组证了两种假绿：
+     * ① {@code // import ReviewChild from './ReviewChild.vue'} 仍成为闭包的边——只在 ReviewChild 里调的
+     * 控制器被判「从菜单走得到」；② {@code // await client.post('/pay/orders', …)} 仍算调用点——
+     * 页面无任何活调用仍绿。两例都是删掉那行注释文本就立刻红，**绿的唯一原因就是注释**。
+     * 现实形态：有人把某个 panel 的 import 临时注掉，该 panel 调的控制器在 §6 里永远绿。
+     *
+     * <p>本用例把合成源码喂进<b>与 {@link #frontendGraph()} 完全相同的两条抽取路径</b>
+     * （{@link #collectLiterals} 与 IMPORT_SPECS 循环），断言注释版取不出、活版取得出——
+     * 后一半是对照组：没有它，这条测试对「抽取函数整体坏掉、什么都取不出」同样会绿。
+     */
+    @Test
+    void commentedOutImportAndCallAreNotExtractedDetectorActuallyBites() {
+        String dead = """
+                <script setup lang="ts">
+                // import ReviewChild from './ReviewChild.vue'
+                /* import Other from '../Other.vue' */
+                // await client.post('/pay/orders', body)
+                /* client.get('/pay/orders/1') */
+                const note = 'https://example.org/not/an/api'   // 字符串里的 // 不是注释，也不是 API
+                </script>
+                """;
+        String live = """
+                <script setup lang="ts">
+                import ReviewChild from './ReviewChild.vue'
+                import { useX } from '@/composables/useX'
+                const Lazy = defineAsyncComponent(() => import('./Lazy.vue'))
+                await client.post('/pay/orders', body)
+                </script>
+                """;
+
+        Set<String> deadLits = new TreeSet<>();
+        collectLiterals(new SrcFile(FRONTEND_SRC + "/views/probe/Dead.vue", dead), deadLits);
+        Set<String> liveLits = new TreeSet<>();
+        collectLiterals(new SrcFile(FRONTEND_SRC + "/views/probe/Live.vue", live), liveLits);
+
+        assertTrue(deadLits.isEmpty(),
+                "被注释掉的调用不得算作调用点（漏洞 2），实际取出：" + deadLits);
+        assertTrue(liveLits.contains("/pay/orders"),
+                "对照组：活调用必须取得出，否则说明抽取函数整体坏了而不是注释被剥了：" + liveLits);
+
+        Set<String> deadImports = importSpecsOf(dead);
+        Set<String> liveImports = importSpecsOf(live);
+        assertTrue(deadImports.isEmpty(),
+                "被注释掉的 import 不得成为闭包的边（漏洞 1），实际取出：" + deadImports);
+        assertTrue(liveImports.containsAll(Set.of("./ReviewChild.vue", "@/composables/useX", "./Lazy.vue")),
+                "对照组：三种活 import（相对 / @ 别名 / 动态）都必须取得出：" + liveImports);
+    }
+
+    /** 与 {@link #frontendGraph()} 里 IMPORT_SPECS 循环<b>逐字同一条</b>抽取路径，供自证用例复用。 */
+    private static Set<String> importSpecsOf(String text) {
+        String script = stripJsComments(text);
+        Set<String> out = new LinkedHashSet<>();
+        for (Pattern p : IMPORT_SPECS) {
+            Matcher m = p.matcher(script);
+            while (m.find()) out.add(m.group(2));
+        }
+        return out;
+    }
+
+    /**
+     * §6 豁免清单的守卫，与 {@link #waiverListItselfIsMaintained()} 同一套规矩再加两条：
+     * 不许与 §1 的清单重复登记（§1 的自动带入，两条理由会互相打架），
+     * 不许留「此刻其实走得到」的死条目——它什么都不再豁免，却会在这个控制器将来真的够不着时把红盖住。
+     */
+    @Test
+    void menuReachWaiverListItselfIsMaintained() {
+        List<String> bad = new ArrayList<>();
+        checkWaiverShape("MENU_REACH_WAIVERS", MENU_REACH_WAIVERS, bad);
+        Map<String, List<String>> controllers = scanControllers();
+        Set<String> section1 = waivedKeys(CONTROLLER_WAIVERS);
+        Map<String, String> unreachableIgnoringWaivers = MENU_REACH_WAIVERS.isEmpty()
+                ? Map.of()
+                : menuUnreachable(controllers, frontendGraph(), enabledMenuPaths(), Set.of());
+        for (Waiver w : MENU_REACH_WAIVERS) {
+            if (!controllers.containsKey(w.key())) {
+                bad.add("MENU_REACH_WAIVERS 里的 \"" + w.key() + "\" 已对不上任何 @RestController（控制器被改名或删除了？）。"
+                        + "烂条目请直接删掉——留着只会在将来悄悄豁免一个同名的新控制器。");
+            } else if (section1.contains(w.key())) {
+                bad.add("MENU_REACH_WAIVERS 里的 \"" + w.key() + "\" 已在 CONTROLLER_WAIVERS 里——§1 的豁免自动带入 §6，"
+                        + "重复登记两条理由会互相打架，删掉这一条。");
+            } else if (!unreachableIgnoringWaivers.containsKey(w.key())) {
+                bad.add("MENU_REACH_WAIVERS 里的 \"" + w.key() + "\" 此刻从菜单走得到，这条豁免什么都不再豁免——"
+                        + "删掉；留着会在它将来真的够不着时把红盖住。");
+            }
+        }
+        if (!bad.isEmpty()) {
+            fail("""
+                    【§6 豁免清单自身不合格】共 %d 条：
+
+                    %s
+
+                    豁免清单是这套断言唯一允许随版本增长的东西，所以它自己必须先干净：
+                    键唯一、理由说清是哪一类例外、条目还在管着一个真实存在且此刻确实走不到的控制器。
+                    """.formatted(bad.size(), String.join("\n", bad)));
+        }
+    }
+
+    // ==================================================================================
     // 扫描工具
     // ==================================================================================
 
@@ -757,8 +1130,15 @@ class ReachabilityTest {
     }
 
     private static void collectLiterals(SrcFile f, Set<String> out) {
+        // **先剥注释再取词**（v56 对抗复核实测的漏洞 2）：此前只有 router 文本过 stripJsComments，
+        // .vue/.ts 吃的是原文——于是 `// await client.post('/pay/orders', …)` 这种**被注释掉的调用**
+        // 仍算调用点，§1 与 §6 双双假绿。复核用对照组证的：删掉那行注释文本 → 两节同时红、点名 /api/pay。
+        // stripJsComments 按引号跟踪，字符串里的 `//`（如 'https://…'）不会被吃；
+        // 它不认正则字面量、也可能多剥 <template> 里裸露的 `http://` 后半行——
+        // 那只会「少认」不会「多认」调用点，方向是安全的。
+        String text = stripJsComments(f.text());
         for (Pattern p : API_LITERALS) {
-            Matcher m = p.matcher(f.text());
+            Matcher m = p.matcher(text);
             while (m.find()) {
                 String s = m.group(2);
                 if (!s.startsWith("/")) continue;
@@ -804,6 +1184,358 @@ class ReachabilityTest {
         }
         if (out.isEmpty()) {
             fail("frontend/shell/src/router 里一条路由都没扫到——先修扫描再看结果");
+        }
+        return out;
+    }
+
+    // ---------------- §6：前端源码图（字面量按文件归属 + 路由 → 组件 + import 传递闭包） ----------------
+
+    /** 前端源码根（{@code @/} 别名指向这里）。 */
+    private static final String FRONTEND_SRC = "frontend/shell/src";
+
+    /** 无后缀 import 的补全顺序：原样、.ts、.vue、.tsx、.js、目录 barrel。 */
+    private static final String[] RESOLVE_SUFFIXES = {"", ".ts", ".vue", ".tsx", ".js", "/index.ts", "/index.vue"};
+
+    /**
+     * import 边的取词法。三种形态：{@code … from '…'}（静态 import 与 export … from 的 barrel 重导出）、
+     * 行首的副作用 import {@code import '…'}、动态 {@code import('…')}。
+     * 不认 {@code require()}、{@code import.meta.glob}、vite 根绝对路径 {@code '/src/…'}——本仓没有这些写法；
+     * 真出现了，{@link #importWalkerResolvesEveryInRepoImportAndStopsAtTheRouteTable()} 不会报，
+     * 因为它们不以 ./ ../ @/ 开头——加写法时请一并把它们纳入取词。
+     */
+    private static final Pattern[] IMPORT_SPECS = {
+            Pattern.compile("\\bfrom\\s*(['\"])([^'\"\\n]+)\\1"),
+            Pattern.compile("(?m)^\\s*import\\s*(['\"])([^'\"\\n]+)\\1"),
+            Pattern.compile("\\bimport\\s*\\(\\s*(['\"])([^'\"\\n]+)\\1")};
+
+    private static final Pattern STATIC_IMPORT =
+            Pattern.compile("\\bimport\\s+([A-Za-z_$][\\w$]*)\\s+from\\s*(['\"])([^'\"\\n]+)\\2");
+    private static final Pattern CONST_LAZY = Pattern.compile(
+            "\\b(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*\\(\\)\\s*=>\\s*import\\(\\s*(['\"])([^'\"\\n]+)\\2");
+    private static final Pattern COMPONENT_LAZY =
+            Pattern.compile("\\bcomponent\\s*:\\s*\\(\\)\\s*=>\\s*import\\(\\s*(['\"])([^'\"\\n]+)\\1");
+    private static final Pattern COMPONENT_NAMED = Pattern.compile("\\bcomponent\\s*:\\s*([A-Za-z_$][\\w$]*)");
+    private static final Pattern CHILDREN_KEY = Pattern.compile("\\bchildren\\s*:");
+    private static final Pattern ALWAYS_ALLOWED = Pattern.compile("\\bALWAYS_ALLOWED\\s*=\\s*\\[([^\\]]*)\\]");
+    private static final Pattern QUOTED = Pattern.compile("(['\"])([^'\"\\n]*)\\1");
+
+    /** 一条路由：归一化的绝对路径 + 渲染它时挂载的组件文件链（父布局在前，页面组件在后）。 */
+    private record RouteDef(String path, List<String> components) {}
+
+    /**
+     * 前端源码图：文件 → 它 import 的仓内文件；文件 → 它的 API 调用字面量；路由表；router 的 ALWAYS_ALLOWED；
+     * 以及解析不了的仓内 import（给扫描器自检用）。探针在副本上做手术，三个 with* 都是 copy-on-write。
+     */
+    private record FrontendGraph(Map<String, Set<String>> imports, Map<String, Set<String>> literals,
+                                 List<RouteDef> routes, List<String> alwaysAllowed, List<String> unresolved) {
+        FrontendGraph withFile(String rel, Set<String> lits, Set<String> imps) {
+            Map<String, Set<String>> i = new LinkedHashMap<>(imports);
+            i.put(rel, new LinkedHashSet<>(imps));
+            Map<String, Set<String>> l = new LinkedHashMap<>(literals);
+            l.put(rel, new TreeSet<>(lits));
+            return new FrontendGraph(i, l, routes, alwaysAllowed, unresolved);
+        }
+
+        FrontendGraph withoutFile(String rel) {
+            Map<String, Set<String>> i = new LinkedHashMap<>(imports);
+            i.remove(rel);
+            Map<String, Set<String>> l = new LinkedHashMap<>(literals);
+            l.remove(rel);
+            return new FrontendGraph(i, l, routes, alwaysAllowed, unresolved);
+        }
+
+        FrontendGraph withRoute(String path, List<String> chain) {
+            List<RouteDef> r = new ArrayList<>(routes);
+            r.add(new RouteDef(path, List.copyOf(chain)));
+            return new FrontendGraph(imports, literals, r, alwaysAllowed, unresolved);
+        }
+    }
+
+    /** 一次菜单可达性计算的中间结果：入口根集合、每条路由的组件树、入口路由组件树里的全部字面量。 */
+    private record MenuReach(List<String> roots, Map<String, Set<String>> trees, Set<String> literals) {}
+
+    /** 扫 frontend/shell/src 全量 .vue/.ts，建图。字面量取词与 §1 同一组 {@link #API_LITERALS}，只是按文件归属。 */
+    private FrontendGraph frontendGraph() {
+        Map<String, SrcFile> files = new LinkedHashMap<>();
+        for (SrcFile f : sources(".vue", FRONTEND_DIRS)) files.put(f.rel(), f);
+        for (SrcFile f : sources(".ts", FRONTEND_DIRS)) files.put(f.rel(), f);
+        List<String> unresolved = new ArrayList<>();
+        Map<String, Set<String>> imports = new LinkedHashMap<>();
+        Map<String, Set<String>> literals = new LinkedHashMap<>();
+        for (SrcFile f : files.values()) {
+            Set<String> lits = new TreeSet<>();
+            collectLiterals(f, lits);
+            literals.put(f.rel(), lits);
+            Set<String> edges = new LinkedHashSet<>();
+            // **先剥注释再抽 import**（v56 对抗复核实测的漏洞 1）：此前 IMPORT_SPECS 跑在原文上，
+            // `// import ReviewChild from './ReviewChild.vue'` 这种**被注释掉的 import** 仍成为闭包的边，
+            // 于是只在 ReviewChild 里调的 /api/outpatient/review 被判「从菜单走得到」——假绿。
+            // 现实形态：有人把某个 panel 的 import 临时注掉，该 panel 调的控制器在 §6 里永远绿。
+            // 复核用对照组证的：删掉那行注释文本 → §6 红、诊断为「孤儿文件」。绿的唯一原因就是注释。
+            String script = stripJsComments(f.text());
+            for (Pattern p : IMPORT_SPECS) {
+                Matcher m = p.matcher(script);
+                while (m.find()) {
+                    String to = resolveImport(m.group(2), f.rel(), files.keySet(), unresolved);
+                    // 路由表是闭包的根，不是节点：client.ts → router → 全部懒加载页面这条边一跟，闭包就等于整个应用
+                    if (to != null && !to.startsWith(FRONTEND_SRC + "/router/")) edges.add(to);
+                }
+            }
+            imports.put(f.rel(), edges);
+        }
+        String routerRel = FRONTEND_SRC + "/router/index.ts";
+        SrcFile router = files.get(routerRel);
+        if (router == null) {
+            return fail(routerRel + " 不存在——路由表搬家了？请同步改 frontendGraph()，不要靠豁免绕过");
+        }
+        String routerText = stripJsComments(router.text());
+        List<RouteDef> routes = parseRouter(routerRel, routerText, files.keySet(), unresolved);
+        if (routes.isEmpty()) {
+            return fail(routerRel + " 里一条路由都没解析到——先修扫描再看结果");
+        }
+        List<String> alwaysAllowed = new ArrayList<>();
+        Matcher aa = ALWAYS_ALLOWED.matcher(routerText);
+        if (aa.find()) {
+            Matcher q = QUOTED.matcher(aa.group(1));
+            while (q.find()) alwaysAllowed.add(q.group(2));
+        }
+        return new FrontendGraph(imports, literals, routes, alwaysAllowed, unresolved);
+    }
+
+    /**
+     * 把一个 import 说明符解析成仓内相对路径。bare 包名（vue / element-plus / axios …）返回 null 且不算未解析——
+     * 那是 node_modules，一律不跟；{@code ./ ../ @/} 形态解析不到则记入 {@code unresolved}，由扫描器自检点名。
+     */
+    private static String resolveImport(String spec, String fromRel, Set<String> files, List<String> unresolved) {
+        String base;
+        if (spec.startsWith("@/")) {
+            base = FRONTEND_SRC + "/" + spec.substring(2);
+        } else if (spec.startsWith("./") || spec.startsWith("../")) {
+            int slash = fromRel.lastIndexOf('/');
+            String dir = slash < 0 ? "" : fromRel.substring(0, slash);
+            base = Path.of(dir, spec).normalize().toString().replace('\\', '/');
+        } else {
+            return null;
+        }
+        for (String suf : RESOLVE_SUFFIXES) {
+            if (files.contains(base + suf)) return base + suf;
+        }
+        unresolved.add(fromRel + " → '" + spec + "'");
+        return null;
+    }
+
+    /**
+     * 结构化解析 router：按 {@code routes: [ { path, component, children: [ … ] } ]} 的括号嵌套走，
+     * 子路由的相对 path 拼到父路径上，父路由的组件排在子路由组件链的前面（布局并入）。
+     * {@code component} 认两种写法：{@code () => import('…')}，以及 {@code component: X} 配
+     * {@code import X from '…'} / {@code const X = () => import('…')}。
+     */
+    private static List<RouteDef> parseRouter(String routerRel, String text, Set<String> files, List<String> unresolved) {
+        Map<String, String> named = new LinkedHashMap<>();
+        Matcher si = STATIC_IMPORT.matcher(text);
+        while (si.find()) named.put(si.group(1), si.group(3));
+        Matcher cl = CONST_LAZY.matcher(text);
+        while (cl.find()) named.put(cl.group(1), cl.group(3));
+        int at = text.indexOf("routes:");
+        if (at < 0) throw new IllegalStateException(routerRel + " 里找不到 routes: 数组——先修扫描再看结果");
+        List<RouteDef> out = new ArrayList<>();
+        parseRouteArray(text, text.indexOf('[', at), "", List.of(), named, routerRel, files, unresolved, out);
+        return out;
+    }
+
+    private static void parseRouteArray(String text, int open, String parentPath, List<String> parentChain,
+                                        Map<String, String> named, String routerRel, Set<String> files,
+                                        List<String> unresolved, List<RouteDef> out) {
+        int close = matchBracket(text, open, '[', ']');
+        int i = open + 1;
+        while (i < close) {
+            if (text.charAt(i) != '{') {
+                i++;
+                continue;
+            }
+            int end = matchBracket(text, i, '{', '}');
+            String obj = text.substring(i, end + 1);
+            String own = obj;
+            int childOpen = -1;
+            Matcher ck = CHILDREN_KEY.matcher(obj);
+            if (ck.find()) {
+                childOpen = obj.indexOf('[', ck.end());
+                int childClose = matchBracket(obj, childOpen, '[', ']');
+                own = obj.substring(0, childOpen) + obj.substring(childClose + 1);
+            }
+            Matcher pm = ROUTE_PATH.matcher(own);
+            if (pm.find()) {
+                String p = pm.group(2);
+                String abs = p.startsWith("/") ? p : parentPath.endsWith("/") ? parentPath + p : parentPath + "/" + p;
+                if (abs.isEmpty()) abs = "/";
+                List<String> chain = new ArrayList<>(parentChain);
+                String spec = null;
+                Matcher lazy = COMPONENT_LAZY.matcher(own);
+                if (lazy.find()) {
+                    spec = lazy.group(2);
+                } else {
+                    Matcher nm = COMPONENT_NAMED.matcher(own);
+                    if (nm.find()) {
+                        spec = named.get(nm.group(1));
+                        if (spec == null) {
+                            unresolved.add(routerRel + " → 路由 " + abs + " 的 component 标识符 " + nm.group(1)
+                                    + " 既不是 import X from '…' 也不是 const X = () => import('…')");
+                        }
+                    }
+                }
+                if (spec != null) {
+                    String r = resolveImport(spec, routerRel, files, unresolved);
+                    if (r != null) chain.add(r);
+                }
+                out.add(new RouteDef(abs, List.copyOf(chain)));
+                if (childOpen >= 0) {
+                    parseRouteArray(text, i + childOpen, abs, chain, named, routerRel, files, unresolved, out);
+                }
+            }
+            i = end + 1;
+        }
+    }
+
+    /** 从 {@code open} 处的开括号找到配对的闭括号，跳过字符串字面量里的括号。 */
+    private static int matchBracket(String s, int open, char o, char c) {
+        int depth = 0;
+        char quote = 0;
+        for (int i = open; i < s.length(); i++) {
+            char ch = s.charAt(i);
+            if (quote != 0) {
+                if (ch == '\\') i++;
+                else if (ch == quote) quote = 0;
+                continue;
+            }
+            if (ch == '\'' || ch == '"' || ch == '`') {
+                quote = ch;
+            } else if (ch == o) {
+                depth++;
+            } else if (ch == c && --depth == 0) {
+                return i;
+            }
+        }
+        throw new IllegalStateException("router 第 " + open + " 个字符起的 '" + o + "' 没有配对的 '" + c + "'");
+    }
+
+    /** 去掉 JS 的 {@code //} 行注释与 {@code /* *&#47;} 块注释，字符串里的内容原样保留——注释里的引号与括号不许干扰解析。 */
+    private static String stripJsComments(String s) {
+        StringBuilder out = new StringBuilder(s.length());
+        char quote = 0;
+        for (int i = 0; i < s.length(); i++) {
+            char ch = s.charAt(i);
+            if (quote != 0) {
+                out.append(ch);
+                if (ch == '\\' && i + 1 < s.length()) out.append(s.charAt(++i));
+                else if (ch == quote) quote = 0;
+                continue;
+            }
+            if (ch == '\'' || ch == '"' || ch == '`') {
+                quote = ch;
+                out.append(ch);
+            } else if (ch == '/' && i + 1 < s.length() && s.charAt(i + 1) == '/') {
+                while (i < s.length() && s.charAt(i) != '\n') i++;
+                out.append('\n');
+            } else if (ch == '/' && i + 1 < s.length() && s.charAt(i + 1) == '*') {
+                int e = s.indexOf("*/", i + 2);
+                i = e < 0 ? s.length() : e + 1;
+            } else {
+                out.append(ch);
+            }
+        }
+        return out.toString();
+    }
+
+    /** 从一组组件文件出发的 import 传递闭包（含起点）。visited 集合就是环检测：到过的不再进。 */
+    private static Set<String> closure(FrontendGraph g, List<String> seeds) {
+        Set<String> seen = new LinkedHashSet<>();
+        ArrayDeque<String> stack = new ArrayDeque<>(seeds);
+        while (!stack.isEmpty()) {
+            String f = stack.pop();
+            if (!seen.add(f)) continue;
+            for (String to : g.imports().getOrDefault(f, Set.of())) {
+                if (!seen.contains(to)) stack.push(to);
+            }
+        }
+        return seen;
+    }
+
+    /** 入口根 = MENU 行 ∪ router 的 ALWAYS_ALLOWED；入口路由（落在某个根之下）的组件树里的字面量并起来。 */
+    private static MenuReach menuReach(FrontendGraph g, List<String> menuPaths) {
+        List<String> roots = new ArrayList<>(menuPaths);
+        roots.addAll(g.alwaysAllowed());
+        Map<String, Set<String>> trees = new LinkedHashMap<>();
+        Set<String> lits = new TreeSet<>();
+        for (RouteDef r : g.routes()) {
+            Set<String> tree = closure(g, r.components());
+            trees.merge(r.path(), tree, (a, b) -> {
+                Set<String> u = new LinkedHashSet<>(a);
+                u.addAll(b);
+                return u;
+            });
+            if (coveredByMenu(r.path(), roots)) {
+                for (String f : tree) lits.addAll(g.literals().getOrDefault(f, Set.of()));
+            }
+        }
+        return new MenuReach(roots, trees, lits);
+    }
+
+    /** 从菜单走不到的控制器 → 能照着修的诊断（点名调用文件、它所在的路由、缺的是菜单还是引用）。 */
+    private Map<String, String> menuUnreachable(Map<String, List<String>> controllers, FrontendGraph g,
+                                                List<String> menuPaths, Set<String> waived) {
+        MenuReach reach = menuReach(g, menuPaths);
+        Map<String, String> out = new TreeMap<>();
+        for (Map.Entry<String, List<String>> e : controllers.entrySet()) {
+            if (waived.contains(e.getKey()) || anyLiteralHits(e.getValue(), reach.literals())) continue;
+            out.put(e.getKey(), diagnoseUnreachable(e.getKey(), e.getValue(), g, reach));
+        }
+        return out;
+    }
+
+    private String diagnoseUnreachable(String base, List<String> endpoints, FrontendGraph g, MenuReach reach) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("  · ").append(base).append("\n      源文件：").append(controllerFiles.getOrDefault(base, "?"));
+        List<String> callers = callersOf(endpoints, g);
+        if (callers.isEmpty()) {
+            sb.append("\n      全前端没有一处调用点（§1 也会红）——先按 §1 的提示补页面");
+        }
+        for (String c : callers) {
+            List<String> owning = routesWhoseTreeContains(c, reach);
+            if (owning.isEmpty()) {
+                sb.append("\n      调用点 ").append(c)
+                        .append("：没有任何路由的组件树包含它（孤儿文件——既不是路由组件，也没被任何路由组件 import）");
+            } else {
+                sb.append("\n      调用点 ").append(c).append("：在路由 ").append(owning)
+                        .append(" 的组件树里，但这些路由上面没有任何 MENU 行、也不在 router 的 ALWAYS_ALLOWED 里");
+            }
+        }
+        return sb.toString();
+    }
+
+    /** 全前端里字面量命中该控制器的文件（按路径排序，失败信息稳定）。 */
+    private static List<String> callersOf(List<String> endpoints, FrontendGraph g) {
+        List<String> out = new ArrayList<>();
+        for (Map.Entry<String, Set<String>> e : new TreeMap<>(g.literals()).entrySet()) {
+            if (anyLiteralHits(endpoints, e.getValue())) out.add(e.getKey());
+        }
+        return out;
+    }
+
+    /** 组件树包含该文件的路由。 */
+    private static List<String> routesWhoseTreeContains(String file, MenuReach reach) {
+        List<String> out = new ArrayList<>();
+        for (Map.Entry<String, Set<String>> e : reach.trees().entrySet()) {
+            if (e.getValue().contains(file)) out.add(e.getKey());
+        }
+        return out;
+    }
+
+    /** 启用的 MENU 行的 path（与 §2 同一条查询）。 */
+    private List<String> enabledMenuPaths() {
+        List<String> out = new ArrayList<>();
+        for (Map<String, Object> row : jdbc.queryForList(
+                "select path from sys_menu where type = 'MENU' and enabled and path is not null and path <> '' order by id")) {
+            out.add(String.valueOf(row.get("path")));
         }
         return out;
     }
