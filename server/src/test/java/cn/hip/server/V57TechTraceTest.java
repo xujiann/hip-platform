@@ -50,7 +50,7 @@ import static org.junit.jupiter.api.Assertions.fail;
  *       cancel_reason（查这三列直接 SQL 报错）——现在三列与 status 同一条 update 落库，
  *       下达原因 {@code reason} 原值不变，两个清单分支与质控穿透都带四列。</li>
  *   <li>{@link #slidesAttachToTechOrderOnlyWhenLegal()}：旧 {@code SlideReq} 没有 techOrderId，切片与医嘱互不认识——
- *       现在三条非法路径同返 5272 且一张片不插；合法则每张片的 tech_order_id 都等于它，医嘱<b>不自动置 DONE</b>。</li>
+ *       现在四条非法路径同返 5272 且一张片不插；合法则每张片的 tech_order_id 都等于它，医嘱<b>不自动置 DONE</b>。</li>
  *   <li>{@link #legacyCancelledRowsStayListedWithNullTrace()}：零回填——直接 SQL 造一条只改 status 的历史取消，
  *       清单仍返回它，三列就是 NULL（不拿 ordered_at 冒充取消时刻）。</li>
  *   <li>{@link #migrationV163IsZeroBackfill()} / {@link #zeroBackfillDetectorActuallyBites()}：V163 剥注释后
@@ -87,6 +87,7 @@ class V57TechTraceTest {
     private long a;
     private long b;
     private long blockA;
+    private long blockA2;     // 同标本第二块：医嘱指定 blockA 时不许挂到它（v57 审阅补）
     private long ihcOnA;      // IHC CK7，挂在 blockA，ORDERED
     private long ihcOnB;      // IHC Ki-67，挂在 B（无蜡块），ORDERED
     private String reasonOnA; // ihcOnA 的下达原因——取消后必须原值不变
@@ -114,7 +115,9 @@ class V57TechTraceTest {
 
         a = specimen("A");
         b = specimen("B");
-        blockA = gross(a, "肿物中心 " + tag);
+        var blocksA = grossBlocks(a, "肿物中心 " + tag, "切缘 " + tag);
+        blockA = blocksA.get(0);
+        blockA2 = blocksA.get(1);
         gross(b, "切缘 " + tag);
 
         reasonOnA = "HE 见腺样结构，查 CK7 定来源 " + tag;
@@ -205,7 +208,7 @@ class V57TechTraceTest {
     }
 
     // =====================================================================================
-    // ③ 切片挂接：三条非法路径同返 5272 且一张片不插；合法则逐张挂上、医嘱不自动 DONE
+    // ③ 切片挂接：四条非法路径同返 5272 且一张片不插；合法则逐张挂上、医嘱不自动 DONE
     // =====================================================================================
 
     @Test
@@ -227,7 +230,12 @@ class V57TechTraceTest {
         // 不存在的 id
         assertEquals(5272, process.slides(new SlideReq(blockA, 1, "HE", null, null, -1L), doc1).getCode());
 
-        assertEquals(0L, slidesOf(blockA, null), "四次 5272 一张片都不许插");
+        // v57 审阅补（复现后加）：医嘱指定了蜡块（ihcOnA 下达在 blockA），挂到同标本另一块 blockA2 → 5272
+        var wrongBlock = process.slides(new SlideReq(blockA2, 1, "IHC", "CK7", null, ihcOnA), doc1);
+        assertEquals(5272, wrongBlock.getCode(), wrongBlock.getMessage());
+        assertEquals(0L, slidesOf(blockA2, null), "挂错块被拒时一张片都不许插");
+
+        assertEquals(0L, slidesOf(blockA, null), "五次 5272 一张片都不许插");
         assertEquals(0L, sectionNodes(a), "被拒的切片不留 SECTION 节点");
 
         // 合法：每张新切片 tech_order_id 都等于它
@@ -395,6 +403,17 @@ class V57TechTraceTest {
     }
 
     /** 取材一块，返回蜡块 id */
+    /** 一次取材出多块（同标本第二次取材会撞 5222「已有大体所见」，所以两块必须一次出） */
+    private List<Long> grossBlocks(long specimenId, String... tissues) {
+        List<BlockReq> blocks = new java.util.ArrayList<>();
+        for (String s : tissues) blocks.add(new BlockReq(s));
+        var gr = process.grossing(new GrossingReq(specimenId, null, null, "灰白组织两块 " + tag, false, null, blocks), doc1);
+        assertEquals(0, gr.getCode(), gr.getMessage());
+        List<Long> ids = new java.util.ArrayList<>();
+        for (var r : rows(gr.getData(), "blocks")) ids.add(idOf(r));
+        return ids;
+    }
+
     private long gross(long specimenId, String tissue) {
         var gr = process.grossing(new GrossingReq(specimenId, null, null, "灰白组织一块 " + tag, false, null,
                 List.of(new BlockReq(tissue))), doc1);

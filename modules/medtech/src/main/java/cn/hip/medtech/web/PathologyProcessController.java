@@ -740,8 +740,8 @@ public class PathologyProcessController {
     /**
      * 切片：从一个蜡块产出 N 张切片，写 SECTION 流转节点。
      *
-     * <p><b>v57 挂接特检技术医嘱</b>：{@code techOrderId} 传了就校验三件事——医嘱存在、属于该蜡块所在标本、
-     * 仍是 ORDERED（三条路径同返 5272，任何一条不过就一张片也不插）。校验通过则每张新切片的
+     * <p><b>v57 挂接特检技术医嘱</b>：{@code techOrderId} 传了就校验四件事——医嘱存在、属于该蜡块所在标本、医嘱若指定了蜡块则必须是这一块、
+     * 仍是 ORDERED（四条路径同返 5272，任何一条不过就一张片也不插）。校验通过则每张新切片的
      * {@code tech_order_id} 都等于它，SECTION 节点备注带「特检医嘱#id 类型」。
      * <b>挂接不自动把医嘱置 DONE</b>：切了片不等于做完了（染色、质控都在后面），完成仍走 /done 由技师确认。
      *
@@ -796,7 +796,7 @@ public class PathologyProcessController {
         // v57：挂接特检技术医嘱（可空）。放在蜡块解析之后——「属于该蜡块所在标本」要先知道标本是谁
         Map<String, Object> techOrder = null;
         if (req.techOrderId() != null) {
-            techOrder = one("select id, specimen_id, tech_type, tech_item, status from path_tech_order where id = ?",
+            techOrder = one("select id, specimen_id, block_id, tech_type, tech_item, status from path_tech_order where id = ?",
                     req.techOrderId());
             if (techOrder == null) {
                 return R.fail(5272, "切片挂接的特检技术医嘱不存在：techOrderId=" + req.techOrderId());
@@ -804,6 +804,13 @@ public class PathologyProcessController {
             if (!specimenId.equals(asLongObj(techOrder.get("specimen_id")))) {
                 return R.fail(5272, "特检技术医嘱 #" + req.techOrderId() + " 不属于该蜡块所在标本（医嘱标本 "
                         + techOrder.get("specimen_id") + "，蜡块标本 " + specimenId + "）");
+            }
+            // v57 审阅补（主控复现后加）：医嘱若指定了蜡块，只能挂到这一块——同一标本两条 CK7 各指一块时不许挂错块；
+            // 医嘱未指定蜡块（补取材等，V144 注释「可空」）才可挂任意块
+            Long orderBlock = asLongObj(techOrder.get("block_id"));
+            if (orderBlock != null && !orderBlock.equals(req.blockId())) {
+                return R.fail(5272, "特检技术医嘱 #" + req.techOrderId() + " 下达在蜡块 " + orderBlock
+                        + "，不能挂到蜡块 " + req.blockId() + " 的切片上（医嘱未指定蜡块时才可挂任意块）");
             }
             if (!"ORDERED".equals(techOrder.get("status"))) {
                 return R.fail(5272, "特检技术医嘱 #" + req.techOrderId() + " 不是待执行状态（当前 "

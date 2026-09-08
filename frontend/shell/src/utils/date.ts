@@ -39,7 +39,8 @@ export function localDateOffset(days: number): string {
 // ---------------------------------------------------------------------------
 const BUSINESS_TZ = 'Asia/Shanghai'
 const ISO_PREFIX = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2})?/
-const TZ_SUFFIX = /(Z|[+-]\d{2}:?\d{2})$/
+// 偏移形态：Z / ±hh:mm / ±hhmm / ±hh（后两种是 PG 文本格式与部分序列化器的写法，v57 审阅补）
+const TZ_SUFFIX = /(Z|[+-]\d{2}(?::?\d{2})?)$/
 const dtf = new Intl.DateTimeFormat('en-CA', {
   timeZone: BUSINESS_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
   hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
@@ -51,33 +52,38 @@ function businessParts(d: Date): Record<string, string> {
   return m
 }
 
+/**
+ * 能换算的输入 → 业务时区各部分；否则 null（调用方按「已是业务时间」原样截取）。
+ * · Date 对象：直接换算（旧裸切对 Date 会得到 'Tue Sep 08 2' 这类垃圾）；
+ * · 带偏移的字符串：先把 ±hhmm / ±hh 归一成 ±hh:mm——V8 对 '+0800' 报 Invalid Date、对 '-0500' 却能解析，
+ *   同一形态两种结果，不归一就是静默退回裸切。
+ */
+function partsOf(v: unknown): Record<string, string> | null {
+  if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : businessParts(v)
+  const s = String(v)
+  if (!ISO_PREFIX.test(s) || !TZ_SUFFIX.test(s)) return null
+  const norm = s.replace(/([+-]\d{2})(\d{2})$/, '$1:$2').replace(/([+-]\d{2})$/, '$1:00')
+  const d = new Date(norm)
+  return Number.isNaN(d.getTime()) ? null : businessParts(d)
+}
+
 /** 时间戳 → 「YYYY-MM-DD HH:mm」（业务时区）；空值给 `empty`（默认「—」，与病理 format.ts 同约定） */
 export function fmtDateTime(v: unknown, empty = '—'): string {
   if (v === null || v === undefined || v === '') return empty
+  const p = partsOf(v)
+  if (p) return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`
   const s = String(v)
   if (!ISO_PREFIX.test(s)) return s
-  if (TZ_SUFFIX.test(s)) {
-    const d = new Date(s)
-    if (!Number.isNaN(d.getTime())) {
-      const p = businessParts(d)
-      return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`
-    }
-  }
   return s.length >= 16 ? s.slice(0, 16).replace('T', ' ') : s
 }
 
 /** 时间戳/日期 → 「YYYY-MM-DD」（业务时区）；纯日期串原样；空值给 `empty` */
 export function fmtDate(v: unknown, empty = '—'): string {
   if (v === null || v === undefined || v === '') return empty
+  const p = partsOf(v)
+  if (p) return `${p.year}-${p.month}-${p.day}`
   const s = String(v)
   if (!ISO_PREFIX.test(s)) return s
-  if (TZ_SUFFIX.test(s)) {
-    const d = new Date(s)
-    if (!Number.isNaN(d.getTime())) {
-      const p = businessParts(d)
-      return `${p.year}-${p.month}-${p.day}`
-    }
-  }
   return s.slice(0, 10)
 }
 
@@ -87,15 +93,10 @@ export function fmtDate(v: unknown, empty = '—'): string {
  */
 export function fmtDateTimeSec(v: unknown, empty = '—'): string {
   if (v === null || v === undefined || v === '') return empty
+  const p = partsOf(v)
+  if (p) return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}`
   const s = String(v)
   if (!ISO_PREFIX.test(s)) return s
-  if (TZ_SUFFIX.test(s)) {
-    const d = new Date(s)
-    if (!Number.isNaN(d.getTime())) {
-      const p = businessParts(d)
-      return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}`
-    }
-  }
   return s.length >= 16 ? s.slice(0, 19).replace('T', ' ') : s
 }
 

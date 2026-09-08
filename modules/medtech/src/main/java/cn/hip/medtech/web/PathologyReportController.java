@@ -691,11 +691,14 @@ public class PathologyReportController {
     /** 完成特检技术医嘱（条件更新 + 受影响行数判定，不做读-判-写） */
     @PutMapping("/tech-orders/{id}/done")
     public R<Map<String, Object>> doneTechOrder(@PathVariable Long id, Authentication auth) {
+        // v57 审阅补：与 cancelTechOrder 同口径——完成人解析不出就不叫留痕，不把 done_by 静默写成 NULL
+        Long uid = currentUserService.idOf(auth);
+        if (uid == null) return R.fail(5270, "无法识别当前登录用户，不能完成特检技术医嘱");
         var updated = jdbc.queryForList("""
                 update path_tech_order set status = 'DONE', done_at = now(), done_by = ?
                 where id = ? and status = 'ORDERED'
                 returning id, specimen_id, tech_type, tech_item, status, done_at
-                """, currentUserService.idOf(auth), id);
+                """, uid, id);
         if (updated.isEmpty()) return R.fail(5268, "特检技术医嘱不存在或不是待执行状态：id=" + id);
         return R.ok(new LinkedHashMap<>(updated.get(0)));
     }

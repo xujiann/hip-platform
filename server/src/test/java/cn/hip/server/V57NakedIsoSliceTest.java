@@ -76,19 +76,28 @@ class V57NakedIsoSliceTest {
     private static final List<Waiver> WAIVERS = List.of();
 
     // ==================================================================================
-    // 四种语法形态
+    // 四族语法形态（v57 审阅后由字面改为形态族）
     // ==================================================================================
 
-    private static final Pattern SLICE_16 = Pattern.compile("\\.slice\\(0,\\s*16\\)");
-    private static final Pattern REPLACE_T_SPACE = Pattern.compile("\\.replace\\('T',\\s*' '\\)");
-    private static final Pattern TODAY_UTC = Pattern.compile("toISOString\\(\\)\\.slice\\(0,\\s*10\\)");
-    private static final Pattern SLICE_10 = Pattern.compile("\\.slice\\(0,\\s*10\\)");
-    /** 整个标识符以这些词结尾才算「时间戳/日期接收者」（等价于题面的 {@code (_at|At|_date|Date|date|time|Time)\b}）。 */
-    private static final Pattern DATE_ISH_IDENT = Pattern.compile("(_at|At|_date|Date|date|time|Time)$");
+    // v57 独立审阅往 AuditView 塞了 24 行探针，首版只抓到 7 行——slice(5,16)、裸 slice(0,19)、substring/substr、
+    // 双引号/正则 replace、replaceAll、split('T')、toISOString().substring、右括号前空格、接收者 deadline/ts/_on 全漏。
+    // 现在按「形态族」而不是「字面」匹配：
+    /** 时刻裸切：slice/substring/substr 从 0/5/11 切到 13/16/19 或 -6——这些起止只对 ISO 时间戳有意义 */
+    private static final Pattern SLICE_16 = Pattern.compile(
+            "\\.(?:slice|substring|substr)\\(\\s*(?:0|5|11)\\s*,\\s*(?:13|16|19|-6)\\s*\\)");
+    /** 把 ISO 的 T 画成空格 / 按 T 劈开：replace|replaceAll 的字符串（单双引号）或正则形式、split('T') */
+    private static final Pattern REPLACE_T_SPACE = Pattern.compile(
+            "\\.(?:replace|replaceAll)\\(\\s*(?:[\'\"]T[\'\"]|/T/g?)\\s*,\\s*[\'\"] [\'\"]\\s*\\)|\\.split\\(\\s*[\'\"]T[\'\"]\\s*\\)");
+    private static final Pattern TODAY_UTC = Pattern.compile(
+            "toISOString\\(\\)\\.(?:slice|substring|substr)\\(\\s*0\\s*,\\s*10\\s*\\)");
+    private static final Pattern SLICE_10 = Pattern.compile("\\.(?:slice|substring|substr)\\(\\s*0\\s*,\\s*10\\s*\\)");
+    /** 整个标识符以这些词结尾才算「时间戳/日期接收者」；ts 只认整词 ts / _ts / …Ts，免得 counts 误报 */
+    private static final Pattern DATE_ISH_IDENT = Pattern.compile(
+            "(_at|At|_date|Date|date|time|Time|_on|On|stamp|Stamp|deadline|Deadline|^ts|_ts|Ts)$");
     private static final Pattern IDENT = Pattern.compile("[A-Za-z_$][\\w$]*");
 
-    static final String FORM_SLICE_16 = "slice(0,16) 裸切到分钟";
-    static final String FORM_REPLACE_T = "replace('T',' ') 把 ISO 直接画成时刻";
+    static final String FORM_SLICE_16 = "slice/substring/substr 裸切到时刻（0|5|11 → 13|16|19|-6）";
+    static final String FORM_REPLACE_T = "replace('T',' ') / split('T') 把 ISO 直接画成时刻";
     static final String FORM_TODAY_UTC = "toISOString().slice(0,10) 取的是 UTC 的今天";
     static final String FORM_DATE_SLICE_10 = "时间戳/日期接收者 slice(0,10) 当日期显示";
 
@@ -225,6 +234,39 @@ class V57NakedIsoSliceTest {
         List<Hit> near = scan(new SrcFile(FRONTEND_SRC + "/views/probe/Near.ts",
                 "export const a = String(row.created_at).slice(0, 100)\nexport const b = list.slice(0, 1)\n"));
         assertTrue(near.isEmpty(), "slice(0, 100) / slice(0, 1) 不是裸切形态，不得误报：" + near);
+    }
+
+    /** v57 独立审阅塞了 24 行探针、首版只抓到 7 行：把漏网的 17 种变体逐行钉死，三行非时间不得误报。 */
+    @Test
+    void variantFormsDetectorActuallyBites() {
+        String live = """
+                const p02 = String(v.measuredAt).slice(5, 16)
+                const p04 = String(row.created_at).substring(0, 16)
+                const p05 = String(row.created_at).substr(0, 16)
+                const p06 = String(row.created_at).slice(0, 19)
+                const p07 = String(row.created_at).slice(0, 16).replace("T", " ")
+                const p08 = String(row.created_at).split('T')[0]
+                const p09 = String(row.created_at).slice(11, 16)
+                const p10 = String(row.admitAt).substring(0, 10)
+                const p11 = new Date().toISOString().substring(0, 10)
+                const p12 = String(row.created_at).slice(0,16 )
+                const p13 = String(row.deadline).slice(0, 10)
+                const p14 = String(row.created_at).slice(0, 13)
+                const p15 = String(row.created_at).replace(/T/, ' ')
+                const p16 = String(row.created_at).replaceAll('T', ' ')
+                const p19 = String(row.ts).slice(0, 10)
+                const p20 = String(row.signed_on).slice(0, 10)
+                const p23 = String(row.created_at).slice(0, -6)
+                const n1 = String(memo).substring(0, 10)
+                const n2 = list.slice(0, 1)
+                const n3 = String(row.counts).slice(0, 10)
+                """;
+        List<Hit> hits = scan(new SrcFile(FRONTEND_SRC + "/views/probe/Variants.ts", live));
+        Set<Integer> got = new java.util.TreeSet<>();
+        for (Hit h : hits) got.add(h.line());
+        Set<Integer> expected = new java.util.TreeSet<>();
+        for (int i = 1; i <= 17; i++) expected.add(i);
+        assertEquals(expected, got, "17 种变体每一行都得抓到、末三行（截文本 / 取一个元素 / counts）不得误报。实际：" + hits);
     }
 
     // ==================================================================================

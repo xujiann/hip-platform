@@ -2,6 +2,74 @@
 
 版本纪律：语义化版本；平台迁移段 V1–V999，实施段 V10000+；升级 = 停服→备份→换产物→自动前滚→回归抽查（多医院部署操作指南 §三）。
 
+## 1.5.7（2026-09-08）
+
+v57 核账坐实四条缺陷的修复——**2530 / 2558 / 2563 / 2576**。迁移 V163、错误码 5271–5272、四车道 + 主控补丁。
+
+**从哪来**：v55/v56 交付后二次复核 10 条 ★，1 条上调（2553，v3 首次上调），4 条被反驳者打回。
+主控按规矩**逐条实测**后四条全部坐实——不是「看起来像」，是读到了代码与线上的字节：
+- **2530** 旧页「专科流程」（菜单 47，启用中，授 ADMIN/DOCTOR_OUTP/TECHNICIAN）的「诊断」按钮把**写死的假大体/镜下文本**
+  整体写进 `diagnose` 端点，而端点是无条件 `set gross_finding = ?`——取材工位写的大体所见被静默抹掉，
+  写进去的还是伪造的临床内容。
+- **2558** 后端 timestamptz 线格式实测 `2026-09-08T05:00:44.229+00:00`，而全 shell **43 处**
+  `slice(0,16)/slice(0,10)` 裸切——病理、药房、护理的每一个时刻早 8 小时；门户报告日期在北京 0–8 点显示前一天。
+- **2563** `path_tech_order` 无 cancelled_at/cancelled_by/cancel_reason、`path_slide` 无 tech_order_id——
+  取消端点的返回体自己写着「本版无 cancel_reason 列，取消原因未留痕」；免疫组化加做的片子与它的医嘱互不认识。
+- **2576** 患者门户按 `status='DIAGNOSED'` 发布病理报告，院内「已签发」看的是 `report_issued_at`——
+  **患者能看到未签发的诊断**。四条里最重。
+
+**交付**：
+- **地基**（主控先落、再分车道）：`utils/date.ts` 新增 `fmtDateTime/fmtDate`（车道 B 又加 `fmtDateTimeSec/fmtMonthDayTime`）：
+  **字符串带 Z/±hh:mm 才换算到 Asia/Shanghai，不带偏移原样截取**——43 处不必逐一考证字段类型即可统一替换，函数按形态自判。
+  14 例自测（跨午夜、跨年、+08:00 已是业务时间、LocalDateTime 透传、h23 无 24:xx）。
+- **A（2530）**：`diagnose` 大体/镜下**空白即保留原值**（`coalesce(nullif(btrim(?),''), gross_finding)`，非空 trim 后覆盖——
+  工作台预填后编辑的合法路径契约不变），返回 `grossKept/microKept` 事实；旧页删掉伪造写入、按钮改跳病理工作台。
+  `V57GrossKeepTest` 5 例，**反向事实实测**：退回旧 SQL 三例变红（`but was: <>`）。
+- **B（2558）**：清单内 42 处改走 utils/date；`V57NakedIsoSliceTest` 4 例——剥注释、按语法形态匹配、
+  `utils/date.ts` 是唯一合法实现且被当作**活的对照组**、WAIVERS 自维护（烂条目逼你删）。
+  **主控补漏**：我当初的 grep 只抓 `slice(0,16)/slice(0,10)`，漏了 `slice(0,19)`、`slice(5,16)`、`replace().slice()` 三种变体，
+  车道 B 按纪律未越界、登记为 waiver 并逐条写明改法；合并后主控照单改完清单外 7 处（VitalsChart/Patient360/Discharge/
+  Print×2/Admission/Dashboard），WAIVERS 归零。
+- **C（2563）**：V163 三列 + `path_slide.tech_order_id` + 部分索引，**零 update**（历史 CANCELLED 行三列永远 NULL，
+  统计层显式分档，同 V146）；cancel 必填 `reason` → **5271**（缺失/空白/>255 同码，取消原因与下达原因分列）；
+  slides 可选 `techOrderId` → **5272**（不存在/不属于该蜡块所在标本/非 ORDERED 同码），不自动置 DONE；
+  清单与质控穿透只增列 cancelled_at/cancelled_by_name/cancel_reason/slide_count；两处取消 UI 改弹原因、制片表单可挂医嘱。
+  `V57TechTraceTest` 7 例，零回填探针带对照组（V22:40 那条真 update 能被抓到）。
+- **D（2576）**：门户 `/my/exam-reports` 的 PATH 分支改按 `report_issued_at is not null and rejected_at is null` 发布、
+  报告日期取签发时刻，EXAM 分支逐字节不动；`V57PortalIssueTest` 2 例（**反向事实实测**：回退门户 SQL 后红在
+  「已诊断未签发不得出现在患者端」，且 report_date 落的是被回拨两天的 diagnosed_at，证明旧代码读的是它；
+  旁人 token 看不到；签发日期与签发响应微秒级相等）；`tools/e2e-v57-audit.py` 四段在**新打的胖包（65.8 MB）+ 空库 + 8082**
+  上实跑通过，并回归 e2e-v48-pathology 8/8、e2e-v55-reach 4/4（契约变了老用例仍过）；登记进 CI。
+- **错误码**：只为 2563 新开 5271–5272，在 v48 病理段 5260–5279「诊断与报告」子段内续用；其余三条是行为修正，**不写代码就不占码**。
+
+**独立审阅（对抗式，高 effort，各自 worktree）7 条发现，主控逐条处置**：
+- **[medium，已复现并修]** 切片挂接只校验「同标本」不校验「医嘱指定的蜡块」：下达在 1 号蜡块的 CK7 医嘱能挂到
+  同标本 2 号蜡块的片子上（审阅者写探针实测 code=0）。补第四条 5272 路径「医嘱指定了蜡块却挂到别的块」，
+  `V57TechTraceTest` 一次取材出两块后钉住（同标本二次取材会撞 5222，两块必须一次出）；登记表同步改「四条路径同码」。
+- **[low，已修]** 扫描器只认四种字面：审阅者塞 24 行探针只抓到 7 行——`slice(5,16)`、裸 `slice(0,19)`、`substring/substr`、
+  双引号/正则 `replace`、`replaceAll`、`split('T')`、`toISOString().substring`、右括号前空格、接收者 `deadline/ts/_on` 全漏。
+  改为按**形态族**匹配（slice|substring|substr × 0|5|11 → 13|16|19|-6；T→空格的四种写法与 split；接收者词尾扩到
+  _on/stamp/deadline/整词 ts），新增 `variantFormsDetectorActuallyBites` 把 17 种变体逐行钉死、3 行非时间不得误报；
+  主树上无新误报（`String(d.day).slice(5,10)` 是日期列，不在族内）。
+- **[low，已修]** `date.ts`：V8 对 `+0800`（无冒号）报 Invalid Date 而 `-0500` 能解析，同一形态两种结果；PG 文本格式 `+00`
+  两位偏移不匹配；传 Date 对象整串回显。现在 ±hhmm/±hh 先归一成 ±hh:mm、Date 对象直接换算，自测 14 → 21 例。
+  当前线格式恒为 `+00:00`，这三条都是「将来某端点换了写法也不会静默退回裸切」的加固。
+- **[low，已修]** `doneTechOrder` 把解析不出的当前用户静默写成 done_by=NULL，与同批 cancel 的「留痕缺了谁就不叫留痕」口径不一——补 5270 守卫。
+- **[low，记录不改]** 取消原因超长按 UTF-16 单元数判，含 emoji 时比 varchar(255) 更早拒——只会多拒不会撞库，与本类既有 reason 口径相同。
+- 审阅者**查过没发现**的：diff 内零时间字面量/零 `LocalDate.now()`/零 `systemDefault()`；diagnose 返回体、cancel 必填 body、
+  slides techOrderId 的全部调用方逐个核过；V163 外键无 ON DELETE 但全仓无删 path_tech_order/sys_user 的路径；
+  跨标本挂接 5272 有效、cancelled_by 只取自登录态；门户首页三处 fmtDate 的输入全是 timestamptz。
+  审阅者自己复现了两条车道声明（退回 diagnose SQL → GrossKeep 3/5 红；V163 塞一行 update → 零回填探针红）。
+
+**主控独立验证（不看车道自述）**：
+- 修复后审计日志页显示 `2026-09-08 13:28:43`，库内该行 `13:28:43+08`，线上的字节是 `05:28:43+00:00`——修复前这页画的是 05:28:43。
+- 合并后全 shell 裸切（含三种变体）**归零**；`vue-tsc` 通过。
+- 三车道分支 **文件零重叠**、各自 worktree + 各自测试库并行；合并后全量 **953 例 0 失败 1 跳过**（937 + 16）；
+  审阅修补 + 车道 D 合入后再跑全量：**956 例 0 失败 1 跳过**（937 → 956）。
+
+**踩坑记一笔**：worktree 工具给车道的起点是 **851b2d5**（会话起始 HEAD）而不是当时的 main（d5c91ac 地基），
+三车道里两条自己 `reset --hard` 对齐、A 由主控趁其未动手时快进——提示里把基线 sha 写死并要求 `reset --hard` 从此是固定动作。
+
 ## 1.5.6（2026-09-08）
 
 v56 可达性断言第二层——「从菜单出发能否走到」。**只改测试**：零迁移、零错误码、零业务代码。
