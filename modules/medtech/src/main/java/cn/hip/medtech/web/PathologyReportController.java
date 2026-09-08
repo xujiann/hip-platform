@@ -69,11 +69,13 @@ import java.util.Set;
  *       留一个静默漏报的口子。本控制器不碰危急值，也不新建危急值表。</li>
  *   <li><b>不做图像</b>——{@code MultipartFile} 全仓零命中，平台没有文件上传基础设施，
  *       大体图像、数字切片、免疫组化图片一概不做。</li>
- *   <li><b>取消技术医嘱不留原因</b>——{@code path_tech_order} 没有 cancel_reason 列，
- *       本版不新建迁移也不往 {@code reason} 里塞取消原因（那会覆盖下达时的原因）。</li>
+ *   <li><b>取消技术医嘱不留原因——v57 已修</b>：V163 给 {@code path_tech_order} 补了
+ *       cancelled_at / cancelled_by / cancel_reason 三列，{@link #cancelTechOrder} 改为必填取消原因（5271），
+ *       三列与 status 在同一条 update 里落库；<b>取消原因与下达原因分列</b>，{@code reason} 一个字节不动。
+ *       历史 CANCELLED 行三列永远 NULL（零回填，同 V146 cancelled_at 的处置），清单照常返回它们。</li>
  * </ul>
  *
- * <p><b>错误码 5260–5270</b>（v48 诊断与报告段 5260–5279，5271–5279 空置未启用）：
+ * <p><b>错误码 5260–5272</b>（v48 诊断与报告段 5260–5279；5271–5272 v57 已用，5273–5279 空置）：
  * <ul>
  *   <li>5260 标本不存在（全部端点的「查无此标本」同码）</li>
  *   <li>5261 标本状态不允许该操作（已拒收 / 已签发 / 重复签名 / 并发抢写——归并同码，消息区分）</li>
@@ -86,7 +88,10 @@ import java.util.Set;
  *       下达、按类型筛选、按状态筛选同码）</li>
  *   <li>5268 特检技术医嘱不存在或非待执行状态（完成、取消两条路径同码）</li>
  *   <li>5269 蜡块不存在或不属于该标本</li>
- *   <li>5270 无法识别当前登录用户，不能签名</li>
+ *   <li>5270 无法识别当前登录用户，不能签名（v57 起取消技术医嘱同码：取消人解析不出就不叫留痕）</li>
+ *   <li>5271 技术医嘱取消原因非法（v57：缺失 / 空白 / 超 255 字三条路径同码）</li>
+ *   <li>5272 切片挂接的技术医嘱非法（v57，<b>由 {@link PathologyProcessController#slides} 返回</b>：
+ *       医嘱不存在 / 不属于该蜡块所在标本 / 不是 ORDERED 三条路径同码）</li>
  * </ul>
  */
 @RestController
@@ -695,24 +700,43 @@ public class PathologyReportController {
         return R.ok(new LinkedHashMap<>(updated.get(0)));
     }
 
+    public record CancelTechOrderReq(String reason) {}
+
     /**
-     * 取消特检技术医嘱。
+     * 取消特检技术医嘱（v57 起留痕）。
      *
-     * <p><b>缺口如实标注</b>：{@code path_tech_order} 没有 cancel_reason 列，取消原因无处存放。
-     * 本版<b>不接收取消原因参数</b>，也不把它塞进 {@code reason}（那会覆盖下达时的原因，
-     * 让「当初为什么要做这个免疫组化」永久丢失）。需要留痕请给主控加列。
+     * <p>{@code reason} 必填——缺失 / 空白 / 超 {@value #REASON_MAX} 字三条路径同返 5271：
+     * 取消是诊断环节的一次决策，「为什么不做了」与「当初为什么要做」同样要留。
+     * <b>取消原因写 {@code cancel_reason}，下达原因 {@code reason} 一个字节不动</b>——两者分列是 V163 的既定口径。
+     *
+     * <p>取消时刻、取消人、取消原因与 status 在<b>同一条 update</b> 里落库（条件更新 + 受影响行数判定，
+     * 不做读-判-写），不存在「状态变了、留痕没写」的中间态；时刻取库端 {@code now()}，与 done_at 同源。
+     * 取消人解析不出返 5270——留痕缺了「谁」就不叫留痕，不把 cancelled_by 静默写成 NULL。
+     * 5268（不存在 / 不是待执行）路径不变。
+     *
+     * <p>历史 CANCELLED 行（V163 之前取消的）三列永远为 NULL，本端点不回填，清单端点照常返回它们。
      */
     @PutMapping("/tech-orders/{id}/cancel")
-    public R<Map<String, Object>> cancelTechOrder(@PathVariable Long id) {
+    public R<Map<String, Object>> cancelTechOrder(@PathVariable Long id,
+                                                  @RequestBody(required = false) CancelTechOrderReq req,
+                                                  Authentication auth) {
+        String reason = req == null ? null : trim(req.reason());
+        if (reason == null) return R.fail(5271, "技术医嘱取消原因不能为空：id=" + id);
+        if (reason.length() > REASON_MAX) {
+            return R.fail(5271, "技术医嘱取消原因超长（最多 " + REASON_MAX + " 字，收到 " + reason.length() + " 字）");
+        }
+        Long uid = currentUserService.idOf(auth);
+        if (uid == null) return R.fail(5270, "无法识别当前登录用户，不能取消特检技术医嘱（取消人须留痕）");
+
         var updated = jdbc.queryForList("""
-                update path_tech_order set status = 'CANCELLED'
-                where id = ? and status = 'ORDERED'
-                returning id, specimen_id, tech_type, tech_item, status
-                """, id);
+                update path_tech_order
+                   set status = 'CANCELLED', cancelled_at = now(), cancelled_by = ?, cancel_reason = ?
+                 where id = ? and status = 'ORDERED'
+                 returning id, specimen_id, block_id, tech_type, tech_item, reason, status,
+                           cancelled_at, cancelled_by, cancel_reason
+                """, uid, reason, id);
         if (updated.isEmpty()) return R.fail(5268, "特检技术医嘱不存在或不是待执行状态：id=" + id);
-        var body = new LinkedHashMap<>(updated.get(0));
-        body.put("note", "本版无 cancel_reason 列，取消原因未留痕（不覆盖下达原因）");
-        return R.ok(body);
+        return R.ok(new LinkedHashMap<>(updated.get(0)));
     }
 
     /**
@@ -729,6 +753,11 @@ public class PathologyReportController {
      * （须同时给出，跨度 ≤ 366 天）。日期与口径参数非法返 5800。<b>全部不传 = 旧行为不变</b>。
      * 返回行新增 {@code hours_since_ordered}（距开单小时数，原始事实，不判超时）与
      * {@code tech_type_name}——只增不改。
+     *
+     * <p><b>v57 取消留痕与切片挂接</b>：两个分支的返回行再增 {@code cancelled_at} / {@code cancelled_by} /
+     * {@code cancelled_by_name} / {@code cancel_reason}（V163 之前取消的历史行四列为 NULL，前端须显式标「历史取消」
+     * 而不是画成 0 或空白）与 {@code slide_count}（{@code path_slide.tech_order_id = t.id} 的计数，
+     * 即这条医嘱实际产出了几张片）。仍是只增不改。
      */
     @GetMapping("/tech-orders")
     public R<Map<String, Object>> techOrders(@RequestParam(required = false) Long specimenId,
@@ -778,6 +807,8 @@ public class PathologyReportController {
                        t.tech_type, t.tech_item, t.reason, t.status,
                        t.ordered_by, ob.real_name as ordered_by_name, t.ordered_at,
                        t.done_by, db.real_name as done_by_name, t.done_at,
+                       t.cancelled_at, t.cancelled_by, cb.real_name as cancelled_by_name, t.cancel_reason,
+                       (select count(*) from path_slide sl where sl.tech_order_id = t.id) as slide_count,
                        s.barcode, s.path_no, s.part_no, s.specimen_type, s.urgent,
                        p.id as patient_id, p.patient_no, p.name as patient_name,
                        round((extract(epoch from (now() - t.ordered_at)) / 3600)::numeric, 1)
@@ -787,6 +818,7 @@ public class PathologyReportController {
                 left join path_block b on b.id = t.block_id
                 left join sys_user ob on ob.id = t.ordered_by
                 left join sys_user db on db.id = t.done_by
+                left join sys_user cb on cb.id = t.cancelled_by
                 left join outp_order oo on oo.id = s.order_id
                 left join outp_registration r on r.id = oo.registration_id
                 left join inp_order io on io.id = s.inp_order_id
@@ -846,7 +878,8 @@ public class PathologyReportController {
         body.put("to", win == null ? null : win.to());
         body.put("note", "不传 specimenId 为全院清单，默认只看 ORDERED，status=ALL 看全状态；"
                 + "传 specimenId 为该标本清单，默认全状态。hoursSinceOrdered 是距开单的小时数（原始事实），"
-                + "本端点不判超时。");
+                + "本端点不判超时。cancelled_at/cancelled_by_name/cancel_reason 为 NULL 且 status=CANCELLED 的是"
+                + "V163 之前的历史取消（零回填）；slide_count 是挂接到该医嘱的切片数。");
         return R.ok(body);
     }
 

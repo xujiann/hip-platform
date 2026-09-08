@@ -256,12 +256,19 @@
         <el-input v-model="slideForm.stainItem" maxlength="64" show-word-limit
                   placeholder="如 CK7、Ki-67、PAS" />
       </el-form-item>
+      <el-form-item label="挂接特检医嘱">
+        <el-select v-model="slideForm.techOrderId" clearable placeholder="不挂接（普通切片）" style="width: 100%"
+                   @change="onTechOrderPick">
+          <el-option v-for="t in techOrderOptions" :key="Number(t.id)" :value="Number(t.id)" :label="techOrderLabel(t)" />
+        </el-select>
+        <span class="muted">只列本标本「待执行」的特检医嘱；挂接不会把医嘱置为已完成，完成仍在特检工位由技师确认</span>
+      </el-form-item>
       <el-form-item label="备注">
         <el-input v-model="slideForm.remark" maxlength="255" show-word-limit />
       </el-form-item>
     </el-form>
     <el-alert type="info" :closable="false" show-icon
-              title="新建切片尚未染色（染色时刻为空）；玻片打码机属设备直连，平台只给编码字符串，不负责打印。" />
+              title="新建切片尚未染色（染色时刻为空）；玻片打码机属设备直连，平台只给编码字符串，不负责打印。挂接了特检医嘱的切片会带 tech_order_id，医嘱清单据此计「挂接切片数」。" />
     <template #footer>
       <el-button size="small" @click="slideDialog = false">取消</el-button>
       <el-button type="primary" size="small" :loading="saving" @click="submitSlide">登记切片</el-button>
@@ -427,12 +434,45 @@ function progressTag(v: string): 'success' | 'warning' | 'info' {
 /* ---------------- 切片 ---------------- */
 const slideDialog = ref(false)
 const currentBlock = ref<Row>({})
-const slideForm = reactive({ count: 1, stainType: 'HE', stainItem: '', remark: '' })
+const slideForm = reactive({
+  count: 1, stainType: 'HE', stainItem: '', remark: '',
+  techOrderId: null as number | null,   // v57：可选挂接的特检技术医嘱；空 = 普通切片（旧契约）
+})
 
-function openSlide(row: Row) {
+/**
+ * 本标本待执行的特检技术医嘱——挂接下拉的唯一来源，取自
+ * {@code GET /pathology/report/tech-orders?specimenId=…&status=ORDERED}
+ * （标本分支默认全状态，这里显式只要 ORDERED：别的状态后端 5272 会拒，列出来只会让技师选了再被打回）。
+ */
+const techOrderOptions = ref<Row[]>([])
+
+async function openSlide(row: Row) {
   currentBlock.value = row
-  Object.assign(slideForm, { count: 1, stainType: 'HE', stainItem: '', remark: '' })
+  Object.assign(slideForm, { count: 1, stainType: 'HE', stainItem: '', remark: '', techOrderId: null })
+  techOrderOptions.value = []
   slideDialog.value = true
+  const d = await client.get('/pathology/report/tech-orders', {
+    params: { specimenId: Number(row.specimen_id), status: 'ORDERED' },
+  }).then((r) => r.data.data as Row).catch(() => ({} as Row))
+  techOrderOptions.value = (d.items ?? []) as Row[]
+}
+
+function techOrderLabel(t: Row): string {
+  const item = t.tech_item ? ` ${String(t.tech_item)}` : ''
+  const block = t.block_code ? `（${String(t.block_code)}）` : ''
+  return `#${String(t.id)} ${String(t.tech_type_name ?? t.tech_type)}${item}${block}`
+}
+
+/** 特检类型 → 染色类型（PathologyProcessController.STAIN_TYPES 四档）；深切 / 重切 / 补取材没有对应染色类型，不动 */
+const TECH_TO_STAIN: Record<string, string> = { IHC: 'IHC', SPECIAL_STAIN: 'SPECIAL', MOLECULAR: 'MOLECULAR' }
+
+/** 选中医嘱时预填染色类型与项目——项目只填空白项，不覆盖技师已手填的内容 */
+function onTechOrderPick(id: unknown) {
+  const hit = techOrderOptions.value.find((t) => Number(t.id) === Number(id))
+  if (!hit) return
+  const st = TECH_TO_STAIN[String(hit.tech_type)]
+  if (st) slideForm.stainType = st
+  if (!slideForm.stainItem && hit.tech_item) slideForm.stainItem = String(hit.tech_item)
 }
 
 async function submitSlide() {
@@ -444,6 +484,7 @@ async function submitSlide() {
       stainType: slideForm.stainType,
       stainItem: slideForm.stainItem || undefined,
       remark: slideForm.remark || undefined,
+      techOrderId: slideForm.techOrderId || undefined,
     })).data.data as Row
     const warnings = (d.warnings ?? []) as string[]
     ElMessage.success(`已产出切片 ${num(d.slideCount)} 张`)

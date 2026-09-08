@@ -249,7 +249,7 @@
         <!-- ---------------- 特检技术医嘱 ---------------- -->
         <el-tab-pane name="tech" :label="`特检技术医嘱（${techRows.length}）`">
           <el-alert type="info" :closable="false" class="cav"
-                    title="取消特检医嘱不留原因：path_tech_order 没有 cancel_reason 列，本版不把取消原因塞进 reason（那会覆盖下达时的原因，让「当初为什么要做这个免疫组化」永久丢失）。" />
+                    title="取消特检医嘱须填写取消原因（v57 起留痕：取消人 / 取消时刻 / 取消原因）。取消原因与下达原因分列，不覆盖 reason——「当初为什么要做这个免疫组化」与「后来为什么不做了」都留着；V163 之前取消的历史行三列为空。" />
           <el-table :data="techRows" size="small" border max-height="380">
             <el-table-column label="类型" width="110">
               <template #default="{ row }">{{ techName(row.tech_type) }}</template>
@@ -328,7 +328,7 @@
   <!-- ============ 首次报告书写 ============ -->
   <el-dialog v-model="diagnoseDialog" title="书写首次病理报告" width="680px" top="6vh">
     <el-alert type="warning" show-icon :closable="false" class="cav"
-              title="本操作走既有 PUT /api/pathology/specimens/{barcode}/diagnose，会以本次内容整体写入大体所见 / 镜下所见 / 诊断三列，因此取材时已写入的大体所见已预填在下方——请在此基础上补写，清空它就等于把取材记录抹掉。保存后标本状态变为「已诊断」，本版无修订入口，更正请出补充报告。" />
+              title="本操作走既有 PUT /api/pathology/specimens/{barcode}/diagnose，写入大体所见 / 镜下所见 / 诊断三列。取材时已写入的大体所见已预填在下方——空白即保留取材时写入的大体所见；要改请在此基础上编辑。保存后标本状态变为「已诊断」，本版无修订入口，更正请出补充报告。" />
     <el-form label-width="90px" size="small">
       <el-form-item label="大体所见">
         <el-input v-model="diagnoseForm.grossFinding" type="textarea" :rows="3" />
@@ -786,13 +786,26 @@ async function techDone(row: Row) {
 }
 
 async function techCancel(row: Row) {
-  const ok = await ElMessageBox.confirm(
-    '取消原因无处存放（path_tech_order 无 cancel_reason 列），本版不留痕也不覆盖下达原因。确认取消该医嘱？',
-    '取消特检技术医嘱', { type: 'warning' },
+  // v57：取消须留原因——后端 5271 拒空白 / 超 255 字；取消原因写 cancel_reason，下达原因 reason 不覆盖
+  const res = await ElMessageBox.prompt(
+    `取消「${techName(row.tech_type)} ${String(row.tech_item ?? '')}」须填写取消原因（留痕：取消人 / 取消时刻 / 取消原因；下达原因不覆盖）`,
+    '取消特检技术医嘱',
+    {
+      type: 'warning',
+      inputType: 'textarea',
+      inputPlaceholder: '如：临床已另行送检、标本量不足、医师撤回',
+      inputValidator: (v: string) => {
+        const t = (v ?? '').trim()
+        if (!t) return '取消原因不能为空'
+        if (t.length > 255) return '取消原因最多 255 字'
+        return true
+      },
+    },
   ).catch(() => null)
-  if (!ok) return
-  await client.put(`/pathology/report/tech-orders/${Number(row.id)}/cancel`, null)
-  ElMessage.success('已取消')
+  const reason = res?.value?.trim()
+  if (!reason) return   // 空则不发
+  await client.put(`/pathology/report/tech-orders/${Number(row.id)}/cancel`, { reason })
+  ElMessage.success('已取消并留痕')
   await loadTech()
 }
 

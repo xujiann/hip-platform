@@ -1,7 +1,7 @@
 <template>
   <!-- ============ 工位五：特检技术医嘱全院工作台（技师侧：按状态 / 类型 / 时间集中处理） ============ -->
   <el-alert type="info" show-icon :closable="false" class="cav"
-            title="全院视角：不分标本列出深切 / 重切 / 补取材 / 免疫组化 / 特殊染色 / 分子病理的技术医嘱。默认只看「待执行」——这是技师今天要做的活；历史请显式切到「全部状态」。距开单小时数是原始事实，本页不判超时。" />
+            title="全院视角：不分标本列出深切 / 重切 / 补取材 / 免疫组化 / 特殊染色 / 分子病理的技术医嘱。默认只看「待执行」——这是技师今天要做的活；历史请显式切到「全部状态」。距开单小时数是原始事实，本页不判超时。取消须填写取消原因（取消人 / 取消时刻 / 取消原因留痕，与下达原因分列）。" />
 
   <el-form inline size="small">
     <el-form-item label="状态">
@@ -91,6 +91,19 @@
     <el-table-column label="原因" min-width="140" show-overflow-tooltip>
       <template #default="{ row }">{{ fmt(row.reason) }}</template>
     </el-table-column>
+    <el-table-column label="取消" width="200">
+      <template #default="{ row }">
+        <template v-if="row.cancelled_at">{{ fmt(row.cancelled_by_name) }}　{{ fmtDateTime(row.cancelled_at) }}</template>
+        <span v-else-if="row.status === 'CANCELLED'" class="muted">历史取消（时刻未采集）</span>
+        <span v-else class="muted">—</span>
+      </template>
+    </el-table-column>
+    <el-table-column label="取消原因" min-width="140" show-overflow-tooltip>
+      <template #default="{ row }">{{ fmt(row.cancel_reason) }}</template>
+    </el-table-column>
+    <el-table-column label="挂接切片" width="90">
+      <template #default="{ row }">{{ fmt(row.slide_count) }}</template>
+    </el-table-column>
     <el-table-column label="操作" width="190" fixed="right">
       <template #default="{ row }">
         <el-button link type="primary" size="small" :disabled="row.status !== 'ORDERED'"
@@ -112,7 +125,10 @@
  *
  * <p>对接 {@code GET /api/pathology/report/tech-orders} <b>不传 specimenId</b> 的全院清单分支——
  * 该分支 v48 就有，但此前全仓唯一调用点恒传 specimenId，技师看不到「今天全院有哪些免疫组化要做」。
- * 完成 / 取消走既有 {@code PUT /tech-orders/{id}/done|cancel}，一个字节没改。
+ * 完成走既有 {@code PUT /tech-orders/{id}/done}；取消（v57，2563 留痕）改为弹框要取消原因并发
+ * {@code {reason}}——后端 5271 拒空白 / 超 255 字，取消人 / 取消时刻 / 取消原因与 status 同一条 update 落库，
+ * 下达原因不覆盖。清单显示取消时刻（{@code fmtDateTime}，带偏移才换算到业务时区）、取消原因与挂接切片数；
+ * V163 之前取消的历史行三列为 NULL，显式标「历史取消」而不是画成空白。
  *
  * <p>「打开报告」把标本 id 交给工作台切到诊断工位并直接打开抽屉：技师做完免疫组化后，
  * 病理医师要出补充报告的入口就在那里。
@@ -120,6 +136,7 @@
 import { reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../../api/client'
+import { fmtDateTime } from '../../../utils/date'
 import { TECH_STATUSES, fmt, fmtTime, techStatusName, techStatusTag, typeName, type Row } from './format'
 
 const emit = defineEmits<{ (e: 'changed'): void; (e: 'open-specimen', specimenId: number): void }>()
@@ -180,13 +197,25 @@ async function done(row: Row) {
 }
 
 async function cancel(row: Row) {
-  const ok = await ElMessageBox.confirm(
-    '取消原因无处存放（path_tech_order 无 cancel_reason 列），本版不留痕也不覆盖下达原因。确认取消该医嘱？',
-    '取消特检技术医嘱', { type: 'warning' },
+  const res = await ElMessageBox.prompt(
+    `取消「${techName(row.tech_type)} ${String(row.tech_item ?? '')}」须填写取消原因（留痕：取消人 / 取消时刻 / 取消原因；下达原因不覆盖）`,
+    '取消特检技术医嘱',
+    {
+      type: 'warning',
+      inputType: 'textarea',
+      inputPlaceholder: '如：临床已另行送检、标本量不足、医师撤回',
+      inputValidator: (v: string) => {
+        const t = (v ?? '').trim()
+        if (!t) return '取消原因不能为空'
+        if (t.length > 255) return '取消原因最多 255 字'
+        return true
+      },
+    },
   ).catch(() => null)
-  if (!ok) return
-  await client.put(`/pathology/report/tech-orders/${Number(row.id)}/cancel`, null)
-  ElMessage.success('已取消')
+  const reason = res?.value?.trim()
+  if (!reason) return   // 空则不发：后端 5271 同样会拒，这里只是省一次往返
+  await client.put(`/pathology/report/tech-orders/${Number(row.id)}/cancel`, { reason })
+  ElMessage.success('已取消并留痕')
   await load()
   emit('changed')
 }

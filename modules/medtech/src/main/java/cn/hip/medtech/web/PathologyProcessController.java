@@ -77,6 +77,8 @@ import java.util.Map;
  *   <li>5247 批量核销请求非法（清单为空 / 超上限 / 参数超长）</li>
  *   <li>5248 无法识别当前登录用户，不能登记制片</li>
  *   <li>5249 检索参数非法（日期格式 / 区间倒置 / 跨度过大 / 枚举取值）</li>
+ *   <li>5272 切片挂接的技术医嘱非法（v57，登记在诊断与报告段 5260–5279 内、与 5271 同批：
+ *       医嘱不存在 / 不属于该蜡块所在标本 / 不是 ORDERED 三条路径同码，见 {@link #slides}）</li>
  * </ul>
  * 5226–5239 与 5250–5259 <b>本版未使用，也未登记</b>——不写代码就不占码。
  *
@@ -723,10 +725,25 @@ public class PathologyProcessController {
     // 四、切片与染色
     // ==================================================================
 
-    public record SlideReq(Long blockId, Integer count, String stainType, String stainItem, String remark) {}
+    /**
+     * 切片请求。{@code techOrderId}（v57）可空：不传即普通切片，{@code path_slide.tech_order_id} 落 NULL，
+     * 旧契约不变；传了则这批切片挂接到该特检技术医嘱上（校验见 {@link #slides}，非法返 5272）。
+     */
+    public record SlideReq(Long blockId, Integer count, String stainType, String stainItem, String remark,
+                           Long techOrderId) {
+        /** v48 五参形态（既有调用方仍在用），等价于不挂接医嘱；JSON 反序列化走六参的规范构造器 */
+        public SlideReq(Long blockId, Integer count, String stainType, String stainItem, String remark) {
+            this(blockId, count, stainType, stainItem, remark, null);
+        }
+    }
 
     /**
      * 切片：从一个蜡块产出 N 张切片，写 SECTION 流转节点。
+     *
+     * <p><b>v57 挂接特检技术医嘱</b>：{@code techOrderId} 传了就校验三件事——医嘱存在、属于该蜡块所在标本、
+     * 仍是 ORDERED（三条路径同返 5272，任何一条不过就一张片也不插）。校验通过则每张新切片的
+     * {@code tech_order_id} 都等于它，SECTION 节点备注带「特检医嘱#id 类型」。
+     * <b>挂接不自动把医嘱置 DONE</b>：切了片不等于做完了（染色、质控都在后面），完成仍走 /done 由技师确认。
      *
      * <p>{@code slide_no} 是<b>蜡块内序号</b>，从既有最大号 +1 续排（深切、重切追加的片接着排）；
      * {@code slide_code} =「蜡块编码-片号」=「病理号-块号-片号」。{@code stain_type} 默认 HE——
@@ -774,20 +791,40 @@ public class PathologyProcessController {
         if (maxNo + count > MAX_SLIDE_NO) {
             return R.fail(5243, "切片序号将超过上限 " + MAX_SLIDE_NO + "（当前最大 " + maxNo + "）");
         }
+        Long specimenId = asLongObj(block.get("specimen_id"));
+
+        // v57：挂接特检技术医嘱（可空）。放在蜡块解析之后——「属于该蜡块所在标本」要先知道标本是谁
+        Map<String, Object> techOrder = null;
+        if (req.techOrderId() != null) {
+            techOrder = one("select id, specimen_id, tech_type, tech_item, status from path_tech_order where id = ?",
+                    req.techOrderId());
+            if (techOrder == null) {
+                return R.fail(5272, "切片挂接的特检技术医嘱不存在：techOrderId=" + req.techOrderId());
+            }
+            if (!specimenId.equals(asLongObj(techOrder.get("specimen_id")))) {
+                return R.fail(5272, "特检技术医嘱 #" + req.techOrderId() + " 不属于该蜡块所在标本（医嘱标本 "
+                        + techOrder.get("specimen_id") + "，蜡块标本 " + specimenId + "）");
+            }
+            if (!"ORDERED".equals(techOrder.get("status"))) {
+                return R.fail(5272, "特检技术医嘱 #" + req.techOrderId() + " 不是待执行状态（当前 "
+                        + techOrder.get("status") + "），不能再挂接切片");
+            }
+        }
 
         var created = jdbc.queryForList("""
-                insert into path_slide(block_id, slide_no, slide_code, stain_type, stain_item)
-                select ?::bigint, ns.n + g.g, ?::text || '-' || (ns.n + g.g)::text, ?::varchar, ?::varchar
+                insert into path_slide(block_id, slide_no, slide_code, stain_type, stain_item, tech_order_id)
+                select ?::bigint, ns.n + g.g, ?::text || '-' || (ns.n + g.g)::text, ?::varchar, ?::varchar, ?::bigint
                 from (select coalesce(max(slide_no), 0) as n from path_slide where block_id = ?) ns,
                      generate_series(1, ?::int) g(g)
-                returning id, slide_no, slide_code, stain_type, stain_item, created_at
-                """, req.blockId(), block.get("block_code"), stainType, stainItem, req.blockId(), count);
+                returning id, slide_no, slide_code, stain_type, stain_item, tech_order_id, created_at
+                """, req.blockId(), block.get("block_code"), stainType, stainItem, req.techOrderId(),
+                req.blockId(), count);
 
-        Long specimenId = asLongObj(block.get("specimen_id"));
         // now() 是事务开始时刻且事务内恒定：SECTION 节点时间与各切片 created_at 逐位相等
         logProcess(specimenId, "SECTION", uid,
                 "切片 " + created.size() + " 张（" + block.get("block_code") + "，" + stainType
                         + (stainItem == null ? "" : " " + stainItem) + "）"
+                        + (techOrder == null ? "" : "，特检医嘱#" + req.techOrderId() + " " + techOrder.get("tech_type"))
                         + (rk == null ? "" : "：" + rk));
 
         var warnings = new ArrayList<String>();
@@ -800,12 +837,14 @@ public class PathologyProcessController {
         body.put("specimenId", specimenId);
         body.put("blockCode", block.get("block_code"));
         body.put("stainType", stainType);
+        body.put("techOrderId", req.techOrderId());
         body.put("slides", created);
         body.put("slideCount", created.size());
         body.put("warnings", warnings);
         body.put("note", "slide_code 由「蜡块编码-片号」生成；玻片打码机属设备直连，"
                 + "平台只给编码字符串，不负责打印。新建切片尚未染色（stainedAt 为空），"
-                + "染色请走 PUT /slides/{id}/stain 或 PUT /slides/batch-complete。");
+                + "染色请走 PUT /slides/{id}/stain 或 PUT /slides/batch-complete。"
+                + "techOrderId 非空时各切片 tech_order_id 已挂接到该特检医嘱，但医嘱仍为 ORDERED——完成走 /done 由技师确认。");
         return R.ok(body);
     }
 

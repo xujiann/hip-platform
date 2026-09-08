@@ -1298,6 +1298,11 @@ public class PathQcController {
                            t.ordered_at, t.done_at,
                            ou.real_name                          as ordered_by_name,
                            du.real_name                          as done_by_name,
+                           t.cancelled_at,
+                           cu.real_name                          as cancelled_by_name,
+                           t.cancel_reason,
+                           (select count(*) from path_slide sl
+                             where sl.tech_order_id = t.id)      as slide_count,
                            b.block_code,
                            s.id                                  as specimen_id,
                            s.path_no, s.barcode,
@@ -1307,6 +1312,7 @@ public class PathQcController {
                     left join path_block b on b.id = t.block_id
                     left join sys_user ou on ou.id = t.ordered_by
                     left join sys_user du on du.id = t.done_by
+                    left join sys_user cu on cu.id = t.cancelled_by
                     {pat}
                     where t.ordered_at >= ?::date and t.ordered_at < ?::date + 1
                     order by t.ordered_at desc, t.id desc
@@ -1646,6 +1652,11 @@ public class PathQcController {
             case "ordered_by_name" -> "开单人";
             case "done_by_name" -> "完成人";
             case "median_hours_to_done" -> "开单→完成中位数(小时)";
+            // v57 取消留痕与切片挂接（V163）：历史取消行三列为空，导出时就是空格，不填 0
+            case "cancelled_at" -> "取消时刻";
+            case "cancelled_by_name" -> "取消人";
+            case "cancel_reason" -> "取消原因";
+            case "slide_count" -> "挂接切片数";
             default -> col;
         };
     }
