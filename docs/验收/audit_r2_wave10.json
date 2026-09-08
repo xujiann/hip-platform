@@ -1,0 +1,8 @@
+[
+ {
+  "no": 2553,
+  "verdict": "符合",
+  "evidence": "modules/medtech/src/main/java/cn/hip/medtech/web/PathologyReportController.java:139 WORKLIST_SCOPES = stained/all/diagnosed/any ; PathologyReportController.java:232-238 switch(mode)：diagnosed → and s.diagnosed_at is not null；any → 不限 ; PathologyReportController.java:250-257 keyword ilike 条码/病理号/患者名/患者号 ; PathologyReportController.java:216 每行 supplement_count（count path_report） ; PathologyReportController.java:290-294 scopeOf：不传/未识别回落 stained（既有行为不变） ; PathologyReportController.java:477-520 POST /{specimenId}/supplement：:498-503 只查存在/未拒收/diagnosis 非空，不查 report_issued_at；:507-513 仅 insert path_report seq_no=max+1，零 update path_specimen ; PathologyReportController.java:529-605 GET /{specimenId}/reports：primary(seqNo 0)+supplements(按 seq_no)+process 时间线+hasPrimary ; PathologyReportController.java:109 SIGNER_ROLES = ADMIN/DOCTOR_OUTP（补充报告署名限医师/管理员） ; frontend/shell/src/views/medtech/pathology/DiagnosisPanel.vue:5-10 范围下拉：diagnosed「已诊断 / 已签发（报告追溯、补充报告、流转轨迹）」、any ; DiagnosisPanel.vue:97-98 操作列 openReport(Number(row.id))，已诊断行文案「报告 / 追溯」 ; DiagnosisPanel.vue:487-494 openReport → drawer=true + loadReport；:105 el-drawer ; DiagnosisPanel.vue:161-162 「出补充报告」按钮 :disabled=!primary.diagnosis",
+  "note": "2026-09-08 v55/v56 交付后复核：三个独立反驳者（子要求拆解/演示可行性/数据真实性）零推翻；上一轮（2026-09-07）推翻的硬缺口已堵。仍缺（不阻断，对外文案勿写过头）：不构成本条阻断、但对外文案不要写过头的三点：(a) 补充报告没有作废/撤回端点（PathologyReportController 全文无 void/revoke），只能再追加一份更正——条款未要求，但不要写「可修改/撤销补充报告」；(b) 无病理报告打印/PDF 视图（frontend/shell/src/views/print 下 pathology 零命中），条款未要求；(c) TECHNICIAN 角色能进病理工作台菜单，但「出补充报告」按钮未按角色隐藏，点击后端 403（SIGNER_ROLES 限 ADMIN/DOCTOR_OUTP，设计如此）——验收演示请用 ADMIN/DOCTOR_OUTP 账号。另：全仓零病理种子数据是刻意的，演示必须现场从门诊开单走到签发再出补充报告；单账号签发会带「缺复签」告警（gate 默认 warn），不影响补充报告。"
+ }
+]
