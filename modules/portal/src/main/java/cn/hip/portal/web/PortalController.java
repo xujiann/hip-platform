@@ -183,7 +183,22 @@ public class PortalController {
         return R.ok(out);
     }
 
-    /** 检查/病理报告（已审核发布） */
+    /**
+     * 检查/病理报告（已审核发布）。
+     *
+     * <p><b>EXAM 分支</b>：{@code ris_exam.status = 'VERIFIED'}，report_date 取 {@code verified_at}——不动。
+     *
+     * <p><b>PATH 分支（v57，2576）：发布 = 签发。</b>此前 where 是 {@code s.status = 'DIAGNOSED'}、
+     * report_date 取 {@code diagnosed_at}——病理医师一写完诊断、还没初签 / 复签 / 签发，患者端就能看到，
+     * 而院内「已签发」看的是 {@code path_specimen.report_issued_at}（V144:64，唯一写侧是
+     * {@code PUT /api/pathology/report/{specimenId}/issue}）；医生站 reportStage 把「已诊断未签发」
+     * 与「已签发」分成两档，患者端却把前者当成已发布。签发前诊断文本仍可修订（补充报告只增不改的是
+     * 签发后的事），患者看到的可能是一版从未签发的草稿。
+     * 现改为 {@code s.report_issued_at is not null and s.rejected_at is null}，report_date 取
+     * {@code report_issued_at}——与院内 reportStage「已签发」同一列、同一口径；患者看到的日期是签发日期，
+     * 不是书写日期。列集合、列序与 EXAM 分支一字未动（report_type / item_name / conclusion / detail / report_date）。
+     * 身份仍只从令牌主体 {@code portal:{patientId}} 取，绝不从 body / path 取。
+     */
     @GetMapping("/my/exam-reports")
     public R<List<Map<String, Object>>> myExamReports(Authentication auth) {
         Long pid = patientId(auth);
@@ -195,11 +210,11 @@ public class PortalController {
                 join outp_registration r on r.id = o.registration_id
                 where r.patient_id = ? and e.status = 'VERIFIED'
                 union all
-                select 'PATH', o.item_name, s.diagnosis, s.micro_finding, s.diagnosed_at
+                select 'PATH', o.item_name, s.diagnosis, s.micro_finding, s.report_issued_at
                 from path_specimen s
                 join outp_order o on o.id = s.order_id
                 join outp_registration r on r.id = o.registration_id
-                where r.patient_id = ? and s.status = 'DIAGNOSED'
+                where r.patient_id = ? and s.report_issued_at is not null and s.rejected_at is null
                 order by report_date desc
                 """, pid, pid);
         return R.ok(reports);
