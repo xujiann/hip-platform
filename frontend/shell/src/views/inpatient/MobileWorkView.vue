@@ -66,7 +66,7 @@
         </el-alert>
         <h4>最近体征</h4>
         <el-card v-for="(v, i) in vitals.slice(-5).reverse()" :key="i" class="pt-card" shadow="never">
-          <span class="muted">{{ String(v.measuredAt).slice(5, 16).replace('T', ' ') }}</span>
+          <span class="muted">{{ fmtMonthDayTime(v.measuredAt, '') }}</span>
           T{{ v.temperature ?? '-' }} P{{ v.pulse ?? '-' }} R{{ v.respiration ?? '-' }}
           BP{{ v.sbp ?? '-' }}/{{ v.dbp ?? '-' }} SpO2 {{ v.spo2 ?? '-' }}
         </el-card>
@@ -89,7 +89,7 @@
             <b>{{ ROUND_LEVEL_CN[String(r.round_level)] ?? r.round_level }}查房</b>
             <span>
               <el-tag v-if="r.signed" size="small" type="success">已签名</el-tag>
-              <span class="muted">{{ String(r.created_at ?? '').slice(0, 16).replace('T', ' ') }}</span>
+              <span class="muted">{{ fmtDateTime(r.created_at, '') }}</span>
             </span>
           </div>
           <div>{{ r.round_opinion }}</div>
@@ -107,7 +107,7 @@ import { onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import client, { type BizError } from '../../api/client'
 import { parseVital } from '../../utils/vitals'
-import { todayLocal } from '../../utils/date'
+import { fmtDateTime, fmtMonthDayTime, todayLocal } from '../../utils/date'
 
 const MODES = [
   { label: '移动护理', value: 'nurse' },

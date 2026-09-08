@@ -80,3 +80,27 @@ export function fmtDate(v: unknown, empty = '—'): string {
   }
   return s.slice(0, 10)
 }
+
+/**
+ * 时间戳 → 「YYYY-MM-DD HH:mm:ss」（业务时区）；空值给 `empty`。
+ * 审计日志、危急值应确认时限、接口监控明细、审签时刻这类原本就显示到秒的位置用——粒度不因换算而丢。
+ */
+export function fmtDateTimeSec(v: unknown, empty = '—'): string {
+  if (v === null || v === undefined || v === '') return empty
+  const s = String(v)
+  if (!ISO_PREFIX.test(s)) return s
+  if (TZ_SUFFIX.test(s)) {
+    const d = new Date(s)
+    if (!Number.isNaN(d.getTime())) {
+      const p = businessParts(d)
+      return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}`
+    }
+  }
+  return s.length >= 16 ? s.slice(0, 19).replace('T', ' ') : s
+}
+
+/** 时间戳 → 「MM-DD HH:mm」（业务时区），移动端窄屏省年份用；空值给 `empty` */
+export function fmtMonthDayTime(v: unknown, empty = '—'): string {
+  const full = fmtDateTime(v, empty)
+  return /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(full) ? full.slice(5) : full
+}

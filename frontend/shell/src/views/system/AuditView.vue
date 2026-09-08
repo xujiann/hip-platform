@@ -14,7 +14,7 @@
     </div>
     <el-table :data="records" size="small" border>
       <el-table-column label="时间" width="170">
-        <template #default="{ row }">{{ String(row.created_at).slice(0, 19).replace('T', ' ') }}</template>
+        <template #default="{ row }">{{ fmtDateTimeSec(row.created_at) }}</template>
       </el-table-column>
       <el-table-column prop="username" label="用户" width="110" />
       <el-table-column prop="method" label="方法" width="70" />
@@ -35,6 +35,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import client from '../../api/client'
+import { fmtDateTimeSec } from '../../utils/date'
 
 const username = ref('')
 const range = ref<[string, string] | null>(null)

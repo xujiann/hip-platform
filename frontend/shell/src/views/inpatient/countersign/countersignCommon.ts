@@ -43,6 +43,8 @@
  * （同时弹红字），故本车道只读 resp.data.data，不再自行判 code。
  */
 
+import { fmtDateTime, fmtDateTimeSec } from '../../../utils/date'
+
 export type Row = Record<string, unknown>
 
 /**
@@ -53,14 +55,14 @@ export function txt(v: unknown): string {
   if (v === null || v === undefined || v === '') return '—'
   if (typeof v === 'boolean') return v ? '是' : '否'
   const s = String(v)
-  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s) ? s.slice(0, 16).replace('T', ' ') : s
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s) ? fmtDateTime(s) : s
 }
 
 /** 时刻显示到秒（审签时刻是举证材料，分钟粒度不够） */
 export function ts(v: unknown): string {
   if (v === null || v === undefined || v === '') return '—'
   const s = String(v)
-  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s) ? s.slice(0, 19).replace('T', ' ') : s
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s) ? fmtDateTimeSec(s) : s
 }
 
 /** 数值：null/undefined 显示「—」而不是 0——「没取到」与「是 0」必须分得开 */

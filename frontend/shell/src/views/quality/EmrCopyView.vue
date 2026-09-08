@@ -125,6 +125,7 @@
 import { computed, onMounted, ref, reactive } from 'vue'
 import { ElMessage } from 'element-plus'
 import client from '../../api/client'
+import { fmtDateTimeSec } from '../../utils/date'
 
 const admOptions = ref<Record<string, unknown>[]>([])
 const list = ref<Record<string, unknown>[]>([])
@@ -148,7 +149,7 @@ const adm = computed(() => (doc.value?.admission ?? {}) as Record<string, unknow
 const statusText = (s: string) => ({ APPLIED: '待登记', REGISTERED: '已登记', ISSUED: '已出件' }[s] ?? s)
 const statusTag = (s: string) => ({ APPLIED: 'info', REGISTERED: 'warning', ISSUED: 'success' }[s] ?? 'info')
 const relText = (r: string) => ({ SELF: '本人', FAMILY: '家属', INSURER: '保险', LEGAL: '司法' }[r] ?? r ?? '')
-function fmt(v: unknown): string { return v ? String(v).slice(0, 19).replace('T', ' ') : '' }
+function fmt(v: unknown): string { return v ? fmtDateTimeSec(v, '') : '' }
 
 async function searchAdm(kw: string) {
   admOptions.value = (await client.get('/quality/med-records', { params: { keyword: kw } })).data.data

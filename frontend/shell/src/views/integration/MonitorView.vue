@@ -10,7 +10,7 @@
         <el-table-column prop="patientName" label="姓名" width="90" />
         <el-table-column prop="content" label="内容" />
         <el-table-column label="时间" width="150">
-          <template #default="{ row }">{{ String(row.createdAt).slice(0, 16).replace('T', ' ') }}</template>
+          <template #default="{ row }">{{ fmtDateTime(row.createdAt) }}</template>
         </el-table-column>
         <el-table-column label="状态" width="90">
           <template #default="{ row }">
@@ -60,7 +60,7 @@
           </template>
         </el-table-column>
         <el-table-column label="时间" width="150">
-          <template #default="{ row }">{{ String(row.createdAt).slice(0, 19).replace('T', ' ') }}</template>
+          <template #default="{ row }">{{ fmtDateTimeSec(row.createdAt) }}</template>
         </el-table-column>
       </el-table>
     </el-card>
@@ -71,6 +71,7 @@
 import { onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import client from '../../api/client'
+import { fmtDateTime, fmtDateTimeSec } from '../../utils/date'
 
 const alerts = ref<Record<string, unknown>[]>([])
 const logs = ref<Record<string, unknown>[]>([])

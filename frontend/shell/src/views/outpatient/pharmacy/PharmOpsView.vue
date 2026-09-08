@@ -391,6 +391,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../../api/client'
 import type { BizError } from '../../../api/client'
+import { fmtDateTime } from '../../../utils/date'
 
 type Row = Record<string, unknown>
 interface Drug { id: number; code: string; name: string; spec?: string; unit?: string }
@@ -432,7 +433,7 @@ function num(v: unknown): number {
 function fmt(v: unknown): string {
   if (v === null || v === undefined || v === '') return '—'
   const s = String(v)
-  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s) ? s.slice(0, 16).replace('T', ' ') : s
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s) ? fmtDateTime(s) : s
 }
 
 function gateType(g: unknown): 'success' | 'warning' | 'danger' | 'info' {

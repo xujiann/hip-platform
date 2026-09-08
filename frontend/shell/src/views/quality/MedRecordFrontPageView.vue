@@ -239,6 +239,7 @@
 import { onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import client from '../../api/client'
+import { fmtDateTime } from '../../utils/date'
 
 const sexName: Record<string, string> = { M: '男', F: '女', U: '未知' }
 const insName: Record<string, string> = { SELF: '自费', YB_STAFF: '职工医保', YB_RESIDENT: '居民医保' }
@@ -252,7 +253,7 @@ const now = new Date().toLocaleString('zh-CN')
 
 function fmt(v: unknown): string {
   if (!v) return ''
-  return String(v).slice(0, 16).replace('T', ' ')
+  return fmtDateTime(v, '')
 }
 
 async function loadList() {

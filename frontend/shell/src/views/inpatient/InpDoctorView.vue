@@ -157,7 +157,7 @@
           <el-button type="primary" style="margin-top: 8px" @click="addRecord">保存记录</el-button>
           <el-timeline style="margin-top: 16px">
             <el-timeline-item v-for="r in records" :key="r.id as number"
-                              :timestamp="`${String(r.createdAt).slice(0, 16).replace('T', ' ')} · ${recordTypeNames[r.recordType as string]}`">
+                              :timestamp="`${fmtDateTime(r.createdAt)} · ${recordTypeNames[r.recordType as string]}`">
               <b>{{ r.title }}</b>
               <el-tag v-if="r.signature" size="small" type="success" style="margin-left: 6px">已签名</el-tag>
               <el-button v-else size="small" link type="primary" style="margin-left: 6px"
@@ -179,7 +179,7 @@
           <VitalsChart :vitals="vitals" />
           <el-table :data="vitals" size="small" height="calc(100vh - 560px)">
             <el-table-column label="时间" width="150">
-              <template #default="{ row }">{{ String(row.measuredAt).slice(0, 16).replace('T', ' ') }}</template>
+              <template #default="{ row }">{{ fmtDateTime(row.measuredAt) }}</template>
             </el-table-column>
             <el-table-column prop="temperature" label="体温℃" width="80" />
             <el-table-column prop="pulse" label="脉搏" width="70" />
@@ -305,7 +305,7 @@
       <el-divider>转科历史</el-divider>
       <el-table :data="transferHistory" size="small" height="160" empty-text="暂无转科记录">
         <el-table-column label="时间" width="140">
-          <template #default="{ row }">{{ String(row.created_at).slice(0, 16).replace('T', ' ') }}</template>
+          <template #default="{ row }">{{ fmtDateTime(row.created_at) }}</template>
         </el-table-column>
         <el-table-column label="由">
           <template #default="{ row }">{{ row.from_dept_name }} {{ row.from_bed_no }}床</template>
@@ -336,7 +336,7 @@
       <el-divider>补正历史</el-divider>
       <el-timeline v-if="recordAmendments.length">
         <el-timeline-item v-for="a in recordAmendments" :key="a.id as number"
-                          :timestamp="`${String(a.amended_at).slice(0, 16).replace('T', ' ')} · ${a.amended_by_name ?? ('用户' + a.amended_by)}`">
+                          :timestamp="`${fmtDateTime(a.amended_at)} · ${a.amended_by_name ?? ('用户' + a.amended_by)}`">
           <b>补正：</b>{{ a.amend_text }}
           <div class="record-content">原因：{{ a.reason }}</div>
         </el-timeline-item>
@@ -354,6 +354,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
+import { fmtDateTime } from '../../utils/date'
 import VitalsChart from '../../components/VitalsChart.vue'
 
 /** v42：体温单打印（周次由打印页自行翻页，此处固定从第 1 住院周进） */

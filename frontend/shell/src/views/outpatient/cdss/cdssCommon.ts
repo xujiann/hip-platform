@@ -6,6 +6,8 @@
  * 四个服务反复写明「不预置任何药学知识」，前端再补一层猜测就会把这条纪律作废。
  */
 
+import { fmtDateTime } from '../../../utils/date'
+
 export type Row = Record<string, unknown>
 
 /** 后端返回体里三种列表键名并存：JdbcTemplate 直出的行是**蛇形**，record/手工 Map 是驼峰。此处一律不改写键名。 */
@@ -22,7 +24,7 @@ export function fmt(v: unknown): string {
   if (Array.isArray(v)) return v.length === 0 ? '—' : v.map((x) => fmt(x)).join('、')
   if (typeof v === 'object') return JSON.stringify(v)
   const s = String(v)
-  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s) ? s.slice(0, 16).replace('T', ' ') : s
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s) ? fmtDateTime(s) : s
 }
 
 /** 数值展示：**不把「取不到」显示成 0**。null/undefined 一律显示破折号。 */

@@ -72,7 +72,7 @@
       <el-tab-pane label="检验报告" name="labs">
         <el-card v-for="l in labs" :key="l.orderId as number" class="item" shadow="never">
           <b>{{ l.itemName }}</b>
-          <span class="muted">{{ String(l.reportDate).slice(0, 10) }}</span>
+          <span class="muted">{{ fmtDate(l.reportDate) }}</span>
           <el-table :data="l.results as Record<string, unknown>[]" size="small" style="margin-top: 6px">
             <el-table-column prop="itemName" label="项目" />
             <el-table-column label="结果" width="90">
@@ -92,7 +92,7 @@
         <el-card v-for="(e, i) in examReports" :key="i" class="item" shadow="never">
           <b>{{ e.item_name }}</b>
           <el-tag size="small" style="margin-left: 6px">{{ e.report_type === 'PATH' ? '病理' : '检查' }}</el-tag>
-          <span class="muted">{{ String(e.report_date).slice(0, 10) }}</span>
+          <span class="muted">{{ fmtDate(e.report_date) }}</span>
           <div style="margin-top: 6px"><b>结论：</b>{{ e.conclusion }}</div>
           <div class="muted">{{ e.detail }}</div>
         </el-card>
@@ -143,7 +143,7 @@
             <div>
               <b>{{ a.deptName }}</b>
               <span class="muted">{{ a.bedNo ? a.bedNo + '床 · ' : '' }}{{ a.admissionNo }}</span>
-              <div class="muted">入院 {{ String(a.admitAt).slice(0, 10) }} · {{ a.admitDiagName }}</div>
+              <div class="muted">入院 {{ fmtDate(a.admitAt) }} · {{ a.admitDiagName }}</div>
             </div>
             <el-tag size="small" :type="a.status === 'IN_HOSPITAL' ? 'success' : 'info'">
               {{ a.status === 'IN_HOSPITAL' ? '在院' : '已出院' }}
@@ -202,7 +202,7 @@
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { todayLocal } from '../../utils/date'
+import { fmtDate, todayLocal } from '../../utils/date'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { portalClient as portal } from '../../api/client'

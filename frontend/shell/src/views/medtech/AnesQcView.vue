@@ -108,6 +108,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import client from '../../api/client'
+import { fmtDateTime, localDateOffset, todayLocal } from '../../utils/date'
 
 type Row = Record<string, unknown>
 
@@ -132,11 +133,9 @@ interface Body {
   indicators: Indicator[]
 }
 
+/** 最近 30 天（含今天）——本地日期。不能用 toISOString()：北京 0–8 点切出来的是 UTC 的昨天（同 pathology/format.ts defaultRange） */
 function defaultRange(): [string, string] {
-  const to = new Date()
-  const from = new Date(to.getTime() - 29 * 86400000)
-  const iso = (d: Date) => d.toISOString().slice(0, 10)
-  return [iso(from), iso(to)]
+  return [localDateOffset(-29), todayLocal()]
 }
 
 const range = ref<[string, string]>(defaultRange())
@@ -238,7 +237,7 @@ function fmt(v: unknown): string {
   if (typeof v === 'boolean') return v ? '是' : '否'
   const s = String(v)
   // 时间戳统一截到分钟：明细里同时有 date 与 timestamptz 两类
-  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s) ? s.slice(0, 16).replace('T', ' ') : s
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s) ? fmtDateTime(s) : s
 }
 
 function colWidth(col: string): number {

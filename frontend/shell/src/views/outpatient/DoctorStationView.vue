@@ -235,7 +235,7 @@
             </el-form>
             <el-timeline v-if="amendments.length" style="margin-top: 12px">
               <el-timeline-item v-for="a in amendments" :key="a.id as number"
-                                :timestamp="`${String(a.amended_at).slice(0, 16).replace('T', ' ')} · ${a.amended_by_name ?? ('用户' + a.amended_by)}`">
+                                :timestamp="`${fmtDateTime(a.amended_at)} · ${a.amended_by_name ?? ('用户' + a.amended_by)}`">
                 <b>补正：</b>{{ a.amend_text }}
                 <div class="amend-reason">原因：{{ a.reason }}</div>
               </el-timeline-item>
@@ -517,7 +517,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { todayLocal } from '../../utils/date'
+import { fmtDateTime, todayLocal } from '../../utils/date'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
 import { useAuthStore } from '../../stores/auth'

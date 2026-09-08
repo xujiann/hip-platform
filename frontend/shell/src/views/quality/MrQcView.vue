@@ -234,6 +234,7 @@ import { BarChart } from 'echarts/charts'
 import { GridComponent, LegendComponent, TitleComponent, TooltipComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import client from '../../api/client'
+import { fmtDateTime } from '../../utils/date'
 
 echarts.use([BarChart, GridComponent, LegendComponent, TitleComponent, TooltipComponent, CanvasRenderer])
 
@@ -470,7 +471,7 @@ async function exportCsv(which: 'stats' | 'deduct-items') {
 /* ---------------- 通用 ---------------- */
 function fmt(v: unknown): string {
   if (!v) return ''
-  return String(v).slice(0, 16).replace('T', ' ')
+  return fmtDateTime(v, '')
 }
 function numOf(v: unknown): number {
   return v == null ? 0 : Number(v)

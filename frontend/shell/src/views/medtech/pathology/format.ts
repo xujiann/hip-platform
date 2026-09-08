@@ -14,6 +14,8 @@
  * 归一化会掩盖「这一段是数据库行、那一段是控制器装配的」这个真实差别，读代码的人反而对不上账。
  */
 
+import { fmtDateTime } from '../../../utils/date'
+
 /**
  * 列表行一律按无类型字典消费：本域各端点的行是 JdbcTemplate 直出的数据库行，
  * 列集合随 SQL 变化（如 {@code s.*}），写死接口反而会在后端加列时静默漏显示。
@@ -149,14 +151,12 @@ export function fmt(v: unknown): string {
   if (v === null || v === undefined || v === '') return '—'
   if (typeof v === 'boolean') return v ? '是' : '否'
   const s = String(v)
-  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s) ? s.slice(0, 16).replace('T', ' ') : s
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s) ? fmtDateTime(s) : s
 }
 
-/** 时间戳截到分钟；空值给「—」 */
+/** 时间戳截到分钟（业务时区）；空值给「—」——委托 utils/date 的 fmtDateTime，带偏移的线格式才换算 */
 export function fmtTime(v: unknown): string {
-  if (v === null || v === undefined || v === '') return '—'
-  const s = String(v)
-  return s.length >= 16 ? s.slice(0, 16).replace('T', ' ') : s
+  return fmtDateTime(v)
 }
 
 export function num(v: unknown): number {

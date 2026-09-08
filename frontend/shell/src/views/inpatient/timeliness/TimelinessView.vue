@@ -680,6 +680,7 @@
 import { computed, onMounted, ref, h, defineComponent, type PropType } from 'vue'
 import { ElMessage, ElTag, ElAlert } from 'element-plus'
 import client from '../../../api/client'
+import { fmtDateTime, localDateOffset, todayLocal } from '../../../utils/date'
 import { useAuthStore } from '../../../stores/auth'
 
 /* ==================================================================
@@ -975,11 +976,9 @@ async function loadCatalog() {
 }
 
 /* ---------------- 一、超时率统计 ---------------- */
+/** 最近 30 天（含今天）——本地日期。不能用 toISOString()：北京 0–8 点切出来的是 UTC 的昨天（同 pathology/format.ts defaultRange） */
 function defaultRange(): [string, string] {
-  const to = new Date()
-  const from = new Date(to.getTime() - 29 * 86400000)
-  const iso = (d: Date) => d.toISOString().slice(0, 10)
-  return [iso(from), iso(to)]
+  return [localDateOffset(-29), todayLocal()]
 }
 
 const range = ref<[string, string]>(defaultRange())
@@ -1214,7 +1213,7 @@ function fmt(v: unknown): string {
   if (v === null || v === undefined) return '—'
   if (typeof v === 'boolean') return v ? '是' : '否'
   const s = String(v)
-  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s) ? s.slice(0, 16).replace('T', ' ') : s
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s) ? fmtDateTime(s) : s
 }
 
 /**

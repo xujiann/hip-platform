@@ -190,7 +190,7 @@
           <el-table-column label="接班签收" width="150">
             <template #default="{ row }">
               <span v-if="row.receiver_id" class="received">
-                {{ row.receiver_name }} · {{ String(row.received_at ?? '').slice(0, 16) }}</span>
+                {{ row.receiver_name }} · {{ fmtDateTime(row.received_at, '') }}</span>
               <el-button v-else link type="primary" size="small" :loading="busyId === row.id"
                          @click="receiveHandover(row)">签收</el-button>
             </template>
@@ -214,6 +214,7 @@
 import { onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
+import { fmtDateTime } from '../../utils/date'
 
 const tab = ref('cards')
 const cards = ref<Record<string, unknown>[]>([])

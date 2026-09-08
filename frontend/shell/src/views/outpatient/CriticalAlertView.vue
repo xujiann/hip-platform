@@ -16,7 +16,7 @@
           <el-table-column label="应确认时限" width="160">
             <template #default="{ row }">
               <span :class="{ overdue: row.overdue }">
-                {{ String(row.deadline_at ?? '').slice(0, 19).replace('T', ' ') }}
+                {{ fmtDateTimeSec(row.deadline_at, '') }}
                 <el-tag v-if="row.overdue" type="danger" size="small" effect="dark">已超期</el-tag>
               </span>
             </template>
@@ -39,7 +39,7 @@
           <el-table-column prop="content" label="危急值内容" show-overflow-tooltip />
           <el-table-column prop="notify_to_name" label="应确认医师" width="110" />
           <el-table-column label="应确认时限" width="160">
-            <template #default="{ row }">{{ String(row.deadline_at ?? '').slice(0, 19).replace('T', ' ') }}</template>
+            <template #default="{ row }">{{ fmtDateTimeSec(row.deadline_at, '') }}</template>
           </el-table-column>
         </el-table>
       </el-tab-pane>
@@ -51,6 +51,7 @@
 import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
+import { fmtDateTimeSec } from '../../utils/date'
 
 const tab = ref('mine')
 const mine = ref<Record<string, unknown>[]>([])
