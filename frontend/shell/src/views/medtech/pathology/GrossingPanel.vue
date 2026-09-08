@@ -65,13 +65,81 @@
     <el-table-column label="蜡块/切片" width="90">
       <template #default="{ row }">{{ num(row.block_count) }} / {{ num(row.slide_count) }}</template>
     </el-table-column>
-    <el-table-column label="操作" width="110" fixed="right">
+    <el-table-column label="操作" width="190" fixed="right">
       <template #default="{ row }">
         <el-button link type="primary" size="small" @click="openGrossing(row)">取材登记</el-button>
+        <el-button link type="primary" size="small" @click="openView(Number(row.id))">查看大体所见</el-button>
       </template>
     </el-table-column>
     <template #empty>该范围内无标本</template>
   </el-table>
+
+  <!-- ============ 大体所见查看（只读，不分诊断状态，2530） ============ -->
+  <el-dialog v-model="viewDialog" title="大体所见与蜡块（只读）" width="760px" top="6vh">
+    <div v-loading="viewLoading">
+      <el-descriptions :column="3" border size="small" class="cav">
+        <el-descriptions-item label="病理号">
+          <span class="code">{{ fmt(view.specimen?.path_no) }}</span>
+        </el-descriptions-item>
+        <el-descriptions-item label="条码">
+          <span class="code">{{ fmt(view.specimen?.barcode) }}</span>
+        </el-descriptions-item>
+        <el-descriptions-item label="患者">{{ fmt(view.specimen?.patient_name) }}</el-descriptions-item>
+        <el-descriptions-item label="类别">{{ typeName(view.specimen?.specimen_type) }}</el-descriptions-item>
+        <el-descriptions-item label="取材部位">{{ fmt(view.specimen?.sampling_site) }}</el-descriptions-item>
+        <el-descriptions-item label="写完诊断">{{ fmtTime(view.diagnosedAt) }}</el-descriptions-item>
+      </el-descriptions>
+
+      <div class="sec">
+        <b>大体所见</b>
+        <el-tag v-if="view.grossFindingPresent" size="small" type="info" style="margin-left: 6px">
+          {{ view.diagnosedAt ? '已写诊断（该列可能已被诊断端点修订）' : '取材工位录入，诊断尚未书写' }}</el-tag>
+        <pre v-if="view.grossFindingPresent">{{ view.grossFinding }}</pre>
+        <el-empty v-else description="该标本尚未录入大体所见" :image-size="50" />
+      </div>
+
+      <h4>蜡块（{{ viewBlocks.length }}）</h4>
+      <el-table :data="viewBlocks" size="small" border max-height="220">
+        <el-table-column label="块号" width="70">
+          <template #default="{ row }">{{ fmt(row.block_no) }}</template>
+        </el-table-column>
+        <el-table-column label="蜡块编码" width="170">
+          <template #default="{ row }"><span class="code">{{ fmt(row.block_code) }}</span></template>
+        </el-table-column>
+        <el-table-column label="组织描述" min-width="160" show-overflow-tooltip>
+          <template #default="{ row }">{{ fmt(row.tissue_desc) }}</template>
+        </el-table-column>
+        <el-table-column label="建块" width="180">
+          <template #default="{ row }">{{ fmt(row.created_by_name) }}　{{ fmtTime(row.created_at) }}</template>
+        </el-table-column>
+        <el-table-column label="包埋" width="140">
+          <template #default="{ row }">{{ fmtTime(row.embedded_at) }}</template>
+        </el-table-column>
+        <el-table-column label="切片" width="60">
+          <template #default="{ row }">{{ num(row.slide_count) }}</template>
+        </el-table-column>
+        <template #empty>尚无蜡块</template>
+      </el-table>
+
+      <h4>取材打点（{{ viewEvents.length }}）</h4>
+      <el-table :data="viewEvents" size="small" border max-height="160">
+        <el-table-column label="时刻" width="150">
+          <template #default="{ row }">{{ fmtTime(row.occurred_at) }}</template>
+        </el-table-column>
+        <el-table-column label="操作人" width="110">
+          <template #default="{ row }">{{ fmt(row.operator_name) }}</template>
+        </el-table-column>
+        <el-table-column label="备注" show-overflow-tooltip>
+          <template #default="{ row }">{{ fmt(row.remark) }}</template>
+        </el-table-column>
+        <template #empty>该标本尚无取材打点</template>
+      </el-table>
+      <p v-if="view.note" class="muted">{{ view.note }}</p>
+    </div>
+    <template #footer>
+      <el-button type="primary" size="small" @click="viewDialog = false">关闭</el-button>
+    </template>
+  </el-dialog>
 
   <!-- ============ 取材登记 ============ -->
   <el-dialog v-model="dialog" title="取材登记" width="760px" top="6vh">
@@ -91,13 +159,24 @@
     <el-alert v-if="num(current.block_count) > 0" type="warning" show-icon :closable="false" class="cav"
               title="该标本已有蜡块：第二次及以后的取材必须显式勾选「补取材」，否则后端返 5223。误点两次「取材」凭空多出一组蜡块是事故，与病理医师看完 HE 片后下的补取材必须区分开。" />
 
+    <!-- 已有大体所见：先给人看见，再决定怎么填——否则填了结构化字段提交才吃 5222 -->
+    <div v-if="existingGross" class="sec" v-loading="existingLoading">
+      <b>该标本已录入的大体所见</b>
+      <el-tag size="small" type="info" style="margin-left: 6px">只读；本端点不覆盖</el-tag>
+      <pre>{{ existingGross }}</pre>
+    </div>
+
     <el-form label-width="100px" size="small">
       <el-form-item label="补取材">
         <el-switch v-model="form.append" />
         <span class="muted" style="margin-left: 8px">已诊断标本的补取材同样必须显式声明</span>
       </el-form-item>
 
-      <el-form-item label="取材模板">
+      <el-form-item v-if="existingGross" label="大体所见">
+        <span class="muted">已有内容（见上），本次不再填写：补取材的组织描述请写在各蜡块里，修订大体所见走诊断端点</span>
+      </el-form-item>
+
+      <el-form-item v-if="!existingGross" label="取材模板">
         <el-select v-model="form.templateCode" clearable placeholder="不用模板" style="width: 260px"
                    @change="onTemplateChange">
           <el-option v-for="t in templates" :key="String(t.code)" :value="String(t.code)"
@@ -110,21 +189,23 @@
         <span v-if="templateNote" class="muted" style="margin-left: 8px">字段清单可配，模板管理未做</span>
       </el-form-item>
 
-      <el-form-item v-if="currentTemplate && currentTemplate.example" label="示例描述">
+      <el-form-item v-if="!existingGross && currentTemplate && currentTemplate.example" label="示例描述">
         <span class="muted">{{ currentTemplate.example }}</span>
       </el-form-item>
-      <el-form-item v-else-if="currentTemplate" label="示例描述">
+      <el-form-item v-else-if="!existingGross && currentTemplate" label="示例描述">
         <span class="muted">—（配置新增的模板无示例文本：sys_config 只有 255 字符，不编一段假的）</span>
       </el-form-item>
 
-      <el-form-item v-for="f in grossFields" :key="f" :label="f">
-        <el-input v-model="form.gross[f]" maxlength="300" show-word-limit />
-      </el-form-item>
+      <template v-if="!existingGross">
+        <el-form-item v-for="f in grossFields" :key="f" :label="f">
+          <el-input v-model="form.gross[f]" maxlength="300" show-word-limit />
+        </el-form-item>
 
-      <el-form-item label="自由描述">
-        <el-input v-model="form.grossText" type="textarea" :rows="2"
-                  placeholder="与上面的结构化字段拼成一段大体所见；总长上限 2000 字" />
-      </el-form-item>
+        <el-form-item label="自由描述">
+          <el-input v-model="form.grossText" type="textarea" :rows="2"
+                    placeholder="与上面的结构化字段拼成一段大体所见；总长上限 2000 字" />
+        </el-form-item>
+      </template>
 
       <el-form-item label="蜡块">
         <div style="width: 100%">
@@ -281,6 +362,26 @@ function addBlock() {
   form.blocks.push({ tissueDesc: '' })
 }
 
+/**
+ * 打开登记对话框前先取该标本已录入的大体所见（只读）。
+ * 后端对「已有大体所见还传结构化字段」直接报 5222，前端若不先把既有内容摆出来，
+ * 人就得填完一整段再被拒——补取材场景（已有蜡块）几乎必然踩到。
+ */
+const existingGross = ref('')
+const existingLoading = ref(false)
+
+async function loadExistingGross(specimenId: number) {
+  existingLoading.value = true
+  try {
+    const d = (await client.get(`/pathology/process/grossing/${specimenId}`)).data.data as Row
+    existingGross.value = d.grossFindingPresent === true ? String(d.grossFinding ?? '') : ''
+  } catch {
+    existingGross.value = ''   // 取不到就按「未知」处理：仍允许填写，由后端最终裁决
+  } finally {
+    existingLoading.value = false
+  }
+}
+
 function openGrossing(row: Row) {
   current.value = row
   Object.assign(form, {
@@ -294,7 +395,27 @@ function openGrossing(row: Row) {
     remark: '',
     blocks: [{ tissueDesc: '' }],
   })
+  existingGross.value = ''
   dialog.value = true
+  void loadExistingGross(Number(row.id))
+}
+
+/* ---------------- 大体所见查看（只读，2530） ---------------- */
+const viewDialog = ref(false)
+const viewLoading = ref(false)
+const view = ref<{ specimen?: Row; grossFinding?: unknown; grossFindingPresent?: unknown;
+  diagnosedAt?: unknown; blocks?: Row[]; grossingEvents?: Row[]; note?: unknown }>({})
+const viewBlocks = computed<Row[]>(() => (view.value.blocks ?? []) as Row[])
+const viewEvents = computed<Row[]>(() => (view.value.grossingEvents ?? []) as Row[])
+
+async function openView(specimenId: number) {
+  viewDialog.value = true
+  viewLoading.value = true
+  try {
+    view.value = (await client.get(`/pathology/process/grossing/${specimenId}`)).data.data as typeof view.value
+  } finally {
+    viewLoading.value = false
+  }
 }
 
 async function submit() {
@@ -311,8 +432,9 @@ async function submit() {
     result.value = (await client.post('/pathology/process/grossing', {
       specimenId: Number(current.value.id),
       templateCode: form.templateCode || undefined,
-      gross: Object.keys(gross).length ? gross : undefined,
-      grossText: form.grossText || undefined,
+      // 已有大体所见时两者一律不传：后端会拒（5222），且那不是本次要写的东西
+      gross: !existingGross.value && Object.keys(gross).length ? gross : undefined,
+      grossText: !existingGross.value && form.grossText ? form.grossText : undefined,
       append: form.append,
       remark: form.remark || undefined,
       blocks: form.blocks.map((b) => ({ tissueDesc: b.tissueDesc || undefined })),
@@ -338,4 +460,15 @@ void loadTemplates()
 .code { font-family: Consolas, Monaco, monospace; }
 .block-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
 .block-idx { width: 60px; color: #606266; font-size: 12px; }
+.sec { margin-bottom: 10px; }
+.sec pre {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  background: var(--el-fill-color-light);
+  padding: 8px;
+  border-radius: 4px;
+}
+h4 { margin: 12px 0 6px; }
 </style>

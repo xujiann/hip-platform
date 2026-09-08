@@ -1,6 +1,7 @@
 package cn.hip.medtech.web;
 
 import cn.hip.platform.core.common.R;
+import cn.hip.platform.core.config.BusinessDates;
 import cn.hip.platform.core.security.CurrentUserService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -79,6 +80,16 @@ import java.util.Map;
  * </ul>
  * 5226–5239 与 5250–5259 <b>本版未使用，也未登记</b>——不写代码就不占码。
  *
+ * <p><b>v55 可达性收口（车道 R1）在本类新增三个只读端点</b>，既有端点一个字节没动：
+ * <ul>
+ *   <li>{@link #grossingView}（{@code GET /grossing/{specimenId}}）：大体所见独立查看。全仓此前唯一渲染
+ *       大体所见的是诊断抽屉，且被「已写诊断」挡住——刚取材未诊断的标本看不到自己写的大体所见。</li>
+ *   <li>{@link #trail}（{@code GET /trail/{specimenId}}）：标本流转轨迹（节点、相邻环节间隔、本标本的流转异常）。</li>
+ *   <li>{@link #anomalies}（{@code GET /anomalies}）：流转异常筛选——超时未流转（STALLED）与三类跳节点。</li>
+ * </ul>
+ * 新增检索参数非法统一返 <b>5801</b>（v55 病理可达性子段 5800–5819 在本类只用这一个码）；
+ * 「标本不存在」沿用既有 5220。
+ *
  * <p><b>本版如实留的缺口（没有造假实现）</b>：
  * <ul>
  *   <li><b>不做玻片/蜡块打码设备直连</b>——打码机属设备驱动硬边界。平台只生成
@@ -142,6 +153,41 @@ public class PathologyProcessController {
 
     /** 取材模板的 sys_config 键前缀，见 {@link #grossingTemplates} */
     public static final String TEMPLATE_KEY_PREFIX = "path.grossing.template.";
+
+    /** 流转节点中文名：与 chk_path_process_node 的 12 档、PathQcController 的 node_name 分支逐字一致 */
+    private static final Map<String, String> NODE_NAMES = Map.ofEntries(
+            Map.entry("RECEIVE", "核收"), Map.entry("REJECT", "拒收"), Map.entry("GROSSING", "取材"),
+            Map.entry("DEHYDRATE", "脱水"), Map.entry("EMBED", "包埋"), Map.entry("SECTION", "切片"),
+            Map.entry("STAIN", "染色"), Map.entry("READ", "阅片"), Map.entry("FIRST_SIGN", "初诊签名"),
+            Map.entry("SECOND_SIGN", "复诊签名"), Map.entry("ISSUE", "报告签发"), Map.entry("SUPPLEMENT", "补充报告"));
+
+    /**
+     * 流转异常四类（v55）。取值集合即 {@code GET /anomalies?kind=} 的白名单（另有 ALL）。
+     * <ul>
+     *   <li>STALLED：已核收、未拒收、未签发，且自最近一个流转节点（无节点则自核收时刻）起超过
+     *       {@code stallHours} 小时没有任何后续节点——「超时未流转」；</li>
+     *   <li>SECTION_WITHOUT_EMBED：蜡块无包埋记录却已产出切片（切片端点只告警不拦截，异常在这里汇总）；</li>
+     *   <li>DIAGNOSED_WITHOUT_STAIN：已写诊断但名下无任何已染色切片（存量标本或漏登记制片）；</li>
+     *   <li>ISSUED_WITHOUT_DOUBLE_SIGN：已签发但缺初诊/复诊签名或同一人双签（gate=warn 放行的那些）。</li>
+     * </ul>
+     * <b>刻意不把「未分脱水篮就包埋」算作异常</b>：分篮是可选的逻辑分组（见类注释第三条口径），
+     * 不做批次管理的科室每一块都会命中，那不是异常清单而是全量清单。
+     */
+    public static final List<String> ANOMALY_KINDS = List.of(
+            "STALLED", "SECTION_WITHOUT_EMBED", "DIAGNOSED_WITHOUT_STAIN", "ISSUED_WITHOUT_DOUBLE_SIGN");
+
+    private static final Map<String, String> ANOMALY_KIND_NAMES = Map.of(
+            "STALLED", "超时未流转",
+            "SECTION_WITHOUT_EMBED", "切片前无包埋记录",
+            "DIAGNOSED_WITHOUT_STAIN", "诊断前无已染色切片",
+            "ISSUED_WITHOUT_DOUBLE_SIGN", "签发时缺双签");
+
+    /** STALLED 的默认阈值（小时）与上限：阈值是请求参数而不是配置项——本版不加 sys_config 行 */
+    private static final int DEFAULT_STALL_HOURS = 24;
+    private static final int MAX_STALL_HOURS = 24 * 366;
+
+    /** 跳节点三类的默认日期窗（天，含今天），与前端 defaultRange() 的最近 30 天一致 */
+    private static final int DEFAULT_WINDOW_DAYS = 30;
 
     // ==================================================================
     // 一、取材
@@ -1053,6 +1099,410 @@ public class PathologyProcessController {
         body.put("note", "dateField=CREATED 按切片产出时间、STAINED 按染色完成时间"
                 + "（未染色切片不出现在 STAINED 结果里）；quality 为空表示尚未评定，不等于优良。");
         return R.ok(body);
+    }
+
+    // ==================================================================
+    // 五、v55 可达性收口：大体所见独立查看 / 流转轨迹 / 流转异常（全部只读）
+    // ==================================================================
+
+    /**
+     * 大体所见独立查看（2530）。
+     *
+     * <p>全仓此前唯一渲染大体所见的是诊断抽屉的「原报告」卡片，而它按 {@code hasPrimary}
+     * （有无诊断）整体隐藏——<b>刚取材、还没写诊断的标本，取材医师看不到自己刚录的大体所见</b>，
+     * 只能等病理医师写完诊断才在报告里第一次见到它。本端点把 {@code path_specimen.gross_finding}
+     * 连同本标本的蜡块清单与 GROSSING 流转节点一起只读回出，不分诊断状态。
+     *
+     * <p><b>该列是共享列</b>：取材端点只在为空时写、既有 diagnose 端点整体覆盖写。
+     * 库里没有「这段文字是谁写的」这一事实，本端点<b>不猜来源</b>——{@code grossingEvents}
+     * 给出取材打点（谁、何时），{@code diagnosedAt} 给出诊断时刻，由读的人自己对时间线。
+     */
+    @GetMapping("/grossing/{specimenId}")
+    public R<Map<String, Object>> grossingView(@PathVariable Long specimenId) {
+        var head = one("""
+                select s.id, s.barcode, s.path_no, s.part_no, s.specimen_type, s.sampling_site,
+                       s.clinical_diagnosis, s.specimen_desc, s.urgent, s.status, s.gross_finding,
+                       s.collected_at, s.received_at, s.diagnosed_at, s.rejected_at, s.report_issued_at,
+                       case when s.order_id is not null then 'OUTP' else 'INP' end as source,
+                       p.patient_no, p.name as patient_name
+                from path_specimen s
+                left join outp_order oo on oo.id = s.order_id
+                left join outp_registration r on r.id = oo.registration_id
+                left join inp_order io on io.id = s.inp_order_id
+                left join inp_admission a on a.id = io.admission_id
+                left join empi_patient p on p.id = coalesce(r.patient_id, a.patient_id)
+                where s.id = ?
+                """, specimenId);
+        if (head == null) return R.fail(5220, "标本不存在：" + specimenId);
+
+        var blocks = jdbc.queryForList("""
+                select b.id, b.block_no, b.block_code, b.tissue_desc, b.dehydrate_batch, b.embedded_at,
+                       b.created_at, b.created_by, u.real_name as created_by_name,
+                       (select count(*) from path_slide sl where sl.block_id = b.id) as slide_count
+                from path_block b
+                left join sys_user u on u.id = b.created_by
+                where b.specimen_id = ?
+                order by b.block_no asc
+                """, specimenId);
+        var events = jdbc.queryForList("""
+                select pr.id, pr.node, pr.occurred_at, pr.operator_id, u.real_name as operator_name, pr.remark
+                from path_process pr
+                left join sys_user u on u.id = pr.operator_id
+                where pr.specimen_id = ? and pr.node = 'GROSSING'
+                order by pr.occurred_at asc, pr.id asc
+                """, specimenId);
+
+        String gross = trim((String) head.get("gross_finding"));
+        var body = new LinkedHashMap<String, Object>();
+        body.put("specimenId", specimenId);
+        body.put("specimen", head);
+        body.put("grossFinding", gross);
+        body.put("grossFindingPresent", gross != null);
+        body.put("diagnosedAt", head.get("diagnosed_at"));
+        body.put("blocks", blocks);
+        body.put("blockCount", blocks.size());
+        body.put("grossingEvents", events);
+        body.put("note", "grossFinding 读自 path_specimen.gross_finding（取材端点只在为空时写，诊断端点整体覆盖写），"
+                + "库里没有「这段文字由谁写」的事实，本端点不猜来源：grossingEvents 是取材打点，"
+                + "diagnosedAt 是诊断时刻，请自行对时间线。");
+        return R.ok(body);
+    }
+
+    /**
+     * 标本流转轨迹（2522）：节点时间线 + 相邻环节间隔 + 本标本命中的流转异常。
+     *
+     * <p>轨迹此前只在诊断抽屉里渲染，而抽屉进不去（阅片列表写死未诊断）。本端点是流转轨迹的独立入口，
+     * 不分诊断状态；{@code hours_since_prev} 是相邻两个节点的间隔小时数，<b>原始事实</b>，
+     * 各环节时限阈值归病理质控页唯一定义，本端点不判超时——只有 STALLED 一条按调用方给的
+     * {@code stallHours}（默认 {@value #DEFAULT_STALL_HOURS}）判「自最近节点起是否已无流转超过 N 小时」。
+     */
+    @GetMapping("/trail/{specimenId}")
+    public R<Map<String, Object>> trail(@PathVariable Long specimenId,
+                                        @RequestParam(required = false) Integer stallHours) {
+        int stall = stallHours == null ? DEFAULT_STALL_HOURS : stallHours;
+        if (stall < 1 || stall > MAX_STALL_HOURS) {
+            return R.fail(5801, "stallHours 须在 1–" + MAX_STALL_HOURS + " 之间，收到 " + stallHours);
+        }
+        var head = one("""
+                select s.id, s.barcode, s.path_no, s.part_no, s.specimen_type, s.sampling_site,
+                       s.clinical_diagnosis, s.urgent, s.status,
+                       s.collected_at, s.received_at, s.diagnosed_at, s.rejected_at, s.reject_reason,
+                       s.first_signed_at, s.second_signed_at, s.report_issued_at,
+                       s.pathologist_id, pu.real_name as pathologist_name,
+                       f.real_name as first_signer_name, sd.real_name as second_signer_name,
+                       case when s.order_id is not null then 'OUTP' else 'INP' end as source,
+                       p.patient_no, p.name as patient_name,
+                       (select count(*) from path_block b where b.specimen_id = s.id) as block_count,
+                       (select count(*) from path_slide sl join path_block b on b.id = sl.block_id
+                         where b.specimen_id = s.id) as slide_count,
+                       (select count(*) from path_slide sl join path_block b on b.id = sl.block_id
+                         where b.specimen_id = s.id and sl.stained_at is not null) as stained_slide_count,
+                       (select count(*) from path_tech_order t
+                         where t.specimen_id = s.id and t.status = 'ORDERED') as pending_tech_count,
+                       (select count(*) from path_report rp where rp.specimen_id = s.id) as supplement_count
+                from path_specimen s
+                left join sys_user pu on pu.id = s.pathologist_id
+                left join sys_user f  on f.id  = s.first_signer_id
+                left join sys_user sd on sd.id = s.second_signer_id
+                left join outp_order oo on oo.id = s.order_id
+                left join outp_registration r on r.id = oo.registration_id
+                left join inp_order io on io.id = s.inp_order_id
+                left join inp_admission a on a.id = io.admission_id
+                left join empi_patient p on p.id = coalesce(r.patient_id, a.patient_id)
+                where s.id = ?
+                """, specimenId);
+        if (head == null) return R.fail(5220, "标本不存在：" + specimenId);
+
+        var nodes = jdbc.queryForList("""
+                select pr.id, pr.node, pr.occurred_at, pr.operator_id, u.real_name as operator_name, pr.remark,
+                       round((extract(epoch from (pr.occurred_at - s.received_at)) / 3600)::numeric, 1)
+                           as hours_from_receive,
+                       round((extract(epoch from (pr.occurred_at
+                             - lag(pr.occurred_at) over (order by pr.occurred_at, pr.id))) / 3600)::numeric, 1)
+                           as hours_since_prev
+                from path_process pr
+                join path_specimen s on s.id = pr.specimen_id
+                left join sys_user u on u.id = pr.operator_id
+                where pr.specimen_id = ?
+                order by pr.occurred_at asc, pr.id asc
+                limit ?
+                """, specimenId, MAX_LIMIT);
+        for (var n : nodes) n.put("node_name", NODE_NAMES.get(String.valueOf(n.get("node"))));
+
+        Map<String, Object> last = nodes.isEmpty() ? null : nodes.get(nodes.size() - 1);
+        Object lastNodeAt = last == null ? head.get("received_at") : last.get("occurred_at");
+        // **与 /anomalies 的 STALLED 锚点同口径**（v55 复核 D2）：最近一次「活动」要把 diagnosed_at 算进去。
+        // 诊断端点不写 path_process，只看节点会把「刚写完诊断」判成「停滞三天」，
+        // 而同一抽屉头部就显示着 diagnosed_at = 刚才——两处自相矛盾。greatest 由 SQL 算，
+        // 两个 timestamptz 直接比，不在 Java 里做时区换算（本仓时区已炸过多次）。
+        Object lastAt = lastNodeAt == null ? null : jdbc.queryForObject(
+                "select greatest(?::timestamptz, coalesce(?::timestamptz, ?::timestamptz))",
+                Object.class, lastNodeAt, head.get("diagnosed_at"), lastNodeAt);
+        Object hoursSinceLast = lastAt == null ? null : jdbc.queryForObject(
+                "select round((extract(epoch from (now() - ?::timestamptz)) / 3600)::numeric, 1)",
+                Object.class, lastAt);
+
+        var anomalies = anomalyRows(ANOMALY_KINDS, specimenId, null, null, null, stall, MAX_LIMIT);
+
+        var body = new LinkedHashMap<String, Object>();
+        body.put("specimenId", specimenId);
+        body.put("specimen", head);
+        body.put("nodes", nodes);
+        body.put("nodeCount", nodes.size());
+        body.put("lastNode", last == null ? null : last.get("node"));
+        body.put("lastNodeName", last == null ? null : last.get("node_name"));
+        body.put("lastNodeAt", last == null ? null : last.get("occurred_at"));
+        body.put("hoursSinceLastNode", hoursSinceLast);
+        body.put("stallHours", stall);
+        body.put("anomalies", anomalies);
+        body.put("note", "nodes 按打点时刻升序；没打点的环节不出现（行的缺席就是「该环节没在系统里打点」）。"
+                + "hours_since_prev 是相邻节点间隔小时数，各环节时限由病理质控页定义，本端点不判超时；"
+                + "anomalies 只列本标本命中的流转异常（STALLED 按 stallHours 判）。");
+        return R.ok(body);
+    }
+
+    /**
+     * 流转异常筛选（2522）：超时未流转 + 三类跳节点，见 {@link #ANOMALY_KINDS}。
+     *
+     * <p><b>日期窗只约束跳节点三类</b>（按异常发生时刻：首张切片产出 / 写诊断 / 签发），默认最近
+     * {@value #DEFAULT_WINDOW_DAYS} 天；<b>STALLED 不受日期窗约束</b>——它是「此刻」的积压，
+     * 一个三个月前核收后没人碰的标本正是最该被看见的那种，按窗口切掉就是把它藏起来。
+     * {@code stallHours} 是请求参数（默认 {@value #DEFAULT_STALL_HOURS}，1–{@value #MAX_STALL_HOURS}），
+     * 不是配置项：本版不加 sys_config 行，阈值口径由调用方显式给出并在返回体回显。
+     *
+     * @param kind ALL（默认）或 {@link #ANOMALY_KINDS} 之一；非法返 5801
+     */
+    @GetMapping("/anomalies")
+    public R<Map<String, Object>> anomalies(@RequestParam(required = false) String kind,
+                                            @RequestParam(required = false) String specimenType,
+                                            @RequestParam(required = false) Integer stallHours,
+                                            @RequestParam(required = false) String from,
+                                            @RequestParam(required = false) String to,
+                                            @RequestParam(required = false) Integer limit) {
+        String k = trimUpper(kind);
+        List<String> kinds;
+        if (k == null || "ALL".equals(k)) {
+            kinds = ANOMALY_KINDS;
+        } else if (ANOMALY_KINDS.contains(k)) {
+            kinds = List.of(k);
+        } else {
+            return R.fail(5801, "流转异常 kind 非法：" + kind + "，可选 ALL / " + String.join(" / ", ANOMALY_KINDS));
+        }
+        String type = trimUpper(specimenType);
+        int stall = stallHours == null ? DEFAULT_STALL_HOURS : stallHours;
+        if (stall < 1 || stall > MAX_STALL_HOURS) {
+            return R.fail(5801, "stallHours 须在 1–" + MAX_STALL_HOURS + " 之间，收到 " + stallHours);
+        }
+        String f = trim(from);
+        String t = trim(to);
+        if ((f == null) != (t == null)) return R.fail(5801, "日期区间 from 与 to 必须同时给出");
+        if (f == null) {
+            // 缺省窗口按业务「今天」取，不用 JVM 时区的 LocalDate.now()
+            LocalDate today = BusinessDates.today();
+            t = today.toString();
+            f = today.minusDays(DEFAULT_WINDOW_DAYS - 1L).toString();
+        } else {
+            LocalDate fd;
+            LocalDate td;
+            try {
+                fd = LocalDate.parse(f);
+                td = LocalDate.parse(t);
+            } catch (DateTimeParseException e) {
+                return R.fail(5801, "日期格式须为 yyyy-MM-dd：" + f + " / " + t);
+            }
+            if (td.isBefore(fd)) return R.fail(5801, "日期区间倒置：" + f + " 晚于 " + t);
+            if (fd.plusDays(MAX_SPAN_DAYS).isBefore(td)) {
+                return R.fail(5801, "日期跨度超过 " + MAX_SPAN_DAYS + " 天");
+            }
+            f = fd.toString();
+            t = td.toString();
+        }
+        int cap = capOf(limit);
+
+        var rows = anomalyRows(kinds, null, type, f, t, stall, cap + 1);
+        var body = page(rows, cap);
+        body.put("kind", k == null ? "ALL" : k);
+        body.put("kinds", kinds);
+        body.put("counts", anomalyCounts(kinds, type, f, t, stall));
+        body.put("stallHours", stall);
+        body.put("from", f);
+        body.put("to", t);
+        body.put("note", "STALLED：已核收未拒收未签发、自最近流转节点（无节点则自核收）起超过 stallHours 小时无后续节点，"
+                + "不受日期窗约束；SECTION_WITHOUT_EMBED / DIAGNOSED_WITHOUT_STAIN / ISSUED_WITHOUT_DOUBLE_SIGN "
+                + "按异常发生时刻（首张切片产出 / 写诊断 / 签发）落在 [from, to] 内。"
+                + "counts 是各类不受 limit 截断的总数。未分脱水篮即包埋不算异常（分篮是可选的逻辑分组）。");
+        return R.ok(body);
+    }
+
+    /** 异常查询的一段：SQL 片段（编译期常量拼装）+ 对应参数 */
+    private record Part(String sql, List<Object> args) {}
+
+    /** 四类异常的公共投影（每段 union 分支列集合必须逐列相同） */
+    private static final String ANOMALY_COLUMNS = """
+            s.id as specimen_id, s.barcode, s.path_no, s.part_no, s.specimen_type, s.urgent, s.status,
+            p.patient_no, p.name as patient_name, s.received_at, s.diagnosed_at, s.report_issued_at,
+            """;
+
+    private static final String ANOMALY_PATIENT_JOINS = """
+            left join outp_order oo on oo.id = s.order_id
+            left join outp_registration r on r.id = oo.registration_id
+            left join inp_order io on io.id = s.inp_order_id
+            left join inp_admission a on a.id = io.admission_id
+            left join empi_patient p on p.id = coalesce(r.patient_id, a.patient_id)
+            """;
+
+    /**
+     * 单类异常的 SQL 段。片段全部是编译期常量，用户输入（kind 白名单值、阈值、日期、类别、标本 id）一律走 ?。
+     *
+     * @param specimenId 非空则只看该标本且<b>不加日期窗</b>（轨迹页用）；为空则跳节点三类按 [from, to] 取
+     */
+    private static Part anomalyPart(String kind, Long specimenId, String type,
+                                    String from, String to, int stallHours) {
+        var args = new ArrayList<Object>();
+        args.add(kind);
+        var sb = new StringBuilder();
+        String windowCol;
+        switch (kind) {
+            case "STALLED" -> {
+                // **停滞锚点 = 最近一次「活动」，不只是最近一个流转节点**（v55 复核实测的 D2）。
+                // 诊断端点（PUT /specimens/{barcode}/diagnose）**不写 path_process**（READ 节点全仓无写入），
+                // 于是「刚写完诊断 1 小时、尚未初签」的标本，最近节点仍是三天前的 STAIN——
+                // 被判「停滞 72 小时」，轨迹抽屉头部却明明写着「写完诊断 = 刚才」，两处自相矛盾。
+                // 修法：锚点取 greatest(最近节点/核收, diagnosed_at)。diagnosed_at 是标本上的事实列，
+                // 不是猜出来的；未诊断时它为 null，coalesce 回落核收时刻，与旧口径逐字等价。
+                // detail 文案改说「最近活动」——「无任何流转节点」在诊断之后就不再是事实。
+                sb.append("select ?::varchar as kind, ").append(ANOMALY_COLUMNS).append("""
+                               greatest(coalesce(ln.last_at, s.received_at),
+                                        coalesce(s.diagnosed_at, s.received_at)) as anchor_at,
+                               ln.last_node as last_node, ln.last_at as last_node_at,
+                               round((extract(epoch from (now()
+                                     - greatest(coalesce(ln.last_at, s.received_at),
+                                                coalesce(s.diagnosed_at, s.received_at)))) / 3600)::numeric, 1)
+                                   as hours,
+                               ('最近活动 ' || case when s.diagnosed_at is not null
+                                                     and s.diagnosed_at >= coalesce(ln.last_at, s.received_at)
+                                                then '书写诊断(diagnosed_at)'
+                                                else coalesce(ln.last_node, 'RECEIVE(received_at)') end
+                                || '，此后无任何流转节点') as detail
+                        from path_specimen s
+                        left join lateral (select pr.node as last_node, pr.occurred_at as last_at
+                                           from path_process pr where pr.specimen_id = s.id
+                                           order by pr.occurred_at desc, pr.id desc limit 1) ln on true
+                        """).append(ANOMALY_PATIENT_JOINS).append("""
+                        where s.received_at is not null and s.rejected_at is null and s.report_issued_at is null
+                          and greatest(coalesce(ln.last_at, s.received_at),
+                                       coalesce(s.diagnosed_at, s.received_at))
+                              < now() - (?::int * interval '1 hour')
+                        """);
+                args.add(stallHours);
+                windowCol = null;
+            }
+            case "SECTION_WITHOUT_EMBED" -> {
+                sb.append("select ?::varchar as kind, ").append(ANOMALY_COLUMNS).append("""
+                               x.first_slide_at as anchor_at,
+                               null::varchar as last_node, null::timestamptz as last_node_at, null::numeric as hours,
+                               ('蜡块 ' || x.codes || ' 无包埋记录即已切片 ' || x.slides::text || ' 张') as detail
+                        from path_specimen s
+                        join (select b.specimen_id, min(sl.created_at) as first_slide_at, count(sl.id) as slides,
+                                     string_agg(distinct b.block_code, '、') as codes
+                              from path_block b join path_slide sl on sl.block_id = b.id
+                              where b.embedded_at is null
+                              group by b.specimen_id) x on x.specimen_id = s.id
+                        """).append(ANOMALY_PATIENT_JOINS).append(" where 1 = 1 ");
+                windowCol = "x.first_slide_at";
+            }
+            case "DIAGNOSED_WITHOUT_STAIN" -> {
+                sb.append("select ?::varchar as kind, ").append(ANOMALY_COLUMNS).append("""
+                               s.diagnosed_at as anchor_at,
+                               null::varchar as last_node, null::timestamptz as last_node_at, null::numeric as hours,
+                               ('写诊断时名下无已染色切片（蜡块 '
+                                || (select count(*) from path_block b where b.specimen_id = s.id)::text
+                                || ' 块，切片 '
+                                || (select count(*) from path_slide sl join path_block b on b.id = sl.block_id
+                                     where b.specimen_id = s.id)::text || ' 张）') as detail
+                        from path_specimen s
+                        """).append(ANOMALY_PATIENT_JOINS).append("""
+                        where s.diagnosed_at is not null and s.rejected_at is null
+                          and not exists (select 1 from path_slide sl join path_block b on b.id = sl.block_id
+                                           where b.specimen_id = s.id and sl.stained_at is not null)
+                        """);
+                windowCol = "s.diagnosed_at";
+            }
+            case "ISSUED_WITHOUT_DOUBLE_SIGN" -> {
+                sb.append("select ?::varchar as kind, ").append(ANOMALY_COLUMNS).append("""
+                               s.report_issued_at as anchor_at,
+                               null::varchar as last_node, null::timestamptz as last_node_at, null::numeric as hours,
+                               ('签发时缺 ' || concat_ws('、',
+                                   case when s.first_signed_at is null then '初诊签名' end,
+                                   case when s.second_signed_at is null then '复诊签名' end,
+                                   case when s.first_signer_id is not null and s.first_signer_id = s.second_signer_id
+                                        then '初诊与复诊为同一人' end)) as detail
+                        from path_specimen s
+                        """).append(ANOMALY_PATIENT_JOINS).append("""
+                        where s.report_issued_at is not null and s.rejected_at is null
+                          and (s.first_signed_at is null or s.second_signed_at is null
+                               or (s.first_signer_id is not null and s.first_signer_id = s.second_signer_id))
+                        """);
+                windowCol = "s.report_issued_at";
+            }
+            default -> throw new IllegalArgumentException("unknown anomaly kind: " + kind);
+        }
+        if (specimenId != null) {
+            sb.append(" and s.id = ? ");
+            args.add(specimenId);
+        } else if (windowCol != null && from != null) {
+            // windowCol 来自上面的 switch，是编译期常量，不是用户输入
+            sb.append(" and ").append(windowCol).append(" >= ?::date and ")
+              .append(windowCol).append(" < ?::date + 1 ");
+            args.add(from);
+            args.add(to);
+        }
+        if (type != null) {
+            sb.append(" and s.specimen_type = ? ");
+            args.add(type);
+        }
+        return new Part(sb.toString(), args);
+    }
+
+    private static Part anomalyUnion(List<String> kinds, Long specimenId, String type,
+                                     String from, String to, int stallHours) {
+        var sql = new StringBuilder();
+        var args = new ArrayList<Object>();
+        for (String kind : kinds) {
+            Part p = anomalyPart(kind, specimenId, type, from, to, stallHours);
+            if (!sql.isEmpty()) sql.append(" union all ");
+            sql.append(p.sql());
+            args.addAll(p.args());
+        }
+        return new Part(sql.toString(), args);
+    }
+
+    /** 异常明细行：按发生时刻倒序；每行补 kind_name / last_node_name（中文名只在 Java 侧维护一份） */
+    private List<Map<String, Object>> anomalyRows(List<String> kinds, Long specimenId, String type,
+                                                  String from, String to, int stallHours, int limit) {
+        Part u = anomalyUnion(kinds, specimenId, type, from, to, stallHours);
+        var args = new ArrayList<>(u.args());
+        args.add(limit);
+        var rows = jdbc.queryForList(
+                "select * from (" + u.sql() + ") u order by u.anchor_at desc nulls last, u.specimen_id desc limit ?",
+                args.toArray());
+        for (var r : rows) {
+            r.put("kind_name", ANOMALY_KIND_NAMES.get(String.valueOf(r.get("kind"))));
+            Object ln = r.get("last_node");
+            r.put("last_node_name", ln == null ? null : NODE_NAMES.get(String.valueOf(ln)));
+        }
+        return rows;
+    }
+
+    /** 各类异常的总数（不受 limit 截断），键顺序照 kinds */
+    private Map<String, Object> anomalyCounts(List<String> kinds, String type, String from, String to, int stallHours) {
+        Part u = anomalyUnion(kinds, null, type, from, to, stallHours);
+        var rows = jdbc.queryForList(
+                "select u.kind, count(*) as n from (" + u.sql() + ") u group by u.kind", u.args().toArray());
+        var counts = new LinkedHashMap<String, Object>();
+        for (String k : kinds) counts.put(k, 0L);
+        for (var r : rows) counts.put(String.valueOf(r.get("kind")), asLong(r.get("n")));
+        return counts;
     }
 
     // ==================================================================

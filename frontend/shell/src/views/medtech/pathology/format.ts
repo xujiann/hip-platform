@@ -93,6 +93,52 @@ export function sourceName(v: unknown): string {
   return v === 'OUTP' ? '门诊' : v === 'INP' ? '住院' : String(v ?? '—')
 }
 
+/** 特检技术医嘱状态（chk_path_tech_status 三档；ALL 是 v55 给全院清单加的显式取值，不是库值） */
+export const TECH_STATUSES = [
+  { value: 'ORDERED', label: '待执行' },
+  { value: 'DONE', label: '已完成' },
+  { value: 'CANCELLED', label: '已取消' },
+]
+
+export function techStatusName(v: unknown): string {
+  const s = v == null ? '' : String(v)
+  return TECH_STATUSES.find((t) => t.value === s)?.label ?? s
+}
+
+export function techStatusTag(v: unknown): 'warning' | 'success' | 'info' {
+  return v === 'ORDERED' ? 'warning' : v === 'DONE' ? 'success' : 'info'
+}
+
+/**
+ * 流转异常四类（v55），中文名与 {@code PathologyProcessController.ANOMALY_KIND_NAMES} 逐字一致。
+ * 后端行里已带 kind_name，这里只用于下拉与后端没回 kind_name 时的兜底。
+ */
+export const ANOMALY_KINDS = [
+  { value: 'STALLED', label: '超时未流转' },
+  { value: 'SECTION_WITHOUT_EMBED', label: '切片前无包埋记录' },
+  { value: 'DIAGNOSED_WITHOUT_STAIN', label: '诊断前无已染色切片' },
+  { value: 'ISSUED_WITHOUT_DOUBLE_SIGN', label: '签发时缺双签' },
+]
+
+export function anomalyName(v: unknown): string {
+  const s = v == null ? '' : String(v)
+  return ANOMALY_KINDS.find((k) => k.value === s)?.label ?? s
+}
+
+export function anomalyTag(v: unknown): 'danger' | 'warning' | 'info' {
+  return v === 'STALLED' ? 'danger' : v === 'ISSUED_WITHOUT_DOUBLE_SIGN' ? 'danger' : 'warning'
+}
+
+/**
+ * 报告进度：由 diagnosed_at / report_issued_at 派生，不新造状态值。
+ * 既有 status 只有 COLLECTED/RECEIVED/DIAGNOSED 三档，「已签发」看的是 report_issued_at 这一列。
+ */
+export function reportStage(row: Row): { label: string; tag: 'info' | 'warning' | 'success' } {
+  if (row.report_issued_at) return { label: '已签发', tag: 'success' }
+  if (row.diagnosed_at) return { label: '已诊断未签发', tag: 'warning' }
+  return { label: '未诊断', tag: 'info' }
+}
+
 /**
  * 通用取值渲染。
  *
@@ -362,6 +408,19 @@ const ZH: Record<string, string> = {
   distinct_nodes: '出现过的环节数',
   note: '口径说明',
   created_by: '建档人ID',
+  // v55 可达性收口新增列
+  hours_since_ordered: '距开单(小时)',
+  tech_type_name: '技术类型',
+  kind: '异常类别编码',
+  kind_name: '异常类别',
+  anchor_at: '异常发生时刻',
+  last_node: '最近环节编码',
+  last_node_name: '最近环节',
+  last_node_at: '最近环节时刻',
+  hours: '已停滞(小时)',
+  hours_since_prev: '距上一环节(小时)',
+  detail: '异常说明',
+  created_by_name: '建档人',
 }
 
 export function zh(col: string): string {
@@ -378,10 +437,21 @@ export function colWidth(col: string): number {
   return 110
 }
 
-/** 最近 30 天（含今天），与后端缺省窗口 to-29 天一致 */
+/**
+ * 最近 30 天（含今天），与后端缺省窗口 to-29 天一致。
+ *
+ * **必须取本地日期，不能用 `toISOString()`**（v55 复核实测的 D3）：
+ * `toISOString()` 返回 UTC 时刻，`slice(0,10)` 切出来的是 **UTC 日期**。
+ * 北京时间 0–8 点打开页面，UTC 还在昨天，默认窗就止于**昨天**——
+ * 今天发生的跳节点三类（含 counts）整体不显示，且日期框不可清空、前端恒传 from/to，
+ * 后端 `BusinessDates.today()` 的缺省窗被绕过，用户看不出少了什么。
+ * 这与本仓 Java 侧「裸 LocalDate.now() 取 JVM 时区」是同一类时区缺陷，只是换到了浏览器。
+ * PathQcView 此前同用本函数，同病同修。
+ */
 export function defaultRange(): [string, string] {
   const to = new Date()
   const from = new Date(to.getTime() - 29 * 86400000)
-  const iso = (d: Date) => d.toISOString().slice(0, 10)
-  return [iso(from), iso(to)]
+  const local = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  return [local(from), local(to)]
 }

@@ -718,11 +718,19 @@ public class DoctorStationService {
                 throw new BizException(4013, "同一处方内存在完全相同的重复医嘱行: " + name);
             }
         }
+        // v55 车道 R3（217）+ 合版修复复核 D1：自由文本关键词闸的让路是**按药品**裁决的，不是按患者。
+        // 复核实测的漏洞：患者级 trustworthy 让路后，药剂科只映射了阿莫西林一支，
+        // 医生开**未映射**的氨苄西林（同为青霉素类）→ 引擎查不到映射、关键词闸又已撤防
+        // → **静默放行，比收敛前更松**。关键词闸原本按药名族（「西林」）覆盖整类，
+        // 结构化引擎只命中显式映射的药——让路的前提必须是「这一行引擎必定会说话」。
+        // 仍是整单算一次（读 gate / 覆盖度 / 映射各一次），逐行只查集合，不撞 30 秒缓存边界。
+        java.util.Set<Long> allergyKeywordYield = allergyKeywordYieldSet(reg.getPatientId(), lines);
         for (OrderLine line : lines) {
             if ("DRUG".equals(line.orderType())) {
                 drugRepository.findById(line.itemId())
                         .ifPresent(drug -> {
-                            checkRationalDrugUse(reg, drug.getName(), drug.getId());
+                            checkRationalDrugUse(reg, drug.getName(), drug.getId(),
+                                    !allergyKeywordYield.contains(drug.getId()));
                             checkAbxPrivilege(drug, doctorId);
                             newDrugs.add(new CdssService.DrugLine(drug.getName(), line.days()));
                             newDrugIds.add(drug.getId());          // v51：按 id 收集，**不按药名反查**
@@ -858,11 +866,124 @@ public class DoctorStationService {
         return ALLERGY_NEGATIONS.stream().anyMatch(allergy::contains);
     }
 
-    /** 合理用药规则：1) 过敏史禁忌 2) 同一次就诊重复开同一药品 */
-    private void checkRationalDrugUse(OutpRegistration reg, String drugName, Long drugId) {
+    /**
+     * v55 车道 R3（偏离表 217★）：<b>自由文本关键词闸是否值守</b>。
+     *
+     * <h3>要收敛的缺陷</h3>
+     * 上面这张 {@link #ALLERGY_CROSS} 关键词表在 {@code createOrders} 里排在 v51 结构化过敏引擎
+     * （{@code allergyRuleService.enforceOnOrdering}）<b>之前</b>执行，命中即抛 4012 回滚整单，
+     * 且完全不受 {@code cdss.gate.allergy} 管辖。后果有两条：
+     * <ul>
+     *   <li>对「原文含青霉素/头孢/磺胺/阿司匹林」的患者，结构化引擎<b>根本轮不到执行</b>——
+     *       药剂科把映射维护得再准、护士把原文核对得再细，说了都不算；</li>
+     *   <li>管理员把 gate 设成 off 也关不掉它，「off」这个档位对过敏审查是假的。</li>
+     * </ul>
+     * v51 给它加的否定语境识别（{@link #ALLERGY_NEGATIONS}）是止血；本方法做的是收敛：
+     * <b>让结构化引擎真正说了算，关键词闸退到「结构化查不到时」的兜底位。</b>
+     *
+     * <h3>三档下关键词闸的行为</h3>
+     * <ul>
+     *   <li><b>off</b>：让路（返回 false）。gate=off 是管理员在 sys_config 里写下的决定，
+     *       从此关键词闸与结构化引擎同进退——引擎在 off 档照样留痕不拦，闸也一样不拦。</li>
+     *   <li><b>warn / block</b>：先看结构化覆盖度（下节）；覆盖不可信时<b>照旧硬拦 4012</b>，
+     *       不降成 warning。理由：warn 描述的是<b>结构化引擎</b>对直接命中的处置方式，
+     *       而关键词闸是出厂态下唯一一道防线（见下），在它还必须值守的场合把它降成一句提示，
+     *       等于在结构化引擎尚未接管前就把防线撤了。既有契约（RationalDrugRulesTest、
+     *       V51CdssTest#legacyFreeTextAllergyBlockStillWorks）钉的正是默认档 warn 下的 4012。</li>
+     *   <li>坏配置（'blocked'/'on'…）经 {@code AllergyRuleService#gate()} 回落 warn，
+     *       关键词闸随之<b>继续值守</b>——一个笔误不能静默关掉两道闸。只有字面 off 才让路。</li>
+     * </ul>
+     *
+     * <h3>结构化覆盖到时以谁为准</h3>
+     * 判据直接取结构化引擎自己的 {@code coverage.trustworthy}（{@code patientProfile} 返回体），
+     * 不在本类另起一套口径。它为 true 需要<b>同时</b>满足：
+     * <ol>
+     *   <li>该患者<b>当前原文</b>有匹配的人工核对记录（{@code cdss_allergy_text_review.source_text}
+     *       与 {@code allergy_history} 逐字相等），且结论不是 UNCLEAR；</li>
+     *   <li>该患者全部生效结构化过敏原都至少映射到一个院内药品（映射为空的过敏原永远不会命中）。</li>
+     * </ol>
+     * 两条都成立时，关键词闸让路，:742 的结构化引擎接手：直接命中按 gate 处置
+     * （block → 5612；warn → warnings 随返回体下发 + cdss_alert + gate 台账），交叉命中恒为警告，
+     * 无命中则放行——<b>这就是「以结构化判定为准」</b>。任一条不成立，闸照旧值守。
+     *
+     * <h3>为什么这样收敛是安全的（不许直接删闸的正面回答）</h3>
+     * <ul>
+     *   <li><b>出厂态一个字节不变。</b>V152 五表全空、零回填：任何有原文的患者
+     *       {@code unreviewedText=true} → {@code trustworthy=false} → 闸值守，行为与 v54 逐字相同。
+     *       结构化目录为空时删闸等于把现有唯一防线也删掉，本方法在那个状态下<b>什么都不改</b>。</li>
+     *   <li><b>让路的两个条件都是「人做过决定」</b>：off 是管理员写的配置；trustworthy 要求
+     *       有人逐字读过当前原文并签了字、药剂科给每个过敏原都配了映射。机器从不自己决定让路，
+     *       也不解析原文——本方法读的是核对记录与映射表，不碰原文一个字
+     *       （V51CdssTest 的「自由文本零脚本解析」纪律不受影响，本文件仍只登记那 4 组既有关键词）。</li>
+     *   <li><b>让路是可撤销的</b>：原文一改，核对记录的 source_text 就对不上，
+     *       该患者自动重回「未核对」，闸下一次开单即重新值守。不存在「核对过一次就永远放行」。</li>
+     *   <li><b>让路之后不是裸奔</b>，是换一道更准的闸接手：结构化引擎按显式映射命中，
+     *       既没有「阿莫西林 vs 青霉素」的假阴性，也没有「皮试阴性」的假阳性。
+     *       trustworthy 是引擎自己对「本次审查配不配说『未发现禁忌』」的判定，
+     *       关键词闸只在引擎自认不配的时候补位——两者互斥而不重叠。</li>
+     *   <li><b>判据取患者级而非药品级</b>（「这个药有映射」）：药品级答不了「原文里那条过敏有没有人读过」，
+     *       而漏拦的根源恰恰是原文没人读。患者级 trustworthy 恒比药品级严，宁严勿宽。</li>
+     *   <li><b>失败面不变</b>：不吞 {@code patientProfile} 的异常——:742 已在无 catch 地调同一引擎，
+     *       引擎读不到时开单本来就失败，这里不新增静默路径。</li>
+     * </ul>
+     *
+     * <p>错误码：本收敛<b>不新增码</b>——关键词闸值守时仍抛既有 4012，结构化引擎拦截仍是既有 5612，
+     * 让路时无错误可抛。5840–5859 子段登记在本车道名下，本版未启用。
+     *
+     * @return true = 关键词闸值守（沿用既有 4012 路径）；false = 让路给结构化引擎 / gate=off
+     */
+    /**
+     * 关键词闸对本单哪些药品<b>让路</b>——返回的 id 集合里的行<b>不跑</b>关键词闸，其余行照旧值守。
+     *
+     * <p>v55 R3 原版是患者级布尔（{@code coverage.trustworthy} 为真即整单让路），复核实测出漏洞（D1）：
+     * 药剂科只映射了阿莫西林一支，患者级覆盖仍算可信，于是**未映射**的氨苄西林（同类）
+     * 既不被引擎命中、也不再被关键词闸拦——静默放行，<b>比收敛前更松</b>。
+     * 关键词闸原本按药名族（「西林」）覆盖整类，引擎只命中显式映射的药；
+     * <b>让路的前提必须是「这一行引擎必定会说话」</b>，患者级判据说明不了这一点。
+     *
+     * <p>裁决顺序（每一档都对应 {@code V55AllergyGateTest} 的一节）：
+     * <ol>
+     *   <li>无药品行 / 无过敏原文 → 闸无事可做，全部让路；</li>
+     *   <li>gate=off → 与引擎同进退，全部让路；</li>
+     *   <li>覆盖不可信（原文未核对、有未映射过敏原、结论 UNCLEAR）→ 全部值守；</li>
+     *   <li>覆盖可信且<b>人工核对为无过敏</b>（生效过敏原 0 条）→ 引擎对谁都不会命中，
+     *       但「无过敏」是人确认过的事实 → 全部让路；</li>
+     *   <li>覆盖可信且有生效过敏原 → <b>只对引擎会直接命中（已显式映射）的药让路</b>，
+     *       其余同类药闸继续值守——这一条就是 D1 的修复。</li>
+     * </ol>
+     * 仍是整单算一次（gate / 覆盖度 / 映射各一次查询），不逐行重算。
+     */
+    private java.util.Set<Long> allergyKeywordYieldSet(Long patientId, List<OrderLine> lines) {
+        List<Long> drugIds = lines.stream()
+                .filter(l -> "DRUG".equals(l.orderType()) && l.itemId() != null)
+                .map(OrderLine::itemId).distinct().toList();
+        if (drugIds.isEmpty()) return java.util.Set.of();
+        var patient = patientRepository.findById(patientId).orElse(null);
+        String allergy = patient == null ? null : patient.getAllergyHistory();
+        if (allergy == null || allergy.isBlank()) return java.util.Set.copyOf(drugIds);   // ① 无原文
+        if ("off".equals(allergyRuleService.gate())) return java.util.Set.copyOf(drugIds); // ② gate=off
+        Object coverage = allergyRuleService.patientProfile(patientId).get("coverage");
+        boolean trustworthy = coverage instanceof java.util.Map<?, ?> m
+                && Boolean.TRUE.equals(m.get("trustworthy"));
+        if (!trustworthy) return java.util.Set.of();                                        // ③ 不可信：全值守
+        if (!allergyRuleService.hasActiveAllergen(patientId)) {
+            return java.util.Set.copyOf(drugIds);                                           // ④ 人工核对为无过敏
+        }
+        return allergyRuleService.directlyHitDrugIds(patientId, drugIds);                   // ⑤ 只对已映射药让路
+    }
+
+    /**
+     * 合理用药规则：1) 过敏史禁忌 2) 同一次就诊重复开同一药品。
+     *
+     * <p>v55：过敏史关键词段受 {@code allergyKeywordArmed} 管辖（裁决见
+     * {@link #allergyKeywordGateArmed}）；值守时的匹配逻辑、错误码 4012 与文案<b>逐字不变</b>。
+     * 重复用药 4013 不属过敏 gate 管辖，任何档位都照常执行。
+     */
+    private void checkRationalDrugUse(OutpRegistration reg, String drugName, Long drugId,
+                                      boolean allergyKeywordArmed) {
         var patient = patientRepository.findById(reg.getPatientId()).orElse(null);
         String allergy = patient == null ? null : patient.getAllergyHistory();
-        if (allergy != null && !allergy.isBlank() && !allergyTextIsNegated(allergy)) {
+        if (allergyKeywordArmed && allergy != null && !allergy.isBlank() && !allergyTextIsNegated(allergy)) {
             for (var entry : ALLERGY_CROSS.entrySet()) {
                 if (allergy.contains(entry.getKey())
                         && entry.getValue().stream().anyMatch(drugName::contains)) {

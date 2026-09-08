@@ -16,6 +16,11 @@
       </el-button>
     </template>
 
+    <!-- v55 车道R2（994）：带参直达的来源说明——医生不需要知道 id 是什么、从哪来 -->
+    <el-alert v-if="arrivedFrom" type="success" show-icon :closable="false" class="gap" :title="arrivedTitle">
+      <div>要看另一份病历，可在上方改类型与 id 后再查；医生请回到门诊医生站选中患者后点「版本留痕」。</div>
+    </el-alert>
+
     <!-- ============ 留痕开关与运行状况：gate 能静默关掉法定留痕，必须摆在最上面 ============ -->
     <template v-if="settings">
       <el-alert v-if="!settings.complianceClaimHolds" type="error" show-icon :closable="false" class="gap"
@@ -149,7 +154,8 @@
                      @size-change="onSizeChange" @current-change="load(false)" />
     </template>
 
-    <el-empty v-else-if="!loading" :image-size="60" description="请输入病历类型与 id 后查询版本" />
+    <el-empty v-else-if="!loading" :image-size="60"
+              description="医生：门诊医生站 → 选中患者 → 「病历」页签 → 「版本留痕」按钮，会自动带入病历 id 进来。质控/病案：在上方选类型、输入 id 直查。" />
   </el-card>
 
   <!-- ============ 任意两版对比：按字段并排，改动字段显著标出 ============ -->
@@ -215,6 +221,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import client from '../../../api/client'
 import EmrVersionDiff from './EmrVersionDiff.vue'
@@ -235,12 +242,60 @@ const WITH_FIELDS_MAX = 10
 const emrType = ref<'OUTP' | 'INP'>('OUTP')
 const emrId = ref<number | undefined>(undefined)
 
+const route = useRoute()
+
+/**
+ * v55 车道R2（994）：带参进入的来源标记。
+ * 'doctor' = 门诊医生站「版本留痕」按钮；其他非空值 = 别处带 ?emrType&emrId 的链接。
+ * null = 没带参，走手工输入（质控/病案人员按 id 直查）。
+ */
+const arrivedFrom = ref<string | null>(null)
+const TYPE_LABEL: Record<string, string> = { OUTP: '门诊病历', INP: '住院病历' }
+
+/**
+ * 支持 `?emrType=OUTP&emrId=123` 带参进入，进来就查。
+ *
+ * 此前本页**唯一**入口是手填 outp_emr.id，而全系统没有任何页面显示这个 id（v55 主控 grep 实证）——
+ * 功能在、医生进不去。现在门诊医生站的「版本留痕」按钮带参直达；手工输入保留，但不再是唯一入口。
+ *
+ * 参数不合法（类型不在 OUTP/INP、id 不是正整数）时**不查**、给一句明确提示，
+ * 也不把坏值塞进输入框冒充有效目标——那会让人以为「查了、没版本」。
+ */
+function applyRouteQuery(): boolean {
+  const t = String(route.query.emrType ?? '').trim().toUpperCase()
+  const idRaw = String(route.query.emrId ?? '').trim()
+  if (!t && !idRaw) {
+    arrivedFrom.value = null   // 从侧栏菜单不带参进来：撤掉「已直达」横幅，已查结果照留
+    return false
+  }
+  const id = /^\d+$/.test(idRaw) ? Number(idRaw) : NaN
+  if ((t !== 'OUTP' && t !== 'INP') || !Number.isSafeInteger(id) || id <= 0) {
+    ElMessage.warning(`地址栏参数不合法（emrType=${t || '空'}，emrId=${idRaw || '空'}），请在上方手工选择类型并输入 id`)
+    return false
+  }
+  emrType.value = t as 'OUTP' | 'INP'
+  emrId.value = id
+  arrivedFrom.value = String(route.query.from ?? '').trim() || 'link'
+  void load(true)
+  return true
+}
+
 /**
  * 已生效的查询目标：翻页、单版查看、对比一律用它，**不用输入框里的 emrType/emrId**。
  * 用户改了 id 却没点查询时，屏幕上还是旧病历的版本列表；此时按输入框去查单版或对比，
  * 拿到的是另一份病历的内容，却显示在这份病历的列表下面——同 AnesQcView 的 applied 纪律。
  */
 const applied = ref<{ emrType: string; emrId: number } | null>(null)
+
+/** 直达横幅的文案跟着 applied 走，不跟输入框：读者改了 id 没点查询时，横幅不能先一步宣称「已查询」 */
+const arrivedTitle = computed(() => {
+  const t = applied.value?.emrType ?? emrType.value
+  const id = applied.value?.emrId ?? emrId.value
+  const label = `${TYPE_LABEL[t] ?? t} #${id}`
+  return arrivedFrom.value === 'doctor'
+    ? `已从门诊医生站直达：${label} 的版本已自动查询，无需手填 id`
+    : `已按地址栏参数自动查询：${label}`
+})
 
 const settings = ref<VersionSettings | null>(null)
 const listBody = ref<VersionListBody | null>(null)
@@ -395,7 +450,15 @@ function savedByText(m: VersionMeta): string {
   return m.savedByName ?? `用户 #${m.savedBy}（姓名未查到）`
 }
 
-onMounted(loadSettings)
+onMounted(() => {
+  void loadSettings()
+  applyRouteQuery()
+})
+
+// 同一标签内再次带不同参数进来（如另一份病历的链接）也要生效；不带参的普通切换不动已查结果
+watch(() => [route.query.emrType, route.query.emrId], () => {
+  applyRouteQuery()
+})
 </script>
 
 <style scoped>

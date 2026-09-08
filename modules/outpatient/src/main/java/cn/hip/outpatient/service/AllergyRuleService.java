@@ -326,6 +326,31 @@ public class AllergyRuleService {
     }
 
     /**
+     * 本次药品中会被<b>直接命中</b>（∈ 患者某条生效过敏记录的显式药品映射）的 id 集合。
+     *
+     * <p>v55 合版修 D1 时加的**药品级信号**，给 {@code DoctorStationService} 裁决关键词闸
+     * 该对哪些行让路：让路的前提必须是「这一行引擎必定会说话」，而引擎只命中显式映射的药——
+     * 患者级 {@code coverage.trustworthy} 说明不了这一点（只映射一支药它就为 true）。
+     * 空入参返空集，<b>不把空列表拼进 {@code in ()}</b>。
+     */
+    public java.util.Set<Long> directlyHitDrugIds(Long patientId, List<Long> drugIds) {
+        List<Long> ids = drugIds == null ? List.of()
+                : drugIds.stream().filter(java.util.Objects::nonNull).distinct().toList();
+        if (ids.isEmpty()) return java.util.Set.of();
+        var out = new LinkedHashSet<Long>();
+        for (var h : queryDirectHits(patientId, ids)) out.add(((Number) h.get("drug_id")).longValue());
+        return out;
+    }
+
+    /** 患者是否有至少一条生效（ACTIVE）的结构化过敏记录。「人工核对为无过敏」时为 false。 */
+    public boolean hasActiveAllergen(Long patientId) {
+        Integer n = jdbc.queryForObject(
+                "select count(*) from cdss_patient_allergy where patient_id = ? and status = 'ACTIVE'",
+                Integer.class, patientId);
+        return n != null && n > 0;
+    }
+
+    /**
      * 交叉命中：患者过敏原所在族 —(有交叉风险)— 对方族 —(族成员)— 对方过敏原 —(映射)— 本次药品。
      *
      * <p>无序对只存一行（lo&lt;hi），故 join 两个方向都要走一遍，再用 case 取「对方族」。

@@ -10,6 +10,8 @@ import org.springframework.security.core.Authentication;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -20,6 +22,18 @@ import java.util.Set;
 /**
  * v48 车道 P3：病理诊断与报告——阅片工作列表 / 初诊复诊双签 / 正式签发 /
  * 补充报告 / 特检技术医嘱 / 既往病理调取。
+ *
+ * <p><b>v55 可达性收口（车道 R1）在本类动了两处，既有契约只增不改</b>：
+ * <ul>
+ *   <li>{@link #worklist}：基础 SQL 原本写死 {@code diagnosed_at is null}，已诊断/已签发的标本
+ *       <b>永久不在列表、也搜不到</b>，而报告抽屉的唯一入口就是这个列表——报告追溯与补充报告在 UI 上无路可走。
+ *       {@code scope} 在既有 {@code stained}/{@code all} 之外新增 {@code diagnosed}/{@code any}，
+ *       另加可选日期窗 {@code from}/{@code to}；<b>不传 = 旧行为不变</b>（含未识别取值回落 stained 这一条）。</li>
+ *   <li>{@link #techOrders}：全院清单分支（不传 specimenId）前端此前零调用。新增
+ *       {@code techType}/{@code urgentOnly}/{@code keyword}/{@code dateField}/{@code from}/{@code to}
+ *       与 {@code status=ALL}，供全院特检工作台按状态/类型/时间筛选；不传 = 旧行为不变。</li>
+ * </ul>
+ * 新增检索参数非法统一返 <b>5800</b>（v55 病理可达性子段 5800–5819 在本类只用这一个码）。
  *
  * <p><b>与既有 {@link PathologyController} 的边界（逐字不动的五个端点）</b>：
  * {@code GET /api/pathology/pending}、{@code POST /specimens}、
@@ -118,6 +132,15 @@ public class PathologyReportController {
     private static final int TECH_ITEM_MAX = 64;
     private static final int REASON_MAX = 255;
 
+    /** 日期窗最大跨度（天），与 PathologyProcessController.slideSearch 同量级 */
+    private static final int MAX_SPAN_DAYS = 366;
+
+    /** 阅片列表 scope 的取值集合：前两个是 v48 既有档，后两个是 v55 为报告追溯放开的档 */
+    public static final List<String> WORKLIST_SCOPES = List.of("stained", "all", "diagnosed", "any");
+
+    /** 全院特检清单的日期口径白名单 */
+    private static final List<String> TECH_DATE_FIELDS = List.of("ORDERED", "DONE");
+
     // ==================================================================
     // 一、阅片工作列表
     // ==================================================================
@@ -137,15 +160,38 @@ public class PathologyReportController {
      * <p>排序：加急优先 → 核收早的优先。{@code hoursSinceReceived} 是<b>原始事实</b>（距核收的小时数），
      * 不在这里判「是否超时」——报告及时率的阈值口径归质控段（5280–5299）唯一定义，两处各判一次必然分叉。
      *
+     * <p><b>v55：{@code diagnosed} / {@code any} 两档与日期窗（可达性收口）</b>。
+     * 基础 SQL 原本写死 {@code diagnosed_at is null}，已诊断/已签发的标本永久不在列表也搜不到，
+     * 而报告抽屉（补充报告、流转轨迹、既往病理）的唯一入口就是这个列表。故放开：
+     * <ul>
+     *   <li>{@code diagnosed}：已写诊断（含已签发）、未拒收——报告追溯与补充报告的入口，
+     *       按 {@code coalesce(report_issued_at, diagnosed_at)} 倒序（最近出的报告在前）；</li>
+     *   <li>{@code any}：已核收、未拒收的全部，不论是否诊断——拿着病理号/患者名追溯时用，按核收时刻倒序；</li>
+     *   <li>{@code from}/{@code to}（yyyy-MM-dd，须同时给出，跨度 ≤ 366 天）：stained/all/any 按核收时刻，
+     *       diagnosed 按 {@code coalesce(report_issued_at, diagnosed_at)}；非法返 5800。</li>
+     * </ul>
+     * <b>不传 scope 仍是 stained；未识别的取值仍回落 stained</b>（v48 既有行为，一个字节没改）。
+     * 返回行新增 diagnosed_at / report_issued_at / first_signed_at / second_signed_at /
+     * pathologist_name / supplement_count 六列——只增不改，未诊断行这几列为 null。
+     *
      * @param scope stained（默认，已染色待诊断）/ all（已核收未诊断的全部，含无切片记录的存量标本）
+     *              / diagnosed（已诊断含已签发）/ any（已核收未拒收的全部）
      */
     @GetMapping("/worklist")
     public R<Map<String, Object>> worklist(@RequestParam(required = false) String scope,
                                            @RequestParam(required = false) String specimenType,
                                            @RequestParam(required = false) Boolean urgentOnly,
                                            @RequestParam(required = false) String keyword,
+                                           @RequestParam(required = false) String from,
+                                           @RequestParam(required = false) String to,
                                            @RequestParam(required = false) Integer limit) {
-        String mode = "all".equalsIgnoreCase(trim(scope)) ? "all" : "stained";
+        String mode = scopeOf(scope);
+        Window win;
+        try {
+            win = parseWindow(from, to);
+        } catch (IllegalArgumentException e) {
+            return R.fail(5800, "阅片列表检索参数非法：" + e.getMessage());
+        }
         int cap = capOf(limit);
 
         var sql = new StringBuilder("""
@@ -164,23 +210,39 @@ public class PathologyReportController {
                        (select count(*) from path_tech_order t
                          where t.specimen_id = s.id and t.status = 'ORDERED') as pending_tech_count,
                        round((extract(epoch from (now() - s.received_at)) / 3600)::numeric, 1)
-                           as hours_since_received
+                           as hours_since_received,
+                       s.diagnosed_at, s.report_issued_at, s.first_signed_at, s.second_signed_at,
+                       pu.real_name as pathologist_name,
+                       (select count(*) from path_report rp where rp.specimen_id = s.id) as supplement_count
                 from path_specimen s
+                left join sys_user pu on pu.id = s.pathologist_id
                 left join outp_order oo on oo.id = s.order_id
                 left join outp_registration r on r.id = oo.registration_id
                 left join inp_order io on io.id = s.inp_order_id
                 left join inp_admission a on a.id = io.admission_id
                 left join empi_patient p on p.id = coalesce(r.patient_id, a.patient_id)
-                where s.diagnosed_at is null and s.rejected_at is null and s.received_at is not null
+                where s.rejected_at is null and s.received_at is not null
                 """);
         var args = new ArrayList<Object>();
 
         // 片段是编译期常量，参数一律走 ?（禁止拼接 SQL）
-        if ("stained".equals(mode)) {
-            sql.append("""
+        switch (mode) {
+            case "stained" -> sql.append("""
+                      and s.diagnosed_at is null
                       and exists (select 1 from path_slide sl join path_block b on b.id = sl.block_id
                                    where b.specimen_id = s.id and sl.stained_at is not null)
                     """);
+            case "all" -> sql.append(" and s.diagnosed_at is null ");
+            case "diagnosed" -> sql.append(" and s.diagnosed_at is not null ");
+            default -> { }   // any：不限诊断状态
+        }
+        if (win != null) {
+            sql.append("diagnosed".equals(mode)
+                    ? " and coalesce(s.report_issued_at, s.diagnosed_at) >= ?::date "
+                      + "and coalesce(s.report_issued_at, s.diagnosed_at) < ?::date + 1 "
+                    : " and s.received_at >= ?::date and s.received_at < ?::date + 1 ");
+            args.add(win.from());
+            args.add(win.to());
         }
         String type = trim(specimenType);
         if (type != null) {
@@ -199,7 +261,12 @@ public class PathologyReportController {
             args.add(like);
             args.add(like);
         }
-        sql.append(" order by s.urgent desc, s.received_at asc nulls last, s.id asc limit ? ");
+        // 待诊断两档：加急优先 → 核收早的优先（既有）；追溯两档：最近的在前
+        sql.append(switch (mode) {
+            case "diagnosed" -> " order by coalesce(s.report_issued_at, s.diagnosed_at) desc, s.id desc limit ? ";
+            case "any" -> " order by s.received_at desc nulls last, s.id desc limit ? ";
+            default -> " order by s.urgent desc, s.received_at asc nulls last, s.id asc limit ? ";
+        });
         args.add(cap + 1);   // 多取 1 条判 truncated：只取 cap 条会让「刚好第 cap 条」漏报
 
         var rows = jdbc.queryForList(sql.toString(), args.toArray());
@@ -210,10 +277,21 @@ public class PathologyReportController {
         body.put("limit", cap);
         body.put("items", truncated ? rows.subList(0, cap) : rows);
         body.put("truncated", truncated);
+        body.put("from", win == null ? null : win.from());
+        body.put("to", win == null ? null : win.to());
         body.put("note", "stained：存在已染色切片的待诊断标本；all：已核收未诊断的全部标本"
-                + "（含 V144 之前无蜡块/切片记录的存量标本）。hoursSinceReceived 为距核收的小时数，"
-                + "是否超时由病理质控端点判定，本端点不判。");
+                + "（含 V144 之前无蜡块/切片记录的存量标本）；diagnosed：已写诊断（含已签发）的标本，"
+                + "报告追溯与补充报告从这里进；any：已核收未拒收的全部，不论诊断状态。"
+                + "hoursSinceReceived 为距核收的小时数，是否超时由病理质控端点判定，本端点不判。");
         return R.ok(body);
+    }
+
+    /** scope 解析：既有两档 + v55 两档；<b>未识别取值回落 stained</b> 是 v48 既有行为，不改 */
+    private static String scopeOf(String scope) {
+        String s = trim(scope);
+        if (s == null) return "stained";
+        String lower = s.toLowerCase(Locale.ROOT);
+        return WORKLIST_SCOPES.contains(lower) ? lower : "stained";
     }
 
     // ==================================================================
@@ -643,19 +721,55 @@ public class PathologyReportController {
      * <p>{@code specimenId} 可空——不传即技师侧的全院待执行清单（默认只看 ORDERED）；
      * 传了则是该标本的全部技术医嘱（默认全状态）。两种用法的默认状态刻意不同：
      * 全院清单默认拉全状态会把历史全捞出来，标本清单只看 ORDERED 又看不到已完成的项目。
+     *
+     * <p><b>v55 全院特检工作台（可达性收口）</b>：全院清单分支此前前端零调用。新增
+     * {@code status=ALL}（不按状态过滤）、{@code techType}（白名单外返 5267，与类注释「按类型筛选同码」一致）、
+     * {@code urgentOnly}、{@code keyword}（条码 / 病理号 / 患者 / 患者号 / 项目名）、
+     * {@code dateField}=ORDERED（默认，按开单时刻）|DONE（按完成时刻）与 {@code from}/{@code to}
+     * （须同时给出，跨度 ≤ 366 天）。日期与口径参数非法返 5800。<b>全部不传 = 旧行为不变</b>。
+     * 返回行新增 {@code hours_since_ordered}（距开单小时数，原始事实，不判超时）与
+     * {@code tech_type_name}——只增不改。
      */
     @GetMapping("/tech-orders")
     public R<Map<String, Object>> techOrders(@RequestParam(required = false) Long specimenId,
                                              @RequestParam(required = false) String status,
+                                             @RequestParam(required = false) String techType,
+                                             @RequestParam(required = false) Boolean urgentOnly,
+                                             @RequestParam(required = false) String keyword,
+                                             @RequestParam(required = false) String dateField,
+                                             @RequestParam(required = false) String from,
+                                             @RequestParam(required = false) String to,
                                              @RequestParam(required = false) Integer limit) {
         String st = trim(status);
+        boolean allStatuses = false;
         if (st != null) {
             st = st.toUpperCase(Locale.ROOT);
-            if (!TECH_STATUSES.contains(st)) {
-                return R.fail(5267, "特检医嘱状态非法（" + String.join("/", TECH_STATUSES) + "）");
+            if ("ALL".equals(st)) {
+                allStatuses = true;   // v55：显式要全状态（全院清单默认只看 ORDERED 这一条不动）
+                st = null;
+            } else if (!TECH_STATUSES.contains(st)) {
+                return R.fail(5267, "特检医嘱状态非法（" + String.join("/", TECH_STATUSES) + "/ALL）");
             }
         } else if (specimenId == null) {
             st = "ORDERED";   // 全院清单默认只看待执行
+        }
+        String type = trim(techType);
+        if (type != null) {
+            type = type.toUpperCase(Locale.ROOT);
+            if (!TECH_TYPES.contains(type)) {
+                return R.fail(5267, "特检技术类型非法（" + String.join("/", TECH_TYPES) + "）");
+            }
+        }
+        String df = trim(dateField);
+        df = df == null ? "ORDERED" : df.toUpperCase(Locale.ROOT);
+        if (!TECH_DATE_FIELDS.contains(df)) {
+            return R.fail(5800, "特检清单 dateField 非法：" + dateField + "，可选 " + String.join(" / ", TECH_DATE_FIELDS));
+        }
+        Window win;
+        try {
+            win = parseWindow(from, to);
+        } catch (IllegalArgumentException e) {
+            return R.fail(5800, "特检清单检索参数非法：" + e.getMessage());
         }
         int cap = capOf(limit);
 
@@ -665,7 +779,9 @@ public class PathologyReportController {
                        t.ordered_by, ob.real_name as ordered_by_name, t.ordered_at,
                        t.done_by, db.real_name as done_by_name, t.done_at,
                        s.barcode, s.path_no, s.part_no, s.specimen_type, s.urgent,
-                       p.id as patient_id, p.patient_no, p.name as patient_name
+                       p.id as patient_id, p.patient_no, p.name as patient_name,
+                       round((extract(epoch from (now() - t.ordered_at)) / 3600)::numeric, 1)
+                           as hours_since_ordered
                 from path_tech_order t
                 join path_specimen s on s.id = t.specimen_id
                 left join path_block b on b.id = t.block_id
@@ -687,18 +803,50 @@ public class PathologyReportController {
             sql.append(" and t.status = ? ");
             args.add(st);
         }
+        if (type != null) {
+            sql.append(" and t.tech_type = ? ");
+            args.add(type);
+        }
+        if (Boolean.TRUE.equals(urgentOnly)) {
+            sql.append(" and s.urgent = true ");
+        }
+        String kw = trim(keyword);
+        if (kw != null) {
+            sql.append(" and (s.barcode ilike ? or s.path_no ilike ? or p.name ilike ? "
+                    + "or p.patient_no ilike ? or t.tech_item ilike ?) ");
+            String like = "%" + escapeLike(kw) + "%";
+            for (int i = 0; i < 5; i++) args.add(like);
+        }
+        if (win != null) {
+            // 片段由白名单二选一，是编译期常量；日期值走 ?
+            sql.append("DONE".equals(df)
+                    ? " and t.done_at >= ?::date and t.done_at < ?::date + 1 "
+                    : " and t.ordered_at >= ?::date and t.ordered_at < ?::date + 1 ");
+            args.add(win.from());
+            args.add(win.to());
+        }
         sql.append(" order by t.status = 'ORDERED' desc, s.urgent desc, t.ordered_at asc, t.id asc limit ? ");
         args.add(cap + 1);
 
         var rows = jdbc.queryForList(sql.toString(), args.toArray());
         boolean truncated = rows.size() > cap;
+        for (var r : rows) {
+            r.put("tech_type_name", TECH_TYPE_NAMES.getOrDefault(String.valueOf(r.get("tech_type")), null));
+        }
 
         var body = new LinkedHashMap<String, Object>();
         body.put("specimenId", specimenId);
-        body.put("status", st);
+        body.put("status", allStatuses ? "ALL" : st);
         body.put("limit", cap);
         body.put("items", truncated ? rows.subList(0, cap) : rows);
         body.put("truncated", truncated);
+        body.put("techType", type);
+        body.put("dateField", df);
+        body.put("from", win == null ? null : win.from());
+        body.put("to", win == null ? null : win.to());
+        body.put("note", "不传 specimenId 为全院清单，默认只看 ORDERED，status=ALL 看全状态；"
+                + "传 specimenId 为该标本清单，默认全状态。hoursSinceOrdered 是距开单的小时数（原始事实），"
+                + "本端点不判超时。");
         return R.ok(body);
     }
 
@@ -833,6 +981,33 @@ public class PathologyReportController {
     private static int capOf(Integer limit) {
         if (limit == null || limit <= 0) return DEFAULT_LIMIT;
         return Math.min(limit, MAX_LIMIT);
+    }
+
+    /** 闭区间日期窗（yyyy-MM-dd 两端），SQL 里按 [from, to+1) 取 */
+    private record Window(String from, String to) {}
+
+    /**
+     * 日期窗解析：两端都不给返回 null（不加窗）；只给一端、格式错、倒置、跨度超 {@value #MAX_SPAN_DAYS} 天
+     * 抛 {@link IllegalArgumentException}，由调用方转 5800。规则与 PathologyProcessController.slideSearch 逐条一致。
+     */
+    private static Window parseWindow(String from, String to) {
+        String f = trim(from);
+        String t = trim(to);
+        if (f == null && t == null) return null;
+        if ((f == null) != (t == null)) throw new IllegalArgumentException("日期区间 from 与 to 必须同时给出");
+        LocalDate fd;
+        LocalDate td;
+        try {
+            fd = LocalDate.parse(f);
+            td = LocalDate.parse(t);
+        } catch (DateTimeParseException e) {
+            throw new IllegalArgumentException("日期格式须为 yyyy-MM-dd：" + f + " / " + t);
+        }
+        if (td.isBefore(fd)) throw new IllegalArgumentException("日期区间倒置：" + f + " 晚于 " + t);
+        if (fd.plusDays(MAX_SPAN_DAYS).isBefore(td)) {
+            throw new IllegalArgumentException("日期跨度超过 " + MAX_SPAN_DAYS + " 天");
+        }
+        return new Window(fd.toString(), td.toString());
     }
 
     /** LIKE 通配符转义（与 InpatientController / EmrFieldController 同一份写法） */

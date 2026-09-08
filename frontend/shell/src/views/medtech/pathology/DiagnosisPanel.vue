@@ -2,10 +2,17 @@
   <!-- ============ 工位四：诊断（阅片 → 首次报告 → 初诊复诊双签 → 签发 → 补充报告） ============ -->
   <el-form inline size="small">
     <el-form-item label="范围">
-      <el-select v-model="query.scope" style="width: 250px" @change="load">
+      <el-select v-model="query.scope" style="width: 300px" @change="load">
         <el-option value="stained" label="待诊断（已有染色切片）" />
-        <el-option value="all" label="全部（已核收未诊断，含无切片记录的存量标本）" />
+        <el-option value="all" label="全部待诊断（已核收未诊断，含无切片记录的存量标本）" />
+        <el-option value="diagnosed" label="已诊断 / 已签发（报告追溯、补充报告、流转轨迹）" />
+        <el-option value="any" label="不限状态（按病理号 / 患者追溯）" />
       </el-select>
+    </el-form-item>
+    <el-form-item :label="query.scope === 'diagnosed' ? '报告日期' : '核收日期'">
+      <el-date-picker v-model="range" type="daterange" unlink-panels value-format="YYYY-MM-DD"
+                      range-separator="至" start-placeholder="起" end-placeholder="止" clearable
+                      style="width: 230px" />
     </el-form-item>
     <el-form-item label="类别">
       <el-select v-model="query.specimenType" clearable placeholder="全部" style="width: 120px">
@@ -71,10 +78,24 @@
     <el-table-column label="距签收(小时)" width="110">
       <template #default="{ row }">{{ fmt(row.hours_since_received) }}</template>
     </el-table-column>
+    <!-- 追溯两档才有意义的列：诊断 / 签发进度与补充报告份数（待诊断两档恒为「未诊断」，不占地方） -->
+    <el-table-column v-if="tracing" label="报告进度" width="200">
+      <template #default="{ row }">
+        <el-tag size="small" :type="reportStage(row).tag">{{ reportStage(row).label }}</el-tag>
+        <span class="muted" style="margin-left: 4px">
+          {{ fmtTime(row.report_issued_at ?? row.diagnosed_at) }}
+        </span>
+        <el-tag v-if="num(row.supplement_count) > 0" size="small" type="warning" style="margin-left: 4px">
+          补充 {{ num(row.supplement_count) }} 份</el-tag>
+      </template>
+    </el-table-column>
+    <el-table-column v-if="tracing" label="诊断医师" width="100">
+      <template #default="{ row }">{{ fmt(row.pathologist_name) }}</template>
+    </el-table-column>
     <el-table-column label="操作" width="110" fixed="right">
       <template #default="{ row }">
         <el-button link type="primary" size="small" @click="openReport(Number(row.id))">
-          阅片 / 报告</el-button>
+          {{ row.diagnosed_at ? '报告 / 追溯' : '阅片 / 报告' }}</el-button>
       </template>
     </el-table-column>
     <template #empty>该范围内无标本</template>
@@ -173,8 +194,16 @@
                 </el-descriptions-item>
               </el-descriptions>
             </template>
-            <el-empty v-else description="尚未书写首次病理诊断（未写诊断不能签名、不能签发、不能出补充报告）"
-                      :image-size="60" />
+            <template v-else>
+              <!-- 未写诊断时大体所见不再被整体藏起来：取材工位写进 gross_finding 的内容此刻就该能看见（2530） -->
+              <div v-if="primary.grossFinding" class="sec">
+                <b>大体所见</b>
+                <el-tag size="small" type="info" style="margin-left: 6px">取材工位已录入，诊断尚未书写</el-tag>
+                <pre>{{ fmt(primary.grossFinding) }}</pre>
+              </div>
+              <el-empty description="尚未书写首次病理诊断（未写诊断不能签名、不能签发、不能出补充报告）"
+                        :image-size="60" />
+            </template>
           </el-card>
 
           <h4>补充报告（{{ supplements.length }} 份，按出具时间序追加）</h4>
@@ -390,7 +419,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../../api/client'
 import { useAuthStore } from '../../../stores/auth'
 import {
-  SPECIMEN_TYPES, fmt, fmtTime, nodeName, num, sourceName, statusName, typeName, type Row,
+  SPECIMEN_TYPES, fmt, fmtTime, nodeName, num, reportStage, sourceName, statusName, typeName, type Row,
 } from './format'
 
 const emit = defineEmits<{ (e: 'changed'): void }>()
@@ -406,6 +435,14 @@ const limit = ref(100)
 const note = ref('')
 const openById = ref('')
 const query = reactive({ scope: 'stained', specimenType: '', urgentOnly: false, keyword: '' })
+/**
+ * 日期窗留空即不传——后端「不传 = 旧行为」。不预填最近 30 天：
+ * 待诊断两档本就该看全部积压，预填窗口会把积压最久的那批藏掉。
+ */
+const range = ref<[string, string] | null>(null)
+
+/** 追溯两档（diagnosed / any）才显示诊断进度列 */
+const tracing = computed(() => query.scope === 'diagnosed' || query.scope === 'any')
 
 async function load() {
   loading.value = true
@@ -416,6 +453,8 @@ async function load() {
         specimenType: query.specimenType || undefined,
         urgentOnly: query.urgentOnly || undefined,
         keyword: query.keyword || undefined,
+        from: range.value?.[0] || undefined,
+        to: range.value?.[1] || undefined,
       },
     })).data.data as Row
     rows.value = (d.items ?? []) as Row[]
@@ -775,7 +814,11 @@ async function loadPrior() {
   }
 }
 
-defineExpose({ reload: load })
+/**
+ * 暴露 openReport 给工作台：特检工作台、流转与异常两个面板里的「打开报告」要跳到本工位并直接打开抽屉，
+ * 否则用户得记下标本 id、切过来、再手输一遍——那正是本版要消灭的「后端做了、前端够不着」。
+ */
+defineExpose({ reload: load, openReport })
 
 void load()
 void loadTechDict()

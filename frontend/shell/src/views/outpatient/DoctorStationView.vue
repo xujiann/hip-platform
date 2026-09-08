@@ -212,6 +212,10 @@
             <el-button type="primary" :loading="savingEmr" :disabled="emrSigned" @click="saveEmr">保存病历</el-button>
             <!-- v43：门诊病历签名入口（此前端点齐备但界面无按钮，签名与补正在正常路径上都走不到） -->
             <el-button v-if="!emrSigned" type="warning" :loading="signing" @click="signEmr">签 名</el-button>
+            <!-- v55 车道R2（994）：版本留痕直达。此前版本页唯一入口是手填 outp_emr.id，而全系统没有任何页面显示这个 id
+                 ——功能在、医生进不去。workspace 与保存返回体本就带 id，这里只是把它接到按钮上。
+                 新标签打开：不丢医生手上尚未保存的正文；病历未保存（无 id）或本人不持有该菜单时不出现，不摆死按钮。 -->
+            <el-button v-if="currentEmrId && canOpenEmrVersion" plain @click="openEmrVersions">版本留痕</el-button>
             <span v-if="!emrSigned" class="sign-tip">签名后原文冻结，如需更正只能追加补正记录</span>
           </el-form>
           </div>
@@ -512,10 +516,11 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { todayLocal } from '../../utils/date'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
+import { useAuthStore } from '../../stores/auth'
 import EmrRefDrawer, { useEmrPasteGuard } from '../../components/EmrRefDrawer.vue'
 import StructuredFieldForm, { type EmrTemplateField } from '../../components/StructuredFieldForm.vue'
 
@@ -648,6 +653,24 @@ async function loadStructFields() {
 const emrSigned = ref(false)
 const emrSignerName = ref('')
 const emrSignedAtText = ref('')
+
+/**
+ * v55 车道R2（994）：当前病历的 outp_emr.id。
+ * 来源只有两处——workspace 返回体的 emr.id 与保存病历返回体的 id，两者都是既有契约（OutpEmr 实体直出，一字未改）。
+ * 病历尚未保存时为 null：此时一版都没有，按钮不出现。
+ */
+const currentEmrId = ref<number | null>(null)
+const auth = useAuthStore()
+/** 与 router 守卫同一判据：菜单未知不拦；已知则须持有 /emr-version（V162 已授 DOCTOR_OUTP），否则点进去会被踢回首页 */
+const canOpenEmrVersion = computed(() => {
+  const menus = auth.user?.menus ?? []
+  return menus.length === 0 || menus.some((m) => m.path === '/emr-version')
+})
+function openEmrVersions() {
+  if (!currentEmrId.value) return
+  const q = new URLSearchParams({ emrType: 'OUTP', emrId: String(currentEmrId.value), from: 'doctor' })
+  window.open(`/emr-version?${q.toString()}`, '_blank')
+}
 const signing = ref(false)
 const amendForm = reactive({ amendText: '', reason: '' })
 const amending = ref(false)
@@ -792,9 +815,11 @@ async function loadWorklist() {
 async function openPatient(row: Record<string, unknown> | null) {
   warnIfLeavingUnsigned(row)
   current.value = row
+  currentEmrId.value = null   // v55：切患者先清，别让上一位的 id 挂在这一位的按钮上
   if (!row) return
   const resp = await client.get(`/outpatient/doctor/${row.registrationId}/workspace`)
   const ws = resp.data.data
+  currentEmrId.value = typeof ws.emr?.id === 'number' ? ws.emr.id : null   // v55：版本留痕按钮的唯一数据来源之一
   Object.assign(emr, {
     chiefComplaint: ws.emr?.chiefComplaint ?? '', presentIllness: ws.emr?.presentIllness ?? '',
     pastHistory: ws.emr?.pastHistory ?? '', physicalExam: ws.emr?.physicalExam ?? '', advice: ws.emr?.advice ?? '',
@@ -932,6 +957,7 @@ async function saveEmr() {
       return
     }
     ElMessage.success('病历已保存')
+    if (typeof resp.data.data?.id === 'number') currentEmrId.value = resp.data.data.id   // v55：首次保存后按钮即出现
     await loadCdssTips()
   } finally {
     savingEmr.value = false

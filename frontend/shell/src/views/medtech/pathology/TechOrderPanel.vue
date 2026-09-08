@@ -1,0 +1,205 @@
+<template>
+  <!-- ============ 工位五：特检技术医嘱全院工作台（技师侧：按状态 / 类型 / 时间集中处理） ============ -->
+  <el-alert type="info" show-icon :closable="false" class="cav"
+            title="全院视角：不分标本列出深切 / 重切 / 补取材 / 免疫组化 / 特殊染色 / 分子病理的技术医嘱。默认只看「待执行」——这是技师今天要做的活；历史请显式切到「全部状态」。距开单小时数是原始事实，本页不判超时。" />
+
+  <el-form inline size="small">
+    <el-form-item label="状态">
+      <el-select v-model="query.status" style="width: 120px" @change="load">
+        <el-option v-for="s in TECH_STATUSES" :key="s.value" :label="s.label" :value="s.value" />
+        <el-option value="ALL" label="全部状态" />
+      </el-select>
+    </el-form-item>
+    <el-form-item label="技术类型">
+      <el-select v-model="query.techType" clearable placeholder="全部" style="width: 130px">
+        <el-option v-for="t in techTypes" :key="String(t.value)" :value="String(t.value)" :label="String(t.label)" />
+      </el-select>
+    </el-form-item>
+    <el-form-item label="仅加急">
+      <el-switch v-model="query.urgentOnly" />
+    </el-form-item>
+    <el-form-item label="日期口径">
+      <el-select v-model="query.dateField" style="width: 130px">
+        <el-option value="ORDERED" label="按开单时刻" />
+        <el-option value="DONE" label="按完成时刻" />
+      </el-select>
+    </el-form-item>
+    <el-form-item label="日期区间">
+      <el-date-picker v-model="range" type="daterange" unlink-panels value-format="YYYY-MM-DD"
+                      range-separator="至" start-placeholder="起" end-placeholder="止" clearable
+                      style="width: 230px" />
+    </el-form-item>
+    <el-form-item label="关键词">
+      <el-input v-model="query.keyword" clearable placeholder="条码 / 病理号 / 患者 / 项目名"
+                style="width: 190px" @keyup.enter="load" />
+    </el-form-item>
+    <el-form-item>
+      <el-button type="primary" :loading="loading" @click="load">查询</el-button>
+    </el-form-item>
+  </el-form>
+
+  <el-alert v-if="truncated" type="warning" show-icon :closable="false" class="cav"
+            :title="`命中超过 ${limit} 条，仅显示前 ${limit} 条（不做翻页）；请收窄条件`" />
+
+  <div class="bar">
+    <span>本次命中 <b>{{ rows.length }}</b> 条</span>
+    <span class="muted">待执行 {{ countOf('ORDERED') }} / 已完成 {{ countOf('DONE') }} / 已取消 {{ countOf('CANCELLED') }}
+      （仅统计本页已显示的行）</span>
+  </div>
+
+  <el-table :data="rows" v-loading="loading" size="small" border stripe max-height="480">
+    <el-table-column label="状态" width="90">
+      <template #default="{ row }">
+        <el-tag size="small" :type="techStatusTag(row.status)">{{ techStatusName(row.status) }}</el-tag>
+      </template>
+    </el-table-column>
+    <el-table-column label="类型 / 项目" width="180">
+      <template #default="{ row }">
+        {{ techName(row.tech_type) }}
+        <span v-if="row.tech_item" class="muted">　{{ row.tech_item }}</span>
+      </template>
+    </el-table-column>
+    <el-table-column label="病理号 / 条码" width="180">
+      <template #default="{ row }">
+        <span class="code">{{ fmt(row.path_no) }}</span><br>
+        <span class="code muted">{{ fmt(row.barcode) }}</span>
+      </template>
+    </el-table-column>
+    <el-table-column label="患者" width="140">
+      <template #default="{ row }">
+        {{ fmt(row.patient_name) }} <span class="muted">{{ fmt(row.patient_no) }}</span>
+      </template>
+    </el-table-column>
+    <el-table-column label="类别" width="100">
+      <template #default="{ row }">
+        {{ typeName(row.specimen_type) }}
+        <el-tag v-if="row.urgent === true" size="small" type="danger">急</el-tag>
+      </template>
+    </el-table-column>
+    <el-table-column label="蜡块" width="150">
+      <template #default="{ row }"><span class="code">{{ fmt(row.block_code) }}</span></template>
+    </el-table-column>
+    <el-table-column label="开单" width="200">
+      <template #default="{ row }">{{ fmt(row.ordered_by_name) }}　{{ fmtTime(row.ordered_at) }}</template>
+    </el-table-column>
+    <el-table-column label="距开单(小时)" width="110">
+      <template #default="{ row }">{{ fmt(row.hours_since_ordered) }}</template>
+    </el-table-column>
+    <el-table-column label="完成" width="200">
+      <template #default="{ row }">{{ fmt(row.done_by_name) }}　{{ fmtTime(row.done_at) }}</template>
+    </el-table-column>
+    <el-table-column label="原因" min-width="140" show-overflow-tooltip>
+      <template #default="{ row }">{{ fmt(row.reason) }}</template>
+    </el-table-column>
+    <el-table-column label="操作" width="190" fixed="right">
+      <template #default="{ row }">
+        <el-button link type="primary" size="small" :disabled="row.status !== 'ORDERED'"
+                   @click="done(row)">完成</el-button>
+        <el-button link type="danger" size="small" :disabled="row.status !== 'ORDERED'"
+                   @click="cancel(row)">取消</el-button>
+        <el-button link type="primary" size="small" @click="emit('open-specimen', Number(row.specimen_id))">
+          打开报告</el-button>
+      </template>
+    </el-table-column>
+    <template #empty>该条件下无特检技术医嘱</template>
+  </el-table>
+  <p v-if="note" class="muted">{{ note }}</p>
+</template>
+
+<script setup lang="ts">
+/**
+ * 工位五：特检技术医嘱全院工作台（v55 车道 R1，2563）。
+ *
+ * <p>对接 {@code GET /api/pathology/report/tech-orders} <b>不传 specimenId</b> 的全院清单分支——
+ * 该分支 v48 就有，但此前全仓唯一调用点恒传 specimenId，技师看不到「今天全院有哪些免疫组化要做」。
+ * 完成 / 取消走既有 {@code PUT /tech-orders/{id}/done|cancel}，一个字节没改。
+ *
+ * <p>「打开报告」把标本 id 交给工作台切到诊断工位并直接打开抽屉：技师做完免疫组化后，
+ * 病理医师要出补充报告的入口就在那里。
+ */
+import { reactive, ref } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import client from '../../../api/client'
+import { TECH_STATUSES, fmt, fmtTime, techStatusName, techStatusTag, typeName, type Row } from './format'
+
+const emit = defineEmits<{ (e: 'changed'): void; (e: 'open-specimen', specimenId: number): void }>()
+
+const rows = ref<Row[]>([])
+const loading = ref(false)
+const truncated = ref(false)
+const limit = ref(100)
+const note = ref('')
+const range = ref<[string, string] | null>(null)
+const query = reactive({ status: 'ORDERED', techType: '', urgentOnly: false, dateField: 'ORDERED', keyword: '' })
+
+const techTypes = ref<Row[]>([])
+
+async function loadDict() {
+  const d = (await client.get('/pathology/report/tech-orders/dict')).data.data as Row
+  techTypes.value = (d.techTypes ?? []) as Row[]
+}
+
+function techName(v: unknown): string {
+  const hit = techTypes.value.find((t) => String(t.value) === String(v))
+  return hit ? String(hit.label) : String(v ?? '—')
+}
+
+function countOf(status: string): number {
+  return rows.value.filter((r) => r.status === status).length
+}
+
+async function load() {
+  loading.value = true
+  try {
+    const d = (await client.get('/pathology/report/tech-orders', {
+      params: {
+        // 刻意不传 specimenId：这是全院清单分支
+        status: query.status,
+        techType: query.techType || undefined,
+        urgentOnly: query.urgentOnly || undefined,
+        dateField: query.dateField,
+        from: range.value?.[0] || undefined,
+        to: range.value?.[1] || undefined,
+        keyword: query.keyword || undefined,
+      },
+    })).data.data as Row
+    rows.value = (d.items ?? []) as Row[]
+    truncated.value = d.truncated === true
+    limit.value = Number(d.limit ?? 100) || 100
+    note.value = String(d.note ?? '')
+  } finally {
+    loading.value = false
+  }
+}
+
+async function done(row: Row) {
+  await client.put(`/pathology/report/tech-orders/${Number(row.id)}/done`, null)
+  ElMessage.success(`已标记完成：${techName(row.tech_type)} ${String(row.tech_item ?? '')}`)
+  await load()
+  emit('changed')
+}
+
+async function cancel(row: Row) {
+  const ok = await ElMessageBox.confirm(
+    '取消原因无处存放（path_tech_order 无 cancel_reason 列），本版不留痕也不覆盖下达原因。确认取消该医嘱？',
+    '取消特检技术医嘱', { type: 'warning' },
+  ).catch(() => null)
+  if (!ok) return
+  await client.put(`/pathology/report/tech-orders/${Number(row.id)}/cancel`, null)
+  ElMessage.success('已取消')
+  await load()
+  emit('changed')
+}
+
+defineExpose({ reload: load })
+
+void loadDict()
+void load()
+</script>
+
+<style scoped>
+.cav { margin-bottom: 8px; }
+.muted { color: #909399; font-size: 12px; }
+.code { font-family: Consolas, Monaco, monospace; }
+.bar { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+</style>
