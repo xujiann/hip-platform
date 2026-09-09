@@ -598,7 +598,7 @@ public class PathQcController {
                          where coalesce(r.signed_at, r.created_at) >= ?::date
                            and coalesce(r.signed_at, r.created_at) < ?::date + 1)               as supplement_reports
                 """, rep(w, 4)));
-        others.put("note", "流转节点值域共 12 档（RECEIVE…SUPPLEMENT）；distinct_nodes 远小于 12 "
+        others.put("note", "流转节点值域共 15 档（RECEIVE…SUPPLEMENT + v58 的 TECH_ORDER/TECH_DONE/TECH_CANCEL）；distinct_nodes 远小于 15 "
                 + "说明多数环节没有打点，PROCESS_TAT 指标只覆盖打了点的那几档。");
         m.put("process", others);
 
@@ -753,7 +753,9 @@ public class PathQcController {
                                when 'EMBED'       then '包埋'      when 'SECTION'     then '切片'
                                when 'STAIN'       then '染色'      when 'READ'        then '阅片'
                                when 'FIRST_SIGN'  then '初诊签名'  when 'SECOND_SIGN' then '复诊签名'
-                               when 'ISSUE'       then '报告签发'  else '补充报告' end            as node_name,
+                               when 'ISSUE'       then '报告签发'  when 'SUPPLEMENT'  then '补充报告'
+                               when 'TECH_ORDER'  then '下达特检医嘱' when 'TECH_DONE' then '确认完成特检医嘱'
+                               when 'TECH_CANCEL' then '取消特检医嘱' else pp.node end              as node_name,
                            count(*)                                                              as events,
                            count(distinct pp.specimen_id)                                        as specimens,
                            count(distinct pp.operator_id)                                        as operators,
@@ -769,7 +771,8 @@ public class PathQcController {
                                  when 'RECEIVE' then 1 when 'REJECT' then 2 when 'GROSSING' then 3
                                  when 'DEHYDRATE' then 4 when 'EMBED' then 5 when 'SECTION' then 6
                                  when 'STAIN' then 7 when 'READ' then 8 when 'FIRST_SIGN' then 9
-                                 when 'SECOND_SIGN' then 10 when 'ISSUE' then 11 else 12 end
+                                 when 'SECOND_SIGN' then 10 when 'ISSUE' then 11 when 'SUPPLEMENT' then 12
+                                 when 'TECH_ORDER' then 13 when 'TECH_DONE' then 14 when 'TECH_CANCEL' then 15 else 16 end
                     """, w.args());
             // args: from, to
             case "WORKLOAD_REGISTER" -> query("""

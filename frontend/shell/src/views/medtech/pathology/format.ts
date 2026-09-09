@@ -69,6 +69,10 @@ export const PROCESS_NODES: Record<string, string> = {
   SECOND_SIGN: '复诊签名',
   ISSUE: '报告签发',
   SUPPLEMENT: '补充报告',
+  // v58（V165）：技术医嘱进流转节点
+  TECH_ORDER: '下达特检医嘱',
+  TECH_DONE: '确认完成特检医嘱',
+  TECH_CANCEL: '取消特检医嘱',
 }
 
 export function typeName(v: unknown): string {

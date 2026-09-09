@@ -116,9 +116,9 @@ class V57GrossKeepTest {
         assertNotNull(row.get("diagnosed_at"));
         assertEquals(userId(tag + "d1"), row.get("pathologist_id"));
 
-        // 响应只带三个事实
+        // 响应只带四个事实（v58 起多 grossRevised：本次覆盖是否写了大体所见修订行）
         assertNotNull(r.getData(), "返回体不再是 R<Void>");
-        assertEquals(Set.of("specimenId", "grossKept", "microKept"), r.getData().keySet());
+        assertEquals(Set.of("specimenId", "grossKept", "microKept", "grossRevised"), r.getData().keySet());
         assertEquals(f.id(), ((Number) r.getData().get("specimenId")).longValue());
         assertEquals(Boolean.TRUE, r.getData().get("grossKept"), "入参空白且原值非空 → 被保留");
         assertEquals(Boolean.FALSE, r.getData().get("microKept"), "原值为空的列没有「被保留」可言");

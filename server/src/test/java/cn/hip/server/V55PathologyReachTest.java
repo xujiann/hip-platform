@@ -372,8 +372,10 @@ class V55PathologyReachTest {
         List<String> order = nodes.stream().map(n -> String.valueOf(n.get("node"))).toList();
         assertTrue(order.indexOf("FIRST_SIGN") >= 0 && order.indexOf("ISSUE") > order.indexOf("FIRST_SIGN"),
                 "B 的轨迹应含 FIRST_SIGN 且 ISSUE 在其后：" + order);
-        assertEquals("报告签发", nodes.get(nodes.size() - 1).get("node_name"));
-        assertEquals("ISSUE", trailB.get("lastNode"));
+        // v58 起技术医嘱进流转节点：夹具在签发后下达了 IHC，最后节点是 TECH_ORDER，且须带中文名（不能是 null/英文码）
+        assertEquals("下达特检医嘱", nodes.get(nodes.size() - 1).get("node_name"));
+        assertEquals("TECH_ORDER", trailB.get("lastNode"));
+        assertTrue(order.indexOf("ISSUE") == order.size() - 2, "ISSUE 仍是倒数第二个节点：" + order);
         assertNotNull(trailB.get("hoursSinceLastNode"));
         Set<String> kindsB = new HashSet<>();
         for (var x : rows(trailB, "anomalies")) kindsB.add(String.valueOf(x.get("kind")));
@@ -382,8 +384,14 @@ class V55PathologyReachTest {
         // A 的轨迹：GROSSING → SECTION → STAIN，第二个节点起有 hours_since_prev
         var trailA = ok(process.trail(a, null));
         var nodesA = rows(trailA, "nodes");
+        List<String> nodeSeqA = nodesA.stream().map(n -> String.valueOf(n.get("node"))).toList();
         assertEquals(List.of("GROSSING", "SECTION", "STAIN"),
-                nodesA.stream().map(n -> String.valueOf(n.get("node"))).toList());
+                nodeSeqA.stream().filter(n -> !n.startsWith("TECH_")).toList(), "制片节点序不变：" + nodeSeqA);
+        // v58：夹具在染色后下达并完成了深切医嘱，轨迹多出两类技术节点，且带中文名
+        assertEquals(List.of("TECH_ORDER", "TECH_DONE"), nodeSeqA.stream().filter(n -> n.startsWith("TECH_")).toList());
+        assertEquals(List.of("下达特检医嘱", "确认完成特检医嘱"), nodesA.stream()
+                .filter(n -> String.valueOf(n.get("node")).startsWith("TECH_"))
+                .map(n -> String.valueOf(n.get("node_name"))).toList());
         assertNull(nodesA.get(0).get("hours_since_prev"));
         assertNotNull(nodesA.get(1).get("hours_since_prev"));
         assertEquals(Set.of("SECTION_WITHOUT_EMBED"),

@@ -161,7 +161,9 @@ public class PathologyProcessController {
             Map.entry("RECEIVE", "核收"), Map.entry("REJECT", "拒收"), Map.entry("GROSSING", "取材"),
             Map.entry("DEHYDRATE", "脱水"), Map.entry("EMBED", "包埋"), Map.entry("SECTION", "切片"),
             Map.entry("STAIN", "染色"), Map.entry("READ", "阅片"), Map.entry("FIRST_SIGN", "初诊签名"),
-            Map.entry("SECOND_SIGN", "复诊签名"), Map.entry("ISSUE", "报告签发"), Map.entry("SUPPLEMENT", "补充报告"));
+            Map.entry("SECOND_SIGN", "复诊签名"), Map.entry("ISSUE", "报告签发"), Map.entry("SUPPLEMENT", "补充报告"),
+            // v58（V165）：技术医嘱的建/完/取消进流转节点
+            Map.entry("TECH_ORDER", "下达特检医嘱"), Map.entry("TECH_DONE", "确认完成特检医嘱"), Map.entry("TECH_CANCEL", "取消特检医嘱"));
 
     /**
      * 流转异常四类（v55）。取值集合即 {@code GET /anomalies?kind=} 的白名单（另有 ALL）。
@@ -1100,6 +1102,7 @@ public class PathologyProcessController {
 
         var sql = new StringBuilder("""
                 select sl.id, sl.block_id, sl.slide_no, sl.slide_code, sl.stain_type, sl.stain_item,
+                       sl.tech_order_id,
                        sl.stained_at, sl.stained_by, sl.quality, sl.created_at,
                        b.specimen_id, b.block_no, b.block_code, b.dehydrate_batch, b.embedded_at,
                        s.barcode, s.path_no, s.part_no, s.specimen_type, s.urgent, s.sampling_site,
