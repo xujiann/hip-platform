@@ -176,6 +176,7 @@ jobs:
           python3 tools/e2e-v51-cdss.py
           python3 tools/e2e-v55-reach.py
           python3 tools/e2e-v57-audit.py
+          python3 tools/demo-pathology.py --count 2 --quiet
 
       - name: 失败时输出服务端日志
         if: failure()
