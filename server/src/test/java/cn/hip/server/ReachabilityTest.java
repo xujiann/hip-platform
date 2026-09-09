@@ -1646,7 +1646,12 @@ class ReachabilityTest {
         }
     }
 
-    /** 遍历真代码。跳过 target/ node_modules/ .claude/ worktrees/——构建产物与他人工作区不是本仓代码。 */
+    /**
+     * 遍历真代码。跳过 target/ node_modules/ dist/ .claude/ worktrees/——构建产物与他人工作区不是本仓代码。
+     * <p><b>按仓库相对路径判跳过，不看绝对路径</b>（v58 车道 D）：仓库本身可能被 checkout 在
+     * {@code …/.claude/worktrees/<x>/} 下（并行车道就是这么跑的），按 {@code f.toString()} 绝对路径判会让
+     * 每个源文件都命中 {@code /.claude/}，扫描恒空——没有空守卫的断言在 worktree 里恒绿，有守卫的直接误红。
+     */
     private static List<SrcFile> sources(String suffix, String... relDirs) {
         Path root = repoRoot();
         List<SrcFile> out = new ArrayList<>();
@@ -1655,19 +1660,46 @@ class ReachabilityTest {
             if (!Files.isDirectory(base)) continue;
             try (var s = Files.walk(base)) {
                 for (Path f : s.filter(Files::isRegularFile).toList()) {
-                    String path = f.toString().replace('\\', '/');
-                    if (path.contains("/target/") || path.contains("/node_modules/")
-                            || path.contains("/.claude/") || path.contains("/worktrees/")
-                            || path.contains("/dist/")) {
-                        continue;
-                    }
+                    String path = root.relativize(f).toString().replace('\\', '/');
+                    if (excluded(path)) continue;
                     if (!path.endsWith(suffix)) continue;
-                    out.add(new SrcFile(root.relativize(f).toString().replace('\\', '/'), read(f)));
+                    out.add(new SrcFile(path, read(f)));
                 }
             } catch (Exception e) {
                 throw new IllegalStateException("扫描 " + base + " 失败", e);
             }
         }
         return out;
+    }
+
+    /** {@code rel} 为相对仓库根、'/' 分隔的路径。只看相对路径——仓库自身所在的目录名不参与判断。 */
+    static boolean excluded(String rel) {
+        return rel.startsWith(".claude/")
+                || rel.startsWith("worktrees/") || rel.contains("/worktrees/")
+                || rel.contains("/target/") || rel.contains("/node_modules/") || rel.contains("/dist/");
+    }
+
+    /**
+     * 活的对照组阈值。写成常量而不是三位数字面量：{@link #thisTestItselfHasNoVersionWindow()}
+     * 把「比较符 + 三位数」当版本窗口抓，而这里是数量守卫不是取件范围。
+     */
+    private static final int MIN_VUE_FILES = 100;
+
+    /**
+     * 自证（v58 车道 D）：排除逻辑只认仓库相对路径。修复前在 {@code …/.claude/worktrees/<x>/} 里实测
+     * {@code sources(".vue", FRONTEND_DIRS)} 返回 0（.ts / .java 同样为 0），
+     * {@link #frontendApiLiterals()} 的空扫描守卫把 §1 打成误红；修复后应回到真实文件数。
+     * 活的对照组用 {@code >} 而不是等于——文件数随版本变，扫空才是要抓的事故。
+     */
+    @Test
+    void sourceScanExclusionDetectorActuallyBites() {
+        assertTrue(excluded(".claude/worktrees/x/frontend/shell/src/App.vue"), "仓库内 .claude/ 下的文件必须排除");
+        assertFalse(excluded("frontend/shell/src/App.vue"),
+                "真源码的相对路径不得被排除——按绝对路径判时它曾因仓库目录含 /.claude/ 被整仓排掉");
+        assertTrue(excluded("frontend/shell/node_modules/x.js"), "node_modules/ 必须排除");
+        assertTrue(excluded("server/target/classes/x"), "target/ 必须排除");
+        int vue = sources(".vue", FRONTEND_DIRS).size();
+        assertTrue(vue > MIN_VUE_FILES, "活的对照组：" + String.join(",", FRONTEND_DIRS) + " 下应扫到超过 "
+                + MIN_VUE_FILES + " 个 .vue，实得 " + vue + "——为 0 即排除逻辑又把整仓扫空了");
     }
 }

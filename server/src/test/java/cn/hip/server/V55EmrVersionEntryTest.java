@@ -337,24 +337,49 @@ class V55EmrVersionEntryTest {
 
     private record SrcFile(String rel, String text) {}
 
+    /**
+     * 遍历前端真代码（.vue / .ts）。跳过 {@code target/ node_modules/ dist/ .claude/ worktrees/}。
+     * <p><b>按仓库相对路径判跳过，不看绝对路径</b>（v58 车道 D）：仓库本身可能被 checkout 在
+     * {@code …/.claude/worktrees/<x>/} 下（并行车道就是这么跑的），按绝对路径判会让每个源文件都命中
+     * {@code /.claude/}，扫描恒空——依赖它的断言在 worktree 里恒绿。
+     */
     private static List<SrcFile> sources(String relDir) {
         Path root = repoRoot();
         Path base = root.resolve(relDir);
         List<SrcFile> out = new ArrayList<>();
         try (var s = Files.walk(base)) {
             for (Path f : s.filter(Files::isRegularFile).toList()) {
-                String path = f.toString().replace('\\', '/');
-                if (path.contains("/node_modules/") || path.contains("/dist/") || path.contains("/.claude/")
-                        || path.contains("/worktrees/")) {
-                    continue;
-                }
+                String path = root.relativize(f).toString().replace('\\', '/');
+                if (excluded(path)) continue;
                 if (!(path.endsWith(".vue") || path.endsWith(".ts"))) continue;
-                out.add(new SrcFile(root.relativize(f).toString().replace('\\', '/'),
-                        Files.readString(f, StandardCharsets.UTF_8)));
+                out.add(new SrcFile(path, Files.readString(f, StandardCharsets.UTF_8)));
             }
         } catch (Exception e) {
             throw new IllegalStateException("扫描 " + base + " 失败", e);
         }
         return out;
+    }
+
+    /** {@code rel} 为相对仓库根、'/' 分隔的路径。只看相对路径——仓库自身所在的目录名不参与判断。 */
+    static boolean excluded(String rel) {
+        return rel.startsWith(".claude/")
+                || rel.startsWith("worktrees/") || rel.contains("/worktrees/")
+                || rel.contains("/target/") || rel.contains("/node_modules/") || rel.contains("/dist/");
+    }
+
+    /**
+     * 自证（v58 车道 D）：排除逻辑只认仓库相对路径。修复前在 {@code …/.claude/worktrees/<x>/} 里
+     * 同形态的 sources() 实测返回 0，本类的前端入口扫描断言随之恒绿。活的对照组用 {@code >} 而不是等于。
+     */
+    @Test
+    void sourceScanExclusionDetectorActuallyBites() {
+        assertTrue(excluded(".claude/worktrees/x/frontend/shell/src/App.vue"), "仓库内 .claude/ 下的文件必须排除");
+        assertFalse(excluded("frontend/shell/src/App.vue"),
+                "真源码的相对路径不得被排除——按绝对路径判时它曾因仓库目录含 /.claude/ 被整仓排掉");
+        assertTrue(excluded("frontend/shell/node_modules/x.js"), "node_modules/ 必须排除");
+        assertTrue(excluded("server/target/classes/x"), "target/ 必须排除");
+        long vue = sources("frontend/shell/src").stream().filter(f -> f.rel().endsWith(".vue")).count();
+        assertTrue(vue > 100, "活的对照组：frontend/shell/src 下应扫到 >100 个 .vue，实得 " + vue
+                + "——为 0 即排除逻辑又把整仓扫空了");
     }
 }
