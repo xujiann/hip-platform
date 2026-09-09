@@ -562,10 +562,28 @@ async function submitStain() {
     ElMessage.success('已登记染色')
     if (warnings.length) ElMessage.warning(warnings.join('；'))
     stainDialog.value = false
+    await notifyTechProgress(currentSlide.value)
     await loadSlides()
     emit('changed')
   } finally {
     saving.value = false
+  }
+}
+
+/**
+ * v58：染色成功后，若该切片挂在特检技术医嘱上，提示该医嘱的执行进度（已染色待确认时技师就可以去点完成了）。
+ * 只读清单：{@code GET /pathology/report/tech-orders?specimenId&status=ALL&slideId}——切片检索行不带 tech_order_id，
+ * 由清单按 slideId 反查（0 或 1 行）；普通切片查不到就不提示。读失败不影响已登记的染色结果。
+ */
+async function notifyTechProgress(slide: Row) {
+  if (!slide.id) return
+  const d = await client.get('/pathology/report/tech-orders', {
+    params: { specimenId: Number(slide.specimen_id), status: 'ALL', slideId: Number(slide.id) },
+  }).then((r) => r.data.data as Row).catch(() => ({} as Row))
+  for (const t of (d.items ?? []) as Row[]) {
+    const item = t.tech_item ? ` ${String(t.tech_item)}` : ''
+    ElMessage.info(`医嘱 #${String(t.id)} ${String(t.tech_type_name ?? t.tech_type)}${item} 进度：`
+      + `${String(t.progress_name ?? t.progress ?? '—')}（已染色 ${num(t.stained_count)} / 挂接 ${num(t.slide_count)} 片）`)
   }
 }
 

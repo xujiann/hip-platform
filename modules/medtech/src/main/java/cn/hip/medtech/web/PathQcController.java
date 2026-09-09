@@ -1292,7 +1292,7 @@ public class PathQcController {
                     {cap}
                     """), rep(w, 2));
             case "WORKLOAD_PATHOLOGIST" -> pathologistDetail(w);
-            case "WORKLOAD_TECH" -> jdbc.queryForList(q("""
+            case "WORKLOAD_TECH" -> withTechProgress(jdbc.queryForList(q("""
                     select t.id                                  as tech_order_id,
                            t.tech_type, t.tech_item, t.reason, t.status,
                            t.ordered_at, t.done_at,
@@ -1303,6 +1303,9 @@ public class PathQcController {
                            t.cancel_reason,
                            (select count(*) from path_slide sl
                              where sl.tech_order_id = t.id)      as slide_count,
+                           (select count(*) from path_slide sl
+                             where sl.tech_order_id = t.id
+                               and sl.stained_at is not null)    as stained_count,
                            b.block_code,
                            s.id                                  as specimen_id,
                            s.path_no, s.barcode,
@@ -1317,9 +1320,22 @@ public class PathQcController {
                     where t.ordered_at >= ?::date and t.ordered_at < ?::date + 1
                     order by t.ordered_at desc, t.id desc
                     {cap}
-                    """), w.args());
+                    """), w.args()));
             default -> List.of();
         };
+    }
+
+    /**
+     * v58：特检穿透行补执行进度 {@code progress} / {@code progress_name}——派生规则与
+     * {@link PathologyReportController#techProgress} 是同一份（只读派生，不是库列），别在质控层再抄一遍五态。
+     */
+    private static List<Map<String, Object>> withTechProgress(List<Map<String, Object>> rows) {
+        for (var r : rows) {
+            String p = PathologyReportController.techProgress(r.get("status"), r.get("slide_count"), r.get("stained_count"));
+            r.put("progress", p);
+            r.put("progress_name", PathologyReportController.TECH_PROGRESS_NAMES.getOrDefault(p, p));
+        }
+        return rows;
     }
 
     /** 报告及时率穿透（参数顺序：阈值 → 标本类别 → from → to；阈值在外层 select，文本上先于子查询） */
@@ -1657,6 +1673,10 @@ public class PathQcController {
             case "cancelled_by_name" -> "取消人";
             case "cancel_reason" -> "取消原因";
             case "slide_count" -> "挂接切片数";
+            // v58 执行进度派生（只读：由挂接切片 + stained_at 与 status 算出，不是库列）
+            case "stained_count" -> "已染色挂接切片数";
+            case "progress" -> "执行进度编码";
+            case "progress_name" -> "执行进度";
             default -> col;
         };
     }

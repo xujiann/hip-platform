@@ -1,7 +1,7 @@
 <template>
   <!-- ============ 工位五：特检技术医嘱全院工作台（技师侧：按状态 / 类型 / 时间集中处理） ============ -->
   <el-alert type="info" show-icon :closable="false" class="cav"
-            title="全院视角：不分标本列出深切 / 重切 / 补取材 / 免疫组化 / 特殊染色 / 分子病理的技术医嘱。默认只看「待执行」——这是技师今天要做的活；历史请显式切到「全部状态」。距开单小时数是原始事实，本页不判超时。取消须填写取消原因（取消人 / 取消时刻 / 取消原因留痕，与下达原因分列）。" />
+            title="全院视角：不分标本列出深切 / 重切 / 补取材 / 免疫组化 / 特殊染色 / 分子病理的技术医嘱。默认只看「待执行」——这是技师今天要做的活；历史请显式切到「全部状态」。距开单小时数是原始事实，本页不判超时。取消须填写取消原因（取消人 / 取消时刻 / 取消原因留痕，与下达原因分列）。「进度」由挂接切片派生（待切片 / 切片中 / 已染色待确认），不是手工标记；点「完成」时若无已染色挂接切片，按 gate emr.gate.pathology.techdone 提示（warn）或拦截（block，5273）。" />
 
   <el-form inline size="small">
     <el-form-item label="状态">
@@ -57,6 +57,12 @@
       <template #default="{ row }">
         {{ techName(row.tech_type) }}
         <span v-if="row.tech_item" class="muted">　{{ row.tech_item }}</span>
+      </template>
+    </el-table-column>
+    <el-table-column label="进度" width="170">
+      <template #default="{ row }">
+        <el-tag size="small" :type="progressTag(row.progress)">{{ fmt(row.progress_name ?? row.progress) }}</el-tag>
+        <span class="muted">　已染 {{ num(row.stained_count) }} / 挂接 {{ num(row.slide_count) }}</span>
       </template>
     </el-table-column>
     <el-table-column label="病理号 / 条码" width="180">
@@ -130,6 +136,10 @@
  * 下达原因不覆盖。清单显示取消时刻（{@code fmtDateTime}，带偏移才换算到业务时区）、取消原因与挂接切片数；
  * V163 之前取消的历史行三列为 NULL，显式标「历史取消」而不是画成空白。
  *
+ * <p>v58（2563 三次核账）：清单多了「进度」列——后端按挂接切片派生的五态（progress / progress_name）与
+ * 已染色 / 挂接计数，不是手工标记；「完成」的返回体带 slideCount / stainedCount / warnings，
+ * warn 档放行时逐条 ElMessage.warning 提示，block 档 5273 由 client 统一报错。
+ *
  * <p>「打开报告」把标本 id 交给工作台切到诊断工位并直接打开抽屉：技师做完免疫组化后，
  * 病理医师要出补充报告的入口就在那里。
  */
@@ -137,7 +147,7 @@ import { reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../../api/client'
 import { fmtDateTime } from '../../../utils/date'
-import { TECH_STATUSES, fmt, fmtTime, techStatusName, techStatusTag, typeName, type Row } from './format'
+import { TECH_STATUSES, fmt, fmtTime, num, techStatusName, techStatusTag, typeName, type Row } from './format'
 
 const emit = defineEmits<{ (e: 'changed'): void; (e: 'open-specimen', specimenId: number): void }>()
 
@@ -165,6 +175,14 @@ function countOf(status: string): number {
   return rows.value.filter((r) => r.status === status).length
 }
 
+/**
+ * 执行进度五态的标签色（v58）：进度由后端按挂接切片派生（PathologyReportController.techProgress），
+ * 前端只画不算——待切片灰、切片中黄、已染色待确认蓝（可以点完成了）、已完成绿、已取消灰。
+ */
+function progressTag(v: unknown): 'primary' | 'success' | 'warning' | 'info' {
+  return v === 'SECTIONING' ? 'warning' : v === 'STAINED' ? 'primary' : v === 'DONE' ? 'success' : 'info'
+}
+
 async function load() {
   loading.value = true
   try {
@@ -190,8 +208,11 @@ async function load() {
 }
 
 async function done(row: Row) {
-  await client.put(`/pathology/report/tech-orders/${Number(row.id)}/done`, null)
-  ElMessage.success(`已标记完成：${techName(row.tech_type)} ${String(row.tech_item ?? '')}`)
+  const d = (await client.put(`/pathology/report/tech-orders/${Number(row.id)}/done`, null)).data.data as Row
+  ElMessage.success(`已标记完成：${techName(row.tech_type)} ${String(row.tech_item ?? '')}`
+    + `（挂接 ${num(d.slideCount)} 片 / 已染色 ${num(d.stainedCount)}）`)
+  // v58：warn 档放行时后端回带 warnings（无已染色挂接切片即确认完成），逐条提示；block 档 5273 走 client 统一报错
+  for (const w of (d.warnings ?? []) as string[]) ElMessage.warning(w)
   await load()
   emit('changed')
 }

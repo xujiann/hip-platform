@@ -75,7 +75,20 @@ import java.util.Set;
  *       历史 CANCELLED 行三列永远 NULL（零回填，同 V146 cancelled_at 的处置），清单照常返回它们。</li>
  * </ul>
  *
- * <p><b>错误码 5260–5272</b>（v48 诊断与报告段 5260–5279；5271–5272 v57 已用，5273–5279 空置）：
+ * <p><b>v58 特检执行进度（2563 三次核账：「执行进度是手工三态标记」「DONE 仅靠手点且不校验任何切片」）</b>：
+ * <ul>
+ *   <li>下达 / 完成 / 取消各在<b>同一事务</b>写 {@code path_process}（TECH_ORDER / TECH_DONE / TECH_CANCEL，
+ *       V165 放开 chk_path_process_node 白名单、原 12 档一个不删），流转轨迹里能答「谁何时加做了什么、谁确认、谁为何取消」。
+ *       历史医嘱不回填节点（零回填）。</li>
+ *   <li>执行进度由挂接切片<b>只读派生</b>（{@link #techProgress}，不加状态列）：CANCELLED / DONE 照状态；ORDERED 且无挂接切片
+ *       → PENDING_SECTION（待切片）；有挂接切片但未全部染色 → SECTIONING（切片中）；全部染色 → STAINED（已染色待确认）。
+ *       两个清单分支与 PathQc WORKLOAD_TECH 穿透都带 {@code stained_count} / {@code progress} / {@code progress_name}。</li>
+ *   <li>完成确认走三态 gate {@value #TECH_DONE_GATE_KEY}（默认 warn，V165 seed）：事实（挂接切片数 / 已染色数）
+ *       <b>任何档位都算且返回体都带</b>，缺口 = 无挂接切片或有挂接切片未染色；block 返 5273、行仍 ORDERED、不写节点 /
+ *       warn 照常 DONE 但 {@code warnings} 回带并写进 TECH_DONE 节点 / off 不判、warnings 为空数组。坏配置回落 warn。</li>
+ * </ul>
+ *
+ * <p><b>错误码 5260–5273</b>（v48 诊断与报告段 5260–5279；5271–5272 v57、5273 v58 已用，5274–5279 空置）：
  * <ul>
  *   <li>5260 标本不存在（全部端点的「查无此标本」同码）</li>
  *   <li>5261 标本状态不允许该操作（已拒收 / 已签发 / 重复签名 / 并发抢写——归并同码，消息区分）</li>
@@ -92,6 +105,8 @@ import java.util.Set;
  *   <li>5271 技术医嘱取消原因非法（v57：缺失 / 空白 / 超 255 字三条路径同码）</li>
  *   <li>5272 切片挂接的技术医嘱非法（v57，<b>由 {@link PathologyProcessController#slides} 返回</b>：
  *       医嘱不存在 / 不属于该蜡块所在标本 / 不是 ORDERED 三条路径同码）</li>
+ *   <li>5273 特检技术医嘱无已染色挂接切片不得确认完成（v58，<b>只有 gate=block 才返</b>：挂接切片数为 0、
+ *       或有挂接切片尚未染色，两条路径同码；warn 档改走 warnings、off 档不判）</li>
  * </ul>
  */
 @RestController
@@ -106,6 +121,17 @@ public class PathologyReportController {
 
     /** 双签 gate 配置键（V144 已随地基写入，默认值 warn） */
     public static final String DOUBLE_SIGN_GATE_KEY = "emr.gate.pathology.doublesign";
+
+    /**
+     * 特检技术医嘱完成校验 gate 配置键（v58，V165 seed，默认 warn）。
+     * 默认 warn 而非 block：V163 之前的历史医嘱普遍没有挂接切片（tech_order_id 零回填），直接 block 会让存量医嘱永远完不成。
+     */
+    public static final String TECH_DONE_GATE_KEY = "emr.gate.pathology.techdone";
+
+    /** 执行进度五态（由 status + 挂接切片事实派生，不是库列，见 {@link #techProgress}）→ 中文 */
+    public static final Map<String, String> TECH_PROGRESS_NAMES = Map.of(
+            "PENDING_SECTION", "待切片", "SECTIONING", "切片中", "STAINED", "已染色待确认",
+            "DONE", "已完成", "CANCELLED", "已取消");
 
     /**
      * 法定署名行为（初诊签名 / 复诊签名 / 正式签发 / 补充报告）限病理医师与管理员。
@@ -669,12 +695,16 @@ public class PathologyReportController {
             }
         }
 
+        Long uid = currentUserService.idOf(auth);
         var ins = jdbc.queryForList("""
                 insert into path_tech_order(specimen_id, block_id, tech_type, tech_item, reason, ordered_by)
                 values (?, ?, ?, ?, ?, ?)
                 returning id, status, ordered_at
-                """, req.specimenId(), req.blockId(), type, item, reason, currentUserService.idOf(auth));
+                """, req.specimenId(), req.blockId(), type, item, reason, uid);
         var row = ins.get(0);
+        // v58：下达进流转节点（同一事务）。V165 之前 'TECH_ORDER' 会直接撞 chk_path_process_node，所以此前这里什么都没写
+        logProcess(req.specimenId(), "TECH_ORDER", uid,
+                "下达特检医嘱 " + techLabel(row.get("id"), type, item) + (reason == null ? "" : "：" + reason));
 
         var body = new LinkedHashMap<String, Object>();
         body.put("id", row.get("id"));
@@ -685,22 +715,86 @@ public class PathologyReportController {
         body.put("techItem", item);
         body.put("status", row.get("status"));
         body.put("orderedAt", row.get("ordered_at"));
+        // 刚下达的医嘱不可能有挂接切片：进度恒为待切片（派生，不是库列）
+        body.put("progress", "PENDING_SECTION");
+        body.put("progressName", TECH_PROGRESS_NAMES.get("PENDING_SECTION"));
         return R.ok(body);
     }
 
-    /** 完成特检技术医嘱（条件更新 + 受影响行数判定，不做读-判-写） */
+    /**
+     * 完成特检技术医嘱（v58 起带完成校验 gate {@value #TECH_DONE_GATE_KEY}）。
+     *
+     * <p>事实与判定分开算（照抄 {@link #issue} 的双签口径）：{@code slideCount}（挂接到该医嘱的切片数）与
+     * {@code stainedCount}（其中 {@code stained_at} 非空的数）<b>任何档位都算、返回体都带</b>；
+     * 缺口 = slideCount == 0，或 stainedCount &lt; slideCount。
+     * <ul>
+     *   <li>block 且有缺口：返 5273，行仍 ORDERED，不写节点；</li>
+     *   <li>warn 且有缺口：照常置 DONE，返回体 {@code warnings} 回带，TECH_DONE 节点 remark 写明「gate=warn 放行」——
+     *       放行不等于没发生过，事后得能查到是谁在没片子的情况下点的完成；</li>
+     *   <li>off：不判，照常 DONE，返回体仍带两个事实、warnings 为空数组。</li>
+     * </ul>
+     * 坏配置回落 warn 而非 off。5268（不存在 / 不是待执行）与 5270（完成人解析不出）两条既有守卫不变。
+     *
+     * <p>先读事实再<b>条件更新</b>：update 仍带 {@code and status = 'ORDERED'}，并发抢完成时后到的一方照旧吃 5268，
+     * 不存在「事实按 A 算、行按 B 改」的中间态。
+     */
     @PutMapping("/tech-orders/{id}/done")
+    @Transactional
     public R<Map<String, Object>> doneTechOrder(@PathVariable Long id, Authentication auth) {
         // v57 审阅补：与 cancelTechOrder 同口径——完成人解析不出就不叫留痕，不把 done_by 静默写成 NULL
         Long uid = currentUserService.idOf(auth);
         if (uid == null) return R.fail(5270, "无法识别当前登录用户，不能完成特检技术医嘱");
+
+        var facts = jdbc.queryForList("""
+                select t.id, t.specimen_id, t.tech_type, t.tech_item, t.status,
+                       (select count(*) from path_slide sl where sl.tech_order_id = t.id)          as slide_count,
+                       (select count(*) from path_slide sl
+                         where sl.tech_order_id = t.id and sl.stained_at is not null)              as stained_count
+                from path_tech_order t
+                where t.id = ?
+                """, id);
+        if (facts.isEmpty() || !"ORDERED".equals(facts.get(0).get("status"))) {
+            return R.fail(5268, "特检技术医嘱不存在或不是待执行状态：id=" + id);
+        }
+        var f = facts.get(0);
+        long slideCount = ((Number) f.get("slide_count")).longValue();
+        long stainedCount = ((Number) f.get("stained_count")).longValue();
+        String label = techLabel(id, f.get("tech_type"), f.get("tech_item"));
+        String gap = slideCount == 0 ? "无挂接切片（slide_count=0）"
+                : stainedCount < slideCount ? "挂接 " + slideCount + " 片中 " + (slideCount - stainedCount) + " 片尚未染色"
+                : null;
+
+        String gate = techDoneGate();
+        if (gap != null && "block".equals(gate)) {
+            return R.fail(5273, "特检技术医嘱无已染色挂接切片不得确认完成：" + label + "，" + gap
+                    + "（gate " + TECH_DONE_GATE_KEY + "=block）");
+        }
+        var warnings = new ArrayList<String>();
+        if (gap != null && !"off".equals(gate)) {
+            warnings.add("无已染色挂接切片即确认完成（gate=warn 放行）：" + label + "，" + gap
+                    + "，本次完成已记入流转节点");
+        }
+
         var updated = jdbc.queryForList("""
                 update path_tech_order set status = 'DONE', done_at = now(), done_by = ?
                 where id = ? and status = 'ORDERED'
                 returning id, specimen_id, tech_type, tech_item, status, done_at
                 """, uid, id);
         if (updated.isEmpty()) return R.fail(5268, "特检技术医嘱不存在或不是待执行状态：id=" + id);
-        return R.ok(new LinkedHashMap<>(updated.get(0)));
+
+        logProcess(asLong(f.get("specimen_id")), "TECH_DONE", uid,
+                "确认完成特检医嘱 " + label + "，挂接 " + slideCount + " 片 / 已染色 " + stainedCount
+                        + (gap == null ? "" : "；" + gap + "（gate=" + gate + " 放行）"));
+
+        var body = new LinkedHashMap<String, Object>(updated.get(0));
+        body.put("slideCount", slideCount);
+        body.put("stainedCount", stainedCount);
+        body.put("stainedComplete", gap == null);
+        body.put("progress", "DONE");
+        body.put("progressName", TECH_PROGRESS_NAMES.get("DONE"));
+        body.put("techDoneGate", gate);
+        body.put("warnings", warnings);
+        return R.ok(body);
     }
 
     public record CancelTechOrderReq(String reason) {}
@@ -718,8 +812,12 @@ public class PathologyReportController {
      * 5268（不存在 / 不是待执行）路径不变。
      *
      * <p>历史 CANCELLED 行（V163 之前取消的）三列永远为 NULL，本端点不回填，清单端点照常返回它们。
+     *
+     * <p>v58：同一事务再写 TECH_CANCEL 流转节点（操作人 = 取消人，remark 带医嘱标识与取消原因），
+     * 流转轨迹里能直接答「这条免疫组化谁取消的、何时、为什么」。
      */
     @PutMapping("/tech-orders/{id}/cancel")
+    @Transactional
     public R<Map<String, Object>> cancelTechOrder(@PathVariable Long id,
                                                   @RequestBody(required = false) CancelTechOrderReq req,
                                                   Authentication auth) {
@@ -739,7 +837,13 @@ public class PathologyReportController {
                            cancelled_at, cancelled_by, cancel_reason
                 """, uid, reason, id);
         if (updated.isEmpty()) return R.fail(5268, "特检技术医嘱不存在或不是待执行状态：id=" + id);
-        return R.ok(new LinkedHashMap<>(updated.get(0)));
+        var row = updated.get(0);
+        logProcess(asLong(row.get("specimen_id")), "TECH_CANCEL", uid,
+                "取消特检医嘱 " + techLabel(row.get("id"), row.get("tech_type"), row.get("tech_item")) + "：" + reason);
+        var body = new LinkedHashMap<String, Object>(row);
+        body.put("progress", "CANCELLED");
+        body.put("progressName", TECH_PROGRESS_NAMES.get("CANCELLED"));
+        return R.ok(body);
     }
 
     /**
@@ -761,6 +865,11 @@ public class PathologyReportController {
      * {@code cancelled_by_name} / {@code cancel_reason}（V163 之前取消的历史行四列为 NULL，前端须显式标「历史取消」
      * 而不是画成 0 或空白）与 {@code slide_count}（{@code path_slide.tech_order_id = t.id} 的计数，
      * 即这条医嘱实际产出了几张片）。仍是只增不改。
+     *
+     * <p><b>v58 执行进度派生</b>：两个分支再增 {@code stained_count}（挂接切片中 stained_at 非空的数）、
+     * {@code progress} / {@code progress_name}（{@link #techProgress} 五态，只读派生、不是库列）。
+     * 另加可选 {@code slideId}：只要「这张切片挂在哪条医嘱上」（0 或 1 行）——切片检索行不带 tech_order_id，
+     * 染色登记后前端据此提示医嘱进度。仍是只增不改。
      */
     @GetMapping("/tech-orders")
     public R<Map<String, Object>> techOrders(@RequestParam(required = false) Long specimenId,
@@ -771,7 +880,8 @@ public class PathologyReportController {
                                              @RequestParam(required = false) String dateField,
                                              @RequestParam(required = false) String from,
                                              @RequestParam(required = false) String to,
-                                             @RequestParam(required = false) Integer limit) {
+                                             @RequestParam(required = false) Integer limit,
+                                             @RequestParam(required = false) Long slideId) {
         String st = trim(status);
         boolean allStatuses = false;
         if (st != null) {
@@ -812,6 +922,8 @@ public class PathologyReportController {
                        t.done_by, db.real_name as done_by_name, t.done_at,
                        t.cancelled_at, t.cancelled_by, cb.real_name as cancelled_by_name, t.cancel_reason,
                        (select count(*) from path_slide sl where sl.tech_order_id = t.id) as slide_count,
+                       (select count(*) from path_slide sl
+                         where sl.tech_order_id = t.id and sl.stained_at is not null)     as stained_count,
                        s.barcode, s.path_no, s.part_no, s.specimen_type, s.urgent,
                        p.id as patient_id, p.patient_no, p.name as patient_name,
                        round((extract(epoch from (now() - t.ordered_at)) / 3600)::numeric, 1)
@@ -833,6 +945,10 @@ public class PathologyReportController {
         if (specimenId != null) {
             sql.append(" and t.specimen_id = ? ");
             args.add(specimenId);
+        }
+        if (slideId != null) {
+            sql.append(" and exists (select 1 from path_slide x where x.id = ? and x.tech_order_id = t.id) ");
+            args.add(slideId);
         }
         if (st != null) {
             sql.append(" and t.status = ? ");
@@ -867,10 +983,14 @@ public class PathologyReportController {
         boolean truncated = rows.size() > cap;
         for (var r : rows) {
             r.put("tech_type_name", TECH_TYPE_NAMES.getOrDefault(String.valueOf(r.get("tech_type")), null));
+            String progress = techProgress(r.get("status"), r.get("slide_count"), r.get("stained_count"));
+            r.put("progress", progress);
+            r.put("progress_name", TECH_PROGRESS_NAMES.getOrDefault(progress, progress));
         }
 
         var body = new LinkedHashMap<String, Object>();
         body.put("specimenId", specimenId);
+        body.put("slideId", slideId);
         body.put("status", allStatuses ? "ALL" : st);
         body.put("limit", cap);
         body.put("items", truncated ? rows.subList(0, cap) : rows);
@@ -882,8 +1002,30 @@ public class PathologyReportController {
         body.put("note", "不传 specimenId 为全院清单，默认只看 ORDERED，status=ALL 看全状态；"
                 + "传 specimenId 为该标本清单，默认全状态。hoursSinceOrdered 是距开单的小时数（原始事实），"
                 + "本端点不判超时。cancelled_at/cancelled_by_name/cancel_reason 为 NULL 且 status=CANCELLED 的是"
-                + "V163 之前的历史取消（零回填）；slide_count 是挂接到该医嘱的切片数。");
+                + "V163 之前的历史取消（零回填）；slide_count 是挂接到该医嘱的切片数，stained_count 是其中已染色的数；"
+                + "progress 由二者与 status 派生（PENDING_SECTION 待切片 / SECTIONING 切片中 / STAINED 已染色待确认 / "
+                + "DONE / CANCELLED），不是库列；slideId 只要该切片挂接的那条医嘱。");
         return R.ok(body);
+    }
+
+    /** 九参形态（v55 契约）：等于不传 slideId。既有测试与调用方按此形态调用，签名不动 */
+    public R<Map<String, Object>> techOrders(Long specimenId, String status, String techType, Boolean urgentOnly,
+                                             String keyword, String dateField, String from, String to, Integer limit) {
+        return techOrders(specimenId, status, techType, urgentOnly, keyword, dateField, from, to, limit, null);
+    }
+
+    /**
+     * 执行进度派生（v58，只读；PathQcController 的 WORKLOAD_TECH 穿透同用这一份，别再抄一遍）。
+     * CANCELLED / DONE 照状态；ORDERED 且无挂接切片 → PENDING_SECTION（待切片）；有挂接切片但未全部染色 → SECTIONING（切片中）；
+     * 全部染色 → STAINED（已染色待确认）。状态不在三档内（直连改库造出来的）原样返回，不猜。
+     */
+    public static String techProgress(Object status, Object slideCount, Object stainedCount) {
+        String st = String.valueOf(status);
+        if (!"ORDERED".equals(st)) return st;
+        long slides = slideCount instanceof Number n ? n.longValue() : 0L;
+        long stained = stainedCount instanceof Number n ? n.longValue() : 0L;
+        if (slides == 0) return "PENDING_SECTION";
+        return stained < slides ? "SECTIONING" : "STAINED";
     }
 
     // ==================================================================
@@ -972,19 +1114,35 @@ public class PathologyReportController {
     // 辅助
     // ==================================================================
 
+    /** 双签 gate 三态解析 */
+    private String gate() {
+        return gate(DOUBLE_SIGN_GATE_KEY);
+    }
+
+    /** 特检完成校验 gate 三态解析（v58） */
+    private String techDoneGate() {
+        return gate(TECH_DONE_GATE_KEY);
+    }
+
     /**
-     * 双签 gate 三态解析。
+     * gate 三态解析（双签与特检完成两把开关同一份规则）。
      *
      * <p><b>坏配置回落 warn 而非 off</b>：把 'blocked'、'true'、'1' 这类写错的值当成 off，
      * 等于让一个笔误静默关掉法定校验；回落 warn 至少还会在返回体里喊一声。
      */
-    private String gate() {
-        String v = configReader.get(DOUBLE_SIGN_GATE_KEY, "warn");
+    private String gate(String key) {
+        String v = configReader.get(key, "warn");
         v = v == null ? "" : v.trim().toLowerCase(Locale.ROOT);
         return switch (v) {
             case "off", "warn", "block" -> v;
             default -> "warn";
         };
+    }
+
+    /** 流转节点留痕文案里的医嘱标识：#id 中文类型(编码) 项目——技师与评委看流转轨迹时不用再回头查字典 */
+    private static String techLabel(Object id, Object type, Object item) {
+        String t = String.valueOf(type);
+        return "#" + id + " " + TECH_TYPE_NAMES.getOrDefault(t, t) + "(" + t + ")" + (item == null ? "" : " " + item);
     }
 
     /** 签名类端点共用的前置：已拒收 / 已签发的标本一律不许再签 */

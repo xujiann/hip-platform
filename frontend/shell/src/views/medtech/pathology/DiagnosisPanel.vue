@@ -249,7 +249,7 @@
         <!-- ---------------- 特检技术医嘱 ---------------- -->
         <el-tab-pane name="tech" :label="`特检技术医嘱（${techRows.length}）`">
           <el-alert type="info" :closable="false" class="cav"
-                    title="取消特检医嘱须填写取消原因（v57 起留痕：取消人 / 取消时刻 / 取消原因）。取消原因与下达原因分列，不覆盖 reason——「当初为什么要做这个免疫组化」与「后来为什么不做了」都留着；V163 之前取消的历史行三列为空。" />
+                    title="取消特检医嘱须填写取消原因（v57 起留痕：取消人 / 取消时刻 / 取消原因）。取消原因与下达原因分列，不覆盖 reason——「当初为什么要做这个免疫组化」与「后来为什么不做了」都留着；V163 之前取消的历史行三列为空。「进度」由挂接切片派生（v58）：待切片 / 切片中 / 已染色待确认，不是手工标记；下达 / 完成 / 取消都进「流转节点」页签。" />
           <el-table :data="techRows" size="small" border max-height="380">
             <el-table-column label="类型" width="110">
               <template #default="{ row }">{{ techName(row.tech_type) }}</template>
@@ -266,6 +266,12 @@
                   {{ techStatusName(String(row.status)) }}</el-tag>
               </template>
             </el-table-column>
+            <el-table-column label="进度" width="170">
+              <template #default="{ row }">
+                <el-tag size="small" :type="progressTag(row.progress)">{{ fmt(row.progress_name ?? row.progress) }}</el-tag>
+                <span class="muted">　已染 {{ num(row.stained_count) }} / 挂接 {{ num(row.slide_count) }}</span>
+              </template>
+            </el-table-column>
             <el-table-column label="开单" width="200">
               <template #default="{ row }">
                 {{ fmt(row.ordered_by_name) }}　{{ fmtTime(row.ordered_at) }}
@@ -275,6 +281,16 @@
               <template #default="{ row }">
                 {{ fmt(row.done_by_name) }}　{{ fmtTime(row.done_at) }}
               </template>
+            </el-table-column>
+            <el-table-column label="取消" width="200">
+              <template #default="{ row }">
+                <template v-if="row.cancelled_at">{{ fmt(row.cancelled_by_name) }}　{{ fmtTime(row.cancelled_at) }}</template>
+                <span v-else-if="row.status === 'CANCELLED'" class="muted">历史取消（时刻未采集）</span>
+                <span v-else class="muted">—</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="取消原因" min-width="140" show-overflow-tooltip>
+              <template #default="{ row }">{{ fmt(row.cancel_reason) }}</template>
             </el-table-column>
             <el-table-column label="原因" min-width="140" show-overflow-tooltip>
               <template #default="{ row }">{{ fmt(row.reason) }}</template>
@@ -729,6 +745,14 @@ function techStatusTag(v: string): 'warning' | 'success' | 'info' {
   return v === 'ORDERED' ? 'warning' : v === 'DONE' ? 'success' : 'info'
 }
 
+/**
+ * 执行进度五态的标签色（v58）：进度由后端按挂接切片派生（PathologyReportController.techProgress），
+ * 前端只画不算——待切片灰、切片中黄、已染色待确认蓝（可以点完成了）、已完成绿、已取消灰。
+ */
+function progressTag(v: unknown): 'primary' | 'success' | 'warning' | 'info' {
+  return v === 'SECTIONING' ? 'warning' : v === 'STAINED' ? 'primary' : v === 'DONE' ? 'success' : 'info'
+}
+
 async function loadTechDict() {
   const d = (await client.get('/pathology/report/tech-orders/dict')).data.data as Row
   techTypes.value = (d.techTypes ?? []) as Row[]
@@ -780,9 +804,12 @@ async function submitTech() {
 }
 
 async function techDone(row: Row) {
-  await client.put(`/pathology/report/tech-orders/${Number(row.id)}/done`, null)
-  ElMessage.success('已标记完成')
+  const d = (await client.put(`/pathology/report/tech-orders/${Number(row.id)}/done`, null)).data.data as Row
+  ElMessage.success(`已标记完成（挂接 ${num(d.slideCount)} 片 / 已染色 ${num(d.stainedCount)}）`)
+  // v58：warn 档放行时后端回带 warnings（无已染色挂接切片即确认完成），逐条提示；block 档 5273 走 client 统一报错
+  for (const w of (d.warnings ?? []) as string[]) ElMessage.warning(w)
   await loadTech()
+  await loadReport()   // 完成进了流转节点页签，一并刷新
 }
 
 async function techCancel(row: Row) {
