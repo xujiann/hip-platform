@@ -369,6 +369,17 @@ public class PathologyProcessController {
         Long uid = currentUserService.idOf(auth);
         if (uid == null) return R.fail(5224, "无法识别当前登录用户，不能登记取材");
 
+        // v58（2530）：字段级存储 + 首写修订留痕，与上面的 gross_finding 写入同一事务（V164）。
+        // gross 的每个非空字段按入参顺序（Jackson 反序列化的 Map 是 LinkedHashMap，顺序即前端顺序）
+        // 落 path_gross_field(seq 1..n)；拼好的文本作为第 1 版落 path_gross_revision(old_text = null)。
+        // append=true 且本次没传 gross/grossText（grossAssembled == null）时两张表都不写：没有新描述就没有新版本。
+        // 文本仍照旧写 gross_finding——既有读方（诊断抽屉、报告）一个字节不用改，字段行是加法不是替代。
+        int grossFieldCount = 0;
+        if (grossWritten) {
+            grossFieldCount = storeGrossFields(req.specimenId(), req.gross(), uid);
+            insertGrossRevision(jdbc, req.specimenId(), null, grossAssembled, "GROSSING", uid);
+        }
+
         String pathNo = trim((String) head.get("path_no"));
         String prefix = pathNo != null ? pathNo : (String) head.get("barcode");
 
@@ -406,6 +417,7 @@ public class PathologyProcessController {
         body.put("totalBlockCount", existing + created.size());
         body.put("grossFinding", grossAssembled);
         body.put("grossFindingWritten", grossWritten);
+        body.put("grossFieldCount", grossFieldCount);   // v58：本次落 path_gross_field 的字段行数（纯自由文本为 0）
         body.put("note", "block_code 由「编码前缀-块号」生成并在建块时定死；"
                 + (pathNo == null ? "本标本尚无病理号，编码回落院内条码 barcode，"
                                   + "病理号事后补发不会回改已生成的 block_code。" : "")
@@ -1198,19 +1210,65 @@ public class PathologyProcessController {
                 order by pr.occurred_at asc, pr.id asc
                 """, specimenId);
 
+        // v58（2530）：字段级记录与修订留痕（V164）。fieldsAvailable 只看「有没有字段行」——
+        // gross_finding 非空却无字段行（V164 之前的历史标本 / 纯自由文本）就是 false，
+        // **不从文本反解析出字段**：「大小：2×1cm；切面：灰白」按标点猜成字段，猜错就是假结构化。
+        var fieldRows = jdbc.queryForList("""
+                select f.seq, f.label, f.value, f.created_at, f.operator_id, u.real_name as operator_name
+                from path_gross_field f
+                left join sys_user u on u.id = f.operator_id
+                where f.specimen_id = ?
+                order by f.seq asc
+                """, specimenId);
+        var fields = new ArrayList<Map<String, Object>>(fieldRows.size());
+        for (var f : fieldRows) {
+            var m = new LinkedHashMap<String, Object>();
+            m.put("seq", f.get("seq"));
+            m.put("label", f.get("label"));
+            m.put("value", f.get("value"));
+            m.put("createdAt", f.get("created_at"));
+            m.put("operatorId", f.get("operator_id"));
+            m.put("operatorName", f.get("operator_name"));
+            fields.add(m);
+        }
+        var revisionRows = jdbc.queryForList("""
+                select r.seq, r.old_text, r.new_text, r.source, r.changed_at, r.changed_by, u.real_name as changed_by_name
+                from path_gross_revision r
+                left join sys_user u on u.id = r.changed_by
+                where r.specimen_id = ?
+                order by r.seq asc
+                """, specimenId);
+        var revisions = new ArrayList<Map<String, Object>>(revisionRows.size());
+        for (var r : revisionRows) {
+            var m = new LinkedHashMap<String, Object>();
+            m.put("seq", r.get("seq"));
+            m.put("oldText", r.get("old_text"));
+            m.put("newText", r.get("new_text"));
+            m.put("source", r.get("source"));
+            m.put("changedAt", r.get("changed_at"));
+            m.put("changedBy", r.get("changed_by"));
+            m.put("changedByName", r.get("changed_by_name"));
+            revisions.add(m);
+        }
+
         String gross = trim((String) head.get("gross_finding"));
         var body = new LinkedHashMap<String, Object>();
         body.put("specimenId", specimenId);
         body.put("specimen", head);
         body.put("grossFinding", gross);
         body.put("grossFindingPresent", gross != null);
+        body.put("fieldsAvailable", !fields.isEmpty());
+        body.put("fields", fields);
+        body.put("revisions", revisions);
         body.put("diagnosedAt", head.get("diagnosed_at"));
         body.put("blocks", blocks);
         body.put("blockCount", blocks.size());
         body.put("grossingEvents", events);
         body.put("note", "grossFinding 读自 path_specimen.gross_finding（取材端点只在为空时写，诊断端点非空即覆盖、空白即保留原值（v57 起）），"
                 + "库里没有「这段文字由谁写」的事实，本端点不猜来源：grossingEvents 是取材打点，"
-                + "diagnosedAt 是诊断时刻，请自行对时间线。");
+                + "diagnosedAt 是诊断时刻，请自行对时间线。"
+                + "fields 是取材时按入参顺序落库的字段行（v58，V164 起），fieldsAvailable=false 即无字段行"
+                + "（历史标本或纯自由文本），不从 grossFinding 反解析；revisions 是该列的修订留痕，按 seq 升序。");
         return R.ok(body);
     }
 
@@ -1694,6 +1752,47 @@ public class PathologyProcessController {
                     + assembled.length() + "），请精简或改写在各蜡块的组织描述里");
         }
         return assembled;
+    }
+
+    /**
+     * v58（2530）：把结构化字段按<b>入参顺序</b>逐条落 {@code path_gross_field}，返回落库行数。
+     * 取舍与 {@link #assembleGross} 逐字一致（label / value 都 trim；值为空的字段整条略去），
+     * 越界在 assembleGross 里已经拒掉，这里不再二次校验。seq 从既有最大号 +1 续排——按现行规则
+     * （已有大体所见即 5222）一个标本只会写一次，续排只是防御，不是允许多次。
+     * 顺序来自调用方的 {@link Map} 迭代序：Jackson 反序列化的 Map 是 LinkedHashMap，即前端字段顺序。
+     */
+    private int storeGrossFields(Long specimenId, Map<String, String> gross, Long uid) {
+        if (gross == null || gross.isEmpty()) return 0;
+        Integer base = jdbc.queryForObject(
+                "select coalesce(max(seq), 0) from path_gross_field where specimen_id = ?", Integer.class, specimenId);
+        int n = 0;
+        for (var e : gross.entrySet()) {
+            String label = trim(e.getKey());
+            String value = trim(e.getValue());
+            if (label == null || value == null) continue;
+            n++;
+            jdbc.update("""
+                    insert into path_gross_field(specimen_id, seq, label, value, operator_id)
+                    values (?, ?, ?, ?, ?)
+                    """, specimenId, (base == null ? 0 : base) + n, label, value, uid);
+        }
+        return n;
+    }
+
+    /**
+     * v58（2530）：大体所见修订留痕一行。seq 由单条 insert 内的子查询取 max+1（并发撞号由
+     * {@code uq_path_gross_revision_seq} 兜底）；{@code changed_at} 由库端 now() 落，Java 侧不产生时间。
+     * 包级静态：诊断端点（{@link PathologyController#diagnose}）覆盖该列时走同一条 SQL，两处不各写一份。
+     * 参数上的显式转型不是装饰：{@code insert … select} 的 select 列表里传 null 时 PostgreSQL 报
+     * 「could not determine data type of parameter」。
+     */
+    static void insertGrossRevision(JdbcTemplate jdbc, Long specimenId, String oldText, String newText,
+                                    String source, Long changedBy) {
+        jdbc.update("""
+                insert into path_gross_revision(specimen_id, seq, old_text, new_text, source, changed_by)
+                select ?::bigint, coalesce(max(r.seq), 0) + 1, ?::text, ?::text, ?::varchar, ?::bigint
+                from path_gross_revision r where r.specimen_id = ?
+                """, specimenId, oldText, newText, source, changedBy, specimenId);
     }
 
     /** 流转节点（occurred_at = now()：PostgreSQL 里是事务开始时刻，事务内恒定） */

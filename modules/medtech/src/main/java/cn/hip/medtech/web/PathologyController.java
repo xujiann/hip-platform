@@ -93,6 +93,14 @@ public class PathologyController {
      * {@code microKept}（Kept=true 表示本次入参空白且原值非空而被保留）。全仓调用方
      * （DiagnosisPanel.vue、tools/e2e-*.py）此前只看 {@code code}，无人依赖 {@code data} 为空。
      * 4552、状态守卫（RECEIVED 且未拒收）、{@code outp_order} 置 EXECUTED 一律不动。
+     *
+     * <p><b>v58（2530）：覆盖大体所见必须留痕</b>。v57 之前该列被覆盖时原文没有任何地方留着——
+     * 「与首次报告共用、可被整体覆盖且无任何历史留存的单列」。现在入参非空且与原值不同（trim 后比较）时，
+     * 同一事务往 {@code path_gross_revision}（V164）写一行：{@code old_text} = 覆盖前的原值、
+     * {@code new_text} = 新值、{@code source='DIAGNOSE'}、{@code changed_by} = 当前用户，
+     * {@code seq} 接在取材首写之后续排。<b>空白保留时不写、与原值相同时不写</b>——没有变化就没有版本。
+     * 返回体<b>只加</b>一个键 {@code grossRevised}（本次是否写了修订行），三个既有键不动。
+     * 原值在 update 之前<b>锁行读出</b>：覆盖后再读就没了，而修订留痕要的正是「覆盖前是什么」。
      */
     @PutMapping("/specimens/{barcode}/diagnose")
     @Transactional
@@ -100,6 +108,12 @@ public class PathologyController {
         if (req.diagnosis() == null || req.diagnosis().isBlank()) return R.fail(4552, "诊断不能为空");
         String gross = blankToNull(req.grossFinding());
         String micro = blankToNull(req.microFinding());
+        // v58：覆盖前锁行读原值。只读不判——状态守卫仍由下面那条 update 的 where 决定，4553 触发情形一个不变。
+        var before = jdbc.queryForList(
+                "select gross_finding from path_specimen where barcode = ? for update", barcode);
+        String oldGrossRaw = before.isEmpty() ? null : (String) before.get(0).get("gross_finding");
+        String oldGross = blankToNull(oldGrossRaw);
+        Long uid = currentUserService.idOf(auth);
         int n = jdbc.update("""
                 update path_specimen set status = 'DIAGNOSED',
                        gross_finding = coalesce(nullif(btrim(?::text), ''), gross_finding),
@@ -107,7 +121,7 @@ public class PathologyController {
                        diagnosis = ?, pathologist_id = ?, diagnosed_at = now()
                 where barcode = ? and status = 'RECEIVED' and rejected_at is null
                 """, gross, micro, req.diagnosis(),
-                currentUserService.idOf(auth), barcode);
+                uid, barcode);
         if (n == 0) return R.fail(4553, "标本不存在、未核收或已拒收");
         jdbc.update("""
                 update outp_order set status = 'EXECUTED'
@@ -120,10 +134,18 @@ public class PathologyController {
                        (micro_finding is not null and btrim(micro_finding) <> '') as micro_present
                 from path_specimen where barcode = ?
                 """, barcode);
+        // v58：入参非空且与原值不同（trim 后比较）→ 写修订行；空白保留、与原值相同都不写。
+        // old_text 存覆盖前的原文（非空白时原样，空白视同「无原值」存 NULL）；seq 由单条 insert 内的子查询取 max+1。
+        boolean grossRevised = gross != null && !gross.equals(oldGross);
+        if (grossRevised) {
+            PathologyProcessController.insertGrossRevision(jdbc, ((Number) row.get("id")).longValue(),
+                    oldGross == null ? null : oldGrossRaw, gross, "DIAGNOSE", uid);
+        }
         var body = new LinkedHashMap<String, Object>();
         body.put("specimenId", row.get("id"));
         body.put("grossKept", gross == null && Boolean.TRUE.equals(row.get("gross_present")));
         body.put("microKept", micro == null && Boolean.TRUE.equals(row.get("micro_present")));
+        body.put("grossRevised", grossRevised);
         return R.ok(body);
     }
 

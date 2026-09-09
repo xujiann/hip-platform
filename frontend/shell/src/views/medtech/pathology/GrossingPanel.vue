@@ -98,6 +98,31 @@
         <el-empty v-else description="该标本尚未录入大体所见" :image-size="50" />
       </div>
 
+      <!-- 字段级记录（v58，2530）：只认 path_gross_field 的行，不从上面的文本反解析 -->
+      <div class="sec">
+        <b>字段级记录</b>
+        <template v-if="view.fieldsAvailable === true">
+          <el-tag size="small" type="success" style="margin-left: 6px">取材时按字段落库（{{ viewFields.length }} 项）</el-tag>
+          <el-table :data="viewFields" size="small" border max-height="200" style="margin-top: 4px">
+            <el-table-column label="#" width="50">
+              <template #default="{ row }">{{ fmt(row.seq) }}</template>
+            </el-table-column>
+            <el-table-column label="字段" width="140">
+              <template #default="{ row }">{{ fmt(row.label) }}</template>
+            </el-table-column>
+            <el-table-column label="内容" min-width="200" show-overflow-tooltip>
+              <template #default="{ row }">{{ fmt(row.value) }}</template>
+            </el-table-column>
+            <el-table-column label="录入" width="220">
+              <template #default="{ row }">{{ fmt(row.operatorName) }}　{{ fmtTime(row.createdAt) }}</template>
+            </el-table-column>
+          </el-table>
+        </template>
+        <span v-else class="muted" style="margin-left: 6px">
+          {{ view.grossFindingPresent ? '历史标本或纯自由文本，无字段级记录（不从文本反解析）' : '无字段级记录' }}
+        </span>
+      </div>
+
       <h4>蜡块（{{ viewBlocks.length }}）</h4>
       <el-table :data="viewBlocks" size="small" border max-height="220">
         <el-table-column label="块号" width="70">
@@ -254,6 +279,33 @@
         {{ result.grossFindingWritten === true ? '已写入' : '未写入（该列原本已有内容或本次未填）' }}
       </el-descriptions-item>
     </el-descriptions>
+
+    <!-- 已落库的字段级记录（v58，2530）：取材成功后回读 GET /grossing/{id}，展示的是库里的行，不是表单里的值 -->
+    <div class="sec" v-loading="resultFieldsLoading">
+      <b>已落库的字段级记录</b>
+      <template v-if="resultView.fieldsAvailable === true">
+        <el-tag size="small" type="success" style="margin-left: 6px">{{ resultFields.length }} 项，按填写顺序</el-tag>
+        <el-table :data="resultFields" size="small" border max-height="200" style="margin-top: 4px">
+          <el-table-column label="#" width="50">
+            <template #default="{ row }">{{ fmt(row.seq) }}</template>
+          </el-table-column>
+          <el-table-column label="字段" width="140">
+            <template #default="{ row }">{{ fmt(row.label) }}</template>
+          </el-table-column>
+          <el-table-column label="内容" min-width="200" show-overflow-tooltip>
+            <template #default="{ row }">{{ fmt(row.value) }}</template>
+          </el-table-column>
+          <el-table-column label="录入时刻" width="150">
+            <template #default="{ row }">{{ fmtTime(row.createdAt) }}</template>
+          </el-table-column>
+        </el-table>
+      </template>
+      <span v-else class="muted" style="margin-left: 6px">
+        {{ result.grossFindingWritten === true
+          ? '无字段级记录：本次只写了自由描述，或该标本此前只有自由文本'
+          : '无字段级记录：本次未写大体所见' }}
+      </span>
+    </div>
     <el-table :data="resultBlocks" size="small" border max-height="240">
       <el-table-column label="块号" width="80">
         <template #default="{ row }">{{ fmt(row.block_no) }}</template>
@@ -404,9 +456,29 @@ function openGrossing(row: Row) {
 const viewDialog = ref(false)
 const viewLoading = ref(false)
 const view = ref<{ specimen?: Row; grossFinding?: unknown; grossFindingPresent?: unknown;
+  fieldsAvailable?: unknown; fields?: Row[]; revisions?: Row[];
   diagnosedAt?: unknown; blocks?: Row[]; grossingEvents?: Row[]; note?: unknown }>({})
 const viewBlocks = computed<Row[]>(() => (view.value.blocks ?? []) as Row[])
 const viewEvents = computed<Row[]>(() => (view.value.grossingEvents ?? []) as Row[])
+const viewFields = computed<Row[]>(() => (view.value.fields ?? []) as Row[])
+
+/* ---------------- 取材成功后回读已落库字段（v58，2530） ---------------- */
+const resultView = ref<{ fieldsAvailable?: unknown; fields?: Row[] }>({})
+const resultFields = computed<Row[]>(() => (resultView.value.fields ?? []) as Row[])
+const resultFieldsLoading = ref(false)
+
+/** 展示的是库里的 path_gross_field 行（GET /grossing/{id}），不是表单里的值——落库了什么就显示什么 */
+async function loadResultFields(specimenId: number) {
+  resultFieldsLoading.value = true
+  resultView.value = {}
+  try {
+    resultView.value = (await client.get(`/pathology/process/grossing/${specimenId}`)).data.data as typeof resultView.value
+  } catch {
+    resultView.value = {}   // 回读失败按「无记录」显示，不拿表单值冒充库里的行
+  } finally {
+    resultFieldsLoading.value = false
+  }
+}
 
 async function openView(specimenId: number) {
   viewDialog.value = true
@@ -441,6 +513,7 @@ async function submit() {
     })).data.data as Row
     dialog.value = false
     resultDialog.value = true
+    void loadResultFields(Number(current.value.id))   // 回读库里的字段行，不用表单值冒充
     await load()
     emit('changed')
   } finally {

@@ -189,6 +189,38 @@
       </el-timeline>
       <el-empty v-else description="该标本尚无流转打点" :image-size="50" />
       <p v-if="trail.note" class="muted">{{ trail.note }}</p>
+
+      <!-- ============ 大体所见修订（v58，2530：path_gross_revision 留痕，按 seq 列 old→new） ============ -->
+      <h4>大体所见修订</h4>
+      <div v-loading="gLoading">
+        <el-tag v-if="gross.fieldsAvailable === true" size="small" type="success">
+          取材时按字段落库（{{ grossFields.length }} 项）</el-tag>
+        <el-tag v-else size="small" type="info">历史标本，无字段级记录（或本次取材只写了自由文本；不从文本反解析）</el-tag>
+        <el-table v-if="grossRevisions.length" :data="grossRevisions" size="small" border max-height="260"
+                  style="margin-top: 6px">
+          <el-table-column label="版本" width="60">
+            <template #default="{ row }">{{ fmt(row.seq) }}</template>
+          </el-table-column>
+          <el-table-column label="来源" width="90">
+            <template #default="{ row }">
+              <el-tag size="small" :type="row.source === 'DIAGNOSE' ? 'warning' : 'info'">{{ revisionSource(row.source) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="时刻" width="150">
+            <template #default="{ row }">{{ fmtDateTime(row.changedAt) }}</template>
+          </el-table-column>
+          <el-table-column label="操作人" width="110">
+            <template #default="{ row }">{{ fmt(row.changedByName) }}</template>
+          </el-table-column>
+          <el-table-column label="修订前 → 修订后" min-width="320">
+            <template #default="{ row }">
+              <div class="rev"><span class="muted">前：</span>{{ row.oldText == null ? '（无：首次写入）' : String(row.oldText) }}</div>
+              <div class="rev"><span class="muted">后：</span>{{ fmt(row.newText) }}</div>
+            </template>
+          </el-table-column>
+        </el-table>
+        <p v-else class="muted">无</p>
+      </div>
     </div>
   </el-drawer>
 </template>
@@ -208,6 +240,7 @@
  */
 import { computed, reactive, ref } from 'vue'
 import client from '../../../api/client'
+import { fmtDateTime } from '../../../utils/date'
 import {
   ANOMALY_KINDS, SPECIMEN_TYPES, anomalyName, anomalyTag, defaultRange, fmt, fmtTime, nodeName, num,
   reportStage, typeName, type Row,
@@ -287,9 +320,38 @@ const drawerTitle = computed(
   () => `流转轨迹 — ${fmt(tSpecimen.value.path_no)}　${fmt(tSpecimen.value.patient_name)}`,
 )
 
+/* ---------------- 大体所见修订（v58，2530） ---------------- */
+const gLoading = ref(false)
+const gross = ref<Row>({})
+const grossFields = computed<Row[]>(() => (gross.value.fields ?? []) as Row[])
+const grossRevisions = computed<Row[]>(() => (gross.value.revisions ?? []) as Row[])
+
+/** path_gross_revision.source 的两档，与 chk_path_gross_revision_source 一致 */
+function revisionSource(v: unknown): string {
+  const s = v == null ? '' : String(v)
+  return s === 'GROSSING' ? '取材' : s === 'DIAGNOSE' ? '诊断' : s
+}
+
+/**
+ * 修订留痕单独取（GET /grossing/{id}）：它与轨迹是两个端点，任一失败不该把另一个的内容一起藏起来。
+ * fieldsAvailable=false 就按后端说的显示「无字段级记录」，前端不从 grossFinding 文本猜字段。
+ */
+async function loadGross(specimenId: number) {
+  gLoading.value = true
+  gross.value = {}
+  try {
+    gross.value = (await client.get(`/pathology/process/grossing/${specimenId}`)).data.data as Row
+  } catch {
+    gross.value = {}   // 取不到就按「无记录」显示，由轨迹本身照常渲染
+  } finally {
+    gLoading.value = false
+  }
+}
+
 async function openTrail(specimenId: number) {
   drawer.value = true
   tLoading.value = true
+  void loadGross(specimenId)
   try {
     trail.value = (await client.get(`/pathology/process/trail/${specimenId}`, {
       params: { stallHours: aq.stallHours },
@@ -309,4 +371,6 @@ void loadAnomalies()
 .muted { color: #909399; font-size: 12px; }
 .code { font-family: Consolas, Monaco, monospace; }
 .bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.rev { white-space: pre-wrap; word-break: break-word; }
+h4 { margin: 12px 0 6px; }
 </style>
