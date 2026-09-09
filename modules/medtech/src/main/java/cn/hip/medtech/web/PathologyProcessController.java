@@ -354,6 +354,11 @@ public class PathologyProcessController {
             return R.fail(5222, "蜡块序号将超过上限 " + MAX_BLOCK_NO + "（当前最大 " + maxNo + "）");
         }
 
+        // v58 审阅补（已复现）：当前用户判定必须在任何写入之前——R.fail 不是异常、@Transactional 不回滚，
+        // 放在 gross_finding update 之后会留下无人署名的半截数据（文本有、字段/修订/蜡块/节点全无）。
+        Long uid = currentUserService.idOf(auth);
+        if (uid == null) return R.fail(5224, "无法识别当前登录用户，不能登记取材");
+
         String existingGross = trim((String) head.get("gross_finding"));
         boolean grossWritten = false;
         if (grossAssembled != null) {
@@ -361,15 +366,16 @@ public class PathologyProcessController {
                 return R.fail(5222, "该标本已有大体所见，本端点不覆盖既有内容："
                         + "补取材的组织描述请写在 blocks[].tissueDesc，修订大体所见请走诊断端点");
             }
-            jdbc.update("""
+            int written = jdbc.update("""
                     update path_specimen set gross_finding = ?
                     where id = ? and (gross_finding is null or btrim(gross_finding) = '')
                     """, grossAssembled, req.specimenId());
+            // v58 审阅补：按影响行数判——并发下后到的一方 where 重判为 0 行，若仍去写字段/修订，留痕就与真实列值不一致
+            if (written != 1) {
+                return R.fail(5222, "该标本的大体所见刚被另一次操作写入，本次未落任何内容，请刷新后再看");
+            }
             grossWritten = true;
         }
-
-        Long uid = currentUserService.idOf(auth);
-        if (uid == null) return R.fail(5224, "无法识别当前登录用户，不能登记取材");
 
         // v58（2530）：字段级存储 + 首写修订留痕，与上面的 gross_finding 写入同一事务（V164）。
         // gross 的每个非空字段按入参顺序（Jackson 反序列化的 Map 是 LinkedHashMap，顺序即前端顺序）
@@ -1731,10 +1737,13 @@ public class PathologyProcessController {
                 throw new IllegalArgumentException("大体描述字段最多 " + GROSS_FIELD_MAX
                         + " 项，收到 " + gross.size());
             }
+            var seen = new java.util.HashSet<String>();
             for (var e : gross.entrySet()) {
                 String label = trim(e.getKey());
                 String value = trim(e.getValue());
                 if (label == null) throw new IllegalArgumentException("大体描述的字段名不能为空");
+                // v58 审阅补：JSON 里 "大小" 与 " 大小 " 是两个键，trim 后同名会落两行字段、文本也拼成「大小：a；大小：b」
+                if (!seen.add(label)) throw new IllegalArgumentException("大体描述字段名重复（去掉首尾空白后同名）：" + label);
                 if (label.length() > GROSS_LABEL_MAX) {
                     throw new IllegalArgumentException("大体描述字段名超长（上限 "
                             + GROSS_LABEL_MAX + " 字）：" + label);

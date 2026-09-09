@@ -452,14 +452,12 @@ class V58TechProgressTest {
         assertEquals(stained, asLong(row.get("stained_count")), where + " stained_count");
     }
 
-    private static void assertRecent(Object ts, String what) {
+    /** 与 V58GrossFieldsTest 同口径：偏差在库端用 now() 算，不碰 JVM 时钟（审阅者指出与「禁 systemDefault()」擦边） */
+    private void assertRecent(Object ts, String what) {
         assertNotNull(ts, what + " 为空");
-        OffsetDateTime at = ts instanceof OffsetDateTime o ? o
-                : ts instanceof java.sql.Timestamp t ? t.toInstant().atOffset(java.time.ZoneOffset.UTC)
-                : fail(what + " 类型不是时间：" + ts.getClass());
-        Duration drift = Duration.between(at, OffsetDateTime.now()).abs();
-        assertTrue(drift.compareTo(Duration.ofMinutes(5)) <= 0,
-                what + " 应在本次测试时刻附近（库端 now()），实际偏差 " + drift);
+        Double gap = jdbc.queryForObject("select abs(extract(epoch from (now() - ?::timestamptz)))", Double.class, ts);
+        assertNotNull(gap);
+        assertTrue(gap <= 300, what + " 应在本次测试时刻附近（库端 now()），实际偏差秒数=" + gap);
     }
 
     private int setGate(String value) {

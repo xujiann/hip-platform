@@ -455,6 +455,45 @@ class V58GrossFieldsTest {
 
     // ==================== 夹具与取值 ====================
 
+    // v58 审阅补（审阅者探针实测：修复前 5224 路径 gross_finding 已写、字段/修订/蜡块/节点全无）：
+    // 当前用户解析不出、字段名 trim 后重复，两条被拒路径都不得留下任何写入。
+    @Test
+    void unknownUserAndDuplicateLabelWriteNothing() {
+        Fixture f = specimen("R");
+        var gross = new LinkedHashMap<String, String>();
+        gross.put("大小", "3×2×1cm");
+        Authentication ghost = new UsernamePasswordAuthenticationToken("ghost_" + tag, null,
+                List.of(new SimpleGrantedAuthority("ROLE_DOCTOR_OUTP")));   // sys_user 里没有这个人
+        var r = process.grossing(new GrossingReq(f.id(), null, gross, "切面灰白 " + tag, false, null,
+                List.of(new BlockReq("肿物中心"))), ghost);
+        assertEquals(5224, r.getCode(), r.getMessage());
+        assertNothingWritten(f.id(), "5224 路径");
+
+        var dup = new LinkedHashMap<String, String>();
+        dup.put("大小", "a");
+        dup.put(" 大小 ", "b");            // Jackson 里是两个键，trim 后同名
+        var d = process.grossing(new GrossingReq(f.id(), null, dup, null, false, null,
+                List.of(new BlockReq("肿物中心"))), doc);
+        assertEquals(5222, d.getCode(), d.getMessage());
+        assertTrue(d.getMessage().contains("重复"), d.getMessage());
+        assertNothingWritten(f.id(), "字段名重复路径");
+    }
+
+    private void assertNothingWritten(long sid, String why) {
+        assertNull(jdbc.queryForObject("select gross_finding from path_specimen where id = ?", String.class, sid), why);
+        assertEquals(0L, rowsOf("path_gross_field", sid), why);
+        assertEquals(0L, rowsOf("path_gross_revision", sid), why);
+        assertEquals(0L, rowsOf("path_block", sid), why);
+        Long nodes = jdbc.queryForObject(
+                "select count(*) from path_process where specimen_id = ? and node = 'GROSSING'", Long.class, sid);
+        assertEquals(0L, nodes, why);
+    }
+
+    private long rowsOf(String table, long sid) {
+        Long n = jdbc.queryForObject("select count(*) from " + table + " where specimen_id = ?", Long.class, sid);
+        return n == null ? 0L : n;
+    }
+
     private record Fixture(long id, String barcode, Long orderId) {}
 
     /** 一条已收费门诊病理医嘱 → 既有 collect 登记打码 → 既有 receive 核收（不取材） */
