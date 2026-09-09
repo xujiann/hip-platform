@@ -40,22 +40,39 @@ ALLOWED = {
  '属外部边界/配套产品': {'配套产品响应', '外部条件'},
  '非软件功能条款': {'部分响应', '正偏离/无偏离'},
 }
+# 审计与改写结果两处都读：SCR（会话 scratchpad，v3 重出时的 r1 与 wave1–8）与 docs/验收/（wave10 起持久化入库——
+# scratchpad 随会话消失，判定证据必须落仓）。wave 上限放宽到 20；同序号后加载的覆盖先加载的（docs 后于 SCR）。
+DOC = os.path.join('docs', '验收')
+def _load(path): return json.load(io.open(path, encoding='utf-8'))
 au = {}
-for x in json.load(io.open(os.path.join(SCR,'audit_r1.json'),encoding='utf-8'))['all']: au[x['no']] = x
-for w in range(1,9):
-    p = os.path.join(SCR,'audit_r2_wave%d.json'%w)
+for d in (SCR, DOC):
+    p = os.path.join(d, 'audit_r1.json')
     if os.path.exists(p):
-        for x in json.load(io.open(p,encoding='utf-8')): au[x['no']] = x
+        for x in _load(p)['all']: au[x['no']] = x
+for w in range(1, 21):
+    for d in (SCR, DOC):
+        p = os.path.join(d, 'audit_r2_wave%d.json' % w)
+        if os.path.exists(p):
+            for x in _load(p): au[x['no']] = x
 star = set()
 import csv
 for r in list(csv.reader(io.open('docs/验收/技术偏离表-v2.csv',encoding='utf-8-sig')))[1:]:
     if r and r[0].strip().isdigit() and len(r)>1 and r[1].strip(): star.add(int(r[0]))
 
-files = sorted(glob.glob(os.path.join(SCR,'rewrite_wave*.json')))
+def _wave_no(path):
+    m = re.search(r'rewrite_wave(\d+)\.json$', os.path.basename(path))
+    return int(m.group(1)) if m else -1
+files = sorted([f for f in set(glob.glob(os.path.join(SCR,'rewrite_wave*.json')))
+                | set(glob.glob(os.path.join(DOC,'rewrite_wave*.json'))) if _wave_no(f) >= 0], key=_wave_no)
 if not files: print('尚无改写结果'); sys.exit(0)
-tot = 0; fail = collections.Counter(); bad_rows = collections.defaultdict(list)
+# 同一序号以**最新 wave** 为准：wave9 那 180 行里的 2553 已被 wave10 上调覆盖，旧改写不再参与校验；
+# 排序按数字不按字符串（字符串序会把 wave10 排到 wave2 前面）；rewrite_wave_selftest.json 不是 wave，跳过。
+latest = {}
 for p in files:
-    for x in json.load(io.open(p,encoding='utf-8')):
+    for x in json.load(io.open(p,encoding='utf-8')): latest[x['no']] = x
+tot = 0; fail = collections.Counter(); bad_rows = collections.defaultdict(list)
+for x in latest.values():
+    if True:
         tot += 1; no = x['no']; v = au.get(no,{}).get('verdict'); nc = x['new_conclusion']; nn = x['new_note']
         if INTERNAL.search(nn): fail['A内部词'] += 1; bad_rows['A内部词'].append((no, INTERNAL.search(nn).group(0)))
         if COMMIT.search(nn): fail['B越权承诺'] += 1; bad_rows['B越权承诺'].append((no, COMMIT.search(nn).group(0)))
