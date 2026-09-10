@@ -81,8 +81,9 @@ def pathology_order(pid, name):
 
 def register(oid, part, desc):
     """登记 + 接收核对 → (specimenId, barcode)。
-    **同一申请的各部位须在任一部位 diagnose 之前全部登记完**：diagnose 会把 outp_order 置 EXECUTED，
-    而登记只认 CHARGED（5201）。"""
+    **同一申请的各部位须在任一部位正式签发（PUT /pathology/report/{id}/issue）之前全部登记完**：
+    v59 起签发才把 outp_order 置 EXECUTED（此前是 diagnose——医生站在报告尚未签发时就显示「已执行」），
+    而登记只认 CHARGED（5201）。本套各段都是先登记完全部部位再 diagnose，口径变更不影响步骤顺序。"""
     reg = ok(api('POST', '/pathology/registry/specimens',
                  {'orderId': oid, 'partNo': part, 'specimenType': 'ROUTINE', 'specimenDesc': desc,
                   'samplingSite': '左乳', 'clinicalDiagnosis': '待查', 'fixative': '福尔马林',

@@ -434,6 +434,8 @@ const ZH: Record<string, string> = {
   // v58 执行进度派生列（挂接切片 + stained_at 算出，不是库列），v59 补登记
   stained_count: '已染色挂接切片数',
   progress_name: '执行进度',
+  // v59 车道 C（2563 一致性）：挂接切片实际染色类型 / 项目的去重汇总（如「IHC CK7 ×2」），与后端 zh() 同名 case 逐字一致
+  attached_stain: '挂接切片染色',
   // 覆盖率段
   with_specimen_type: '已录标本类别',
   with_path_no: '已录病理号',

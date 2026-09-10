@@ -1309,6 +1309,11 @@ public class PathQcController {
                            (select count(*) from path_slide sl
                              where sl.tech_order_id = t.id
                                and sl.stained_at is not null)    as stained_count,
+                           (select string_agg(g.stain_type || coalesce(' ' || g.stain_item, '') || ' ×' || g.n::text, '、'
+                                              order by g.stain_type, g.stain_item)
+                              from (select sl.stain_type, sl.stain_item, count(*) as n
+                                      from path_slide sl where sl.tech_order_id = t.id
+                                     group by sl.stain_type, sl.stain_item) g) as attached_stain,
                            b.block_code,
                            s.id                                  as specimen_id,
                            s.path_no, s.barcode,
@@ -1331,6 +1336,9 @@ public class PathQcController {
     /**
      * v58：特检穿透行补执行进度 {@code progress} / {@code progress_name}——派生规则与
      * {@link PathologyReportController#techProgress} 是同一份（只读派生，不是库列），别在质控层再抄一遍五态。
+     * v59：穿透行的 {@code attached_stain}（挂接切片实际染色类型 / 项目的去重汇总，如「IHC CK7 ×2」）与
+     * PathologyReportController.techOrders 同一段子查询——只回事实、不判一致（一致性在挂接时按
+     * {@code PathologyProcessController.TECH_TO_STAIN} 判，5274）。
      */
     private static List<Map<String, Object>> withTechProgress(List<Map<String, Object>> rows) {
         for (var r : rows) {
@@ -1504,7 +1512,16 @@ public class PathQcController {
         return sb.toString();
     }
 
-    /** 列名中文化（CSV 表头用；未登记的列名原样输出，不猜也不隐藏） */
+    /**
+     * 列名中文化（CSV 表头用；未登记的列名原样输出，不猜也不隐藏）。
+     *
+     * <p>前端 {@code format.ts} 的 ZH 是页面表头的字典，v59 起由 V59QcLabelsTest 机械断言 ZH ⊇ 本方法的 case 键。
+     * <b>两侧刻意措辞不同的四个键</b>：specimen_type「类别编码」vs「标本类别」、source「来源(OUTP门诊/INP住院)」vs「来源」、
+     * slide_count「挂接切片数」vs「切片数」、progress「执行进度编码」vs「进度」——页面单元格经 {@code cellText} 翻译成中文
+     * （OUTP→门诊、IHC→免疫组化、progress 取同行 progress_name），CSV 导出的却是原始编码，故 CSV 表头保留「编码」提示是对的，
+     * 不向前端措辞看齐。本方法只登记<b>确实会出现在 rowsOf / detailRows 别名里</b>的键：coverage() 四段的 with_* 列不进 CSV，
+     * 不在这里登记（v59 核对：前端 ZH 独有的 63 键里，真正出现在汇总 / 明细行的只有 created_at，见下）。
+     */
     private static String zh(String col) {
         return switch (col) {
             // 通用
@@ -1522,6 +1539,8 @@ public class PathQcController {
             case "dept_name" -> "科室";
             case "sampling_site" -> "取材部位";
             case "urgent" -> "加急";
+            // v59：切片 / 蜡块穿透明细都带裸列 created_at（SLIDE_QUALITY / WORKLOAD_SLIDE / WORKLOAD_BLOCK），此前 CSV 表头漏登记
+            case "created_at" -> "创建时刻";
             case "collected_at" -> "登记时刻";
             case "received_at" -> "签收时刻";
             case "fixative" -> "固定液";
@@ -1680,6 +1699,8 @@ public class PathQcController {
             case "stained_count" -> "已染色挂接切片数";
             case "progress" -> "执行进度编码";
             case "progress_name" -> "执行进度";
+            // v59 挂接切片实际染色类型 / 项目的去重汇总（如「IHC CK7 ×2」）
+            case "attached_stain" -> "挂接切片染色";
             default -> col;
         };
     }

@@ -248,20 +248,26 @@
         <span class="muted" style="margin-left: 8px">1–20 张，片号从既有最大号 +1 续排</span>
       </el-form-item>
       <el-form-item label="染色类型">
-        <el-select v-model="slideForm.stainType" style="width: 180px">
+        <el-select v-model="slideForm.stainType" style="width: 180px" :disabled="!!pickedTechOrder">
           <el-option v-for="s in STAIN_TYPES" :key="s.value" :label="s.label" :value="s.value" />
         </el-select>
+        <span v-if="pickedTechOrder" class="muted" style="margin-left: 8px">
+          已按医嘱类型「{{ String(pickedTechOrder.tech_type_name ?? pickedTechOrder.tech_type) }}」锁定为 {{ stainName(slideForm.stainType) }}
+        </span>
       </el-form-item>
       <el-form-item label="染色项目">
         <el-input v-model="slideForm.stainItem" maxlength="64" show-word-limit
-                  placeholder="如 CK7、Ki-67、PAS" />
+                  :readonly="techOrderItemLocked"
+                  :placeholder="pickedTechOrder && !techOrderItemLocked ? '医嘱未指定项目，可填' : '如 CK7、Ki-67、PAS'" />
+        <span v-if="techOrderItemLocked" class="muted">项目随医嘱锁定为「{{ slideForm.stainItem }}」；要做别的项目请另下医嘱</span>
       </el-form-item>
       <el-form-item label="挂接特检医嘱">
         <el-select v-model="slideForm.techOrderId" clearable placeholder="不挂接（普通切片）" style="width: 100%"
                    @change="onTechOrderPick">
           <el-option v-for="t in techOrderOptions" :key="Number(t.id)" :value="Number(t.id)" :label="techOrderLabel(t)" />
         </el-select>
-        <span class="muted">只列本标本「待执行」的特检医嘱；挂接不会把医嘱置为已完成，完成仍在特检工位由技师确认</span>
+        <span class="muted">只列本标本「待执行」的特检医嘱；挂接不会把医嘱置为已完成，完成仍在特检工位由技师确认。
+          挂接后染色类型 / 项目须与医嘱一致（免疫组化→IHC、特殊染色→SPECIAL、分子→MOLECULAR、深切 / 重切 / 补取材→HE），不一致后端 5274 拒绝且一张片不插</span>
       </el-form-item>
       <el-form-item label="备注">
         <el-input v-model="slideForm.remark" maxlength="255" show-word-limit />
@@ -290,6 +296,9 @@
       <el-form-item label="染色项目">
         <el-input v-model="stainForm.stainItem" maxlength="64" show-word-limit
                   placeholder="留空则保留切片时登记的项目，不会清空" />
+        <span v-if="currentSlide.tech_order_id" class="muted">
+          本片挂接了特检医嘱 #{{ String(currentSlide.tech_order_id) }}：医嘱有项目时不得改成别的（后端 5274），留空即保留
+        </span>
       </el-form-item>
       <el-form-item label="备注">
         <el-input v-model="stainForm.remark" maxlength="255" show-word-limit />
@@ -313,8 +322,12 @@
  * 包埋返回体的 {@code warnings}（未分篮直接包埋）、切片返回体的 {@code warnings}（蜡块无包埋记录）、
  * 分篮返回体的 {@code moved}（有蜡块从别的批次改判过来）。
  * 切片质量为空一律显示「未评」，<b>绝不显示成优或空白</b>。
+ *
+ * <p>v59（2563 一致性）：切片登记选了特检医嘱后，染色类型按 {@code TECH_TO_STAIN} 锁定为映射值、项目按医嘱预填并只读
+ * （医嘱无项目——深切 / 重切 / 补取材——才可填）。修复前 onTechOrderPick 只做预填，下拉仍可改回 HE，
+ * 一条「免疫组化 CK7」医嘱能挂上 2 张 HE 片推到「已染色待确认」。后端同口径 5274 兜底，前端锁定只是省一次被打回。
  */
-import { reactive, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../../api/client'
 import { SLIDE_QUALITIES, STAIN_TYPES, fmt, fmtTime, num, stainName, type Row } from './format'
@@ -463,21 +476,46 @@ function techOrderLabel(t: Row): string {
   return `#${String(t.id)} ${String(t.tech_type_name ?? t.tech_type)}${item}${block}`
 }
 
-/** 特检类型 → 染色类型（PathologyProcessController.STAIN_TYPES 四档）；深切 / 重切 / 补取材没有对应染色类型，不动 */
-const TECH_TO_STAIN: Record<string, string> = { IHC: 'IHC', SPECIAL_STAIN: 'SPECIAL', MOLECULAR: 'MOLECULAR' }
+/**
+ * 特检类型 → 挂接切片必须登记的染色类型，逐字照抄后端 {@code PathologyProcessController.TECH_TO_STAIN}
+ * （挂接时后端按同一张表判 5274）：免疫组化 / 特殊染色 / 分子病理各对应自己的染色类型；深切 / 重切 / 补取材是 HE 片的再制。
+ */
+const TECH_TO_STAIN: Record<string, string> = {
+  IHC: 'IHC', SPECIAL_STAIN: 'SPECIAL', MOLECULAR: 'MOLECULAR', DEEP_CUT: 'HE', RECUT: 'HE', RESAMPLE: 'HE',
+}
 
-/** 选中医嘱时预填染色类型与项目——项目只填空白项，不覆盖技师已手填的内容 */
+/** 当前选中的待执行医嘱（清空即普通切片） */
+const pickedTechOrder = computed<Row | null>(() => {
+  const id = slideForm.techOrderId
+  if (!id) return null
+  return techOrderOptions.value.find((t) => Number(t.id) === Number(id)) ?? null
+})
+
+/** 医嘱有项目 → 项目输入只读（随医嘱）；医嘱无项目（深切 / 重切 / 补取材）→ 可填 */
+const techOrderItemLocked = computed<boolean>(() => !!pickedTechOrder.value?.tech_item)
+
+/**
+ * 选中医嘱：染色类型锁定为映射值、项目按医嘱覆盖（v59 起不再只填空白项——项目随医嘱，技师手填的会被后端 5274 打回）。
+ * 清空医嘱：解锁，保留当前值让技师自己改。
+ */
 function onTechOrderPick(id: unknown) {
   const hit = techOrderOptions.value.find((t) => Number(t.id) === Number(id))
   if (!hit) return
   const st = TECH_TO_STAIN[String(hit.tech_type)]
   if (st) slideForm.stainType = st
-  if (!slideForm.stainItem && hit.tech_item) slideForm.stainItem = String(hit.tech_item)
+  if (hit.tech_item) slideForm.stainItem = String(hit.tech_item)
 }
 
 async function submitSlide() {
   saving.value = true
   try {
+    // 挂接医嘱时以医嘱为准再钉一次（只读输入挡不住脚本改值；后端 5274 是最终守卫）
+    const picked = pickedTechOrder.value
+    if (picked) {
+      const st = TECH_TO_STAIN[String(picked.tech_type)]
+      if (st) slideForm.stainType = st
+      if (picked.tech_item) slideForm.stainItem = String(picked.tech_item)
+    }
     const d = (await client.post('/pathology/process/slides', {
       blockId: Number(currentBlock.value.id),
       count: slideForm.count,

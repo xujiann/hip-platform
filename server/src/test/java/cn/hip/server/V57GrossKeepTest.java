@@ -5,6 +5,7 @@ import cn.hip.medtech.web.PathologyController.DiagnoseReq;
 import cn.hip.medtech.web.PathologyProcessController;
 import cn.hip.medtech.web.PathologyProcessController.BlockReq;
 import cn.hip.medtech.web.PathologyProcessController.GrossingReq;
+import cn.hip.medtech.web.PathologyReportController;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -64,6 +65,7 @@ class V57GrossKeepTest {
 
     @Autowired PathologyController pathology;
     @Autowired PathologyProcessController process;
+    @Autowired PathologyReportController report;   // v59：EXECUTED 断言随口径改到签发之后
     @Autowired JdbcTemplate jdbc;
 
     private String tag;
@@ -123,9 +125,17 @@ class V57GrossKeepTest {
         assertEquals(Boolean.TRUE, r.getData().get("grossKept"), "入参空白且原值非空 → 被保留");
         assertEquals(Boolean.FALSE, r.getData().get("microKept"), "原值为空的列没有「被保留」可言");
 
-        // 其余逐字节不动：医嘱联动、状态守卫、4552
+        // v59（2576-③）口径变更：写完诊断门诊申请仍 CHARGED（修复前 diagnose 同一事务置 EXECUTED，医生站在报告
+        // 尚未初签 / 复签 / 签发时就显示「已执行」）；正式签发后才 EXECUTED。状态守卫、4552 不动
+        assertEquals("CHARGED", jdbc.queryForObject(
+                "select status from outp_order where id = ?", String.class, f.orderId()),
+                "diagnose 不再把 outp_order 置 EXECUTED——「报告出了」= 正式签发");
+        var issued = report.issue(f.id(), doc);
+        assertEquals(0, issued.getCode(), issued.getMessage());
+        assertEquals(Boolean.TRUE, issued.getData().get("orderExecuted"), "签发返回体应回带本次置了 EXECUTED 的事实");
         assertEquals("EXECUTED", jdbc.queryForObject(
-                "select status from outp_order where id = ?", String.class, f.orderId()));
+                "select status from outp_order where id = ?", String.class, f.orderId()),
+                "正式签发后门诊申请才是 EXECUTED");
         assertEquals(4553, pathology.diagnose(f.barcode(), new DiagnoseReq(null, null, "再来一次"), doc).getCode(),
                 "已诊断的标本再诊断仍是 4553（状态守卫未动）");
         assertEquals(4552, pathology.diagnose(f.barcode(), new DiagnoseReq("x", "y", "   "), doc).getCode(),

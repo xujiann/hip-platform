@@ -257,9 +257,11 @@ class V58TechProgressTest {
             for (boolean stained : List.of(false, true)) {
                 String label = "gate=" + gate + (stained ? "/染完" : "/0片");
                 assertEquals(1, setGate(gate), label + "：sys_config 里必须有这一行可改");
-                long id = techOrder(a, blockA, "IHC", "T-" + gate + (stained ? "-S" : "-0"), null);
+                String item = "T-" + gate + (stained ? "-S" : "-0");
+                long id = techOrder(a, blockA, "IHC", item, null);
                 if (stained) {
-                    long slide = idOf(rows(ok(process.slides(new SlideReq(blockA, 1, "IHC", "T", null, id), doc1)), "slides").get(0));
+                    // v59（2563 一致性）：挂接切片的项目须与医嘱相同（此前传 "T" 也能挂上——正是 5274 要堵的路径）
+                    long slide = idOf(rows(ok(process.slides(new SlideReq(blockA, 1, "IHC", item, null, id), doc1)), "slides").get(0));
                     ok(process.stain(slide, new StainReq("GOOD", null, null), doc1));
                 }
                 var r = report.doneTechOrder(id, doc1);
@@ -313,7 +315,7 @@ class V58TechProgressTest {
         // 5273 的第二条路径：有挂接切片但未全部染色
         assertEquals(1, setGate("block"));
         long partial = techOrder(a, blockA, "IHC", "T-partial", null);
-        var slides = rows(ok(process.slides(new SlideReq(blockA, 2, "IHC", "T", null, partial), doc1)), "slides");
+        var slides = rows(ok(process.slides(new SlideReq(blockA, 2, "IHC", "T-partial", null, partial), doc1)), "slides");
         ok(process.stain(idOf(slides.get(0)), new StainReq("GOOD", null, null), doc1));
         var partialR = report.doneTechOrder(partial, doc1);
         assertEquals(5273, partialR.getCode(), partialR.getMessage());

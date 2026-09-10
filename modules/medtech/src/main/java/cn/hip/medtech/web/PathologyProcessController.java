@@ -150,6 +150,18 @@ public class PathologyProcessController {
     /** 染色类型白名单（与 chk_path_slide_stain 一致） */
     public static final List<String> STAIN_TYPES = List.of("HE", "IHC", "SPECIAL", "MOLECULAR");
 
+    /**
+     * v59（2563 一致性）：特检技术类型（chk_path_tech_type 六档）→ 挂接到该医嘱的切片<b>必须</b>登记的染色类型
+     * （{@link #STAIN_TYPES} 四档）。免疫组化 / 特殊染色 / 分子病理各对应自己的染色类型；深切 / 重切 / 补取材
+     * 是 HE 片的再制，落 HE。{@link #slides} 挂接时按它判 5274——修复前只校验医嘱存在 / 同标本 / 同蜡块 / ORDERED，
+     * 一条「免疫组化 CK7」医嘱可由 2 张 HE 片推到「已染色待确认」再「已完成」且 warnings 为空。
+     * PathologyReportController / PathQcController 的 {@code attached_stain} 汇总列只回挂接切片的实际染色、不判，
+     * 与本表同源（那边不再抄一份）。
+     */
+    public static final Map<String, String> TECH_TO_STAIN = Map.of(
+            "IHC", "IHC", "SPECIAL_STAIN", "SPECIAL", "MOLECULAR", "MOLECULAR",
+            "DEEP_CUT", "HE", "RECUT", "HE", "RESAMPLE", "HE");
+
     /** 切片质量白名单（与 chk_path_slide_quality 一致）：染色切片优良率的唯一数据源 */
     public static final List<String> SLIDE_QUALITIES = List.of("GOOD", "FAIR", "POOR");
 
@@ -885,6 +897,12 @@ public class PathologyProcessController {
      * {@code tech_order_id} 都等于它，SECTION 节点备注带「特检医嘱#id 类型」。
      * <b>挂接不自动把医嘱置 DONE</b>：切了片不等于做完了（染色、质控都在后面），完成仍走 /done 由技师确认。
      *
+     * <p><b>v59（2563 一致性）挂接切片须与医嘱一致，否则 5274</b>：{@code stainType} 必须等于 {@link #TECH_TO_STAIN}
+     * 给该医嘱类型的映射值；医嘱 {@code tech_item} 非空时 {@code stainItem}（trim 后）必须与之相同（医嘱无项目——深切 / 重切 /
+     * 补取材——则不限项目）。修复前执行进度只按 {@code tech_order_id + stained_at} 计数，挂接不校验染色类型与项目，
+     * 一条「免疫组化 CK7」医嘱可由 2 张 HE 片或 2 张 CK20 片推到「已染色待确认」再「已完成」且 warnings 为空。
+     * 两条路径都在 5272 四条之后、插入之前判——被拒时一张片不插、不留 SECTION 节点。
+     *
      * <p>{@code slide_no} 是<b>蜡块内序号</b>，从既有最大号 +1 续排（深切、重切追加的片接着排）；
      * {@code slide_code} =「蜡块编码-片号」=「病理号-块号-片号」。{@code stain_type} 默认 HE——
      * 绝大多数切片就是 HE，这个默认值省掉的是最高频的一次输入。
@@ -956,6 +974,19 @@ public class PathologyProcessController {
                 return R.fail(5272, "特检技术医嘱 #" + req.techOrderId() + " 不是待执行状态（当前 "
                         + techOrder.get("status") + "），不能再挂接切片");
             }
+            // v59（2563 一致性）：染色类型 / 项目必须与医嘱一致，两条路径同返 5274，都在插入之前——
+            // 修复前 HE 片、CK20 片都能挂到「免疫组化 CK7」医嘱并把进度推到 STAINED / DONE 而无任何告警
+            String techType = String.valueOf(techOrder.get("tech_type"));
+            String expectStain = TECH_TO_STAIN.get(techType);
+            if (expectStain != null && !expectStain.equals(stainType)) {
+                return R.fail(5274, "切片染色类型与特检医嘱不一致：医嘱 #" + req.techOrderId() + " 是 " + techType
+                        + "，挂接的切片须登记为 " + expectStain + "，收到 " + stainType);
+            }
+            String orderItem = trim((String) techOrder.get("tech_item"));
+            if (orderItem != null && !orderItem.equals(stainItem)) {
+                return R.fail(5274, "切片染色项目与特检医嘱不一致：医嘱 #" + req.techOrderId() + " 项目为「" + orderItem
+                        + "」，收到「" + (stainItem == null ? "" : stainItem) + "」");
+            }
         }
 
         var created = jdbc.queryForList("""
@@ -1006,6 +1037,10 @@ public class PathologyProcessController {
      *
      * <p>{@code stain_item} 用 {@code coalesce(?, stain_item)}：不传就保留切片时登记的项目，
      * <b>不清空</b>。update 带 {@code and stained_at is null} 作乐观并发闸，重复登记返 5245。
+     *
+     * <p><b>v59（2563 一致性）</b>：切片若挂接了特检医嘱且医嘱有项目，入参 {@code stainItem} 非空时必须与之相同，
+     * 否则 5274——修复前 {@code coalesce(?, stain_item)} 允许把「CK7」医嘱名下的片子改登记成任何项目，
+     * 进度照样计入。空照旧（保留原值，不判）；判在 update 之前，被拒不写。
      */
     @PutMapping("/slides/{id}/stain")
     @Transactional
@@ -1027,6 +1062,20 @@ public class PathologyProcessController {
 
         Long uid = currentUserService.idOf(auth);
         if (uid == null) return R.fail(5248, "无法识别当前登录用户，不能登记染色");
+
+        // v59（2563 一致性）：已挂接「有项目」的医嘱时，项目不得改成别的——只在入参非空时判，且在 update 之前
+        if (stainItem != null) {
+            var bound = one("""
+                    select t.id as tech_order_id, t.tech_item
+                    from path_slide sl join path_tech_order t on t.id = sl.tech_order_id
+                    where sl.id = ?
+                    """, id);
+            String orderItem = bound == null ? null : trim((String) bound.get("tech_item"));
+            if (orderItem != null && !orderItem.equals(stainItem)) {
+                return R.fail(5274, "染色项目与特检医嘱不一致：切片 " + id + " 挂接的医嘱 #" + bound.get("tech_order_id")
+                        + " 项目为「" + orderItem + "」，不能登记为「" + stainItem + "」（留空即保留原值）");
+            }
+        }
 
         var updated = jdbc.queryForList("""
                 update path_slide
@@ -1078,6 +1127,8 @@ public class PathologyProcessController {
      *
      * <p><b>全批校验通过才写，否则整批拒绝</b>（切片不存在 5244 / 已染色 5245，均连同问题条目返回）：
      * 批量核销最怕「点了 30 张、实际进了 27 张」，剩下 3 张永远漏在流程外。
+     * v59（2563 一致性）再加一条：入参 {@code stainItem} 非空而批内任一张挂接了「有项目」的特检医嘱且项目不同 → 5274，
+     * 同样连同问题条目返回、<b>整批不写</b>（含批内的普通切片）；空照旧保留各自原值。
      *
      * <p>一次 update 写全部；STAIN 节点按标本去重各记一条，节点时间取本批
      * {@code max(stained_at)}——同一事务内 {@code now()} 恒定，该值就是本批的染色时刻。
@@ -1108,8 +1159,9 @@ public class PathologyProcessController {
 
         String in = placeholders(ids.size());
         var rows = jdbc.queryForList("""
-                select sl.id, sl.slide_code, sl.stained_at, b.specimen_id
+                select sl.id, sl.slide_code, sl.stained_at, b.specimen_id, sl.tech_order_id, t.tech_item as order_item
                 from path_slide sl join path_block b on b.id = sl.block_id
+                left join path_tech_order t on t.id = sl.tech_order_id
                 where sl.id in (%s)
                 """.formatted(in), ids.toArray());
 
@@ -1123,6 +1175,20 @@ public class PathologyProcessController {
         if (!missing.isEmpty()) return R.fail(5244, "切片不存在：" + missing);
         if (!already.isEmpty()) {
             return R.fail(5245, "以下切片已完成染色，整批不予核销（请剔除后重试）：" + already);
+        }
+        // v59（2563 一致性）：入参项目非空时，批内任一张挂接了「有项目」的医嘱且项目不同 → 5274 整批不写（update 之前）
+        if (stainItem != null) {
+            var mismatched = new ArrayList<String>();
+            for (var r : rows) {
+                String orderItem = trim((String) r.get("order_item"));
+                if (orderItem != null && !orderItem.equals(stainItem)) {
+                    mismatched.add(r.get("slide_code") + "（医嘱#" + r.get("tech_order_id") + " " + orderItem + "）");
+                }
+            }
+            if (!mismatched.isEmpty()) {
+                return R.fail(5274, "染色项目「" + stainItem + "」与以下切片挂接的特检医嘱不一致，整批不予核销（留空即各自保留原值）："
+                        + mismatched);
+            }
         }
 
         var updArgs = new ArrayList<Object>();

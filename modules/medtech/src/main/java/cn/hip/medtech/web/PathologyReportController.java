@@ -88,7 +88,18 @@ import java.util.Set;
  *       warn 照常 DONE 但 {@code warnings} 回带并写进 TECH_DONE 节点 / off 不判、warnings 为空数组。坏配置回落 warn。</li>
  * </ul>
  *
- * <p><b>错误码 5260–5273</b>（v48 诊断与报告段 5260–5279；5271–5272 v57、5273 v58 已用，5274–5279 空置）：
+ * <p><b>v59（2576-③ 签发口径 + 2563 一致性）</b>：
+ * <ul>
+ *   <li>「报告出了」= <b>正式签发</b>：{@link #issue} 签发成功后同一事务把门诊来源的 {@code outp_order} 置 EXECUTED
+ *       （与 RIS 到 verifyReport 才置同口径）。此前这一步在既有 diagnose 端点——医生站在报告尚未初签 / 复签 / 签发时
+ *       就显示「已执行」，而「报告签发量」锚在 {@code report_issued_at}，同一平台对「报告出了几份」两套答案。
+ *       diagnose 端点不再碰 {@code outp_order}；住院来源的 {@code inp_order} 此前 diagnose 也从未动过，维持不动。</li>
+ *   <li>两个清单分支再增 {@code attached_stain}（挂接切片的 stain_type / stain_item 去重汇总，如「IHC CK7 ×2」）——
+ *       挂接时的类型 / 项目一致性由 {@link PathologyProcessController#slides} 按 {@code TECH_TO_STAIN} 判（5274），
+ *       这里只回事实、不判。{@code stained_count} 语义不变。</li>
+ * </ul>
+ *
+ * <p><b>错误码 5260–5274</b>（v48 诊断与报告段 5260–5279；5271–5272 v57、5273 v58、5274 v59 已用，5275–5279 空置）：
  * <ul>
  *   <li>5260 标本不存在（全部端点的「查无此标本」同码）</li>
  *   <li>5261 标本状态不允许该操作（已拒收 / 已签发 / 重复签名 / 并发抢写——归并同码，消息区分）</li>
@@ -107,6 +118,8 @@ import java.util.Set;
  *       医嘱不存在 / 不属于该蜡块所在标本 / 不是 ORDERED 三条路径同码）</li>
  *   <li>5273 特检技术医嘱无已染色挂接切片不得确认完成（v58，<b>只有 gate=block 才返</b>：挂接切片数为 0、
  *       或有挂接切片尚未染色，两条路径同码；warn 档改走 warnings、off 档不判）</li>
+ *   <li>5274 切片染色类型或项目与特检医嘱不一致（v59，<b>由 {@link PathologyProcessController} 返回</b>：挂接时 stain_type
+ *       与 tech_type 映射不符 / 医嘱有项目而 stain_item 不同 / 染色登记（单张、批量）把已挂接切片的项目改成别的，三条路径同码）</li>
  * </ul>
  */
 @RestController
@@ -425,13 +438,23 @@ public class PathologyReportController {
     /**
      * 正式签发：写 {@code report_issued_at} 与 ISSUE 流转节点。
      *
-     * <p><b>只写 report_issued_at</b>——{@code diagnosed_at}（写完诊断的时刻）、
+     * <p><b>path_specimen 上只写 report_issued_at</b>——{@code diagnosed_at}（写完诊断的时刻）、
      * {@code status}、gross/micro/diagnosis 三列全部一字不动。
      *
      * <p>双签校验按 {@code emr.gate.pathology.doublesign} 三态：
      * off 整段跳过（返回体 warnings 为空数组）；warn <b>放行并回带 warnings</b>；block 返 5265。
      * 三档都会把「本次是否完整双签」写进 ISSUE 节点的 remark——
      * warn 档放行不等于没发生过，事后追责得能查到当时是谁在缺签的情况下发的报告。
+     *
+     * <p><b>v59（2576-③）：签发成功后同一事务把门诊申请置 EXECUTED</b>——
+     * {@code update outp_order set status='EXECUTED' where id=(该标本 order_id) and status='CHARGED'}，
+     * 与 RIS 检查到 verifyReport 才置 EXECUTED（MedTechController）同形同口径。此前这条 update 在既有 diagnose
+     * 端点里：开单医生在报告尚未初签 / 复签 / 签发时就看到病理「已执行」，而质控的「报告签发量」锚在
+     * {@code report_issued_at}。被 5265（gate=block 缺双签）、5260 / 5261 / 5262 拦下的签发走不到这里，不置。
+     * <b>住院来源的 {@code inp_order} 维持不动</b>：diagnose 此前也从未动过它（只按 {@code order_id} 更新门诊表），
+     * 本版不新开住院侧联动——那是住院医嘱执行状态机的事，不在签发端点里顺手改。
+     * 返回体只加一个键 {@code orderExecuted}（本次是否真的把一条 CHARGED 门诊申请置成了 EXECUTED；住院来源、
+     * 或门诊申请已不是 CHARGED 时为 false），既有键不动。
      */
     @PutMapping("/{specimenId}/issue")
     @PreAuthorize(SIGNER_ROLES)
@@ -478,6 +501,12 @@ public class PathologyReportController {
         logProcess(specimenId, "ISSUE", uid,
                 missing.isEmpty() ? "双签完整" : "缺" + String.join("、", missing) + "（gate=" + gate + " 放行）");
 
+        // v59（2576-③）：「报告出了」= 正式签发——门诊申请在此置 EXECUTED（此前在 diagnose）；inp_order 不碰
+        int executed = jdbc.update("""
+                update outp_order set status = 'EXECUTED'
+                where id = (select order_id from path_specimen where id = ?) and status = 'CHARGED'
+                """, specimenId);
+
         var body = new LinkedHashMap<String, Object>();
         body.put("specimenId", specimenId);
         body.put("reportIssuedAt", updated.get(0).get("report_issued_at"));
@@ -485,6 +514,7 @@ public class PathologyReportController {
         body.put("doubleSignGate", gate);
         body.put("doubleSignComplete", missing.isEmpty());
         body.put("warnings", warnings);
+        body.put("orderExecuted", executed == 1);
         return R.ok(body);
     }
 
@@ -870,6 +900,11 @@ public class PathologyReportController {
      * {@code progress} / {@code progress_name}（{@link #techProgress} 五态，只读派生、不是库列）。
      * 另加可选 {@code slideId}：只要「这张切片挂在哪条医嘱上」（0 或 1 行）——切片检索行不带 tech_order_id，
      * 染色登记后前端据此提示医嘱进度。仍是只增不改。
+     *
+     * <p><b>v59（2563 一致性）</b>：两个分支再增 {@code attached_stain}——挂接切片按 (stain_type, stain_item) 去重计数后
+     * 汇总成一段文本，如「IHC CK7 ×2」，多组以「、」相连，无挂接切片为 NULL。修复前三处清单 / 穿透都不回挂接切片的实际
+     * 染色类型 / 项目，挂错的片子（v59 之前挂上去的 HE 片）在清单上看不出来。这里只回事实、不判一致（判在挂接时，5274）；
+     * 与 PathQcController 的 WORKLOAD_TECH 穿透同一段子查询。{@code stained_count} 语义不变。
      */
     @GetMapping("/tech-orders")
     public R<Map<String, Object>> techOrders(@RequestParam(required = false) Long specimenId,
@@ -924,6 +959,11 @@ public class PathologyReportController {
                        (select count(*) from path_slide sl where sl.tech_order_id = t.id) as slide_count,
                        (select count(*) from path_slide sl
                          where sl.tech_order_id = t.id and sl.stained_at is not null)     as stained_count,
+                       (select string_agg(g.stain_type || coalesce(' ' || g.stain_item, '') || ' ×' || g.n::text, '、'
+                                          order by g.stain_type, g.stain_item)
+                          from (select sl.stain_type, sl.stain_item, count(*) as n
+                                  from path_slide sl where sl.tech_order_id = t.id
+                                 group by sl.stain_type, sl.stain_item) g)              as attached_stain,
                        s.barcode, s.path_no, s.part_no, s.specimen_type, s.urgent,
                        p.id as patient_id, p.patient_no, p.name as patient_name,
                        round((extract(epoch from (now() - t.ordered_at)) / 3600)::numeric, 1)
@@ -1004,7 +1044,8 @@ public class PathologyReportController {
                 + "本端点不判超时。cancelled_at/cancelled_by_name/cancel_reason 为 NULL 且 status=CANCELLED 的是"
                 + "V163 之前的历史取消（零回填）；slide_count 是挂接到该医嘱的切片数，stained_count 是其中已染色的数；"
                 + "progress 由二者与 status 派生（PENDING_SECTION 待切片 / SECTIONING 切片中 / STAINED 已染色待确认 / "
-                + "DONE / CANCELLED），不是库列；slideId 只要该切片挂接的那条医嘱。");
+                + "DONE / CANCELLED），不是库列；slideId 只要该切片挂接的那条医嘱；"
+                + "attached_stain 是挂接切片按染色类型/项目去重计数的汇总（如「IHC CK7 ×2」），无挂接为 null。");
         return R.ok(body);
     }
 

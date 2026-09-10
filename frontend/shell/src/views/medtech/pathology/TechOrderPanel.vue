@@ -1,7 +1,7 @@
 <template>
   <!-- ============ 工位五：特检技术医嘱全院工作台（技师侧：按状态 / 类型 / 时间集中处理） ============ -->
   <el-alert type="info" show-icon :closable="false" class="cav"
-            title="全院视角：不分标本列出深切 / 重切 / 补取材 / 免疫组化 / 特殊染色 / 分子病理的技术医嘱。默认只看「待执行」——这是技师今天要做的活；历史请显式切到「全部状态」。距开单小时数是原始事实，本页不判超时。取消须填写取消原因（取消人 / 取消时刻 / 取消原因留痕，与下达原因分列）。「进度」由挂接切片派生（待切片 / 切片中 / 已染色待确认），不是手工标记；点「完成」时若无已染色挂接切片，按 gate emr.gate.pathology.techdone 提示（warn）或拦截（block，5273）。" />
+            title="全院视角：不分标本列出深切 / 重切 / 补取材 / 免疫组化 / 特殊染色 / 分子病理的技术医嘱。默认只看「待执行」——这是技师今天要做的活；历史请显式切到「全部状态」。距开单小时数是原始事实，本页不判超时。取消须填写取消原因（取消人 / 取消时刻 / 取消原因留痕，与下达原因分列）。「进度」由挂接切片派生（待切片 / 切片中 / 已染色待确认），不是手工标记；点「完成」时若无已染色挂接切片，按 gate emr.gate.pathology.techdone 提示（warn）或拦截（block，5273）。「挂接切片染色」是挂接切片的实际染色类型 / 项目汇总——挂接时后端已按医嘱类型 / 项目校验（5274），这一列用于核对 v59 之前挂上去的片子。" />
 
   <el-form inline size="small">
     <el-form-item label="状态">
@@ -110,6 +110,12 @@
     <el-table-column label="挂接切片" width="90">
       <template #default="{ row }">{{ fmt(row.slide_count) }}</template>
     </el-table-column>
+    <el-table-column label="挂接切片染色" min-width="150" show-overflow-tooltip>
+      <template #default="{ row }">
+        <!-- v59：挂接切片的实际染色类型 / 项目（后端去重汇总，如「IHC CK7 ×2」）；无挂接为「—」 -->
+        {{ fmt(row.attached_stain) }}
+      </template>
+    </el-table-column>
     <el-table-column label="操作" width="190" fixed="right">
       <template #default="{ row }">
         <el-button link type="primary" size="small" :disabled="row.status !== 'ORDERED'"
@@ -139,6 +145,9 @@
  * <p>v58（2563 三次核账）：清单多了「进度」列——后端按挂接切片派生的五态（progress / progress_name）与
  * 已染色 / 挂接计数，不是手工标记；「完成」的返回体带 slideCount / stainedCount / warnings，
  * warn 档放行时逐条 ElMessage.warning 提示，block 档 5273 由 client 统一报错。
+ *
+ * <p>v59（2563 一致性）：清单多了「挂接切片染色」列（后端 attached_stain：挂接切片按染色类型 / 项目去重计数的汇总，
+ * 如「IHC CK7 ×2」）——修复前三处清单 / 穿透都不回挂接切片的实际染色，挂错的片子在清单上看不出来。
  *
  * <p>「打开报告」把标本 id 交给工作台切到诊断工位并直接打开抽屉：技师做完免疫组化后，
  * 病理医师要出补充报告的入口就在那里。

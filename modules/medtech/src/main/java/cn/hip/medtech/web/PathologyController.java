@@ -13,7 +13,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/** 二十四期：病理——复用 LIS 标本流转模式（取材→核收→诊断报告），报告发布联动医嘱执行 */
+/**
+ * 二十四期：病理——复用 LIS 标本流转模式（取材→核收→诊断报告）。
+ *
+ * <p><b>v59（2576-③）：医嘱执行联动改在正式签发</b>——「报告出了」= {@code report_issued_at} 落值
+ * （{@link PathologyReportController#issue}），不再是本类 diagnose 写完诊断的那一刻。
+ */
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/api/pathology")
@@ -85,7 +90,15 @@ public class PathologyController {
     public record DiagnoseReq(String grossFinding, String microFinding, String diagnosis) {}
 
     /**
-     * 病理诊断报告：发布后联动医嘱执行。
+     * 病理诊断报告（写完诊断，status → DIAGNOSED）。
+     *
+     * <p><b>v59（2576-③）：本端点不再把 {@code outp_order} 置 EXECUTED——「报告出了」= 正式签发</b>。
+     * 此前同一事务 {@code update outp_order set status='EXECUTED'}，医生站把 EXECUTED 显示为「已执行」，
+     * 开单医生看到病理「已执行」时报告尚未初签 / 复签 / 签发；而质控的「报告签发量」锚在 {@code report_issued_at}，
+     * 同类 RIS 检查也要到 verifyReport 才置 EXECUTED——同一平台对「报告出了几份」两套答案。
+     * 现在这条 update 挪到 {@link PathologyReportController#issue}（签发成功后同一事务、仍只认 CHARGED）；
+     * 本端点写完诊断后门诊申请<b>仍是 CHARGED</b>。住院来源的 {@code inp_order} 本端点从来没动过，签发端点也不动。
+     * 4552 / 4553 与状态守卫不变。
      *
      * <p><b>v48 加了 {@code rejected_at is null}</b>——理由同 {@link #receive(String)}：
      * 已拒收的标本不得出报告。4553 值域未变，只是多了一种触发情形。
@@ -102,7 +115,7 @@ public class PathologyController {
      * <p><b>返回体从 {@code R<Void>} 改为三个事实</b>：{@code specimenId}、{@code grossKept}、
      * {@code microKept}（Kept=true 表示本次入参空白且原值非空而被保留）。全仓调用方
      * （DiagnosisPanel.vue、tools/e2e-*.py）此前只看 {@code code}，无人依赖 {@code data} 为空。
-     * 4552、状态守卫（RECEIVED 且未拒收）、{@code outp_order} 置 EXECUTED 一律不动。
+     * 4552、状态守卫（RECEIVED 且未拒收）一律不动（{@code outp_order} 置 EXECUTED 这一步 v59 起挪到签发，见上）。
      *
      * <p><b>v58（2530）：覆盖大体所见必须留痕</b>。v57 之前该列被覆盖时原文没有任何地方留着——
      * 「与首次报告共用、可被整体覆盖且无任何历史留存的单列」。现在入参非空且与原值不同（trim 后比较）时，
@@ -133,10 +146,7 @@ public class PathologyController {
                 """, gross, micro, req.diagnosis(),
                 uid, barcode);
         if (n == 0) return R.fail(4553, "标本不存在、未核收或已拒收");
-        jdbc.update("""
-                update outp_order set status = 'EXECUTED'
-                where id = (select order_id from path_specimen where barcode = ?) and status = 'CHARGED'
-                """, barcode);
+        // v59：此处原有的 update outp_order set status='EXECUTED' 已挪到 PathologyReportController.issue——写完诊断不等于报告出了
         // 事实回读：入参空白时列值就是原值，故「入参空白 且 结果非空」即「原值非空而被保留」
         var row = jdbc.queryForMap("""
                 select id,
