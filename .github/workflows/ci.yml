@@ -130,7 +130,7 @@ jobs:
           for i in $(seq 1 15); do curl -sf http://localhost:8100/docs > /dev/null && break; sleep 1; done
           curl -sf http://localhost:8100/docs > /dev/null || { echo "ai-service 未就绪："; cat ../ai.log || cat ai.log; exit 1; }
 
-      - name: 运行全部 E2E 套件（43 套 + 演示驱动脚本）
+      - name: 运行全部 E2E 套件（44 套 + 演示驱动脚本）
         run: |
           python3 tools/e2e-outpatient.py
           python3 tools/e2e-inpatient.py
@@ -178,6 +178,7 @@ jobs:
           python3 tools/e2e-v57-audit.py
           python3 tools/demo-pathology.py --count 2 --quiet
           python3 tools/e2e-v58-audit.py
+          python3 tools/e2e-v59-audit.py
 
       - name: 失败时输出服务端日志
         if: failure()
