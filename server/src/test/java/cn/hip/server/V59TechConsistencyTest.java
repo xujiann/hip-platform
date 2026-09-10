@@ -599,4 +599,26 @@ class V59TechConsistencyTest {
     private static long asLong(Object o) {
         return o instanceof Number n ? n.longValue() : Long.MIN_VALUE;
     }
+
+    // ==================================================================================
+    // v59 审阅补：前端 ProcessingPanel 抄了一份 TECH_TO_STAIN 做下拉锁定；后端 5274 是最终守卫，
+    // 但两份不同源就会「前端锁成 A、后端拦成 B」多一次被打回——机械断言逐键逐字相等。
+    // ==================================================================================
+
+    @Test
+    void frontendTechToStainMirrorsBackend() throws Exception {
+        java.nio.file.Path root = java.nio.file.Path.of(System.getProperty("user.dir")).toAbsolutePath();
+        while (root != null && !(java.nio.file.Files.isDirectory(root.resolve("frontend")) && java.nio.file.Files.isDirectory(root.resolve("modules")))) root = root.getParent();
+        assertNotNull(root, "找不到仓库根");
+        String vue = java.nio.file.Files.readString(root.resolve("frontend/shell/src/views/medtech/pathology/ProcessingPanel.vue"));
+        vue = vue.replaceAll("(?s)/\\*.*?\\*/", "").replaceAll("(?m)^\\s*//[^\\n]*", "");
+        java.util.regex.Matcher obj = java.util.regex.Pattern.compile("const TECH_TO_STAIN[^=]*=\\s*\\{([^}]*)\\}").matcher(vue);
+        assertTrue(obj.find(), "ProcessingPanel.vue 里找不到 const TECH_TO_STAIN = { … }");
+        var front = new java.util.LinkedHashMap<String, String>();
+        java.util.regex.Matcher kv = java.util.regex.Pattern.compile("([A-Z_]+)\\s*:\\s*'([A-Z_]+)'").matcher(obj.group(1));
+        while (kv.find()) front.put(kv.group(1), kv.group(2));
+        assertEquals(PathologyProcessController.TECH_TO_STAIN, front,
+                "前端 TECH_TO_STAIN 必须与后端逐键逐字相同（后端是最终守卫，前端只是锁定下拉）");
+        assertTrue(front.size() >= 6, "活的对照组：至少六种特检类型，实际 " + front);
+    }
 }

@@ -18,7 +18,7 @@
 
 调用形态逐字抄自 tools/e2elib.py、tools/e2e-v48-pathology.py、tools/e2e-v57-audit.py
 （这三份已在 CI 全新库上跑通），**不猜契约**：驼峰 / 蛇形、items/rows、排班是 POST 建、
-开单前须先 start、登记只认 CHARGED、diagnose 会把 outp_order 置 EXECUTED、双签须两个人。
+开单前须先 start、登记只认 CHARGED、**正式签发**才把 outp_order 置 EXECUTED（v59 起，diagnose 不再置）、双签须两个人。
 
 用法：
   HIP_E2E_BASE=http://localhost:8080/api python tools/demo-pathology.py            # 默认 5 个阶梯标本 + 1 个拒收

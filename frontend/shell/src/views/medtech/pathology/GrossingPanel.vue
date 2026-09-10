@@ -109,7 +109,7 @@
             {{ view.fieldsCurrent === false ? '' : '，与当前文本同版' }}</el-tag>
           <!-- v59：字段随版本走；诊断只改文本不改字段，两者分叉时明说，不让两处并排自相矛盾 -->
           <el-alert v-if="view.fieldsCurrent === false" type="warning" show-icon :closable="false" style="margin-top: 4px"
-                    :title="`字段级记录对应第 ${fmt(view.fieldsRevisionSeq)} 版，文本已在第 ${fmt(view.textRevisionSeq)} 版被诊断修订，以文本为准`" />
+                    :title="String(view.fieldsNote || `字段级记录对应第 ${fmt(view.fieldsRevisionSeq)} 版，文本已在第 ${fmt(view.textRevisionSeq)} 版修订，以文本为准`)" />
           <el-table :data="viewFields" size="small" border max-height="200" style="margin-top: 4px">
             <el-table-column label="#" width="50">
               <template #default="{ row }">{{ fmt(row.seq) }}</template>
@@ -580,7 +580,7 @@ const viewDialog = ref(false)
 const viewLoading = ref(false)
 const view = ref<{ specimen?: Row; grossFinding?: unknown; grossFindingPresent?: unknown;
   fieldsAvailable?: unknown; fields?: Row[]; revisions?: Row[];
-  fieldsRevisionSeq?: unknown; textRevisionSeq?: unknown; fieldsCurrent?: unknown;   // v59：字段与文本各自的版号
+  fieldsRevisionSeq?: unknown; textRevisionSeq?: unknown; fieldsNote?: unknown; fieldsCurrent?: unknown;   // v59：字段与文本各自的版号
   diagnosedAt?: unknown; blocks?: Row[]; grossingEvents?: Row[]; note?: unknown }>({})
 const viewBlocks = computed<Row[]>(() => (view.value.blocks ?? []) as Row[])
 const viewEvents = computed<Row[]>(() => (view.value.grossingEvents ?? []) as Row[])

@@ -1441,6 +1441,7 @@ public class PathologyProcessController {
                 """, specimenId);
         var revisions = new ArrayList<Map<String, Object>>(revisionRows.size());
         Integer textRevisionSeq = null;
+        String lastRevisionSource = null;   // v59 审阅补：字段与文本分叉时，措辞要按最新一版是谁改的来写
         for (var r : revisionRows) {
             var m = new LinkedHashMap<String, Object>();
             m.put("seq", r.get("seq"));
@@ -1454,6 +1455,7 @@ public class PathologyProcessController {
             m.put("changedByName", r.get("changed_by_name"));
             revisions.add(m);
             if (r.get("seq") instanceof Number n) textRevisionSeq = n.intValue();   // 按 seq 升序，最后一条即最大
+            lastRevisionSource = String.valueOf(r.get("source"));
         }
 
         String gross = trim((String) head.get("gross_finding"));
@@ -1466,7 +1468,10 @@ public class PathologyProcessController {
         body.put("fields", fields);
         body.put("fieldsRevisionSeq", fields.isEmpty() ? null : fieldsRevisionSeq);   // v59：fields 属于哪一版
         body.put("textRevisionSeq", textRevisionSeq);                                   // v59：文本的最新版号（无修订为 null）
-        body.put("fieldsCurrent", !fields.isEmpty() && fieldsRevisionSeq != null && fieldsRevisionSeq.equals(textRevisionSeq));
+        boolean fieldsCurrent = !fields.isEmpty() && fieldsRevisionSeq != null && fieldsRevisionSeq.equals(textRevisionSeq);
+        body.put("fieldsCurrent", fieldsCurrent);
+        // v59 审阅补：分叉原因不只「被诊断修订」——取材修订或补取材追加只写自由文本时，字段行留在上一版，措辞不能写死
+        body.put("fieldsNote", fieldsStaleNote(fields.isEmpty(), fieldsCurrent, fieldsRevisionSeq, textRevisionSeq, lastRevisionSource));
         body.put("revisions", revisions);
         body.put("diagnosedAt", head.get("diagnosed_at"));
         body.put("blocks", blocks);
@@ -2020,6 +2025,18 @@ public class PathologyProcessController {
     }
 
     /** 流转节点（occurred_at = now()：PostgreSQL 里是事务开始时刻，事务内恒定） */
+    /** 字段级记录与文本不同版时给读方的一句话；同版或无字段行为 null。 */
+    static String fieldsStaleNote(boolean noFields, boolean current, Integer fieldsSeq, Integer textSeq, String lastSource) {
+        if (noFields || current || fieldsSeq == null || textSeq == null) return null;
+        String head = "字段级记录对应第 " + fieldsSeq + " 版，";
+        return switch (lastSource == null ? "" : lastSource) {
+            case "DIAGNOSE" -> head + "文本已在第 " + textSeq + " 版被诊断修订，以文本为准";
+            case "GROSSING_EDIT" -> head + "第 " + textSeq + " 版取材修订只写了自由文本、未再填写字段，以文本为准";
+            case "GROSSING" -> head + "第 " + textSeq + " 版补取材追加未填写字段，以文本为准";
+            default -> head + "文本已在第 " + textSeq + " 版修订，以文本为准";
+        };
+    }
+
     private void logProcess(Long specimenId, String node, Long operatorId, String remark) {
         jdbc.update("""
                 insert into path_process(specimen_id, node, occurred_at, operator_id, remark)

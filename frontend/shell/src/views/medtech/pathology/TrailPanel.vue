@@ -196,7 +196,7 @@
         <!-- v59：字段随版本走——标出字段属于第几版；与文本不同版（诊断只改文本）时明说，以文本为准 -->
         <el-tag v-if="gross.fieldsAvailable === true" size="small" :type="gross.fieldsCurrent === false ? 'warning' : 'success'">
           第 {{ fmt(gross.fieldsRevisionSeq) }} 版字段级记录（{{ grossFields.length }} 项）{{
-            gross.fieldsCurrent === false ? `；文本已在第 ${fmt(gross.textRevisionSeq)} 版被诊断修订，以文本为准` : '，与当前文本同版' }}</el-tag>
+            gross.fieldsCurrent === false ? `；${gross.fieldsNote || `文本已在第 ${fmt(gross.textRevisionSeq)} 版修订，以文本为准`}` : '，与当前文本同版' }}</el-tag>
         <el-tag v-else size="small" type="info">历史标本，无字段级记录（或本次取材只写了自由文本；不从文本反解析）</el-tag>
         <el-table v-if="grossRevisions.length" :data="grossRevisions" size="small" border max-height="260"
                   style="margin-top: 6px">
