@@ -60,6 +60,12 @@ public class ExecStationController {
         if ("DRUG".equals(o.getOrderType()) || "REG".equals(o.getOrderType())) {
             return R.fail(7003, "药品/挂号费不在执行范围");
         }
+        // v59 审阅补：已登记病理标本（未拒收）的申请由病理科签发后自动置 EXECUTED（PathologyReportController.issue，
+        // 仍只认 CHARGED）；技师在此抢先置 EXECUTED 会让签发的 update 命中 0 行、orderExecuted=false。
+        // 队列端点 /worklist 已由 chargedExecutables 排除，此处兜住直接 POST；在 7002/7003 之后、任何写入之前
+        if (orderRepository.hasRegisteredSpecimen(orderId)) {
+            return R.fail(7004, "病理申请已登记标本，由病理科签发后自动置执行");
+        }
         o.setStatus("EXECUTED");
         orderRepository.save(o);
         OutpOrderReport report = new OutpOrderReport();

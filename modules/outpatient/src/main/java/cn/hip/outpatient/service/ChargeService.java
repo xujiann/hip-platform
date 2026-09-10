@@ -81,7 +81,7 @@ public class ChargeService {
         return chargeRepository.findTop50ByOrderByIdDesc();
     }
 
-    /** 退费：单内订单均未发药/未执行才可退；订单退回已开立（退号单的挂号费直接作废） */
+    /** 退费：单内订单均未发药/未执行/未登记病理标本才可退；订单退回已开立（退号单的挂号费直接作废） */
     @Transactional
     public OutpCharge refund(Long chargeId, Long operatorId) {
         OutpCharge charge = chargeRepository.findById(chargeId)
@@ -110,6 +110,13 @@ public class ChargeService {
             }
             if ("EXECUTED".equals(o.getStatus())) {
                 throw new BizException(5005, "已执行项目不可退费: " + o.getItemName());
+            }
+            // v59 审阅补：EXECUTED 挪到正式签发后（2576-③），病理申请在「已取材 / 已写诊断、未签发」窗口内仍是
+            // CHARGED，上一条拦不住——已取材制片、甚至写完诊断的申请单在签发前可整单退费。口径：登记了病理标本
+            // （path_specimen.order_id = 该申请 且 rejected_at is null）即视为已进入病理科流程，复用 5005、消息改；
+            // 已拒收的标本不算（拒收即退出流程，可退可重送）。同上只读、前置于抢占，被拒路径不碰任何单据状态
+            if (orderRepository.hasRegisteredSpecimen(o.getId())) {
+                throw new BizException(5005, "病理标本已登记，不可退费: " + o.getItemName());
             }
         }
         // 抢占单据本身：读-判-写让并发退费各自放行一次（YB 单会重复冲正医保额度）。

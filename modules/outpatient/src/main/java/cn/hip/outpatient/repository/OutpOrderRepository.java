@@ -24,9 +24,28 @@ public interface OutpOrderRepository extends JpaRepository<OutpOrder, Long> {
     @Query("from OutpOrder o where o.orderType = 'DRUG' and o.status = 'CREATED' and o.reviewStatus is null order by o.id")
     List<OutpOrder> findPendingReviewDrugs();
 
-    /** 医技执行队列：已收费的检验/检查/治疗 */
-    @Query("from OutpOrder o where o.status = 'CHARGED' and o.orderType in ('LAB', 'EXAM', 'TREAT') order by o.id")
+    /**
+     * 医技执行队列：已收费的检验/检查/治疗——<b>排除已登记病理标本（未拒收）的申请</b>。
+     *
+     * <p>v59 审阅补：EXECUTED 挪到正式签发后（2576-③）以后，病理申请在「已取材 / 已写诊断、未签发」窗口内
+     * 仍是 CHARGED，按 {@code status='CHARGED' and orderType in (...)} 会一直列在执行站待执行队列直到签发，
+     * 技师可在那里抢先置 EXECUTED，随后签发的 {@code update … and status='CHARGED'} 命中 0 行、orderExecuted=false。
+     * 口径：登记了病理标本（{@code path_specimen.order_id} = 该申请 且 {@code rejected_at is null}）即视为
+     * 已进入病理科流程，由病理科签发后自动置执行；拒收后重新出现在队列里。
+     * 改为 native：path_specimen 无 JPA 实体（全仓 JdbcTemplate 直写），JPQL 关联不到它；列名按 outp_order 实体
+     * 默认 snake_case 映射，排序不变。
+     */
+    @Query(value = "select o.* from outp_order o where o.status = 'CHARGED' and o.order_type in ('LAB', 'EXAM', 'TREAT') "
+            + "and not exists (select 1 from path_specimen s where s.order_id = o.id and s.rejected_at is null) "
+            + "order by o.id", nativeQuery = true)
     List<OutpOrder> chargedExecutables();
+
+    /**
+     * 该申请是否已登记病理标本（未拒收）。v59 审阅补：退费守卫（5005）与执行站守卫（7004）共用的只读判定；
+     * 已拒收（{@code rejected_at is not null}）的标本不算——拒收后重送是临床常态（V145），拒收即退出病理科流程。
+     */
+    @Query(value = "select exists(select 1 from path_specimen s where s.order_id = :orderId and s.rejected_at is null)", nativeQuery = true)
+    boolean hasRegisteredSpecimen(@Param("orderId") Long orderId);
 
     /** 有已收费待发药药品订单的挂号 id 列表（发药工作队列） */
     @Query("select distinct o.registrationId from OutpOrder o where o.orderType = 'DRUG' and o.status = 'CHARGED'")
