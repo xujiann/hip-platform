@@ -97,7 +97,7 @@
         <el-table v-if="rowsOf(ind).length" :data="rowsOf(ind)" size="small" border max-height="360">
           <el-table-column v-for="c in columnsOf(rowsOf(ind))" :key="c" :prop="c" :label="zh(c)"
                            :min-width="colWidth(c)" show-overflow-tooltip>
-            <template #default="{ row }">{{ fmt(row[c]) }}</template>
+            <template #default="{ row }">{{ cellText(c, row[c], row) }}</template>
           </el-table-column>
         </el-table>
         <el-empty v-else description="该统计区间内无数据" :image-size="60" />
@@ -117,11 +117,13 @@
       <el-alert v-if="detailCaveat" type="warning" :closable="false" class="cav" :title="detailCaveat" />
       <el-alert v-if="detailTruncated" type="warning" show-icon :closable="false" class="cav"
                 :title="`命中超过 ${detailLimit} 条，仅显示前 ${detailLimit} 条（不做翻页）；请缩小统计区间后再穿透`" />
+      <!-- 表头 zh()、取值 cellText()；_id 主键列挪到最后并置灰（不删：对账与 CSV 导出仍要它） -->
       <el-table :data="detailItems" v-loading="detailLoading" size="small" border
                 height="calc(100vh - 260px)">
-        <el-table-column v-for="c in columnsOf(detailItems)" :key="c" :prop="c" :label="zh(c)"
-                         :min-width="colWidth(c)" show-overflow-tooltip>
-          <template #default="{ row }">{{ fmt(row[c]) }}</template>
+        <el-table-column v-for="c in detailColumns" :key="c" :prop="c" :label="zh(c)"
+                         :min-width="colWidth(c)" :class-name="isIdColumn(c) ? 'id-col' : ''"
+                         show-overflow-tooltip>
+          <template #default="{ row }">{{ cellText(c, row[c], row) }}</template>
         </el-table-column>
       </el-table>
       <el-empty v-if="!detailLoading && detailItems.length === 0" description="该统计区间内无明细" />
@@ -149,7 +151,8 @@
 import { computed, onMounted, ref } from 'vue'
 import client from '../../../api/client'
 import {
-  colWidth, columnsOf, defaultRange, fmt, keysOf, num, ratio, zh, type Row,
+  cellText, colWidth, columnsOf, defaultRange, fmt, idColumnsLast, isIdColumn, keysOf, num, ratio, zh,
+  type Row,
 } from './format'
 
 const range = ref<[string, string]>(defaultRange())
@@ -250,6 +253,12 @@ const detailItems = ref<Row[]>([])
 const detailTruncated = ref(false)
 const detailLimit = ref(200)
 const detailLoading = ref(false)
+/**
+ * 明细列序：后端返回顺序为准，只把 _id 结尾的内部主键挪到最后（v59 2576 复核：
+ * 每张明细表首列都是 specimen_id / slide_id / tech_order_id 这类内部主键，患者与病理号被挤到后面）。
+ * 不删列——对账与 CSV 导出仍要主键。
+ */
+const detailColumns = computed<string[]>(() => idColumnsLast(columnsOf(detailItems.value)))
 
 async function openDetail(ind: Row) {
   detailCode.value = String(ind.code)
@@ -310,4 +319,6 @@ h4 { margin: 16px 0 8px; }
 .ind-head { margin-bottom: 8px; line-height: 24px; }
 .ind-code { font-weight: 600; color: var(--el-color-primary); margin-right: 6px; }
 .ind-name { font-weight: 600; }
+/* 内部主键列置灰（el-table 的 class-name 落在 td/th 上，穿透 scoped） */
+:deep(.id-col) { color: var(--el-text-color-placeholder); }
 </style>

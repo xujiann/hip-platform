@@ -42,8 +42,13 @@ export const SOURCES = [
   { value: 'INP', label: '住院' },
 ]
 
+/**
+ * 染色类型四档（值域照 PathologyProcessController.STAIN_TYPES）。
+ * HE 的中文名照 {@code PathQcController} SLIDE_QUALITY 行的 stain_name 分支（'HE 染色'）逐字取，
+ * 不写「苏木素-伊红」——后端没有这个写法，质控页的 stain_type 与 stain_name 两列并排，名字必须同一个。
+ */
 export const STAIN_TYPES = [
-  { value: 'HE', label: 'HE' },
+  { value: 'HE', label: 'HE 染色' },
   { value: 'IHC', label: '免疫组化' },
   { value: 'SPECIAL', label: '特殊染色' },
   { value: 'MOLECULAR', label: '分子病理' },
@@ -113,6 +118,30 @@ export function techStatusName(v: unknown): string {
 
 export function techStatusTag(v: unknown): 'warning' | 'success' | 'info' {
   return v === 'ORDERED' ? 'warning' : v === 'DONE' ? 'success' : 'info'
+}
+
+/**
+ * 特检技术类型六档（chk_path_tech_type），中文名照 {@code PathologyReportController.TECH_TYPE_NAMES}
+ * 与 {@code PathQcController} WORKLOAD_TECH 行的 tech_name 分支逐字抄（两处后端本就同一份）。
+ * v59 之前前端没有这张表——质控穿透的 tech_type 列只能原样显示 DEEP_CUT / IHC。
+ */
+export const TECH_TYPES = [
+  { value: 'DEEP_CUT', label: '深切' },
+  { value: 'RECUT', label: '重切' },
+  { value: 'RESAMPLE', label: '补取材' },
+  { value: 'IHC', label: '免疫组化' },
+  { value: 'SPECIAL_STAIN', label: '特殊染色' },
+  { value: 'MOLECULAR', label: '分子病理' },
+]
+
+export function techTypeName(v: unknown): string {
+  const s = v == null ? '' : String(v)
+  return TECH_TYPES.find((t) => t.value === s)?.label ?? s
+}
+
+export function qualityName(v: unknown): string {
+  const s = v == null ? '' : String(v)
+  return SLIDE_QUALITIES.find((q) => q.value === s)?.label ?? s
 }
 
 /**
@@ -191,9 +220,11 @@ export function ratio(numerator: unknown, denominator: unknown): string {
 }
 
 /**
- * 列名中文化——与 {@code PathQcController.columnLabel()} 逐键同源（CSV 导出走后端那一份）。
+ * 列名中文化——与 {@code PathQcController.zh(String col)}（复核清单里叫 columnLabel）逐键同源（CSV 导出走后端那一份）。
  * 未登记的列名原样显示英文，<b>不猜也不隐藏</b>：漏一个键只是显示成列名，
  * 比显示成空白或猜错一个意思要好。
+ *
+ * <p>v59 起由 {@code V59QcLabelsTest} 机械断言「本表 ⊇ 后端 case 键」：后端加一个 case、这里不跟，CI 就红并点名缺的键。
  */
 const ZH: Record<string, string> = {
   // 标本主键与身份
@@ -350,7 +381,9 @@ const ZH: Record<string, string> = {
   operator_name: '操作人',
   remark: '备注',
   hours_from_receive: '距签收(小时)',
-  // 工作量
+  // 工作量（v59 2576 复核：四张按日表首列此前落网，页面显示英文 stat_day、CSV 却写「日期」）
+  stat_day: '日期',
+  issue_day: '签发日期',
   registered: '登记标本数',
   outp_source: '门诊来源',
   inp_source: '住院来源',
@@ -398,6 +431,9 @@ const ZH: Record<string, string> = {
   cancelled_by_name: '取消人',
   cancel_reason: '取消原因',
   median_hours_to_done: '开单→完成中位数(小时)',
+  // v58 执行进度派生列（挂接切片 + stained_at 算出，不是库列），v59 补登记
+  stained_count: '已染色挂接切片数',
+  progress_name: '执行进度',
   // 覆盖率段
   with_specimen_type: '已录标本类别',
   with_path_no: '已录病理号',
@@ -433,6 +469,55 @@ const ZH: Record<string, string> = {
 
 export function zh(col: string): string {
   return ZH[col] ?? col
+}
+
+/**
+ * 单元格取值中文化（v59 2576 复核）：按<b>列名族</b>把编码值翻成本文件既有字典的中文，
+ * 其余列一律走 {@link fmt}。
+ *
+ * <p><b>不认识的值原样回显，不猜</b>：后端 specimen_type 在明细里是 {@code coalesce(specimen_type, '（未填）')}，
+ * 「（未填）」不在字典里就该照原样显示；status 列在标本行是 COLLECTED/RECEIVED/DIAGNOSED、
+ * 在技术医嘱行是 ORDERED/DONE/CANCELLED，两组值域不相交，故合并查表，查不到仍回显原值。
+ * progress 列优先用同一行后端已算好的 progress_name（v58 派生列），行里没有就回显编码——
+ * 前端不另抄一份五态名表。outp_source / inp_source 是<b>按来源计数</b>的数值列（不是编码），不进本表。
+ */
+export function cellText(col: string, v: unknown, row?: Row): string {
+  if (v === null || v === undefined || v === '') return fmt(v)
+  switch (col) {
+    case 'source':
+      return sourceName(v)
+    case 'specimen_type':
+      return typeName(v)
+    case 'stain_type':
+      return stainName(v)
+    case 'quality':
+      return qualityName(v)
+    case 'status':
+      return techStatusName(statusName(v))
+    case 'node':
+    case 'last_node':
+      return nodeName(v)
+    case 'tech_type':
+      return techTypeName(v)
+    case 'kind':
+      return anomalyName(v)
+    case 'progress': {
+      const named = row?.progress_name
+      return named === null || named === undefined || named === '' ? fmt(v) : String(named)
+    }
+    default:
+      return fmt(v)
+  }
+}
+
+/** 以 _id 结尾的列是内部主键：对账要留着（CSV 导出照带），但不该排在患者姓名前面 */
+export function isIdColumn(col: string): boolean {
+  return col.endsWith('_id')
+}
+
+/** 内部主键列挪到最后，其余保持后端返回顺序（明细表用；不删列） */
+export function idColumnsLast(cols: string[]): string[] {
+  return [...cols.filter((c) => !isIdColumn(c)), ...cols.filter(isIdColumn)]
 }
 
 /** 备注类长列给宽一点，其余按数值列常宽 */
