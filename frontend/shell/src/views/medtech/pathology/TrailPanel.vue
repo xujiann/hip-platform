@@ -193,18 +193,23 @@
       <!-- ============ 大体所见修订（v58，2530：path_gross_revision 留痕，按 seq 列 old→new） ============ -->
       <h4>大体所见修订</h4>
       <div v-loading="gLoading">
-        <el-tag v-if="gross.fieldsAvailable === true" size="small" type="success">
-          取材时按字段落库（{{ grossFields.length }} 项）</el-tag>
+        <!-- v59：字段随版本走——标出字段属于第几版；与文本不同版（诊断只改文本）时明说，以文本为准 -->
+        <el-tag v-if="gross.fieldsAvailable === true" size="small" :type="gross.fieldsCurrent === false ? 'warning' : 'success'">
+          第 {{ fmt(gross.fieldsRevisionSeq) }} 版字段级记录（{{ grossFields.length }} 项）{{
+            gross.fieldsCurrent === false ? `；文本已在第 ${fmt(gross.textRevisionSeq)} 版被诊断修订，以文本为准` : '，与当前文本同版' }}</el-tag>
         <el-tag v-else size="small" type="info">历史标本，无字段级记录（或本次取材只写了自由文本；不从文本反解析）</el-tag>
         <el-table v-if="grossRevisions.length" :data="grossRevisions" size="small" border max-height="260"
                   style="margin-top: 6px">
           <el-table-column label="版本" width="60">
             <template #default="{ row }">{{ fmt(row.seq) }}</template>
           </el-table-column>
-          <el-table-column label="来源" width="90">
+          <el-table-column label="来源" width="100">
             <template #default="{ row }">
-              <el-tag size="small" :type="row.source === 'DIAGNOSE' ? 'warning' : 'info'">{{ revisionSource(row.source) }}</el-tag>
+              <el-tag size="small" :type="revisionTag(row.source)">{{ row.sourceName ?? revisionSource(row.source) }}</el-tag>
             </template>
+          </el-table-column>
+          <el-table-column label="模板" width="110">
+            <template #default="{ row }"><span class="code">{{ fmt(row.templateCode) }}</span></template>
           </el-table-column>
           <el-table-column label="时刻" width="150">
             <template #default="{ row }">{{ fmtDateTime(row.changedAt) }}</template>
@@ -326,10 +331,15 @@ const gross = ref<Row>({})
 const grossFields = computed<Row[]>(() => (gross.value.fields ?? []) as Row[])
 const grossRevisions = computed<Row[]>(() => (gross.value.revisions ?? []) as Row[])
 
-/** path_gross_revision.source 的两档，与 chk_path_gross_revision_source 一致 */
+/** path_gross_revision.source 的三档（V166），与 chk_path_gross_revision_source 一致；后端 sourceName 优先，这里只是兜底 */
 function revisionSource(v: unknown): string {
   const s = v == null ? '' : String(v)
-  return s === 'GROSSING' ? '取材' : s === 'DIAGNOSE' ? '诊断' : s
+  return s === 'GROSSING' ? '取材' : s === 'GROSSING_EDIT' ? '取材修订' : s === 'DIAGNOSE' ? '诊断' : s
+}
+
+function revisionTag(v: unknown): 'warning' | 'success' | 'info' {
+  const s = v == null ? '' : String(v)
+  return s === 'DIAGNOSE' ? 'warning' : s === 'GROSSING_EDIT' ? 'success' : 'info'
 }
 
 /**

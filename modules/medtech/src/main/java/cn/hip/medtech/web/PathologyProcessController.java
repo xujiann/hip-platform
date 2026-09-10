@@ -61,9 +61,9 @@ import java.util.Map;
  * <p><b>错误码</b>（v48 病理段的 5220–5239 取材 / 5240–5259 技术制片两个子段）：
  * <ul>
  *   <li>5220 标本不存在</li>
- *   <li>5221 标本状态不允许取材（未核收 / 已拒收 / 已诊断而未声明补取材）</li>
+ *   <li>5221 标本状态不允许取材（未核收 / 已拒收 / 已诊断而未声明补取材；v59 取材修订入口：已诊断 / 尚无大体所见）</li>
  *   <li>5222 取材请求非法（蜡块清单为空或超上限 / 组织描述超长 / 大体描述字段非法 / 备注超长 /
- *       已有大体所见时重复提交）</li>
+ *       已有大体所见且未声明 append 时再传描述；v59 取材修订入口：内容为空 / 与当前相同 / 并发改写）</li>
  *   <li>5223 该标本已取材（未显式声明 append 的重复取材）</li>
  *   <li>5224 无法识别当前登录用户，不能登记取材</li>
  *   <li>5225 取材模板不存在</li>
@@ -164,6 +164,20 @@ public class PathologyProcessController {
             Map.entry("SECOND_SIGN", "复诊签名"), Map.entry("ISSUE", "报告签发"), Map.entry("SUPPLEMENT", "补充报告"),
             // v58（V165）：技术医嘱的建/完/取消进流转节点
             Map.entry("TECH_ORDER", "下达特检医嘱"), Map.entry("TECH_DONE", "确认完成特检医嘱"), Map.entry("TECH_CANCEL", "取消特检医嘱"));
+
+    /** v59：大体所见修订来源中文名，与 chk_path_gross_revision_source（V166）三档逐字一致 */
+    static final Map<String, String> REVISION_SOURCE_NAMES = Map.of(
+            "GROSSING", "取材首写", "GROSSING_EDIT", "取材修订", "DIAGNOSE", "诊断修订");
+
+    /**
+     * v59：修订行的来源中文名。GROSSING 一档同时承载「首写」与「补取材追加」（v59 起 append 带描述出新版本，
+     * source 仍是 GROSSING）——两者在库里以 old_text 是否为空区分，回给人看时也如实区分，
+     * 不把带原文的追加行叫「首写」。
+     */
+    static String revisionSourceName(String source, boolean hasOldText) {
+        if ("GROSSING".equals(source) && hasOldText) return "补取材追加";
+        return REVISION_SOURCE_NAMES.getOrDefault(source, source);
+    }
 
     /**
      * 流转异常四类（v55）。取值集合即 {@code GET /anomalies?kind=} 的白名单（另有 ALL）。
@@ -279,12 +293,15 @@ public class PathologyProcessController {
      * {@code grossText} 拼成一段文本，写入 {@code path_specimen.gross_finding}——
      * 那本来就是「大体所见」列。但有两条硬规矩：
      * <ul>
-     *   <li><b>只在该列为空时写，绝不覆盖</b>。该列同时被既有
-     *       {@code PUT /specimens/{barcode}/diagnose} 写（病理医师出报告时可修订大体所见），
-     *       本端点不去抢它。</li>
-     *   <li>已有大体所见时若仍传 {@code gross}/{@code grossText}，<b>直接报 5222 拒绝</b>，
-     *       不静默丢弃：补取材的组织描述应写在 {@code blocks[].tissueDesc}（每块 500 字），
-     *       修订大体所见走既有 diagnose 端点。悄悄吞掉用户写的字比报错坏得多。</li>
+     *   <li><b>不覆盖</b>。该列同时被既有 {@code PUT /specimens/{barcode}/diagnose} 写
+     *       （病理医师出报告时可修订大体所见），本端点不去抢它：为空时首写；
+     *       <b>v59 起 {@code append=true} 且本次带描述时追加为新版本</b>——
+     *       新文本 = 既有文本 + 「。补取材：」 + 本次拼装文本，修订行 source 仍是 GROSSING、
+     *       字段行落在新 revision_seq 下。此前（v58）这条路径一律 5222，已诊断标本的补取材
+     *       （RESAMPLE）没有任何入口记录该次取材的大体描述。</li>
+     *   <li>已有大体所见、{@code append=false} 仍传 {@code gross}/{@code grossText}，<b>直接报 5222 拒绝</b>，
+     *       不静默丢弃：未诊断前修订大体所见走 {@link #reviseGrossFields}，诊断时修订走 diagnose 端点。
+     *       悄悄吞掉用户写的字比报错坏得多。</li>
      * </ul>
      *
      * <p><b>append 的语义</b>：第二次及以后的取材必须显式 {@code append=true}（否则 5223），
@@ -359,17 +376,38 @@ public class PathologyProcessController {
         Long uid = currentUserService.idOf(auth);
         if (uid == null) return R.fail(5224, "无法识别当前登录用户，不能登记取材");
 
-        String existingGross = trim((String) head.get("gross_finding"));
+        String existingRaw = (String) head.get("gross_finding");
+        String existingGross = trim(existingRaw);
+        // v59（2530 复核）：已有大体所见时，append=true 带描述 → 追加为新版本；append=false 仍 5222。
+        // 新文本在这里先算好并校验总长——被拒路径必须在任何写入之前返回。
+        String grossToWrite = grossAssembled;
+        if (grossAssembled != null && existingGross != null) {
+            if (!append) {
+                return R.fail(5222, "该标本已有大体所见，本端点不覆盖既有内容："
+                        + "补取材记描述请显式传 append=true（将作为新版本追加），修订大体所见请走取材修订入口或诊断端点");
+            }
+            grossToWrite = existingGross + "。补取材：" + grossAssembled;
+            if (grossToWrite.length() > GROSS_MAX) {
+                return R.fail(5222, "追加后的大体描述总长超过 " + GROSS_MAX + " 字（当前 "
+                        + grossToWrite.length() + "），请精简或改写在各蜡块的组织描述里");
+            }
+        }
+
         boolean grossWritten = false;
         if (grossAssembled != null) {
-            if (existingGross != null) {
-                return R.fail(5222, "该标本已有大体所见，本端点不覆盖既有内容："
-                        + "补取材的组织描述请写在 blocks[].tissueDesc，修订大体所见请走诊断端点");
+            int written;
+            if (existingGross == null) {
+                written = jdbc.update("""
+                        update path_specimen set gross_finding = ?
+                        where id = ? and (gross_finding is null or btrim(gross_finding) = '')
+                        """, grossToWrite, req.specimenId());
+            } else {
+                // 追加：where 带原值做乐观比对——并发下另一方先改了，这里就是 0 行，不落任何东西
+                written = jdbc.update("""
+                        update path_specimen set gross_finding = ?
+                        where id = ? and gross_finding = ?
+                        """, grossToWrite, req.specimenId(), existingRaw);
             }
-            int written = jdbc.update("""
-                    update path_specimen set gross_finding = ?
-                    where id = ? and (gross_finding is null or btrim(gross_finding) = '')
-                    """, grossAssembled, req.specimenId());
             // v58 审阅补：按影响行数判——并发下后到的一方 where 重判为 0 行，若仍去写字段/修订，留痕就与真实列值不一致
             if (written != 1) {
                 return R.fail(5222, "该标本的大体所见刚被另一次操作写入，本次未落任何内容，请刷新后再看");
@@ -377,15 +415,18 @@ public class PathologyProcessController {
             grossWritten = true;
         }
 
-        // v58（2530）：字段级存储 + 首写修订留痕，与上面的 gross_finding 写入同一事务（V164）。
+        // v58（2530）：字段级存储 + 修订留痕，与上面的 gross_finding 写入同一事务（V164）。
         // gross 的每个非空字段按入参顺序（Jackson 反序列化的 Map 是 LinkedHashMap，顺序即前端顺序）
-        // 落 path_gross_field(seq 1..n)；拼好的文本作为第 1 版落 path_gross_revision(old_text = null)。
+        // 落 path_gross_field(seq 1..n)；拼好的文本落 path_gross_revision（首写 old_text = null，追加 old_text = 原文）。
+        // v59（V166）：先落修订行拿到本版 seq，字段行带 revision_seq 落在这一版下；模板码随修订行落库。
         // append=true 且本次没传 gross/grossText（grossAssembled == null）时两张表都不写：没有新描述就没有新版本。
         // 文本仍照旧写 gross_finding——既有读方（诊断抽屉、报告）一个字节不用改，字段行是加法不是替代。
         int grossFieldCount = 0;
+        Integer revisionSeq = null;
         if (grossWritten) {
-            grossFieldCount = storeGrossFields(req.specimenId(), req.gross(), uid);
-            insertGrossRevision(jdbc, req.specimenId(), null, grossAssembled, "GROSSING", uid);
+            revisionSeq = insertGrossRevision(jdbc, req.specimenId(), existingGross == null ? null : existingRaw,
+                    grossToWrite, "GROSSING", uid, templateCode);
+            grossFieldCount = storeGrossFields(req.specimenId(), revisionSeq, req.gross(), uid);
         }
 
         String pathNo = trim((String) head.get("path_no"));
@@ -423,13 +464,92 @@ public class PathologyProcessController {
         body.put("blocks", created);
         body.put("blockCount", created.size());
         body.put("totalBlockCount", existing + created.size());
-        body.put("grossFinding", grossAssembled);
+        body.put("grossFinding", grossWritten ? grossToWrite : grossAssembled);   // v59：追加时是拼接后的全文
         body.put("grossFindingWritten", grossWritten);
         body.put("grossFieldCount", grossFieldCount);   // v58：本次落 path_gross_field 的字段行数（纯自由文本为 0）
+        body.put("grossRevisionSeq", revisionSeq);      // v59：本次落的修订版号（未写大体所见为 null）
         body.put("note", "block_code 由「编码前缀-块号」生成并在建块时定死；"
                 + (pathNo == null ? "本标本尚无病理号，编码回落院内条码 barcode，"
                                   + "病理号事后补发不会回改已生成的 block_code。" : "")
                 + "打码机属设备直连，平台只给编码字符串，不负责打印。");
+        return R.ok(body);
+    }
+
+    public record GrossReviseReq(String templateCode, Map<String, String> gross, String grossText) {}
+
+    /**
+     * v59（2530 复核打回）：取材修订入口——未诊断前，取材员自己改自己录的大体描述（字段 + 自由文本）。
+     *
+     * <p>修复前的反向事实：{@code path_gross_field} 只有 insert，字段一旦落库不能改不能补；取材员敲错一个
+     * 字段值只能等病理医师在诊断时改扁平文本，而字段行不跟着改——查看大体所见与轨迹抽屉两处并排自相矛盾。
+     *
+     * <p><b>口径</b>：
+     * <ul>
+     *   <li>仅未诊断（{@code diagnosed_at} 为空，否则 5221）、未拒收、已核收且<b>已有大体所见</b>的标本
+     *       （尚无大体所见 → 5221：本端点只修订不首写，首写走取材登记，否则之后的正常取材会被「已有大体所见」挡住）；</li>
+     *   <li>内容用 {@link #assembleGross} 同一套规则校验（5222）；拼出来与当前文本相同 → 5222（没有变化就没有版本）；</li>
+     *   <li>同一事务：新修订行（source=GROSSING_EDIT、old_text=当前原文、new_text=新拼装文本、template_code）、
+     *       字段行落在新 revision_seq 下、{@code gross_finding} 更新为新文本。<b>不写流转节点</b>——修订不是流转环节；</li>
+     *   <li>被拒路径全部在任何写入之前返回（R.fail 不是异常，@Transactional 不回滚）；{@code gross_finding} 的
+     *       update 带原值做乐观比对，并发下 0 行即 5222，不落半截。</li>
+     * </ul>
+     * 返回 {@code revisionSeq}（本版号）、{@code grossFieldCount}（本版字段行数）、{@code grossFinding}（新文本）。
+     */
+    @PutMapping("/grossing/{specimenId}/fields")
+    @Transactional
+    public R<Map<String, Object>> reviseGrossFields(@PathVariable Long specimenId,
+                                                    @RequestBody GrossReviseReq req, Authentication auth) {
+        if (specimenId == null) return R.fail(5222, "标本 id 不能为空");
+        if (req == null) return R.fail(5222, "修订内容不能为空");
+
+        String templateCode = trimUpper(req.templateCode());
+        if (templateCode != null && !templateCatalog().containsKey(templateCode)) {
+            return R.fail(5225, "取材模板不存在：" + req.templateCode());
+        }
+        String assembled;
+        try {
+            assembled = assembleGross(req.gross(), trim(req.grossText()));
+        } catch (IllegalArgumentException e) {
+            return R.fail(5222, e.getMessage());
+        }
+        if (assembled == null) return R.fail(5222, "修订内容不能为空：字段与自由描述至少填一项");
+
+        var head = one("""
+                select s.id, s.received_at, s.rejected_at, s.diagnosed_at, s.gross_finding
+                from path_specimen s where s.id = ?
+                """, specimenId);
+        if (head == null) return R.fail(5220, "标本不存在：" + specimenId);
+        if (head.get("rejected_at") != null) return R.fail(5221, "标本已拒收，不能修订取材描述");
+        if (head.get("received_at") == null) return R.fail(5221, "标本尚未核收，不能修订取材描述");
+        if (head.get("diagnosed_at") != null) {
+            return R.fail(5221, "标本已出诊断，取材端不再修订大体所见");
+        }
+        String existingRaw = (String) head.get("gross_finding");
+        String existing = trim(existingRaw);
+        if (existing == null) {
+            return R.fail(5221, "该标本尚无大体所见，无从修订：请先在取材登记里填写");
+        }
+        if (assembled.equals(existing)) {
+            return R.fail(5222, "修订后的大体描述与当前相同，没有变化就没有新版本");
+        }
+
+        Long uid = currentUserService.idOf(auth);
+        if (uid == null) return R.fail(5224, "无法识别当前登录用户，不能修订取材描述");
+
+        int written = jdbc.update("""
+                update path_specimen set gross_finding = ?
+                where id = ? and gross_finding = ? and diagnosed_at is null
+                """, assembled, specimenId, existingRaw);
+        if (written != 1) {
+            return R.fail(5222, "该标本的大体所见刚被另一次操作改写，本次未落任何内容，请刷新后再看");
+        }
+        int revisionSeq = insertGrossRevision(jdbc, specimenId, existingRaw, assembled, "GROSSING_EDIT", uid, templateCode);
+        int grossFieldCount = storeGrossFields(specimenId, revisionSeq, req.gross(), uid);
+
+        var body = new LinkedHashMap<String, Object>();
+        body.put("revisionSeq", revisionSeq);
+        body.put("grossFieldCount", grossFieldCount);
+        body.put("grossFinding", assembled);
         return R.ok(body);
     }
 
@@ -1222,13 +1342,18 @@ public class PathologyProcessController {
         // v58（2530）：字段级记录与修订留痕（V164）。fieldsAvailable 只看「有没有字段行」——
         // gross_finding 非空却无字段行（V164 之前的历史标本 / 纯自由文本）就是 false，
         // **不从文本反解析出字段**：「大小：2×1cm；切面：灰白」按标点猜成字段，猜错就是假结构化。
-        var fieldRows = jdbc.queryForList("""
+        // v59（V166）：字段行随修订版本化——只回「最大 revision_seq 中有字段行的那一版」，
+        // 并把它的版号（fieldsRevisionSeq）与文本的最新版号（textRevisionSeq = 修订表最大 seq）并排给出，
+        // 两者相等才是 fieldsCurrent=true；诊断覆盖只改文本不改字段，此时为 false，读的人以文本为准。
+        Integer fieldsRevisionSeq = jdbc.queryForObject(
+                "select max(revision_seq) from path_gross_field where specimen_id = ?", Integer.class, specimenId);
+        var fieldRows = fieldsRevisionSeq == null ? List.<Map<String, Object>>of() : jdbc.queryForList("""
                 select f.seq, f.label, f.value, f.created_at, f.operator_id, u.real_name as operator_name
                 from path_gross_field f
                 left join sys_user u on u.id = f.operator_id
-                where f.specimen_id = ?
+                where f.specimen_id = ? and f.revision_seq = ?
                 order by f.seq asc
-                """, specimenId);
+                """, specimenId, fieldsRevisionSeq);
         var fields = new ArrayList<Map<String, Object>>(fieldRows.size());
         for (var f : fieldRows) {
             var m = new LinkedHashMap<String, Object>();
@@ -1241,23 +1366,28 @@ public class PathologyProcessController {
             fields.add(m);
         }
         var revisionRows = jdbc.queryForList("""
-                select r.seq, r.old_text, r.new_text, r.source, r.changed_at, r.changed_by, u.real_name as changed_by_name
+                select r.seq, r.old_text, r.new_text, r.source, r.template_code, r.changed_at, r.changed_by,
+                       u.real_name as changed_by_name
                 from path_gross_revision r
                 left join sys_user u on u.id = r.changed_by
                 where r.specimen_id = ?
                 order by r.seq asc
                 """, specimenId);
         var revisions = new ArrayList<Map<String, Object>>(revisionRows.size());
+        Integer textRevisionSeq = null;
         for (var r : revisionRows) {
             var m = new LinkedHashMap<String, Object>();
             m.put("seq", r.get("seq"));
             m.put("oldText", r.get("old_text"));
             m.put("newText", r.get("new_text"));
             m.put("source", r.get("source"));
+            m.put("sourceName", revisionSourceName((String) r.get("source"), r.get("old_text") != null));
+            m.put("templateCode", r.get("template_code"));   // v59：本次所用模板码；V166 之前的修订行与诊断覆盖为 null
             m.put("changedAt", r.get("changed_at"));
             m.put("changedBy", r.get("changed_by"));
             m.put("changedByName", r.get("changed_by_name"));
             revisions.add(m);
+            if (r.get("seq") instanceof Number n) textRevisionSeq = n.intValue();   // 按 seq 升序，最后一条即最大
         }
 
         String gross = trim((String) head.get("gross_finding"));
@@ -1268,16 +1398,22 @@ public class PathologyProcessController {
         body.put("grossFindingPresent", gross != null);
         body.put("fieldsAvailable", !fields.isEmpty());
         body.put("fields", fields);
+        body.put("fieldsRevisionSeq", fields.isEmpty() ? null : fieldsRevisionSeq);   // v59：fields 属于哪一版
+        body.put("textRevisionSeq", textRevisionSeq);                                   // v59：文本的最新版号（无修订为 null）
+        body.put("fieldsCurrent", !fields.isEmpty() && fieldsRevisionSeq != null && fieldsRevisionSeq.equals(textRevisionSeq));
         body.put("revisions", revisions);
         body.put("diagnosedAt", head.get("diagnosed_at"));
         body.put("blocks", blocks);
         body.put("blockCount", blocks.size());
         body.put("grossingEvents", events);
-        body.put("note", "grossFinding 读自 path_specimen.gross_finding（取材端点只在为空时写，诊断端点非空即覆盖、空白即保留原值（v57 起）），"
+        body.put("note", "grossFinding 读自 path_specimen.gross_finding（取材端点为空时首写、append 带描述时追加为新版本（v59），"
+                + "诊断端点非空即覆盖、空白即保留原值（v57 起）），"
                 + "库里没有「这段文字由谁写」的事实，本端点不猜来源：grossingEvents 是取材打点，"
                 + "diagnosedAt 是诊断时刻，请自行对时间线。"
-                + "fields 是取材时按入参顺序落库的字段行（v58，V164 起），fieldsAvailable=false 即无字段行"
-                + "（历史标本或纯自由文本），不从 grossFinding 反解析；revisions 是该列的修订留痕，按 seq 升序。");
+                + "fields 是按入参顺序落库的字段行（v58，V164 起），只回最大 revision_seq 中有字段行的那一版（v59，V166 起），"
+                + "fieldsAvailable=false 即无字段行（历史标本或纯自由文本），不从 grossFinding 反解析；"
+                + "fieldsRevisionSeq / textRevisionSeq 分别是字段与文本的版号，fieldsCurrent=false 表示文本已被诊断修订、以文本为准；"
+                + "revisions 是该列的修订留痕，按 seq 升序，sourceName 是来源中文名，templateCode 是本次所用模板码。");
         return R.ok(body);
     }
 
@@ -1769,14 +1905,13 @@ public class PathologyProcessController {
     /**
      * v58（2530）：把结构化字段按<b>入参顺序</b>逐条落 {@code path_gross_field}，返回落库行数。
      * 取舍与 {@link #assembleGross} 逐字一致（label / value 都 trim；值为空的字段整条略去），
-     * 越界在 assembleGross 里已经拒掉，这里不再二次校验。seq 从既有最大号 +1 续排——按现行规则
-     * （已有大体所见即 5222）一个标本只会写一次，续排只是防御，不是允许多次。
+     * 越界在 assembleGross 里已经拒掉，这里不再二次校验。
+     * v59（V166）：每套字段行带 {@code revisionSeq}（所属修订版号），seq 在本版内从 1 起——
+     * 唯一约束是 (specimen_id, revision_seq, seq)，一个标本每一版各自一套字段行。
      * 顺序来自调用方的 {@link Map} 迭代序：Jackson 反序列化的 Map 是 LinkedHashMap，即前端字段顺序。
      */
-    private int storeGrossFields(Long specimenId, Map<String, String> gross, Long uid) {
+    private int storeGrossFields(Long specimenId, int revisionSeq, Map<String, String> gross, Long uid) {
         if (gross == null || gross.isEmpty()) return 0;
-        Integer base = jdbc.queryForObject(
-                "select coalesce(max(seq), 0) from path_gross_field where specimen_id = ?", Integer.class, specimenId);
         int n = 0;
         for (var e : gross.entrySet()) {
             String label = trim(e.getKey());
@@ -1784,9 +1919,9 @@ public class PathologyProcessController {
             if (label == null || value == null) continue;
             n++;
             jdbc.update("""
-                    insert into path_gross_field(specimen_id, seq, label, value, operator_id)
-                    values (?, ?, ?, ?, ?)
-                    """, specimenId, (base == null ? 0 : base) + n, label, value, uid);
+                    insert into path_gross_field(specimen_id, revision_seq, seq, label, value, operator_id)
+                    values (?, ?, ?, ?, ?, ?)
+                    """, specimenId, revisionSeq, n, label, value, uid);
         }
         return n;
     }
@@ -1794,17 +1929,28 @@ public class PathologyProcessController {
     /**
      * v58（2530）：大体所见修订留痕一行。seq 由单条 insert 内的子查询取 max+1（并发撞号由
      * {@code uq_path_gross_revision_seq} 兜底）；{@code changed_at} 由库端 now() 落，Java 侧不产生时间。
-     * 包级静态：诊断端点（{@link PathologyController#diagnose}）覆盖该列时走同一条 SQL，两处不各写一份。
-     * 参数上的显式转型不是装饰：{@code insert … select} 的 select 列表里传 null 时 PostgreSQL 报
-     * 「could not determine data type of parameter」。
+     * 包级静态：诊断端点（{@link PathologyController#diagnose}）覆盖该列时走同一条 SQL，两处不各写一份
+     * （诊断没有模板，走这个六参形态，template_code 恒 NULL）。
      */
     static void insertGrossRevision(JdbcTemplate jdbc, Long specimenId, String oldText, String newText,
                                     String source, Long changedBy) {
-        jdbc.update("""
-                insert into path_gross_revision(specimen_id, seq, old_text, new_text, source, changed_by)
-                select ?::bigint, coalesce(max(r.seq), 0) + 1, ?::text, ?::text, ?::varchar, ?::bigint
+        insertGrossRevision(jdbc, specimenId, oldText, newText, source, changedBy, null);
+    }
+
+    /**
+     * v59（V166）：带模板码的修订留痕，<b>返回本行 seq</b>——调用方拿它给字段行标 revision_seq。
+     * 参数上的显式转型不是装饰：{@code insert … select} 的 select 列表里传 null 时 PostgreSQL 报
+     * 「could not determine data type of parameter」。
+     */
+    static int insertGrossRevision(JdbcTemplate jdbc, Long specimenId, String oldText, String newText,
+                                   String source, Long changedBy, String templateCode) {
+        Integer seq = jdbc.queryForObject("""
+                insert into path_gross_revision(specimen_id, seq, old_text, new_text, source, changed_by, template_code)
+                select ?::bigint, coalesce(max(r.seq), 0) + 1, ?::text, ?::text, ?::varchar, ?::bigint, ?::varchar
                 from path_gross_revision r where r.specimen_id = ?
-                """, specimenId, oldText, newText, source, changedBy, specimenId);
+                returning seq
+                """, Integer.class, specimenId, oldText, newText, source, changedBy, templateCode, specimenId);
+        return seq == null ? 0 : seq;
     }
 
     /** 流转节点（occurred_at = now()：PostgreSQL 里是事务开始时刻，事务内恒定） */

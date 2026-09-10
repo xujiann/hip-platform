@@ -28,9 +28,10 @@
         <el-table :data="pathPending" size="small" border>
           <el-table-column prop="patient_name" label="患者" width="90" />
           <el-table-column prop="item_name" label="项目" show-overflow-tooltip />
-          <el-table-column label="操作" width="110">
-            <template #default="{ row }">
-              <el-button link type="primary" size="small" :loading="collectBusy === row.order_id" @click="collect(row)">取材打码</el-button>
+          <el-table-column label="操作" width="160">
+            <template #default>
+              <!-- 2530（v59）：登记标本描述必填且必须是真实描述，本页不再替人填——去工作台登记页录入 -->
+              <el-button link type="success" size="small" @click="goWorkbench">去病理工作台登记</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -236,7 +237,6 @@ const anesRecords = ref<Record<string, unknown>[]>([])
 const pacu = ref<{ latestScore: number; canLeave: boolean } | null>(null)
 const anes = reactive({ surgeryId: '', phase: 'INTRA', hr: '', sbp: '', dbp: '', spo2: '', stewardScore: '' })
 const busyId = ref<unknown>(null)
-const collectBusy = ref<unknown>(null)
 const startErLoading = ref(false)
 const recordAnesLoading = ref(false)
 const recordIcuLoading = ref(false)
@@ -310,15 +310,9 @@ async function verify(row: Record<string, unknown>) {
     await loadRis()
   } finally { busyId.value = null }
 }
-async function collect(row: Record<string, unknown>) {
-  collectBusy.value = row.order_id
-  try {
-    const resp = await client.post('/pathology/specimens', null,
-      { params: { orderId: row.order_id, specimenDesc: '手术切除标本' } })
-    ElMessage.success(`取材成功，条码 ${resp.data.data.barcode}`)
-    await Promise.all([loadPathPending(), loadSpecimens()])
-  } finally { collectBusy.value = null }
-}
+// 2530（v59）：本页曾在这里把一段写死的标本描述当真实事实落进 path_specimen.specimen_desc
+// （把活检写成别的标本类型，之后被检索 / history / grossing 头回出）。登记一律去病理工作台，
+// 那里的登记页要人填真实描述，后端也改为必填（4554）。
 async function receive(row: Record<string, unknown>) {
   busyId.value = row.id
   try {

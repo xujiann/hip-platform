@@ -176,8 +176,13 @@ class V58GrossFieldsTest {
         assertNotNull(fields.get(0).get("createdAt"));
         var rv = rows(view, "revisions");
         assertEquals(1, rv.size());
-        assertEquals(Set.of("seq", "oldText", "newText", "source", "changedAt", "changedBy", "changedByName"),
+        // v59（V166）契约更新：修订项多两个键——sourceName（来源中文名）与 templateCode（本次所用模板码，不用模板为 null）；
+        // v58 的七个键一个不动。字段项的键不变（版号在顶层 fieldsRevisionSeq 给）。
+        assertEquals(Set.of("seq", "oldText", "newText", "source", "sourceName", "templateCode",
+                        "changedAt", "changedBy", "changedByName"),
                 rv.get(0).keySet());
+        assertEquals("取材首写", rv.get(0).get("sourceName"));
+        assertNull(rv.get(0).get("templateCode"), "本次没用模板");
         assertEquals(1, seq(rv.get(0)));
         assertNull(rv.get(0).get("oldText"));
         assertEquals(expected, rv.get(0).get("newText"));
@@ -208,13 +213,18 @@ class V58GrossFieldsTest {
         assertEquals(1, revisionRows(f.id()).size(), "没有新描述就没有新版本");
         assertEquals(2, ((Number) gr.get("totalBlockCount")).intValue());
 
-        // 既有规则保留：已有大体所见再传 gross → 5222，两张表仍零变化
+        // v59（2530 复核）契约更新：已有大体所见后 append=true 再传 gross **不再 5222**，而是追加为新版本
+        // （修订 seq2 source=GROSSING、old_text=原文、字段行落在 revision_seq=2 下，第 1 版两行不动）。
+        // 「append=false 仍 5222」的反向事实与拼接文本口径钉在 V59GrossReviseTest (e)。
         var again = new LinkedHashMap<String, String>();
         again.put("大小", "3×2cm");
-        assertEquals(5222, process.grossing(new GrossingReq(f.id(), null, again, null, true, null,
-                List.of(new BlockReq("x"))), doc).getCode());
-        assertEquals(2, fieldRows(f.id()).size());
-        assertEquals(1, revisionRows(f.id()).size());
+        var gr2 = ok(process.grossing(new GrossingReq(f.id(), null, again, null, true, null,
+                List.of(new BlockReq("x"))), doc));
+        assertEquals(Boolean.TRUE, gr2.get("grossFindingWritten"));
+        assertEquals(1, ((Number) gr2.get("grossFieldCount")).intValue());
+        assertEquals(3, fieldRows(f.id()).size(), "v59：追加版的一行字段加在第 1 版两行之后（不同 revision_seq）");
+        assertEquals(2, revisionRows(f.id()).size(), "v59：追加出第 2 版");
+        assertEquals("GROSSING", revisionRows(f.id()).get(1).get("source"));
     }
 
     // =====================================================================================

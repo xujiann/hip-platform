@@ -65,9 +65,11 @@
     <el-table-column label="蜡块/切片" width="90">
       <template #default="{ row }">{{ num(row.block_count) }} / {{ num(row.slide_count) }}</template>
     </el-table-column>
-    <el-table-column label="操作" width="190" fixed="right">
+    <el-table-column label="操作" width="290" fixed="right">
       <template #default="{ row }">
         <el-button link type="primary" size="small" @click="openGrossing(row)">取材登记</el-button>
+        <!-- v59（2530 复核）：未诊断前取材员可改自己录的字段与文本，出新版本；诊断后由诊断端点修订 -->
+        <el-button v-if="canRevise(row)" link type="warning" size="small" @click="openRevise(row)">修订取材描述</el-button>
         <el-button link type="primary" size="small" @click="openView(Number(row.id))">查看大体所见</el-button>
       </template>
     </el-table-column>
@@ -102,7 +104,12 @@
       <div class="sec">
         <b>字段级记录</b>
         <template v-if="view.fieldsAvailable === true">
-          <el-tag size="small" type="success" style="margin-left: 6px">取材时按字段落库（{{ viewFields.length }} 项）</el-tag>
+          <el-tag size="small" :type="view.fieldsCurrent === false ? 'warning' : 'success'" style="margin-left: 6px">
+            第 {{ fmt(view.fieldsRevisionSeq) }} 版字段（{{ viewFields.length }} 项）
+            {{ view.fieldsCurrent === false ? '' : '，与当前文本同版' }}</el-tag>
+          <!-- v59：字段随版本走；诊断只改文本不改字段，两者分叉时明说，不让两处并排自相矛盾 -->
+          <el-alert v-if="view.fieldsCurrent === false" type="warning" show-icon :closable="false" style="margin-top: 4px"
+                    :title="`字段级记录对应第 ${fmt(view.fieldsRevisionSeq)} 版，文本已在第 ${fmt(view.textRevisionSeq)} 版被诊断修订，以文本为准`" />
           <el-table :data="viewFields" size="small" border max-height="200" style="margin-top: 4px">
             <el-table-column label="#" width="50">
               <template #default="{ row }">{{ fmt(row.seq) }}</template>
@@ -166,8 +173,8 @@
     </template>
   </el-dialog>
 
-  <!-- ============ 取材登记 ============ -->
-  <el-dialog v-model="dialog" title="取材登记" width="760px" top="6vh">
+  <!-- ============ 取材登记 / 修订取材描述（v59 起同一张表单两种模式） ============ -->
+  <el-dialog v-model="dialog" :title="mode === 'REVISE' ? '修订取材描述' : '取材登记'" width="760px" top="6vh">
     <el-descriptions :column="3" border size="small" class="cav">
       <el-descriptions-item label="病理号">
         <span class="code">{{ fmt(current.path_no) }}</span>
@@ -181,27 +188,35 @@
       <el-descriptions-item label="取材部位">{{ fmt(current.sampling_site) }}</el-descriptions-item>
     </el-descriptions>
 
-    <el-alert v-if="num(current.block_count) > 0" type="warning" show-icon :closable="false" class="cav"
+    <el-alert v-if="mode === 'GROSSING' && num(current.block_count) > 0" type="warning" show-icon :closable="false" class="cav"
               title="该标本已有蜡块：第二次及以后的取材必须显式勾选「补取材」，否则后端返 5223。误点两次「取材」凭空多出一组蜡块是事故，与病理医师看完 HE 片后下的补取材必须区分开。" />
 
     <!-- 已有大体所见：先给人看见，再决定怎么填——否则填了结构化字段提交才吃 5222 -->
     <div v-if="existingGross" class="sec" v-loading="existingLoading">
-      <b>该标本已录入的大体所见</b>
-      <el-tag size="small" type="info" style="margin-left: 6px">只读；本端点不覆盖</el-tag>
+      <b>{{ mode === 'REVISE' ? '当前大体所见（修订前，将记为 old_text）' : '该标本已录入的大体所见' }}</b>
+      <el-tag size="small" type="info" style="margin-left: 6px">
+        {{ mode === 'REVISE' ? `当前第 ${fmt(existingTextSeq)} 版` : '只读；不覆盖，勾选「补取材」后可作为新版本追加' }}</el-tag>
       <pre>{{ existingGross }}</pre>
     </div>
 
+    <!-- v59：修订预填——字段来自库里最新一版字段行，自由描述由当前文本剥掉字段前缀得到；拆不开时整段放自由描述 -->
+    <el-alert v-if="mode === 'REVISE' && revisePrefillNote" type="warning" show-icon :closable="false" class="cav"
+              :title="revisePrefillNote" />
+
     <el-form label-width="100px" size="small">
-      <el-form-item label="补取材">
+      <el-form-item v-if="mode === 'GROSSING'" label="补取材">
         <el-switch v-model="form.append" />
         <span class="muted" style="margin-left: 8px">已诊断标本的补取材同样必须显式声明</span>
       </el-form-item>
 
-      <el-form-item v-if="existingGross" label="大体所见">
-        <span class="muted">已有内容（见上），本次不再填写：补取材的组织描述请写在各蜡块里，修订大体所见走诊断端点</span>
+      <el-form-item v-if="mode === 'GROSSING' && existingGross && !form.append" label="大体所见">
+        <span class="muted">已有内容（见上），本次不再填写：勾选「补取材」后可填写本次描述（作为新版本追加）；修订既有描述用列表里的「修订取材描述」</span>
       </el-form-item>
 
-      <el-form-item v-if="!existingGross" label="取材模板">
+      <el-alert v-if="mode === 'GROSSING' && existingGross && form.append" type="info" show-icon :closable="false" class="cav"
+                title="本次填写的描述将作为新版本追加：新文本 = 既有文本 + 「。补取材：」 + 本次描述，不覆盖既有内容；不填则只加蜡块、不出新版本。" />
+
+      <el-form-item v-if="showGrossInputs" label="取材模板">
         <el-select v-model="form.templateCode" clearable placeholder="不用模板" style="width: 260px"
                    @change="onTemplateChange">
           <el-option v-for="t in templates" :key="String(t.code)" :value="String(t.code)"
@@ -211,17 +226,17 @@
                     style="margin-left: 6px">{{ t.source === 'CONFIG' ? '配置' : '内置' }}</el-tag>
           </el-option>
         </el-select>
-        <span v-if="templateNote" class="muted" style="margin-left: 8px">字段清单可配，模板管理未做</span>
+        <span v-if="templateNote" class="muted" style="margin-left: 8px">字段清单可配，模板管理未做；模板码随本版修订落库</span>
       </el-form-item>
 
-      <el-form-item v-if="!existingGross && currentTemplate && currentTemplate.example" label="示例描述">
+      <el-form-item v-if="showGrossInputs && currentTemplate && currentTemplate.example" label="示例描述">
         <span class="muted">{{ currentTemplate.example }}</span>
       </el-form-item>
-      <el-form-item v-else-if="!existingGross && currentTemplate" label="示例描述">
+      <el-form-item v-else-if="showGrossInputs && currentTemplate" label="示例描述">
         <span class="muted">—（配置新增的模板无示例文本：sys_config 只有 255 字符，不编一段假的）</span>
       </el-form-item>
 
-      <template v-if="!existingGross">
+      <template v-if="showGrossInputs">
         <el-form-item v-for="f in grossFields" :key="f" :label="f">
           <el-input v-model="form.gross[f]" maxlength="300" show-word-limit />
         </el-form-item>
@@ -232,7 +247,7 @@
         </el-form-item>
       </template>
 
-      <el-form-item label="蜡块">
+      <el-form-item v-if="mode === 'GROSSING'" label="蜡块">
         <div style="width: 100%">
           <el-button size="small" @click="addBlock">增加一块</el-button>
           <span class="muted" style="margin-left: 8px">
@@ -249,17 +264,20 @@
         </div>
       </el-form-item>
 
-      <el-form-item label="备注">
+      <el-form-item v-if="mode === 'GROSSING'" label="备注">
         <el-input v-model="form.remark" maxlength="255" show-word-limit />
       </el-form-item>
     </el-form>
 
-    <el-alert type="info" :closable="false" show-icon
-              title="大体所见只在该标本此列为空时写入，绝不覆盖：该列同时被病理医师出报告时修订。已有大体所见还传结构化字段/自由描述会被拒（5222），补取材的组织描述请写在各蜡块里。" />
+    <el-alert v-if="mode === 'GROSSING'" type="info" :closable="false" show-icon
+              title="大体所见为空时首写；已有内容时不覆盖——勾选「补取材」后填写的描述作为新版本追加（v59），未勾选还传描述会被拒（5222）。该列同时被病理医师出报告时修订。" />
+    <el-alert v-else type="info" :closable="false" show-icon
+              title="提交后生成新一版修订（来源「取材修订」）：字段行落在新版下、文本整体替换、修订前原文留痕；仅未诊断前可用，诊断后由诊断端点修订。与当前文本完全相同会被拒（没有变化就没有版本）。" />
 
     <template #footer>
       <el-button size="small" @click="dialog = false">取消</el-button>
-      <el-button type="primary" size="small" :loading="saving" @click="submit">登记取材</el-button>
+      <el-button v-if="mode === 'GROSSING'" type="primary" size="small" :loading="saving" @click="submit">登记取材</el-button>
+      <el-button v-else type="warning" size="small" :loading="saving" @click="submitRevise">提交修订</el-button>
     </template>
   </el-dialog>
 
@@ -380,22 +398,34 @@ async function loadTemplates() {
 const currentTemplate = computed<Row | null>(
   () => templates.value.find((t) => String(t.code) === form.templateCode) ?? null,
 )
-const grossFields = computed<string[]>(
-  () => ((currentTemplate.value?.fields ?? []) as string[]),
-)
+/** 字段清单 = 模板字段 + 表单里已有的其它键（修订预填自库里字段行时，不在模板里的字段也得有输入框，不能悄悄丢） */
+const grossFields = computed<string[]>(() => {
+  const out: string[] = [...((currentTemplate.value?.fields ?? []) as string[])]
+  for (const k of Object.keys(form.gross)) if (!out.includes(k)) out.push(k)
+  return out
+})
 
+/** 换模板：同名字段保留已填值，不在新模板里但已填了内容的字段也保留——悄悄吞掉用户写的字比多显示一个输入框坏得多 */
 function onTemplateChange() {
+  const kept = { ...form.gross }
   form.gross = {}
-  for (const f of grossFields.value) form.gross[f] = ''
+  for (const f of ((currentTemplate.value?.fields ?? []) as string[])) form.gross[f] = kept[f] ?? ''
+  for (const [k, v] of Object.entries(kept)) if (v && v.trim() && !(k in form.gross)) form.gross[k] = v
 }
 
-/* ---------------- 取材登记 ---------------- */
+/* ---------------- 取材登记 / 修订取材描述 ---------------- */
 const dialog = ref(false)
+/** GROSSING = 取材登记（POST /grossing）；REVISE = 修订取材描述（PUT /grossing/{id}/fields，v59） */
+const mode = ref<'GROSSING' | 'REVISE'>('GROSSING')
 const resultDialog = ref(false)
 const saving = ref(false)
 const current = ref<Row>({})
 const result = ref<Row>({})
 const resultBlocks = computed<Row[]>(() => (result.value.blocks ?? []) as Row[])
+/** 描述输入框何时出现：修订模式恒出；取材模式在无既有大体所见、或勾了补取材（作为新版本追加）时出 */
+const showGrossInputs = computed(
+  () => mode.value === 'REVISE' || !existingGross.value || form.append,
+)
 
 const form = reactive({
   templateCode: '',
@@ -420,6 +450,7 @@ function addBlock() {
  * 人就得填完一整段再被拒——补取材场景（已有蜡块）几乎必然踩到。
  */
 const existingGross = ref('')
+const existingTextSeq = ref<unknown>(null)   // v59：既有文本的版号（textRevisionSeq），修订对话框里给人看
 const existingLoading = ref(false)
 
 async function loadExistingGross(specimenId: number) {
@@ -427,14 +458,17 @@ async function loadExistingGross(specimenId: number) {
   try {
     const d = (await client.get(`/pathology/process/grossing/${specimenId}`)).data.data as Row
     existingGross.value = d.grossFindingPresent === true ? String(d.grossFinding ?? '') : ''
+    existingTextSeq.value = d.textRevisionSeq ?? null
   } catch {
     existingGross.value = ''   // 取不到就按「未知」处理：仍允许填写，由后端最终裁决
+    existingTextSeq.value = null
   } finally {
     existingLoading.value = false
   }
 }
 
 function openGrossing(row: Row) {
+  mode.value = 'GROSSING'
   current.value = row
   Object.assign(form, {
     templateCode: '',
@@ -448,8 +482,97 @@ function openGrossing(row: Row) {
     blocks: [{ tissueDesc: '' }],
   })
   existingGross.value = ''
+  existingTextSeq.value = null
+  revisePrefillNote.value = ''
   dialog.value = true
   void loadExistingGross(Number(row.id))
+}
+
+/* ---------------- 修订取材描述（v59，2530 复核） ---------------- */
+const revisePrefillNote = ref('')
+
+/** 只对未诊断的标本给入口：诊断后由诊断端点修订，后端也会以 5221 拒 */
+function canRevise(row: Row): boolean {
+  return row.diagnosed_at == null && row.rejected_at == null
+}
+
+/**
+ * 把当前文本按取材端点的拼装规则（「标签：值」以「；」相连，末尾「。」接自由文本）拆回字段 + 自由描述。
+ * 字段来自库里最新一版字段行，不从文本猜；文本与字段拼不上（如经补取材追加、或只有自由文本）时，
+ * 整段放进自由描述、字段留空——既不丢字，也不会提交后拼出重复内容。
+ */
+function splitGross(text: string, fields: Row[]): { gross: Record<string, string>; free: string; parsed: boolean } {
+  const gross: Record<string, string> = {}
+  for (const f of fields) gross[String(f.label)] = String(f.value ?? '')
+  if (!fields.length) return { gross, free: text, parsed: true }
+  const prefix = fields.map((f) => `${String(f.label)}：${String(f.value ?? '')}`).join('；')
+  if (text === prefix) return { gross, free: '', parsed: true }
+  if (text.startsWith(prefix + '。')) return { gross, free: text.slice(prefix.length + 1), parsed: true }
+  return { gross: {}, free: text, parsed: false }
+}
+
+async function openRevise(row: Row) {
+  let d: Row
+  try {
+    d = (await client.get(`/pathology/process/grossing/${Number(row.id)}`)).data.data as Row
+  } catch {
+    return   // 拦截器已提示；取不到当前内容就不开表单，免得对着空白改
+  }
+  if (d.grossFindingPresent !== true) {
+    ElMessage.warning('该标本尚无大体所见，无从修订：请先「取材登记」填写')
+    return
+  }
+  mode.value = 'REVISE'
+  current.value = row
+  const text = String(d.grossFinding ?? '')
+  const fields = (d.fieldsCurrent === true ? (d.fields ?? []) : []) as Row[]
+  const split = splitGross(text, fields)
+  const revisions = (d.revisions ?? []) as Row[]
+  const lastTemplate = revisions.length ? revisions[revisions.length - 1]?.templateCode : null
+  const templateCode = lastTemplate != null && templates.value.some((t) => String(t.code) === String(lastTemplate))
+    ? String(lastTemplate) : ''
+  Object.assign(form, {
+    templateCode,
+    gross: split.gross,
+    grossText: split.free,
+    append: false,
+    remark: '',
+    blocks: [{ tissueDesc: '' }],
+  })
+  // 模板字段里没填过的也给输入框（值空则提交时略去），顺序：模板字段在前、既有字段在后
+  const tf = (templates.value.find((t) => String(t.code) === templateCode)?.fields ?? []) as string[]
+  for (const f of tf) if (!(f in form.gross)) form.gross[f] = ''
+  revisePrefillNote.value = split.parsed
+    ? (d.fieldsAvailable === true && d.fieldsCurrent !== true
+        ? `库里的字段行属于第 ${fmt(d.fieldsRevisionSeq)} 版，与当前第 ${fmt(d.textRevisionSeq)} 版文本不同版，未按它预填；已把当前文本整段放入自由描述`
+        : '')
+    : '当前文本不是由库里最新字段直接拼出的形态（如经补取材追加、或只有自由文本），已整段放入自由描述、字段留空；如需字段化请自行拆分'
+  existingGross.value = text
+  existingTextSeq.value = d.textRevisionSeq ?? null
+  dialog.value = true
+}
+
+async function submitRevise() {
+  saving.value = true
+  try {
+    const gross: Record<string, string> = {}
+    for (const [k, v] of Object.entries(form.gross)) if (v && v.trim()) gross[k] = v.trim()
+    if (!Object.keys(gross).length && !form.grossText.trim()) {
+      ElMessage.warning('字段与自由描述至少填一项')
+      return
+    }
+    const r = (await client.put(`/pathology/process/grossing/${Number(current.value.id)}/fields`, {
+      templateCode: form.templateCode || undefined,
+      gross: Object.keys(gross).length ? gross : undefined,
+      grossText: form.grossText || undefined,
+    })).data.data as Row
+    dialog.value = false
+    ElMessage.success(`已生成第 ${fmt(r.revisionSeq)} 版取材描述（字段 ${num(r.grossFieldCount)} 项）`)
+    await load()
+    emit('changed')
+  } finally {
+    saving.value = false
+  }
 }
 
 /* ---------------- 大体所见查看（只读，2530） ---------------- */
@@ -457,6 +580,7 @@ const viewDialog = ref(false)
 const viewLoading = ref(false)
 const view = ref<{ specimen?: Row; grossFinding?: unknown; grossFindingPresent?: unknown;
   fieldsAvailable?: unknown; fields?: Row[]; revisions?: Row[];
+  fieldsRevisionSeq?: unknown; textRevisionSeq?: unknown; fieldsCurrent?: unknown;   // v59：字段与文本各自的版号
   diagnosedAt?: unknown; blocks?: Row[]; grossingEvents?: Row[]; note?: unknown }>({})
 const viewBlocks = computed<Row[]>(() => (view.value.blocks ?? []) as Row[])
 const viewEvents = computed<Row[]>(() => (view.value.grossingEvents ?? []) as Row[])
@@ -501,12 +625,13 @@ async function submit() {
     const gross: Record<string, string> = {}
     for (const [k, v] of Object.entries(form.gross)) if (v && v.trim()) gross[k] = v.trim()
 
+    // v59：无既有大体所见 → 首写；已有且勾了补取材 → 作为新版本追加；已有且未勾 → 一律不传（后端会拒 5222）
+    const sendGross = !existingGross.value || form.append
     result.value = (await client.post('/pathology/process/grossing', {
       specimenId: Number(current.value.id),
       templateCode: form.templateCode || undefined,
-      // 已有大体所见时两者一律不传：后端会拒（5222），且那不是本次要写的东西
-      gross: !existingGross.value && Object.keys(gross).length ? gross : undefined,
-      grossText: !existingGross.value && form.grossText ? form.grossText : undefined,
+      gross: sendGross && Object.keys(gross).length ? gross : undefined,
+      grossText: sendGross && form.grossText ? form.grossText : undefined,
       append: form.append,
       remark: form.remark || undefined,
       blocks: form.blocks.map((b) => ({ tissueDesc: b.tissueDesc || undefined })),

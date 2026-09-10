@@ -37,11 +37,21 @@ public class PathologyController {
                 """));
     }
 
-    /** 取材登记（打码 PB-） */
+    /**
+     * 取材登记（打码 PB-）。
+     *
+     * <p><b>v59（2530 复核）：标本描述必填，空白 → 4554</b>。此前 {@code specimenDesc} 可空，而旧页
+     * 「专科流程」（SpecialtyView.vue，菜单 47）的「取材打码」把写死的「手术切除标本」落进
+     * {@code path_specimen.specimen_desc}——把活检写成手术切除标本的假事实，之后被检索 / history /
+     * grossing 头回出。旧页已改为跳病理工作台登记；本端点唯一外部调用方 tools/e2e-phase2226.py 本就传真实描述。
+     * 参数仍 {@code required=false}：缺参与空白都走 4554（业务码），不让 Spring 以 400 抢先。
+     * 判定在取号与 insert 之前——被拒路径不落任何东西、不消耗序列。
+     */
     @PostMapping("/specimens")
     @Transactional
     public R<Map<String, Object>> collect(@RequestParam Long orderId,
                                           @RequestParam(required = false) String specimenDesc) {
+        if (specimenDesc == null || specimenDesc.isBlank()) return R.fail(4554, "取材登记标本描述不能为空");
         String barcode = "PB" + jdbc.queryForObject("select nextval('path_specimen_seq')", Long.class);
         int n = jdbc.update("""
                 insert into path_specimen(order_id, barcode, specimen_desc)
