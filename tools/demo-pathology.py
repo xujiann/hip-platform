@@ -38,6 +38,12 @@
 
 所有患者名带时间戳后缀，脚本可在同一实例上反复跑而不撞名；复诊医师账号 demo_pathdoc 与
 质控账号 demo_quality 幂等复用（口令沿用 e2elib.provision_user 约定）。
+
+**v59（2558）既往可演示**：v58 版每个标本新建一名患者，跑完既往视图必然空表（反驳者原话）。本版阶梯里
+**前两个标本共用同一患者**（第一个走到双签已签发 + 补充报告，第二个停在已切片已染色未诊断），固定加的那个
+拒收标本也挂在同一患者上。于是在 ④ 诊断工位打开第二条时，既往页签有第一条（大体 / 镜下 / 诊断 / 补充报告正文）
+可「对比」、书写首次报告时可「查看既往」；拒收那条不算既往（① 登记页既往抽屉默认也不含，「含拒收」才带并标已拒收）。
+脚本造完后**回读 /prior 与 /history 两个端点核对这条口径**（见 verify_prior_history），不对就以非 0 退出。
 """
 import argparse
 import datetime
@@ -109,11 +115,15 @@ def visited(pid, dept_id=1):
     return reg['id']
 
 
+_used_orders = set()
+
+
 def pathology_order(pid, name):
     """自建一条已收费的门诊病理申请，返回 order_id。
     在待取材队列里**按 patient_name 认领自己的**（既有 GET /pathology/pending 只回
     order_id/item_name/group_no/patient_name 四键，没有 patient_id；患者名带时间戳后缀），
-    不拿 pend[0]——脏库里 pend[0] 可能是别人的。"""
+    不拿 pend[0]——脏库里 pend[0] 可能是别人的。v59 起同一患者会连开多单（既往演示），
+    故再排除本次已认领过的 order_id、取最新的一条（每次都是新排班 + 新挂号，不撞 3002）。"""
     rid = visited(pid)
     items = do('收费项目', 'GET', '/masterdata/charge-items')
     cand = next((i for i in items if '病理' in (i.get('name') or '') or '活检' in (i.get('name') or '')), None)
@@ -122,8 +132,11 @@ def pathology_order(pid, name):
        {'lines': [{'orderType': 'EXAM', 'itemId': cand['id'], 'qty': 1}]})
     do('结算', 'POST', '/outpatient/charges/settle', {'registrationId': rid, 'payMethod': 'CASH'})
     pend = do('待取材', 'GET', '/pathology/pending')
-    oid = next((p['order_id'] for p in pend if p.get('order_id') and p.get('patient_name') == name), None)
-    assert oid, f'待取材队列里没有患者 {name} 刚开的病理医嘱：{pend[:3]}'
+    mine = [p['order_id'] for p in pend
+            if p.get('order_id') and p.get('patient_name') == name and p['order_id'] not in _used_orders]
+    assert mine, f'待取材队列里没有患者 {name} 刚开的病理医嘱：{pend[:3]}'
+    oid = max(mine)
+    _used_orders.add(oid)
     return oid
 
 
@@ -220,15 +233,19 @@ def supplement(sid):
 
 
 # ===========================================================================
-# 阶梯：从顶端往下轮流分配，N=1/2 也能出「已签发 + 有蜡块」的数
+# 阶梯：从顶端往下轮流分配，N=1/2 也能出「已签发 + 有蜡块」的数。
+# v59：第二档改为「已切片已染色未诊断」——它与第一档共用患者，是 ④ 待诊断默认列表里就能看见、
+# 打开即有既往可对比、书写诊断时可「查看既往」的那一条；「已诊断未签发」顺延到第三档。
 # ===========================================================================
 LADDER = [
     ('ISSUED', '双签已签发'),
-    ('DIAGNOSED', '已诊断未签发'),
     ('STAINED', '已切片已染色未诊断'),
+    ('DIAGNOSED', '已诊断未签发'),
     ('RECEIVED', '已核收未取材'),
     ('COLLECTED', '已登记未核收'),
 ]
+# 共用患者的标本序号（0 基）：阶梯前两个 + 固定加的拒收标本（拒收那条用来演示「拒收不算既往」）
+SHARED_PATIENT_IDX = {0, 1}
 VARIANTS = ['SUPPLEMENT', 'IHC_ATTACH', 'TECH_CANCEL']
 SITES = ['左乳外上象限', '右乳内下象限', '胃窦小弯侧', '乙状结肠', '甲状腺左叶', '子宫颈 3 点']
 
@@ -239,13 +256,23 @@ for k, v in enumerate(VARIANTS):
     variants_of[issued_idx[k % len(issued_idx)]].append(v)
 
 
+_shared = {}   # 共用患者：第一个标本建好后填 {'pid', 'name'}
+
+
 def build(idx, stage, label, variants, t2):
-    name = f'演示病理{idx + 1:02d}号{SUF}'
-    rec = {'idx': idx + 1, 'stage': stage, 'label': label, 'name': name, 'blocks': 0, 'slides': 0,
-           'extras': [], 'last': None}
-    say(f'--- 标本 {idx + 1}/{len(plan)}：{label}{"（" + "、".join(variants) + "）" if variants else ""} 患者 {name}')
-    _last_step[0] = '建患者'
-    pid = new_patient(t, name, sex='F' if idx % 2 == 0 else 'M')['id']
+    shared = idx in SHARED_PATIENT_IDX or stage == 'REJECTED'
+    if shared and _shared:
+        pid, name = _shared['pid'], _shared['name']
+    else:
+        name = f'演示病理{idx + 1:02d}号{SUF}'
+        _last_step[0] = '建患者'
+        pid = new_patient(t, name, sex='F' if idx % 2 == 0 else 'M')['id']
+        if shared:
+            _shared.update(pid=pid, name=name)
+    rec = {'idx': idx + 1, 'stage': stage, 'label': label, 'name': name, 'pid': pid, 'shared': shared,
+           'blocks': 0, 'slides': 0, 'extras': [], 'last': None}
+    say(f'--- 标本 {idx + 1}/{len(plan)}：{label}{"（" + "、".join(variants) + "）" if variants else ""} '
+        f'患者 {name}{"（与首个标本同一患者，既往演示）" if shared and idx != 0 else ""}')
     oid = pathology_order(pid, name)
     site = SITES[idx % len(SITES)]
     sid, bc, pno = register(oid, 1, f'{site}肿物（演示）', site, '肿物待查')
@@ -307,6 +334,44 @@ def current_state(rec):
     return {'COLLECTED': '已登记', 'RECEIVED': '已核收', 'DIAGNOSED': '已诊断'}.get(row.get('status'), row.get('status')), row
 
 
+def verify_prior_history(records):
+    """v59（2558）：造完后回读既往两端点，核对「既往 = 同一患者、已写诊断、未拒收的其他标本」这条口径。
+    返回一行可打印的结论；--count 1 时没有第二条，返回 None（拒收那条虽同患者，但它不是拿来看既往的）。"""
+    by_idx = {r['idx']: r for r in records}
+    first, second = by_idx.get(1), by_idx.get(2)
+    rejected = next((r for r in records if r['stage'] == 'REJECTED'), None)
+    if not (first and second and second['shared'] and second['stage'] != 'REJECTED'):
+        return None   # --count 1：第 2 条就是拒收那条，它不是拿来看既往的
+    assert first['stage'] == 'ISSUED', f'阶梯第一档应是已签发：{first}'
+    prior = do('回读既往（④ /prior）', 'GET', f"/pathology/report/{second['sid']}/prior")
+    assert prior.get('patientResolved') is True, f'既往端点须解出患者：{prior}'
+    items = prior.get('items') or []
+    row = next((r for r in items if r.get('id') == first['sid']), None)
+    assert row, f"第二条的既往里必须有第一条（同患者、已签发）：{[r.get('path_no') for r in items]}"
+    assert row.get('gross_finding') and row.get('micro_finding') and row.get('diagnosis'), \
+        f'既往行须带大体 / 镜下 / 诊断正文（修复前前端整行丢弃、后端补充报告只给份数）：{row}'
+    assert row.get('status') == 'DIAGNOSED' and row.get('report_issued_at'), f'既往行须带 status 与签发时刻：{row}'
+    sups = row.get('supplements')
+    assert isinstance(sups, list) and (len(sups) == (row.get('supplement_count') or 0)), \
+        f'既往行的 supplements 正文条数须等于 supplement_count：{row}'
+    if any('补充报告' in e for e in first['extras']):
+        assert sups and sups[0].get('diagnosis') and sups[0].get('seqNo') == 1, f'第一条有补充报告，既往行须带其正文：{sups}'
+    if rejected:
+        assert all(r.get('id') != rejected['sid'] for r in items), '已拒收标本不算既往（④ prior）'
+        hist = do('回读既往（① /history 默认）', 'GET', f"/pathology/registry/specimens/{second['sid']}/history")
+        h_ids = [r.get('id') for r in (hist.get('items') or [])]
+        assert first['sid'] in h_ids and rejected['sid'] not in h_ids, \
+            f'① 默认口径：含第一条、不含拒收（修复前含拒收）：{h_ids}'
+        hist_r = do('回读既往（① /history includeRejected）', 'GET',
+                    f"/pathology/registry/specimens/{second['sid']}/history?includeRejected=true")
+        rej_row = next((r for r in (hist_r.get('items') or []) if r.get('id') == rejected['sid']), None)
+        assert rej_row and rej_row.get('rejected_at') and rej_row.get('reject_reason'), \
+            f'含拒收时拒收行须回来且带 rejected_at / reject_reason：{hist_r}'
+    return (f"既往可演示：患者 {first['name']} 有 2 条可比（{first['pathNo']} 已签发"
+            f"{'+补充报告' if sups else ''} → 在 ④ 打开 {second['pathNo']}（{second['label']}）时既往页签有它、可「对比」）"
+            f"{'；同患者另有 1 条拒收 ' + rejected['pathNo'] + '，④ 与 ① 默认都不算既往，① 开「含拒收」才带' if rejected else ''}")
+
+
 def qc_overview(tok):
     """质控概览（QUALITY 角色令牌，默认时间窗 = 页面打开即见的近 30 天）→ 三项汇总值"""
     body = do('质控概览（QUALITY 令牌）', 'GET', '/path-qc/indicators', tok=tok)
@@ -338,14 +403,17 @@ def main():
         state, row = current_state(rec)
         rows.append((rec, state, row))
     body, by, three = qc_overview(tq)
+    prior_line = verify_prior_history(records)
 
     if not QUIET:
         print('\n==== 本次造出的标本（状态回读自 GET /pathology/registry/specimens/search） ====')
-        print('序号 | 阶梯目标 | 病理号 | 条码 | 库中状态 | 做到哪一步 | 蜡块/切片 | 附加')
+        print('序号 | 阶梯目标 | 患者 | 病理号 | 条码 | 库中状态 | 做到哪一步 | 蜡块/切片 | 附加')
         for rec, state, row in rows:
-            print(f"{rec['idx']:>4} | {rec['label']} | {row.get('path_no') or ''} | {rec['barcode']} | "
+            print(f"{rec['idx']:>4} | {rec['label']} | {rec['name']}{'（同患者）' if rec['shared'] else ''} | "
+                  f"{row.get('path_no') or ''} | {rec['barcode']} | "
                   f"{state} | {rec['last']} | {rec['blocks']}/{rec['slides']} | "
                   f"{'；'.join(rec['extras']) or '-'}")
+        print(f"  {prior_line or '既往可演示：--count 1 没有第二条，跑 --count 2 及以上'}")
         print(f"\n==== 现在质控页（菜单 169 病理质控，{body.get('from')} 至 {body.get('to')}）哪些指标有数 ====")
         for code, ind in by.items():
             if ind.get('available') is not True:
@@ -372,7 +440,8 @@ def main():
           f"({' '.join(f'{k}={v}' for k, v in n_by.items())})  "
           f"path-qc registered={three['登记总量 WORKLOAD_REGISTER.registered']} "
           f"blocks={three['蜡块产出 WORKLOAD_BLOCK.blocks']} "
-          f"issued_reports={three['报告签发量 WORKLOAD_REPORT.issued_reports']}  suffix={SUF}")
+          f"issued_reports={three['报告签发量 WORKLOAD_REPORT.issued_reports']}  suffix={SUF}"
+          f"  prior_checked={'yes' if prior_line else 'skipped(count<2)'}")
 
 
 if __name__ == '__main__':

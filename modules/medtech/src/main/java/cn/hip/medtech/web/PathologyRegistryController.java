@@ -582,10 +582,22 @@ public class PathologyRegistryController {
      * <p><b>同名提醒只给「有几份、最近一次是什么时候」，不给诊断</b>：病理科最怕同名混标本，
      * 所以提醒必须有；但把另一位同名患者的病理诊断一并吐出来是越界，
      * 医师要看就按患者去查。默认关闭，{@code includeSameName=true} 才查。
+     *
+     * <p><b>拒收口径（v59 2558，与诊断页 {@code GET /report/{specimenId}/prior} 同一条）</b>：
+     * 拒收不删行、不改 status（类注释第二、三条），所以 v59 之前本端点用 {@code SPECIMEN_SELECT}
+     * 只加 {@code patient_id = ? and s.id <> ?}，一份因未固定被拒收、从未受检的标本在医师眼里就是一条既往病理，
+     * 同名统计也把拒收行算进份数；同一患者在登记页与诊断页看到的既往条数不一致。本版<b>默认排除拒收</b>
+     * （{@code rejected_at is null}），{@code includeRejected=true} 才带拒收行（每行本就带
+     * {@code status / rejected_at / reject_reason}，前端按 {@code rejected_at} 标「已拒收」）。
+     * 同名他人块的 {@code specimen_count} 与 {@code latest_collected_at} <b>一律只算未拒收</b>，
+     * 拒收份数另给 {@code rejected_count}（不带 includeRejected 时同名块也不带只有拒收标本的人）。
+     * 与 prior 的差别只剩一条：本端点仍列未出结果的在办标本（登记工位要看的是「这个患者送过什么」），
+     * prior 只列已写诊断的。
      */
     @GetMapping("/specimens/{id}/history")
     public R<Map<String, Object>> history(@PathVariable Long id,
-                                          @RequestParam(required = false) Boolean includeSameName) {
+                                          @RequestParam(required = false) Boolean includeSameName,
+                                          @RequestParam(required = false) Boolean includeRejected) {
         var rows = jdbc.queryForList("""
                 select coalesce(r.patient_id, a.patient_id) as patient_id,
                        coalesce(op.name, ip.name) as patient_name
@@ -605,10 +617,13 @@ public class PathologyRegistryController {
             return R.fail(5211, "无法从来源解出患者身份（申请单或住院记录缺失），既往病理不可用");
         }
 
+        // v59：默认排除拒收（与诊断页 prior 同口径）；includeRejected=true 才带拒收行
+        boolean withRejected = Boolean.TRUE.equals(includeRejected);
         var history = jdbc.queryForList(SPECIMEN_SELECT + """
                  where coalesce(r.patient_id, a.patient_id) = ? and s.id <> ?
+                   and (? or s.rejected_at is null)
                  order by s.collected_at desc, s.id desc limit ?
-                """, patientId, id, HISTORY_LIMIT + 1);
+                """, patientId, id, withRejected, HISTORY_LIMIT + 1);
         boolean truncated = history.size() > HISTORY_LIMIT;
         if (truncated) history = history.subList(0, HISTORY_LIMIT);
 
@@ -618,12 +633,21 @@ public class PathologyRegistryController {
         out.put("items", history);
         out.put("truncated", truncated);
         out.put("limit", HISTORY_LIMIT);
+        out.put("includeRejected", withRejected);
+        out.put("note", withRejected
+                ? "既往 = 同一患者的其他标本，本次含已拒收行（rejected_at 非空即已拒收，带 reject_reason）；"
+                  + "同名他人块 specimen_count 仍只算未拒收，拒收份数见 rejected_count"
+                : "既往 = 同一患者、未拒收的其他标本（与诊断页 /report/{id}/prior 同口径：拒收行不算既往）；"
+                  + "含未出结果的在办标本；includeRejected=true 才带拒收行");
 
         if (Boolean.TRUE.equals(includeSameName) && patientName != null) {
-            // 只统计「有几份、最近一次何时」，不带诊断——同名提醒不是查别人的报告
+            // 只统计「有几份、最近一次何时」，不带诊断——同名提醒不是查别人的报告。
+            // 份数与最近一次一律只算未拒收（与上面 items 同口径）；拒收份数另给 rejected_count，不混进 specimen_count
             out.put("sameName", jdbc.queryForList("""
                     select p.id as patient_id, p.name as patient_name, p.sex, p.birth_date,
-                           count(s.id) as specimen_count, max(s.collected_at) as latest_collected_at
+                           count(s.id) filter (where s.rejected_at is null) as specimen_count,
+                           count(s.id) filter (where s.rejected_at is not null) as rejected_count,
+                           max(s.collected_at) filter (where s.rejected_at is null) as latest_collected_at
                     from empi_patient p
                     join path_specimen s
                       on s.id in (
@@ -632,12 +656,13 @@ public class PathologyRegistryController {
                          left join outp_registration r on r.id = oo.registration_id
                          left join inp_order io on io.id = s2.inp_order_id
                          left join inp_admission a on a.id = io.admission_id
-                         where coalesce(r.patient_id, a.patient_id) = p.id)
+                         where coalesce(r.patient_id, a.patient_id) = p.id
+                           and (? or s2.rejected_at is null))
                     where p.name = ? and p.id <> ?
                     group by p.id, p.name, p.sex, p.birth_date
-                    order by max(s.collected_at) desc
+                    order by max(s.collected_at) filter (where s.rejected_at is null) desc nulls last, p.id
                     limit 20
-                    """, patientName, patientId));
+                    """, withRejected, patientName, patientId));
         }
         return R.ok(out);
     }

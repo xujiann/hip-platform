@@ -1039,8 +1039,17 @@ public class PathologyReportController {
      * 这正是 V144 把 {@code inp_order_id} 补上的意义：此前住院病理挂不进来，
      * 「既往病理」永远只能看到门诊那一半。
      *
-     * <p>只列<b>已有诊断或已签发</b>的既往标本（还没出结果的正在做，不构成「既往病理」），
-     * 排除本标本自身。每行带补充报告条数，提示是否有后续修订意见。
+     * <p><b>口径（v59 2558，与登记页 {@code GET /registry/specimens/{id}/history} 同一条）：
+     * 既往 = 同一患者、已写诊断（含已签发）、未拒收的其他标本</b>。还没出结果的正在做，不构成「既往病理」；
+     * 拒收不删行、不改 status（见 PathologyRegistryController 类注释），但一份因未固定被拒收、
+     * 从未受检的标本不是既往病理，按 {@code rejected_at is null} 排除。排除本标本自身。
+     *
+     * <p>每行带首次报告三段<b>正文</b>（{@code gross_finding / micro_finding / diagnosis}）、
+     * {@code clinical_diagnosis}、{@code status}、{@code report_issued_at}，以及补充报告正文
+     * {@code supplements: [{seqNo, diagnosis, reason, signedAt, signerName}]}（取自 {@code path_report}，
+     * 按 seq_no 升序；{@code diagnosis} 即 {@code path_report.content}）。v59 之前只给
+     * {@code supplement_count} 份数不给内容、前端既往页签只画 diagnosis 一列，要看既往全文只能
+     * 关抽屉→改范围→手抄病理号再搜，两份报告任何时刻不能同屏。<b>只加不改既有键</b>。
      *
      * <p>患者解析不出时（申请单被删、脏数据）返回空列表 + {@code patientResolved=false}，
      * <b>不静默返回空数组假装「这个病人没有既往病理」</b>——两者临床含义天差地别。
@@ -1080,7 +1089,7 @@ public class PathologyReportController {
 
         int cap = capOf(limit);
         var rows = jdbc.queryForList("""
-                select s.id, s.barcode, s.path_no, s.part_no, s.specimen_type, s.sampling_site,
+                select s.id, s.barcode, s.path_no, s.part_no, s.specimen_type, s.sampling_site, s.status,
                        s.clinical_diagnosis, s.specimen_desc, s.diagnosis, s.gross_finding, s.micro_finding,
                        s.collected_at, s.received_at, s.diagnosed_at, s.report_issued_at,
                        s.pathologist_id, u.real_name as pathologist_name,
@@ -1101,12 +1110,40 @@ public class PathologyReportController {
                 limit ?
                 """, patientId, specimenId, cap + 1);
         boolean truncated = rows.size() > cap;
+        var items = truncated ? rows.subList(0, cap) : rows;
+
+        // v59（2558）：补充报告给正文不只给份数——一次查完本页所有既往标本的 path_report，按 specimen_id 归组
+        if (!items.isEmpty()) {
+            var ids = new ArrayList<Object>();
+            for (var r : items) ids.add(asLong(r.get("id")));
+            var sups = jdbc.queryForList("""
+                    select rp.specimen_id, rp.seq_no, rp.content, rp.reason, rp.signed_at,
+                           u.real_name as signer_name
+                    from path_report rp
+                    left join sys_user u on u.id = rp.signer_id
+                    where rp.specimen_id in (%s)
+                    order by rp.specimen_id, rp.seq_no
+                    """.formatted(String.join(",", java.util.Collections.nCopies(ids.size(), "?"))),
+                    ids.toArray());
+            var bySpecimen = new java.util.HashMap<Long, List<Map<String, Object>>>();
+            for (var sp : sups) {
+                var one = new LinkedHashMap<String, Object>();
+                one.put("seqNo", sp.get("seq_no"));
+                one.put("diagnosis", sp.get("content"));
+                one.put("reason", sp.get("reason"));
+                one.put("signedAt", sp.get("signed_at"));
+                one.put("signerName", sp.get("signer_name"));
+                bySpecimen.computeIfAbsent(asLong(sp.get("specimen_id")), k -> new ArrayList<>()).add(one);
+            }
+            for (var r : items) r.put("supplements", bySpecimen.getOrDefault(asLong(r.get("id")), List.of()));
+        }
 
         body.put("limit", cap);
-        body.put("items", truncated ? rows.subList(0, cap) : rows);
+        body.put("items", items);
         body.put("truncated", truncated);
-        body.put("note", "仅列已有诊断或已签发的既往标本（含门诊与住院两条来源），已排除本标本与已拒收标本；"
-                + "supplementCount>0 表示该次报告后另有补充报告");
+        body.put("note", "既往 = 同一患者、已写诊断（含已签发）、未拒收的其他标本（含门诊与住院两条来源，已排除本标本）；"
+                + "与登记页 /registry/specimens/{id}/history 同口径。每行带 gross_finding / micro_finding / diagnosis 正文与 status，"
+                + "supplementCount 为补充报告份数、supplements 为其正文（按 seqNo 升序）");
         return R.ok(body);
     }
 

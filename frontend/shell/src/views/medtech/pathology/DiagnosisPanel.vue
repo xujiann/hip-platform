@@ -308,43 +308,140 @@
         </el-tab-pane>
 
         <!-- ---------------- 既往病理 ---------------- -->
-        <el-tab-pane name="prior" label="既往病理（对比诊断）">
+        <el-tab-pane name="prior" :label="`既往病理（对比诊断，${priorRows.length}）`">
           <el-alert v-if="priorResolved === false" type="error" show-icon :closable="false" class="cav"
                     :title="priorNote || '无法从该标本解析出患者，本次未能检索既往病理——这不等于该患者没有既往病理'" />
-          <el-table v-else :data="priorRows" v-loading="priorLoading" size="small" border max-height="420">
-            <el-table-column label="病理号" width="140">
-              <template #default="{ row }"><span class="code">{{ fmt(row.path_no) }}</span></template>
-            </el-table-column>
-            <el-table-column label="类别" width="90">
-              <template #default="{ row }">{{ typeName(row.specimen_type) }}</template>
-            </el-table-column>
-            <el-table-column label="取材部位" width="120">
-              <template #default="{ row }">{{ fmt(row.sampling_site) }}</template>
-            </el-table-column>
-            <el-table-column label="病理诊断" min-width="240" show-overflow-tooltip>
-              <template #default="{ row }">{{ fmt(row.diagnosis) }}</template>
-            </el-table-column>
-            <el-table-column label="补充报告" width="90">
-              <template #default="{ row }">
-                <el-tag v-if="num(row.supplement_count) > 0" size="small" type="warning">
-                  {{ num(row.supplement_count) }} 份</el-tag>
-                <span v-else class="muted">—</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="签发时刻" width="150">
-              <template #default="{ row }">{{ fmtTime(row.report_issued_at) }}</template>
-            </el-table-column>
-            <template #empty>该患者无其它已出结果的病理标本</template>
-          </el-table>
+          <template v-else>
+            <el-alert type="info" :closable="false" class="cav"
+                      title="既往 = 同一患者、已写诊断（含已签发）、未拒收的其他标本（与登记页既往抽屉同口径，拒收行不算既往）。每行带大体 / 镜下 / 诊断正文与补充报告正文；「对比」在本抽屉之上开一个对照框，两份报告同屏，不必关抽屉再搜。" />
+            <el-table :data="priorRows" v-loading="priorLoading" size="small" border max-height="420">
+              <el-table-column label="病理号" width="140">
+                <template #default="{ row }"><span class="code">{{ fmt(row.path_no) }}</span></template>
+              </el-table-column>
+              <el-table-column label="类别" width="90">
+                <template #default="{ row }">{{ typeName(row.specimen_type) }}</template>
+              </el-table-column>
+              <el-table-column label="取材部位" width="110">
+                <template #default="{ row }">{{ fmt(row.sampling_site) }}</template>
+              </el-table-column>
+              <el-table-column label="临床诊断" min-width="120" show-overflow-tooltip>
+                <template #default="{ row }">{{ fmt(row.clinical_diagnosis) }}</template>
+              </el-table-column>
+              <el-table-column label="大体所见" min-width="160" show-overflow-tooltip>
+                <template #default="{ row }">{{ fmt(row.gross_finding) }}</template>
+              </el-table-column>
+              <el-table-column label="镜下所见" min-width="160" show-overflow-tooltip>
+                <template #default="{ row }">{{ fmt(row.micro_finding) }}</template>
+              </el-table-column>
+              <el-table-column label="病理诊断" min-width="200" show-overflow-tooltip>
+                <template #default="{ row }">{{ fmt(row.diagnosis) }}</template>
+              </el-table-column>
+              <el-table-column label="补充报告" width="90">
+                <template #default="{ row }">
+                  <el-tag v-if="num(row.supplement_count) > 0" size="small" type="warning">
+                    {{ num(row.supplement_count) }} 份</el-tag>
+                  <span v-else class="muted">—</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="签发时刻" width="140">
+                <template #default="{ row }">{{ fmtDateTime(row.report_issued_at) }}</template>
+              </el-table-column>
+              <el-table-column label="操作" width="70" fixed="right">
+                <template #default="{ row }">
+                  <el-button link type="primary" size="small" @click="openCompare(row)">对比</el-button>
+                </template>
+              </el-table-column>
+              <template #empty>该患者无其它已出结果的病理标本</template>
+            </el-table>
+          </template>
         </el-tab-pane>
       </el-tabs>
     </div>
   </el-drawer>
 
+  <!-- ============ 既往对比（el-dialog 而非抽屉：append-to-body 可叠在报告抽屉与书写对话框之上，两份报告同屏） ============ -->
+  <el-dialog v-model="compareDialog" append-to-body width="92%" top="3vh"
+             :title="`既往对比 — ${fmt(specimen.patient_name)} ${fmt(specimen.patient_no)}`">
+    <el-form inline size="small">
+      <el-form-item label="既往标本">
+        <el-select v-model="compareId" style="width: 460px">
+          <el-option v-for="r in priorRows" :key="Number(r.id)" :value="Number(r.id)"
+                     :label="`${fmt(r.path_no)}　${typeName(r.specimen_type)}　${fmt(r.sampling_site)}　签发 ${fmtDateTime(r.report_issued_at)}`" />
+        </el-select>
+        <span class="muted" style="margin-left: 8px">共 {{ priorRows.length }} 条既往（已写诊断、未拒收）</span>
+      </el-form-item>
+    </el-form>
+    <el-row :gutter="12">
+      <el-col :span="12">
+        <el-card shadow="never" class="cmp-card">
+          <template #header>
+            <el-tag size="small">当前标本</el-tag>
+            <span class="code" style="margin-left: 6px">{{ fmt(specimen.path_no) }}</span>
+            <el-tag v-if="diagnoseDialog" size="small" type="warning" style="margin-left: 6px">
+              书写中草稿（未保存，以书写框为准）</el-tag>
+            <el-tag v-else-if="!hasPrimary" size="small" type="info" style="margin-left: 6px">尚未书写首次报告</el-tag>
+          </template>
+          <el-descriptions :column="2" border size="small" class="cav">
+            <el-descriptions-item label="取材部位">{{ fmt(specimen.sampling_site) }}</el-descriptions-item>
+            <el-descriptions-item label="临床诊断">{{ fmt(specimen.clinical_diagnosis) }}</el-descriptions-item>
+            <el-descriptions-item label="状态">{{ statusName(specimen.status) }}</el-descriptions-item>
+            <el-descriptions-item label="签发时刻">{{ fmtDateTime(specimen.report_issued_at) }}</el-descriptions-item>
+          </el-descriptions>
+          <div class="sec"><b>大体所见</b><pre>{{ fmt(leftGross) }}</pre></div>
+          <div class="sec"><b>镜下所见</b><pre>{{ fmt(leftMicro) }}</pre></div>
+          <div class="sec"><b>病理诊断</b><pre>{{ fmt(leftDiagnosis) }}</pre></div>
+          <h4>补充报告（{{ supplements.length }} 份）</h4>
+          <div v-for="s in supplements" :key="Number(s.id)" class="sec">
+            <el-tag size="small" type="warning">补充 #{{ fmt(s.seq_no) }}</el-tag>
+            <span class="muted" style="margin-left: 6px">{{ fmt(s.signer_name) }}　{{ fmtDateTime(s.signed_at) }}</span>
+            <div v-if="s.reason" class="muted">补充原因：{{ s.reason }}</div>
+            <pre>{{ fmt(s.content) }}</pre>
+          </div>
+          <span v-if="!supplements.length" class="muted">无补充报告</span>
+        </el-card>
+      </el-col>
+      <el-col :span="12">
+        <el-card shadow="never" class="cmp-card">
+          <template #header>
+            <el-tag size="small" type="info">既往</el-tag>
+            <span class="code" style="margin-left: 6px">{{ fmt(compareRow.path_no) }}</span>
+            <el-tag size="small" style="margin-left: 6px">{{ statusName(compareRow.status) }}</el-tag>
+            <span class="muted" style="margin-left: 6px">{{ sourceName(compareRow.source) }} · 诊断医师 {{ fmt(compareRow.pathologist_name) }}</span>
+          </template>
+          <el-descriptions :column="2" border size="small" class="cav">
+            <el-descriptions-item label="取材部位">{{ fmt(compareRow.sampling_site) }}</el-descriptions-item>
+            <el-descriptions-item label="临床诊断">{{ fmt(compareRow.clinical_diagnosis) }}</el-descriptions-item>
+            <el-descriptions-item label="写完诊断">{{ fmtDateTime(compareRow.diagnosed_at) }}</el-descriptions-item>
+            <el-descriptions-item label="签发时刻">{{ fmtDateTime(compareRow.report_issued_at) }}</el-descriptions-item>
+          </el-descriptions>
+          <div class="sec"><b>大体所见</b><pre>{{ fmt(compareRow.gross_finding) }}</pre></div>
+          <div class="sec"><b>镜下所见</b><pre>{{ fmt(compareRow.micro_finding) }}</pre></div>
+          <div class="sec"><b>病理诊断</b><pre>{{ fmt(compareRow.diagnosis) }}</pre></div>
+          <h4>补充报告（{{ compareSupplements.length }} 份）</h4>
+          <div v-for="s in compareSupplements" :key="Number(s.seqNo)" class="sec">
+            <el-tag size="small" type="warning">补充 #{{ fmt(s.seqNo) }}</el-tag>
+            <span class="muted" style="margin-left: 6px">{{ fmt(s.signerName) }}　{{ fmtDateTime(s.signedAt) }}</span>
+            <div v-if="s.reason" class="muted">补充原因：{{ s.reason }}</div>
+            <pre>{{ fmt(s.diagnosis) }}</pre>
+          </div>
+          <span v-if="!compareSupplements.length" class="muted">无补充报告</span>
+        </el-card>
+      </el-col>
+    </el-row>
+    <template #footer>
+      <el-button size="small" @click="compareDialog = false">关闭</el-button>
+    </template>
+  </el-dialog>
+
   <!-- ============ 首次报告书写 ============ -->
   <el-dialog v-model="diagnoseDialog" title="书写首次病理报告" width="680px" top="6vh">
     <el-alert type="warning" show-icon :closable="false" class="cav"
               title="本操作走既有 PUT /api/pathology/specimens/{barcode}/diagnose，写入大体所见 / 镜下所见 / 诊断三列。取材时已写入的大体所见已预填在下方——空白即保留取材时写入的大体所见；要改请在此基础上编辑。保存后标本状态变为「已诊断」，本版无修订入口，更正请出补充报告。" />
+    <div class="bar">
+      <el-button link type="primary" size="small" :disabled="!priorRows.length" @click="openCompare()">
+        查看既往（{{ priorRows.length }} 条，同屏对照）</el-button>
+      <span v-if="!priorRows.length" class="muted">该患者无其它已出结果的病理标本</span>
+    </div>
     <el-form label-width="90px" size="small">
       <el-form-item label="大体所见">
         <el-input v-model="diagnoseForm.grossFinding" type="textarea" :rows="3" />
@@ -434,6 +531,7 @@ import { computed, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../../api/client'
 import { useAuthStore } from '../../../stores/auth'
+import { fmtDateTime } from '../../../utils/date'
 import {
   SPECIMEN_TYPES, fmt, fmtTime, nodeName, num, reportStage, sourceName, statusName, typeName, type Row,
 } from './format'
@@ -854,6 +952,35 @@ async function loadPrior() {
   }
 }
 
+/* ---------------- 既往对比（2558） ---------------- */
+/**
+ * 对照框是 el-dialog 而不是第二个抽屉：抽屉单实例（openReport 覆写 specimenId），要看既往全文此前只能
+ * 关抽屉→改范围→手抄病理号再搜，两份报告任何时刻不能同屏。对照框 append-to-body，可叠在报告抽屉之上，
+ * 也可叠在「书写首次报告」这个模态之上——写诊断那一刻既往不再被遮罩挡住。
+ * 右栏正文直接取 /prior 行里的 gross_finding / micro_finding / diagnosis 与 supplements（后端 v59 起带正文），
+ * 不再为看一份既往报告另发一次 /reports。
+ */
+const compareDialog = ref(false)
+const compareId = ref<number | null>(null)
+const compareRow = computed<Row>(
+  () => priorRows.value.find((r) => Number(r.id) === compareId.value) ?? {},
+)
+const compareSupplements = computed<Row[]>(() => (compareRow.value.supplements ?? []) as Row[])
+
+/** 左栏：书写对话框开着时给草稿（医生此刻正在写的就是要对照的那份），否则给已加载的首次报告 */
+const leftGross = computed(() => (diagnoseDialog.value ? diagnoseForm.grossFinding : primary.value.grossFinding))
+const leftMicro = computed(() => (diagnoseDialog.value ? diagnoseForm.microFinding : primary.value.microFinding))
+const leftDiagnosis = computed(() => (diagnoseDialog.value ? diagnoseForm.diagnosis : primary.value.diagnosis))
+
+function openCompare(row?: Row) {
+  if (!priorRows.value.length) {
+    ElMessage.info('该患者无其它已出结果的病理标本，无从对比')
+    return
+  }
+  compareId.value = Number((row ?? priorRows.value[0]).id)
+  compareDialog.value = true
+}
+
 /**
  * 暴露 openReport 给工作台：特检工作台、流转与异常两个面板里的「打开报告」要跳到本工位并直接打开抽屉，
  * 否则用户得记下标本 id、切过来、再手输一遍——那正是本版要消灭的「后端做了、前端够不着」。
@@ -870,6 +997,7 @@ void loadTechDict()
 .code { font-family: Consolas, Monaco, monospace; }
 .bar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
 .primary-card { border: 1px solid var(--el-color-info-light-5); }
+.cmp-card { border: 1px solid var(--el-color-info-light-5); height: 100%; }
 .lock { margin-left: 8px; color: var(--el-color-info); font-size: 12px; }
 .sec { margin-bottom: 10px; }
 .sec pre {

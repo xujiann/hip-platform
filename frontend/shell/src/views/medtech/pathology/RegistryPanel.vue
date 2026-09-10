@@ -327,7 +327,14 @@
             只给「有几份、最近一次何时」，不给别人的诊断——那是越界
           </span>
         </el-form-item>
+        <el-form-item label="含拒收">
+          <el-switch v-model="includeRejected" @change="loadHistory" />
+          <span class="muted" style="margin-left: 8px">
+            默认不含：拒收不删行，但一份因未固定被拒收、从未受检的标本不是既往病理（与诊断页既往页签同口径）
+          </span>
+        </el-form-item>
       </el-form>
+      <el-alert v-if="historyNote" type="info" :closable="false" class="cav" :title="historyNote" />
       <el-alert v-if="historyTruncated" type="warning" :closable="false" class="cav"
                 :title="`既往记录超过 ${historyLimit} 条，仅显示最近 ${historyLimit} 条`" />
       <el-table :data="history" v-loading="historyLoading" size="small" border max-height="360">
@@ -336,6 +343,12 @@
         </el-table-column>
         <el-table-column label="类别" width="90">
           <template #default="{ row }">{{ typeName(row.specimen_type) }}</template>
+        </el-table-column>
+        <el-table-column label="状态" width="150">
+          <template #default="{ row }">
+            <el-tag size="small">{{ statusName(row.status) }}</el-tag>
+            <el-tag v-if="row.rejected_at" size="small" type="danger" style="margin-left: 4px">已拒收</el-tag>
+          </template>
         </el-table-column>
         <el-table-column label="登记时刻" width="140">
           <template #default="{ row }">{{ fmtTime(row.collected_at) }}</template>
@@ -346,7 +359,13 @@
         <el-table-column label="签发时刻" width="140">
           <template #default="{ row }">{{ fmtTime(row.report_issued_at) }}</template>
         </el-table-column>
-        <template #empty>该患者无其它病理记录</template>
+        <el-table-column v-if="includeRejected" label="拒收原因" min-width="160" show-overflow-tooltip>
+          <template #default="{ row }">
+            <template v-if="row.rejected_at">{{ fmtTime(row.rejected_at) }}　{{ fmt(row.reject_reason) }}</template>
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
+        <template #empty>该患者无其它病理记录{{ includeRejected ? '' : '（不含拒收）' }}</template>
       </el-table>
 
       <template v-if="includeSameName">
@@ -359,10 +378,13 @@
           <el-table-column label="出生日期" width="120">
             <template #default="{ row }">{{ fmt(row.birth_date) }}</template>
           </el-table-column>
-          <el-table-column label="病理标本份数" width="120">
+          <el-table-column label="病理标本份数（不含拒收）" width="170">
             <template #default="{ row }">{{ num(row.specimen_count) }}</template>
           </el-table-column>
-          <el-table-column label="最近一次登记" width="150">
+          <el-table-column v-if="includeRejected" label="其中已拒收" width="100">
+            <template #default="{ row }">{{ num(row.rejected_count) }}</template>
+          </el-table-column>
+          <el-table-column label="最近一次登记（不含拒收）" width="190">
             <template #default="{ row }">{{ fmtTime(row.latest_collected_at) }}</template>
           </el-table-column>
           <template #empty>无同名他人</template>
@@ -602,14 +624,19 @@ const historyLoading = ref(false)
 const history = ref<Row[]>([])
 const sameName = ref<Row[]>([])
 const includeSameName = ref(false)
+/** v59（2558）：既往默认排除拒收——与诊断页 /prior 同口径；开关打开才带拒收行并标「已拒收」+ 原因 */
+const includeRejected = ref(false)
 const historyTruncated = ref(false)
 const historyLimit = ref(50)
 const historyError = ref('')
+const historyNote = ref('')
 
 function openHistory(row: Row) {
   current.value = row
   includeSameName.value = false
+  includeRejected.value = false
   historyError.value = ''
+  historyNote.value = ''
   historyDrawer.value = true
   void loadHistory()
 }
@@ -620,12 +647,18 @@ async function loadHistory() {
   try {
     const d = (await client.get(
       `/pathology/registry/specimens/${Number(current.value.id)}/history`,
-      { params: { includeSameName: includeSameName.value || undefined } },
+      {
+        params: {
+          includeSameName: includeSameName.value || undefined,
+          includeRejected: includeRejected.value || undefined,
+        },
+      },
     )).data.data as Row
     history.value = (d.items ?? []) as Row[]
     sameName.value = (d.sameName ?? []) as Row[]
     historyTruncated.value = d.truncated === true
     historyLimit.value = num(d.limit) || 50
+    historyNote.value = String(d.note ?? '')
   } catch (e) {
     // 5211：来源解不出患者身份。**不能显示成「该患者无既往病理」**——
     // 「没有既往病理」与「不知道这是谁」是两回事，后者伪装成前者就是把身份核对失败当阴性结果。
