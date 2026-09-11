@@ -22,9 +22,10 @@
     </template>
 
     <!-- ============ 口径三处同源之一：页面 alert（另两处是端点 javadoc 与返回体 caveats） ============ -->
+    <!-- v60（2576-②）：后端口径文本带 **强调** 与反引号，一律经 mdText 去标记后按纯文本插值——不做 Markdown 渲染、不用 v-html -->
     <el-alert v-for="(c, i) in caveats" :key="i" type="warning" show-icon :closable="false" class="cav"
               :title="i === 0 ? '统计口径（请先看完这几条再看指标值）' : ''">
-      <div>{{ c }}</div>
+      <div>{{ mdText(c) }}</div>
     </el-alert>
 
     <el-descriptions v-if="thresholds" :column="3" border size="small" class="cav" title="时限阈值与统计区间">
@@ -35,9 +36,9 @@
       <el-descriptions-item label="统计区间">
         {{ fmt(body?.from) }} 至 {{ fmt(body?.to) }}（{{ fmt(body?.days) }} 天）</el-descriptions-item>
       <el-descriptions-item label="节假日口径" :span="3">
-        {{ fmt(thresholds.holidayNote) }}</el-descriptions-item>
+        {{ mdText(thresholds.holidayNote) }}</el-descriptions-item>
       <el-descriptions-item label="接收及时率为何不给单一数字" :span="3">
-        {{ fmt(thresholds.receiveThresholdNote) }}</el-descriptions-item>
+        {{ mdText(thresholds.receiveThresholdNote) }}</el-descriptions-item>
     </el-descriptions>
 
     <!-- ============ 字段录入覆盖率：先看这一段再看指标值 ============ -->
@@ -49,7 +50,7 @@
             {{ item.text }}
           </el-descriptions-item>
         </el-descriptions>
-        <el-alert v-if="sec.note" type="info" :closable="false" class="cav" :title="sec.note" />
+        <el-alert v-if="sec.note" type="info" :closable="false" class="cav" :title="mdText(sec.note)" />
       </div>
     </template>
 
@@ -73,31 +74,38 @@
       <template v-if="ind.available !== true">
         <el-alert type="error" show-icon :closable="false" class="cav"
                   title="本指标缺数据源，本平台不给近似值、不显示为 0">
-          <div>{{ ind.unavailableReason }}</div>
+          <div>{{ mdText(ind.unavailableReason) }}</div>
         </el-alert>
         <el-descriptions :column="1" border size="small" title="需要补的字段（补齐后本指标即可按现成口径出）">
           <el-descriptions-item v-for="(f, i) in missingOf(ind)" :key="i" :label="`缺 ${i + 1}`">
-            {{ f }}
+            {{ mdText(f) }}
           </el-descriptions-item>
         </el-descriptions>
       </template>
 
       <template v-else>
         <el-alert type="info" :closable="false" class="cav"
-                  :title="`归集锚点：${ind.anchorField}　${stripStars(String(ind.anchor ?? ''))}`" />
+                  :title="`归集锚点：${ind.anchorField}　${mdText(ind.anchor)}`" />
         <el-alert v-if="ind.caveat" type="warning" :closable="false" class="cav"
-                  :title="stripStars(String(ind.caveat))" />
+                  :title="mdText(ind.caveat)" />
         <el-descriptions v-if="ind.summary" :column="4" border size="small" class="cav">
           <el-descriptions-item v-for="k in keysOf(ind.summary as Row)" :key="k" :label="zh(k)">
             {{ fmt((ind.summary as Row)[k]) }}
           </el-descriptions-item>
         </el-descriptions>
         <el-alert v-if="ind.rowsTruncated === true" type="warning" show-icon :closable="false" class="cav"
-                  :title="String(ind.rowsTruncatedNote ?? '汇总行超限，已截断，请缩小统计区间')" />
+                  :title="mdText(ind.rowsTruncatedNote ?? '汇总行超限，已截断，请缩小统计区间')" />
         <el-table v-if="rowsOf(ind).length" :data="rowsOf(ind)" size="small" border max-height="360">
           <el-table-column v-for="c in columnsOf(rowsOf(ind))" :key="c" :prop="c" :label="zh(c)"
                            :min-width="colWidth(c)" show-overflow-tooltip>
             <template #default="{ row }">{{ cellText(c, row[c], row) }}</template>
+          </el-table-column>
+          <!-- v60：科室维度每行可穿透到该科室的标本明细（穿透端点的 dept 过滤只对 WORKLOAD_DEPT 生效；「（未知科室）」也能穿） -->
+          <el-table-column v-if="ind.code === 'WORKLOAD_DEPT'" label="穿透" width="110" fixed="right">
+            <template #default="{ row }">
+              <el-button link type="primary" size="small" @click="openDetail(ind, String(row.dept_name ?? ''))">
+                该科室明细</el-button>
+            </template>
           </el-table-column>
         </el-table>
         <el-empty v-else description="该统计区间内无数据" :image-size="60" />
@@ -108,13 +116,13 @@
   </el-card>
 
   <!-- ============ 穿透明细 ============ -->
-  <el-drawer v-model="drawer" size="72%" :title="`${detailCode} ${detailName} — 取值明细`">
+  <el-drawer v-model="drawer" size="72%" :title="detailTitle">
     <el-alert type="info" show-icon :closable="false" class="cav"
               title="明细与汇总同时间窗、同锚点、同过滤条件——对不上账即为缺陷，请据此核对。" />
     <el-alert v-if="detailUnavailable" type="error" show-icon :closable="false" class="cav"
-              :title="detailUnavailable" />
+              :title="mdText(detailUnavailable)" />
     <template v-else>
-      <el-alert v-if="detailCaveat" type="warning" :closable="false" class="cav" :title="detailCaveat" />
+      <el-alert v-if="detailCaveat" type="warning" :closable="false" class="cav" :title="mdText(detailCaveat)" />
       <el-alert v-if="detailTruncated" type="warning" show-icon :closable="false" class="cav"
                 :title="`命中超过 ${detailLimit} 条，仅显示前 ${detailLimit} 条（不做翻页）；请缩小统计区间后再穿透`" />
       <!-- 表头 zh()、取值 cellText()；_id 主键列挪到最后并置灰（不删：对账与 CSV 导出仍要它） -->
@@ -143,7 +151,10 @@
  *   <li>{@code coverage} 四段（标本 / 蜡块 / 切片 / 流转）与每段的 note 全部上屏，
  *       且每个覆盖率都以「分子 / 分母（百分比）」形式给出——只给百分比时
  *       「100%」既可能是 200/200 也可能是 2/2，而本域经常是后者。</li>
- *   <li>顶层 {@code caveats} 与每个指标自己的 {@code caveat} 逐条显示，不折叠不省略。</li>
+ *   <li>顶层 {@code caveats} 与每个指标自己的 {@code caveat} 逐条显示，不折叠不省略。
+ *       v60（2576-②）：这些口径文本带 {@code **强调**} / 反引号 / 行首列表符，一律经 {@code format.ts#mdText}
+ *       去标记后按<b>纯文本插值</b>显示——不做 Markdown 渲染、不用 v-html（v59 之前 {@code {{ c }}} 直出，星号上屏）。</li>
+ *   <li>v60（2576-②）：{@code WORKLOAD_DEPT} 送检科室维度的每一行可穿透到该科室的标本明细（穿透端点 {@code dept} 过滤）。</li>
  * </ul>
  *
  * <p>路由 {@code /pathology/qc}、菜单 169（perm {@code path:qc}，端点限 ADMIN / QUALITY）。
@@ -151,7 +162,7 @@
 import { computed, onMounted, ref } from 'vue'
 import client from '../../../api/client'
 import {
-  cellText, colWidth, columnsOf, defaultRange, fmt, idColumnsLast, isIdColumn, keysOf, num, ratio, zh,
+  cellText, colWidth, columnsOf, defaultRange, fmt, idColumnsLast, isIdColumn, keysOf, mdText, num, ratio, zh,
   type Row,
 } from './format'
 
@@ -178,11 +189,6 @@ function rowsOf(ind: Row): Row[] {
 
 function missingOf(ind: Row): string[] {
   return (ind.missingFields ?? []) as string[]
-}
-
-/** 后端 caveat 里用 ** 强调，页面按纯文本显示——不做 Markdown 渲染，去掉星号即可 */
-function stripStars(s: string): string {
-  return s.replace(/\*\*/g, '')
 }
 
 /* ---------------- 覆盖率四段 ---------------- */
@@ -247,6 +253,10 @@ async function load() {
 const drawer = ref(false)
 const detailCode = ref('')
 const detailName = ref('')
+/** v60：WORKLOAD_DEPT 按科室穿透时的科室显示名（空 = 不过滤）；其余指标恒空 */
+const detailDept = ref('')
+const detailTitle = computed(() =>
+  `${detailCode.value} ${detailName.value} — 取值明细` + (detailDept.value ? `（科室：${detailDept.value}）` : ''))
 const detailCaveat = ref('')
 const detailUnavailable = ref('')
 const detailItems = ref<Row[]>([])
@@ -260,9 +270,11 @@ const detailLoading = ref(false)
  */
 const detailColumns = computed<string[]>(() => idColumnsLast(columnsOf(detailItems.value)))
 
-async function openDetail(ind: Row) {
+/** @param dept v60：只在 WORKLOAD_DEPT 行级穿透时传科室显示名；后端只对该指标套用过滤 */
+async function openDetail(ind: Row, dept?: string) {
   detailCode.value = String(ind.code)
   detailName.value = String(ind.name)
+  detailDept.value = ind.code === 'WORKLOAD_DEPT' && dept ? dept : ''
   detailItems.value = []
   detailTruncated.value = false
   detailCaveat.value = ''
@@ -271,7 +283,10 @@ async function openDetail(ind: Row) {
   detailLoading.value = true
   try {
     const d = (await client.get('/path-qc/detail', {
-      params: { indicator: ind.code, from: applied.value[0], to: applied.value[1] },
+      params: {
+        indicator: ind.code, from: applied.value[0], to: applied.value[1],
+        dept: detailDept.value || undefined,
+      },
     })).data.data as Row
     if (d.available !== true) {
       detailUnavailable.value = String(d.unavailableReason ?? '本指标缺数据源，无明细可穿透')
@@ -280,7 +295,8 @@ async function openDetail(ind: Row) {
     detailItems.value = (d.items ?? []) as Row[]
     detailTruncated.value = d.truncated === true
     detailLimit.value = num(d.limit) || 200
-    detailCaveat.value = stripStars(String(d.caveat ?? ''))
+    // 原文进 ref，去标记放在模板绑定处（mdText）——源码扫描按「绑定处经 mdText」判，口径文本只此一条路上屏
+    detailCaveat.value = String(d.caveat ?? '')
   } finally {
     detailLoading.value = false
   }

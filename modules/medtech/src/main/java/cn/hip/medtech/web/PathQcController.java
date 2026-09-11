@@ -39,6 +39,14 @@ import java.util.Map;
  * <h2>统计时间窗归集口径：本域各指标<b>不共用同一个锚点</b></h2>
  * <p>{@value #WINDOW_ANCHOR_NOTE}
  *
+ * <h2>v60（2576-②③）：按送检科室聚合的汇总维度 {@code WORKLOAD_DEPT}</h2>
+ * <p>此前六条 WORKLOAD_* 只按日 / 类别 / 染色 / 医师 / 技术类型分组，{@code dept_name} 只出现在穿透明细里——
+ * 「多维度」缺一个科室维度（v59 复核反驳者原话）。本版加 {@code WORKLOAD_DEPT}：按送检科室（门诊取挂号科室
+ * outp_registration.dept_id、住院取在院科室 inp_admission.dept_id，与 {@code SPEC_SELECT} 的 dept_name <b>同一条联接链</b>）
+ * 聚合本期<b>登记</b>的标本条数与其截至查询时刻的状态（已签发 / 已拒收 / 在办）；取不到科室或科室名为空白的归
+ * 「{@value #UNKNOWN_DEPT}」一行、<b>不丢行</b>。穿透明细复用 SPEC_SELECT，可按 {@code dept}（科室显示名）过滤到一个科室。
+ * 口径文本仍是带 {@code **} / 反引号的 Markdown 味纯文本，由前端 {@code format.ts#mdText} 去标记后显示（不做 Markdown 渲染），本控制器不改文本。
+ *
  * <h2>三条「符合率」指标全部缺数据源</h2>
  * <p>术中冰冻与石蜡诊断符合率、临床诊断符合率、外院会诊符合率——本仓<b>没有「符合 / 不符合」的
  * 录入位</b>，也没有冰冻与石蜡的配对键。这三条一律 {@code available=false} 并列出缺失字段，
@@ -70,7 +78,7 @@ public class PathQcController {
 
     static final String WINDOW_ANCHOR_NOTE =
             "统计时间窗归集口径：本域各指标**不共用同一个归集时刻**，跨指标横向相加没有意义。"
-            + "登记 / 接收 / 固定类按 path_specimen.collected_at（登记时刻）落窗；"
+            + "登记 / 接收 / 固定类与送检科室工作量按 path_specimen.collected_at（登记时刻）落窗；"
             + "报告及时率、双签率与报告签发量按 report_issued_at（正式签发时刻）落窗；"
             + "蜡块按 coalesce(embedded_at, created_at)、切片按 coalesce(stained_at, created_at)、"
             + "流转环节按 path_process.occurred_at、特检技术医嘱按 path_tech_order.ordered_at。"
@@ -149,6 +157,30 @@ public class PathQcController {
             left join empi_patient ipa on ipa.id = ia.patient_id
             """;
 
+    /**
+     * v60：送检科室联接——门诊按挂号科室（outp_registration.dept_id）、住院按在院科室（inp_admission.dept_id）。
+     * 与 {@code SPEC_SELECT} 里 dept_name 走的是同一条链，WORKLOAD_DEPT 的汇总与穿透因此同口径。
+     */
+    private static final String DEPT_JOINS = """
+            left join outp_order oo on oo.id = s.order_id
+            left join outp_registration orr on orr.id = oo.registration_id
+            left join sys_dept od on od.id = orr.dept_id
+            left join inp_order io on io.id = s.inp_order_id
+            left join inp_admission ia on ia.id = io.admission_id
+            left join sys_dept ad on ad.id = ia.dept_id
+            """;
+
+    /** 取不到送检科室、或科室名为空白的标本归到这一行——不丢行，也不把它们混进任何一个真实科室 */
+    public static final String UNKNOWN_DEPT = "（未知科室）";
+
+    /**
+     * 科室显示名：门诊科室优先、住院科室其次；首尾空白剥掉后为空的视同缺失（sys_dept.name not null 但不禁止空白）。
+     * 用 regexp_replace 的 \s 而不是 trim()：PostgreSQL 的 trim() 只剥空格，制表 / 换行会漏成一个「看不见的科室」。
+     */
+    private static final String DEPT_NAME =
+            "coalesce(nullif(regexp_replace(od.name, '^\\s+|\\s+$', '', 'g'), ''),"
+            + " nullif(regexp_replace(ad.name, '^\\s+|\\s+$', '', 'g'), ''), '" + UNKNOWN_DEPT + "')";
+
     /** 标本明细的公共投影：明细要能直接核对到人、到标本、到签名人，否则「穿透」是空话 */
     private static final String SPEC_SELECT = """
             select s.id                                                        as specimen_id,
@@ -159,7 +191,7 @@ public class PathQcController {
                    case when s.order_id is not null then 'OUTP' else 'INP' end as source,
                    coalesce(op.patient_no, ipa.patient_no)                     as patient_no,
                    coalesce(op.name, ipa.name)                                 as patient_name,
-                   coalesce(od.name, ad.name)                                  as dept_name,
+                   {deptName}                                                  as dept_name,
                    s.sampling_site,
                    s.urgent,
                    s.collected_at,
@@ -187,7 +219,7 @@ public class PathQcController {
             left join sys_user pu on pu.id = s.pathologist_id
             left join sys_user su1 on su1.id = s.first_signer_id
             left join sys_user su2 on su2.id = s.second_signer_id
-            """;
+            """.replace("{deptName}", DEPT_NAME);
 
     /** 标本类别中文名（值域与 chk_path_specimen_type 一致） */
     private static final String TYPE_NAME = """
@@ -211,10 +243,13 @@ public class PathQcController {
     /** 穿透明细多取 1 条判 truncated：只取 LIMIT 条会让「刚好第 200 条」漏报 */
     private static final String DETAIL_CAP = " limit " + (DETAIL_LIMIT + 1);
 
-    /** 占位符展开。{spec} 内不含其它占位符，其余互不嵌套 */
+    /** 占位符展开。{spec} 内不含其它占位符（dept_name 的表达式在常量定义时已展开），其余互不嵌套 */
     private static String q(String sql) {
         return sql.replace("{spec}", SPEC_SELECT)
                 .replace("{pat}", PAT_JOINS)
+                .replace("{deptJoins}", DEPT_JOINS)
+                .replace("{deptName}", DEPT_NAME)
+                .replace("{unknownDept}", UNKNOWN_DEPT)
                 .replace("{patName}", "coalesce(op.name, ipa.name)")
                 .replace("{typeName}", TYPE_NAME)
                 .replace("{wc}", W_COLLECTED)
@@ -364,6 +399,16 @@ public class PathQcController {
                 + "多部位送检一份申请对应多条标本（V144 的 (来源, part_no) 唯一），"
                 + "这正是病理科的真实工作量单位。rejected 一列是当日登记的标本里**后来**被拒收的条数"
                 + "（按登记日归集，不是按拒收日），要看「本期拒了多少」请走 PROCESS_TAT 的 REJECT 节点。");
+
+        // v60（2576-②）：科室维度——此前 dept_name 只在穿透明细里，六条 WORKLOAD_* 汇总行没有一条按送检科室分组
+        def("WORKLOAD_DEPT", "送检科室工作量",
+                "path_specimen.collected_at", ANCHOR_COLLECTED, WORKLOAD_NOTE
+                + " 送检科室取自申请归属：门诊按挂号科室（outp_registration.dept_id）、住院按在院科室（inp_admission.dept_id），"
+                + "与穿透明细的 dept_name 同一条联接链；取不到科室或科室名为空白的标本归「" + UNKNOWN_DEPT + "」一行，**不丢行**；"
+                + "同名科室（不同编码）合并为一行。registered 是本期**登记**的标本条数（与 WORKLOAD_REGISTER 同分母），"
+                + "issued / rejected / in_progress 是这批标本**截至查询时刻**的状态（已签发 / 已拒收 / 两者皆非）——"
+                + "按登记日归集而不是按签发日或拒收日，要看「本期签发了多少」请走 WORKLOAD_REPORT。"
+                + "三列之和等于 registered：签发端点拒绝已拒收标本、拒收端点拒绝已诊断标本，两态互斥。");
 
         def("WORKLOAD_BLOCK", "蜡块产出数（按日）",
                 "coalesce(path_block.embedded_at, created_at)",
@@ -793,6 +838,20 @@ public class PathQcController {
                     group by 1
                     order by 1 desc
                     """, w);
+            // v60（2576-②）：送检科室维度。args: from, to
+            case "WORKLOAD_DEPT" -> query("""
+                    select {deptName}                                                  as dept_name,
+                           count(*)                                                    as registered,
+                           count(*) filter (where s.report_issued_at is not null)      as issued,
+                           count(*) filter (where s.rejected_at is not null)           as rejected,
+                           count(*) filter (where s.report_issued_at is null
+                                              and s.rejected_at is null)               as in_progress
+                    from path_specimen s
+                    {deptJoins}
+                    where {wc}
+                    group by 1
+                    order by registered desc, 1
+                    """, w);
             // args: from, to
             case "WORKLOAD_BLOCK" -> query("""
                     select coalesce(b.embedded_at, b.created_at)::date                    as stat_day,
@@ -1034,6 +1093,19 @@ public class PathQcController {
                     from path_specimen s
                     where {wc}
                     """), w.args());
+            // v60：dept_count 是本期有登记的科室数（含「（未知科室）」这一行）；unknown_dept 是落到该行的标本条数
+            case "WORKLOAD_DEPT" -> one(q("""
+                    select count(*)                                                    as registered,
+                           count(*) filter (where s.report_issued_at is not null)      as issued,
+                           count(*) filter (where s.rejected_at is not null)           as rejected,
+                           count(*) filter (where s.report_issued_at is null
+                                              and s.rejected_at is null)               as in_progress,
+                           count(distinct {deptName})                                  as dept_count,
+                           count(*) filter (where {deptName} = '{unknownDept}')        as unknown_dept
+                    from path_specimen s
+                    {deptJoins}
+                    where {wc}
+                    """), w.args());
             case "WORKLOAD_BLOCK" -> one(q("""
                     select count(*)                                                as blocks,
                            count(*) filter (where b.embedded_at is not null)       as embedded,
@@ -1113,12 +1185,15 @@ public class PathQcController {
      * <b>不静默截断成「看着像全量」的结果</b>。
      *
      * @param limit 可选，调用方自定条数上限；超过 {@value #DETAIL_LIMIT} 返 5282
+     * @param dept  可选（v60），<b>只对 WORKLOAD_DEPT 生效</b>：按科室显示名过滤到一个科室（传「{@value #UNKNOWN_DEPT}」
+     *              取无科室 / 空白科室名的标本）。其余指标的明细不按科室分组，不套用该过滤；返回体只在生效时回带 {@code dept}
      */
     @GetMapping("/detail")
     public R<Map<String, Object>> detail(@RequestParam(required = false) String indicator,
                                          @RequestParam(required = false) String from,
                                          @RequestParam(required = false) String to,
-                                         @RequestParam(required = false) Integer limit) {
+                                         @RequestParam(required = false) Integer limit,
+                                         @RequestParam(required = false) String dept) {
         Def d = DEFS.get(indicator == null ? "" : indicator.trim().toUpperCase(Locale.ROOT));
         if (d == null) {
             return R.fail(5281, "指标编码不存在：" + indicator + "（可用编码见 GET /api/path-qc/catalog）");
@@ -1143,10 +1218,12 @@ public class PathQcController {
             body.put("truncated", false);
             return R.ok(body);
         }
-        List<Map<String, Object>> rows = detailRows(d.code(), w.window());
+        String deptFilter = deptFilterFor(d.code(), dept);
+        List<Map<String, Object>> rows = detailRows(d.code(), w.window(), deptFilter);
         boolean truncated = rows.size() > DETAIL_LIMIT;
         body.put("items", truncated ? rows.subList(0, DETAIL_LIMIT) : rows);
         body.put("truncated", truncated);
+        if ("WORKLOAD_DEPT".equals(d.code())) body.put("dept", deptFilter);
         body.put("anchorField", d.anchorField());
         body.put("anchor", d.anchor());
         body.put("caveat", d.caveat());
@@ -1154,7 +1231,18 @@ public class PathQcController {
         return R.ok(body);
     }
 
-    private List<Map<String, Object>> detailRows(String code, Window w) {
+    /** v60 之前的四参形态（V57TechTraceTest / V58TechProgressTest / V59TechConsistencyTest 直调），等价于不带科室过滤 */
+    public R<Map<String, Object>> detail(String indicator, String from, String to, Integer limit) {
+        return detail(indicator, from, to, limit, null);
+    }
+
+    /** 科室过滤只对 WORKLOAD_DEPT 生效（其余指标的明细不按科室分组，静默套用会让「同过滤条件」失真）；空白视为不过滤 */
+    private static String deptFilterFor(String code, String dept) {
+        if (!"WORKLOAD_DEPT".equals(code) || dept == null || dept.isBlank()) return null;
+        return dept.trim();
+    }
+
+    private List<Map<String, Object>> detailRows(String code, Window w, String dept) {
         return switch (code) {
             case "SPECIMEN_RECEIVE" -> jdbc.queryForList(q("""
                     select x.*,
@@ -1241,6 +1329,21 @@ public class PathQcController {
                     order by x.collected_at desc, x.specimen_id desc
                     {cap}
                     """), w.args());
+            // v60：复用 SPEC_SELECT（dept_name 同一条联接链），按科室排、可按 dept 过滤到一个科室；stage 与汇总三列同判据
+            case "WORKLOAD_DEPT" -> {
+                String filter = dept == null ? "" : "where x.dept_name = ?";
+                Object[] args = dept == null ? w.args() : new Object[]{w.f(), w.t(), dept};
+                yield jdbc.queryForList(q("""
+                        select x.*,
+                               case when x.rejected_at is not null      then '已拒收'
+                                    when x.report_issued_at is not null then '已签发'
+                                    else '在办' end                       as stage
+                        from ( {spec} where {wc} ) x
+                        {deptFilter}
+                        order by x.dept_name, x.collected_at desc, x.specimen_id desc
+                        {cap}
+                        """).replace("{deptFilter}", filter), args);
+            }
             case "WORKLOAD_BLOCK" -> jdbc.queryForList(q("""
                     select b.id                                 as block_id,
                            b.block_code, b.block_no, b.tissue_desc, b.dehydrate_batch,
@@ -1448,22 +1551,24 @@ public class PathQcController {
         if (!d.available()) return unavailableCsv(d, w.window());
         List<Map<String, Object>> rows = rowsOf(d.code(), w.window());
         boolean cut = rows.size() > ROW_LIMIT;
-        return toCsv(d, w.window(), "指标汇总", cut ? rows.subList(0, ROW_LIMIT) : rows, cut, ROW_LIMIT);
+        return toCsv(d, w.window(), "指标汇总", null, cut ? rows.subList(0, ROW_LIMIT) : rows, cut, ROW_LIMIT);
     }
 
-    /** 穿透明细 CSV（与 {@link #detail} 同 SQL 同口径、同 200 条上限；超限在页脚明写截断） */
+    /** 穿透明细 CSV（与 {@link #detail} 同 SQL 同口径、同 200 条上限、同 dept 过滤；超限在页脚明写截断） */
     @GetMapping(value = "/detail.csv", produces = "text/csv;charset=UTF-8")
     public String detailCsv(@RequestParam(required = false) String indicator,
                             @RequestParam(required = false) String from,
-                            @RequestParam(required = false) String to) {
+                            @RequestParam(required = false) String to,
+                            @RequestParam(required = false) String dept) {
         Def d = DEFS.get(indicator == null ? "" : indicator.trim().toUpperCase(Locale.ROOT));
         if (d == null) return errCsv(5281, "指标编码不存在：" + indicator);
         var w = parseWindow(from, to);
         if (w.error() != null) return errCsv(w.error().getCode(), w.error().getMessage());
         if (!d.available()) return unavailableCsv(d, w.window());
-        List<Map<String, Object>> rows = detailRows(d.code(), w.window());
+        String deptFilter = deptFilterFor(d.code(), dept);
+        List<Map<String, Object>> rows = detailRows(d.code(), w.window(), deptFilter);
         boolean truncated = rows.size() > DETAIL_LIMIT;
-        return toCsv(d, w.window(), "取值明细",
+        return toCsv(d, w.window(), "取值明细", deptFilter == null ? null : "科室过滤：" + deptFilter,
                 truncated ? rows.subList(0, DETAIL_LIMIT) : rows, truncated, DETAIL_LIMIT);
     }
 
@@ -1484,11 +1589,14 @@ public class PathQcController {
         return sb.toString();
     }
 
-    private String toCsv(Def d, Window w, String kind, List<Map<String, Object>> rows,
+    /** @param filterNote 过滤条件说明（v60 科室过滤），紧跟表头行写出——过滤过的明细脱离页面后必须看得出它不是全量 */
+    private String toCsv(Def d, Window w, String kind, String filterNote, List<Map<String, Object>> rows,
                          boolean truncated, int limit) {
         var sb = new StringBuilder("﻿指标编码,指标名称,报表,统计区间,归集时刻\n");
-        sb.append("%s,%s,%s,%s,%s\n\n".formatted(csv(d.code()), csv(d.name()), csv(kind),
+        sb.append("%s,%s,%s,%s,%s\n".formatted(csv(d.code()), csv(d.name()), csv(kind),
                 csv(w.f() + " 至 " + w.t()), csv(d.anchorField())));
+        if (filterNote != null) sb.append(csv(filterNote)).append('\n');
+        sb.append('\n');
         if (rows.isEmpty()) {
             sb.append(csv("（该统计区间内无数据）")).append('\n');
         } else {
@@ -1675,6 +1783,11 @@ public class PathQcController {
             case "activities" -> "操作次数合计";
             case "activity" -> "操作";
             case "act_time" -> "操作时刻";
+            // v60（2576-②）送检科室维度：dept_name / registered / issued / rejected 复用上面的既有键，这四个是新键
+            case "in_progress" -> "在办数";
+            case "dept_count" -> "送检科室数";
+            case "unknown_dept" -> "未知科室标本数";
+            case "stage" -> "办理阶段";
             // 特检
             case "tech_order_id" -> "技术医嘱ID";
             case "tech_type" -> "技术类型编码";

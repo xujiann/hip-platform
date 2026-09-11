@@ -192,6 +192,26 @@ export function fmtTime(v: unknown): string {
   return fmtDateTime(v)
 }
 
+/**
+ * 后端口径文本去 Markdown 标记（v60 2576-②）。
+ *
+ * <p>{@code PathQcController} 的口径 caveat / 覆盖率 note / 节假日口径是带 {@code **强调**}、反引号代码段、
+ * 行首 {@code - } 列表符的 Markdown 味纯文本，CSV 页脚原样带走没问题，页面此前却把 {@code **} 与反引号原样打在屏幕上。
+ * 本函数<b>只去标记、保留文字</b>：{@code **a** b} → {@code a b}；反引号整个删掉；行首 {@code - } 列表符去掉、条目文字留下。
+ * <b>不做 Markdown 渲染、不用 v-html</b>——口径文本来自后端常量，但页面一律按纯文本插值，不给 HTML 注入留口子。
+ * 不认识的标记原样保留，不猜。null / undefined 给空串（这些文本缺席时不该显示「—」占位）。
+ *
+ * <p>三条规则的正则字面量被 {@code V60DeptDimensionTest} 逐条解析、在 Java 里按相同语义回放（'**a** b' → 'a b' 等），
+ * 改规则时那边会跟着红。反引号写成 {@code \x60}：源码扫描类测试的剥注释器把裸反引号当模板串起点，正则里放一个会吞掉后面的代码。
+ */
+export function mdText(v: unknown): string {
+  if (v === null || v === undefined) return ''
+  return String(v)
+    .replace(/\*\*/g, '')
+    .replace(/\x60/g, '')
+    .replace(/^[ \t]*-[ \t]+/gm, '')
+}
+
 export function num(v: unknown): number {
   return typeof v === 'number' ? v : Number(v ?? 0)
 }
@@ -411,6 +431,11 @@ const ZH: Record<string, string> = {
   activities: '操作次数合计',
   activity: '操作',
   act_time: '操作时刻',
+  // v60（2576-②）送检科室维度 WORKLOAD_DEPT：与后端 zh() 同名 case 逐字一致（dept_name / registered / issued / rejected 复用上面的既有键）
+  in_progress: '在办数',
+  dept_count: '送检科室数',
+  unknown_dept: '未知科室标本数',
+  stage: '办理阶段',
   // 特检
   tech_order_id: '技术医嘱ID',
   tech_type: '技术类型编码',
@@ -436,6 +461,10 @@ const ZH: Record<string, string> = {
   progress_name: '执行进度',
   // v59 车道 C（2563 一致性）：挂接切片实际染色类型 / 项目的去重汇总（如「IHC CK7 ×2」），与后端 zh() 同名 case 逐字一致
   attached_stain: '挂接切片染色',
+  // v60 车道 B 契约（规划节写死、由 C 统一补键）：清单「蜡块」列在 block_id 空时按挂接蜡块 / 切片派生（「块码1、块码2」文本）；
+  // attached_stain 的中文版（「免疫组化 CK7 ×2」）
+  blocks_derived: '关联蜡块',
+  attached_stain_name: '挂接切片染色',
   // 覆盖率段
   with_specimen_type: '已录标本类别',
   with_path_no: '已录病理号',
@@ -528,7 +557,7 @@ export function colWidth(col: string): number {
       || col === 'tissue_desc' || col === 'reject_reason' || col === 'fixatives'
       || col === 'clinical_diagnosis' || col === 'specimen_desc') return 220
   if (col === 'patient_name' || col === 'path_no' || col === 'block_code'
-      || col === 'slide_code' || col === 'item_name') return 140
+      || col === 'slide_code' || col === 'item_name' || col === 'dept_name') return 140
   return 110
 }
 
