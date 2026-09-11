@@ -143,6 +143,10 @@
         <el-table-column label="类别" width="90">
           <template #default="{ row }">{{ typeName(row.specimen_type) }}</template>
         </el-table-column>
+        <!-- v60（2530 尾）：登记时录入的标本描述此前只写不读——四个读端点都 select 了它，前端却没有一处只读展示 -->
+        <el-table-column label="标本描述" min-width="150" show-overflow-tooltip>
+          <template #default="{ row }">{{ fmt(row.specimen_desc) }}</template>
+        </el-table-column>
         <el-table-column label="状态" width="180">
           <template #default="{ row }">
             <el-tag size="small">{{ statusName(row.status) }}</el-tag>
@@ -343,6 +347,10 @@
         </el-table-column>
         <el-table-column label="类别" width="90">
           <template #default="{ row }">{{ typeName(row.specimen_type) }}</template>
+        </el-table-column>
+        <!-- v60（2530 尾）：既往行同带 specimen_desc（SPECIMEN_SELECT 片段），医师对比既往时该看得见当年送的是什么 -->
+        <el-table-column label="标本描述" min-width="150" show-overflow-tooltip>
+          <template #default="{ row }">{{ fmt(row.specimen_desc) }}</template>
         </el-table-column>
         <el-table-column label="状态" width="150">
           <template #default="{ row }">

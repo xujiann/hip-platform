@@ -50,6 +50,10 @@
         <el-tag v-if="row.urgent === true" size="small" type="danger">急</el-tag>
       </template>
     </el-table-column>
+    <!-- v60（2530 尾）：登记时强制录入的标本描述（4554 必填）此前在取材工位看不见——取材员对着标本却看不到登记员写了什么 -->
+    <el-table-column label="标本描述" min-width="150" show-overflow-tooltip>
+      <template #default="{ row }">{{ fmt(row.specimen_desc) }}</template>
+    </el-table-column>
     <el-table-column label="取材部位" min-width="120" show-overflow-tooltip>
       <template #default="{ row }">{{ fmt(row.sampling_site) }}</template>
     </el-table-column>
@@ -90,6 +94,8 @@
         <el-descriptions-item label="类别">{{ typeName(view.specimen?.specimen_type) }}</el-descriptions-item>
         <el-descriptions-item label="取材部位">{{ fmt(view.specimen?.sampling_site) }}</el-descriptions-item>
         <el-descriptions-item label="写完诊断">{{ fmtTime(view.diagnosedAt) }}</el-descriptions-item>
+        <!-- v60（2530 尾）：登记时录入的标本描述与大体所见并排——「送来的是什么」与「取材看到的是什么」本该同屏 -->
+        <el-descriptions-item label="标本描述（登记时录入）" :span="3">{{ fmt(view.specimen?.specimen_desc) }}</el-descriptions-item>
       </el-descriptions>
 
       <div class="sec">
@@ -103,14 +109,27 @@
       <!-- 字段级记录（v58，2530）：只认 path_gross_field 的行，不从上面的文本反解析 -->
       <div class="sec">
         <b>字段级记录</b>
-        <template v-if="view.fieldsAvailable === true">
-          <el-tag size="small" :type="view.fieldsCurrent === false ? 'warning' : 'success'" style="margin-left: 6px">
-            第 {{ fmt(view.fieldsRevisionSeq) }} 版字段（{{ viewFields.length }} 项）
-            {{ view.fieldsCurrent === false ? '' : '，与当前文本同版' }}</el-tag>
+        <template v-if="viewFieldVersions.length">
+          <!-- v60（2530 尾）：被取代版本的字段可调阅——fieldsByRevision 逐版给字段行（车道 B 契约），这里按版切换、标来源；
+               默认最新有字段的版（与后端 fieldsRevisionSeq 同口径）。后端没回该键（B 未合入 / 旧包）时下拉只列最新字段版这一项，不编造其它版 -->
+          <el-select v-model="viewVersionSeq" size="small" style="width: 320px; margin-left: 6px">
+            <el-option v-for="v in viewFieldVersions" :key="String(v.revisionSeq)" :value="Number(v.revisionSeq)"
+                       :label="versionLabel(v)" />
+          </el-select>
+          <el-tag size="small" style="margin-left: 6px"
+                  :type="viewVersionIsLatestFields ? (view.fieldsCurrent === false ? 'warning' : 'success') : 'info'">
+            {{ viewVersionIsLatestFields
+              ? `最新字段版（第 ${fmt(view.fieldsRevisionSeq)} 版，${viewFields.length} 项）${view.fieldsCurrent === false ? '' : '，与当前文本同版'}`
+              : `被取代版本（第 ${fmt(viewVersion?.revisionSeq)} 版，${viewFields.length} 项）：已被第 ${fmt(view.fieldsRevisionSeq)} 版字段取代，仅供调阅` }}</el-tag>
+          <div class="muted" style="margin-top: 4px">
+            来源：{{ versionSourceName(viewVersion) }}　模板：<span class="code">{{ fmt(viewVersion?.templateCode) }}</span>
+            <span v-if="view.fieldsByRevision == null">　（后端未回 fieldsByRevision：只能查看最新字段版，被取代版本暂不可调阅）</span>
+          </div>
           <!-- v59：字段随版本走；诊断只改文本不改字段，两者分叉时明说，不让两处并排自相矛盾 -->
-          <el-alert v-if="view.fieldsCurrent === false" type="warning" show-icon :closable="false" style="margin-top: 4px"
+          <el-alert v-if="viewVersionIsLatestFields && view.fieldsCurrent === false" type="warning" show-icon :closable="false" style="margin-top: 4px"
                     :title="String(view.fieldsNote || `字段级记录对应第 ${fmt(view.fieldsRevisionSeq)} 版，文本已在第 ${fmt(view.textRevisionSeq)} 版修订，以文本为准`)" />
-          <el-table :data="viewFields" size="small" border max-height="200" style="margin-top: 4px">
+          <span v-if="!viewFields.length" class="muted" style="display: block; margin-top: 4px">本版未填写字段（只写了自由文本，或该版由诊断端点修订文本）</span>
+          <el-table v-else :data="viewFields" size="small" border max-height="200" style="margin-top: 4px">
             <el-table-column label="#" width="50">
               <template #default="{ row }">{{ fmt(row.seq) }}</template>
             </el-table-column>
@@ -215,6 +234,21 @@
 
       <el-alert v-if="mode === 'GROSSING' && existingGross && form.append" type="info" show-icon :closable="false" class="cav"
                 title="本次填写的描述将作为新版本追加：新文本 = 既有文本 + 「。补取材：」 + 本次描述，不覆盖既有内容；不填则只加蜡块、不出新版本。" />
+
+      <!-- v60（2563 尾，车道 B 契约）：勾了补取材可挂接病理医师下的 RESAMPLE 医嘱——POST /grossing 带 techOrderId，
+           后端校验医嘱存在 / RESAMPLE / 属于该标本 / ORDERED（四路径同码 5275，在任何写入之前拒）；不挂接即自由补取材，旧行为不变 -->
+      <el-form-item v-if="mode === 'GROSSING' && form.append" label="挂接补取材医嘱">
+        <div style="width: 100%">
+          <el-select v-model="form.techOrderId" clearable placeholder="不挂接（自由补取材，医嘱进度不随本次取材推进）"
+                     style="width: 100%" :loading="resampleLoading">
+            <el-option v-for="o in resampleOrders" :key="Number(o.id)" :value="Number(o.id)" :label="resampleLabel(o)" />
+          </el-select>
+          <span v-if="!resampleLoading && !resampleOrders.length" class="muted">
+            该标本无待执行的补取材医嘱：只列 status=ORDERED 且 tech_type=RESAMPLE 的医嘱，深切 / 重切 / 免疫组化等不在此挂接</span>
+          <span v-else-if="form.techOrderId" class="muted">
+            提交后本次新蜡块回写到该医嘱（path_block.tech_order_id），医嘱进度由事实派生为「已补取材、待切片」</span>
+        </div>
+      </el-form-item>
 
       <el-form-item v-if="showGrossInputs" label="取材模板">
         <el-select v-model="form.templateCode" clearable placeholder="不用模板" style="width: 260px"
@@ -353,7 +387,7 @@
  */
 import { computed, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import client from '../../../api/client'
+import client, { type BizError } from '../../../api/client'
 import { SPECIMEN_TYPES, fmt, fmtTime, num, typeName, type Row } from './format'
 
 const emit = defineEmits<{ (e: 'changed'): void }>()
@@ -432,9 +466,43 @@ const form = reactive({
   gross: {} as Record<string, string>,
   grossText: '',
   append: false,
+  /** v60：勾了补取材时可挂接的 RESAMPLE 医嘱 id（POST /grossing 的 techOrderId，车道 B 契约）；不挂接为 undefined */
+  techOrderId: undefined as number | undefined,
   remark: '',
   blocks: [{ tissueDesc: '' }] as { tissueDesc: string }[],
 })
+
+/* ---------------- 补取材挂接 RESAMPLE 医嘱（v60，2563 尾） ---------------- */
+const resampleOrders = ref<Row[]>([])
+const resampleLoading = ref(false)
+
+/**
+ * 只列该标本待执行的补取材医嘱：GET /report/tech-orders 的 status / techType 都是后端白名单参数
+ * （值域照 TECH_STATUSES / TECH_TYPES），传 specimenId 时默认全状态，故 status=ORDERED 必须显式给；
+ * 回来再按 tech_type / status 过一遍，后端返回口径变了也不会把别的类型混进来。取不到就没得挂：下拉为空、仍可自由补取材。
+ */
+async function loadResampleOrders(specimenId: number) {
+  resampleLoading.value = true
+  resampleOrders.value = []
+  try {
+    const d = (await client.get('/pathology/report/tech-orders', {
+      params: { specimenId, status: 'ORDERED', techType: 'RESAMPLE' },
+    })).data.data as Row
+    resampleOrders.value = ((d.items ?? []) as Row[])
+      .filter((o) => o.tech_type === 'RESAMPLE' && o.status === 'ORDERED')
+  } catch {
+    resampleOrders.value = []
+  } finally {
+    resampleLoading.value = false
+  }
+}
+
+function resampleLabel(o: Row): string {
+  const item = o.tech_item ? ` ${String(o.tech_item)}` : ''
+  const block = o.block_code ? String(o.block_code) : '未指定'
+  const reason = o.reason ? `　原因：${String(o.reason)}` : ''
+  return `#${fmt(o.id)}　补取材${item}　下达 ${fmt(o.ordered_by_name)} ${fmtTime(o.ordered_at)}　蜡块 ${block}${reason}`
+}
 
 function addBlock() {
   if (form.blocks.length >= 50) {
@@ -478,6 +546,7 @@ function openGrossing(row: Row) {
     // 「病理医师看完 HE 片后的补取材」与「误点两次取材凭空多出一组蜡块」区分开。
     // 前端替人勾上就等于把这道闸拆了——默认关，由人自己确认。
     append: false,
+    techOrderId: undefined,
     remark: '',
     blocks: [{ tissueDesc: '' }],
   })
@@ -486,6 +555,7 @@ function openGrossing(row: Row) {
   revisePrefillNote.value = ''
   dialog.value = true
   void loadExistingGross(Number(row.id))
+  void loadResampleOrders(Number(row.id))   // v60：勾「补取材」后可挂接的 RESAMPLE 医嘱，先取好、不让人勾了再等
 }
 
 /* ---------------- 修订取材描述（v59，2530 复核） ---------------- */
@@ -536,6 +606,7 @@ async function openRevise(row: Row) {
     gross: split.gross,
     grossText: split.free,
     append: false,
+    techOrderId: undefined,
     remark: '',
     blocks: [{ tissueDesc: '' }],
   })
@@ -581,10 +652,66 @@ const viewLoading = ref(false)
 const view = ref<{ specimen?: Row; grossFinding?: unknown; grossFindingPresent?: unknown;
   fieldsAvailable?: unknown; fields?: Row[]; revisions?: Row[];
   fieldsRevisionSeq?: unknown; textRevisionSeq?: unknown; fieldsNote?: unknown; fieldsCurrent?: unknown;   // v59：字段与文本各自的版号
+  fieldsByRevision?: Row[];   // v60（车道 B 契约）：[{revisionSeq, source, sourceName, templateCode, fields:[{seq,label,value}]}]，B 未合入前为 undefined
   diagnosedAt?: unknown; blocks?: Row[]; grossingEvents?: Row[]; note?: unknown }>({})
 const viewBlocks = computed<Row[]>(() => (view.value.blocks ?? []) as Row[])
 const viewEvents = computed<Row[]>(() => (view.value.grossingEvents ?? []) as Row[])
-const viewFields = computed<Row[]>(() => (view.value.fields ?? []) as Row[])
+
+/* ---------------- 被取代版本的字段可调阅（v60，2530 尾） ---------------- */
+/**
+ * 可切换的字段版本，按 revisionSeq 升序。fieldsByRevision 有值就逐版列（含没字段行的版，选中后显示「本版未填写字段」）；
+ * 后端没回该键（车道 B 未合入 / 旧包）就只列最新字段版这一项（fields + fieldsRevisionSeq），不编造被取代的版。
+ */
+const viewFieldVersions = computed<Row[]>(() => {
+  const raw = view.value.fieldsByRevision
+  if (Array.isArray(raw) && raw.length) {
+    return [...raw].sort((a, b) => Number(a.revisionSeq) - Number(b.revisionSeq))
+  }
+  const latest = (view.value.fields ?? []) as Row[]
+  if (!latest.length) return []
+  return [{ revisionSeq: view.value.fieldsRevisionSeq ?? null, source: null, sourceName: null, templateCode: null, fields: latest }]
+})
+const viewVersionSeq = ref<number | null>(null)
+const viewVersion = computed<Row | null>(
+  () => viewFieldVersions.value.find((v) => Number(v.revisionSeq) === viewVersionSeq.value)
+    ?? latestVersionWithFields(viewFieldVersions.value),
+)
+/** 选中的是否就是最新字段版（后端 fieldsRevisionSeq 那一版）：是则用 fields（带录入人 / 时刻），否则用 fieldsByRevision 里该版的行 */
+const viewVersionIsLatestFields = computed(() => {
+  const v = viewVersion.value
+  const seq = view.value.fieldsRevisionSeq
+  return v != null && seq != null && Number(v.revisionSeq) === Number(seq)
+})
+const viewFields = computed<Row[]>(() => {
+  const v = viewVersion.value
+  if (!v) return []
+  const latest = (view.value.fields ?? []) as Row[]
+  if (viewVersionIsLatestFields.value && latest.length) return latest
+  return (v.fields ?? []) as Row[]
+})
+
+/** 默认版 = 最新有字段的版（与后端 fieldsRevisionSeq 同口径）；全都没字段就取最后一版 */
+function latestVersionWithFields(list: Row[]): Row | null {
+  for (let i = list.length - 1; i >= 0; i--) if (versionFieldCount(list[i]) > 0) return list[i]
+  return list.length ? list[list.length - 1] : null
+}
+
+function versionFieldCount(v: Row | null | undefined): number {
+  return Array.isArray(v?.fields) ? (v.fields as Row[]).length : 0
+}
+
+/** path_gross_revision.source 三档（V166）的中文兜底；后端 sourceName 优先 */
+function versionSourceName(v: Row | null | undefined): string {
+  if (!v) return '—'
+  if (v.sourceName != null && v.sourceName !== '') return String(v.sourceName)
+  const s = v.source == null ? '' : String(v.source)
+  return s === 'GROSSING' ? '取材' : s === 'GROSSING_EDIT' ? '取材修订' : s === 'DIAGNOSE' ? '诊断' : (s || '—')
+}
+
+function versionLabel(v: Row): string {
+  const n = versionFieldCount(v)
+  return `第 ${fmt(v.revisionSeq)} 版 · ${versionSourceName(v)}${n ? `（${n} 项）` : '（本版未填写字段）'}`
+}
 
 /* ---------------- 取材成功后回读已落库字段（v58，2530） ---------------- */
 const resultView = ref<{ fieldsAvailable?: unknown; fields?: Row[] }>({})
@@ -607,8 +734,12 @@ async function loadResultFields(specimenId: number) {
 async function openView(specimenId: number) {
   viewDialog.value = true
   viewLoading.value = true
+  viewVersionSeq.value = null
   try {
     view.value = (await client.get(`/pathology/process/grossing/${specimenId}`)).data.data as typeof view.value
+    // v60：默认停在最新有字段的版；被取代版本由人切下拉去看
+    const def = latestVersionWithFields(viewFieldVersions.value)
+    viewVersionSeq.value = def == null || def.revisionSeq == null ? null : Number(def.revisionSeq)
   } finally {
     viewLoading.value = false
   }
@@ -627,20 +758,32 @@ async function submit() {
 
     // v59：无既有大体所见 → 首写；已有且勾了补取材 → 作为新版本追加；已有且未勾 → 一律不传（后端会拒 5222）
     const sendGross = !existingGross.value || form.append
+    // v60：只有勾了补取材才带 techOrderId（车道 B 契约：append=true 时挂接 RESAMPLE 医嘱，非法 5275）；未勾即使残留也不传
+    const techOrderId = form.append && form.techOrderId ? Number(form.techOrderId) : undefined
     result.value = (await client.post('/pathology/process/grossing', {
       specimenId: Number(current.value.id),
       templateCode: form.templateCode || undefined,
       gross: sendGross && Object.keys(gross).length ? gross : undefined,
       grossText: sendGross && form.grossText ? form.grossText : undefined,
       append: form.append,
+      techOrderId,
       remark: form.remark || undefined,
       blocks: form.blocks.map((b) => ({ tissueDesc: b.tissueDesc || undefined })),
-    })).data.data as Row
+    }, { __silentCodes: [5275] })).data.data as Row
     dialog.value = false
     resultDialog.value = true
     void loadResultFields(Number(current.value.id))   // 回读库里的字段行，不用表单值冒充
     await load()
     emit('changed')
+  } catch (e) {
+    // 5275：挂接的补取材医嘱非法（不存在 / 非 RESAMPLE / 不属于该标本 / 非 ORDERED，四路径同码）——后端在任何写入之前拒绝，
+    // 这里把后端原话给人看并刷新下拉（多半是别人刚取消 / 完成了那条医嘱）；其余码由拦截器统一红字，照旧抛出
+    if ((e as BizError).bizCode === 5275) {
+      ElMessage.error(`补取材医嘱挂接被拒（5275）：${(e as Error).message || '医嘱非法'}——请重新选择或改为不挂接`)
+      void loadResampleOrders(Number(current.value.id))
+      return
+    }
+    throw e
   } finally {
     saving.value = false
   }

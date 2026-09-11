@@ -162,6 +162,8 @@
         <el-descriptions-item label="蜡块 / 切片 / 已染色">
           {{ num(tSpecimen.block_count) }} / {{ num(tSpecimen.slide_count) }} / {{ num(tSpecimen.stained_slide_count) }}
         </el-descriptions-item>
+        <!-- v60（2530 尾）：登记时录入的标本描述。轨迹头 specimen_desc 由车道 B 加；B 未合入前回落同抽屉已取的 GET /grossing/{id} 头（本就带该列），两处都没有才「—」 -->
+        <el-descriptions-item label="标本描述" :span="4">{{ fmt(tSpecimen.specimen_desc ?? gSpecimen.specimen_desc) }}</el-descriptions-item>
       </el-descriptions>
 
       <el-alert :type="tAnomalies.length ? 'warning' : 'success'" show-icon :closable="false" class="cav"
@@ -198,8 +200,35 @@
           第 {{ fmt(gross.fieldsRevisionSeq) }} 版字段级记录（{{ grossFields.length }} 项）{{
             gross.fieldsCurrent === false ? `；${gross.fieldsNote || `文本已在第 ${fmt(gross.textRevisionSeq)} 版修订，以文本为准`}` : '，与当前文本同版' }}</el-tag>
         <el-tag v-else size="small" type="info">历史标本，无字段级记录（或本次取材只写了自由文本；不从文本反解析）</el-tag>
-        <el-table v-if="grossRevisions.length" :data="grossRevisions" size="small" border max-height="260"
-                  style="margin-top: 6px">
+        <el-table v-if="grossRevisions.length" :data="grossRevisions" size="small" border max-height="320"
+                  style="margin-top: 6px" row-key="seq">
+          <!-- v60（2530 尾）：每版字段可展开调阅——fieldsByRevision（车道 B 契约）按 revisionSeq 对上本行 seq；
+               对不上或空即「本版未填写字段」，不从文本反解析。B 未合入前只有最新字段版（fields / fieldsRevisionSeq）能对上 -->
+          <el-table-column type="expand" width="40">
+            <template #default="{ row }">
+              <div class="rev-fields">
+                <template v-if="revisionFields(row.seq).length">
+                  <el-tag size="small" type="success">第 {{ fmt(row.seq) }} 版字段级记录（{{ revisionFields(row.seq).length }} 项）</el-tag>
+                  <span v-if="gross.fieldsByRevision == null" class="muted" style="margin-left: 6px">后端未回 fieldsByRevision：仅最新字段版可展开</span>
+                  <el-table :data="revisionFields(row.seq)" size="small" border style="margin-top: 4px; max-width: 640px">
+                    <el-table-column label="#" width="50">
+                      <template #default="{ row: f }">{{ fmt(f.seq) }}</template>
+                    </el-table-column>
+                    <el-table-column label="字段" width="140">
+                      <template #default="{ row: f }">{{ fmt(f.label) }}</template>
+                    </el-table-column>
+                    <el-table-column label="内容" min-width="200" show-overflow-tooltip>
+                      <template #default="{ row: f }">{{ fmt(f.value) }}</template>
+                    </el-table-column>
+                  </el-table>
+                </template>
+                <span v-else class="muted">
+                  本版未填写字段{{ gross.fieldsByRevision == null
+                    ? '（后端未回 fieldsByRevision：被取代版本的字段暂不可调阅，仅最新字段版可展开）'
+                    : '（只写了自由文本，或该版由诊断端点修订文本、字段留在上一版）' }}</span>
+              </div>
+            </template>
+          </el-table-column>
           <el-table-column label="版本" width="60">
             <template #default="{ row }">{{ fmt(row.seq) }}</template>
           </el-table-column>
@@ -328,8 +357,24 @@ const drawerTitle = computed(
 /* ---------------- 大体所见修订（v58，2530） ---------------- */
 const gLoading = ref(false)
 const gross = ref<Row>({})
+const gSpecimen = computed<Row>(() => (gross.value.specimen ?? {}) as Row)   // v60：GET /grossing/{id} 的标本头（带 specimen_desc）
 const grossFields = computed<Row[]>(() => (gross.value.fields ?? []) as Row[])
 const grossRevisions = computed<Row[]>(() => (gross.value.revisions ?? []) as Row[])
+
+/**
+ * v60（2530 尾）：某一版修订的字段行。fieldsByRevision（车道 B 契约：[{revisionSeq, source, sourceName, templateCode,
+ * fields:[{seq,label,value}]}]）按 revisionSeq 对上修订行的 seq；后端没回该键时只有最新字段版（fields / fieldsRevisionSeq）
+ * 能对上，其余版一律空——不从文本反解析、不拿最新字段冒充旧版。
+ */
+function revisionFields(seq: unknown): Row[] {
+  const raw = gross.value.fieldsByRevision
+  if (Array.isArray(raw)) {
+    const hit = (raw as Row[]).find((v) => Number(v.revisionSeq) === Number(seq))
+    return (hit?.fields ?? []) as Row[]
+  }
+  const latestSeq = gross.value.fieldsRevisionSeq
+  return latestSeq != null && Number(latestSeq) === Number(seq) ? grossFields.value : []
+}
 
 /** path_gross_revision.source 的三档（V166），与 chk_path_gross_revision_source 一致；后端 sourceName 优先，这里只是兜底 */
 function revisionSource(v: unknown): string {
@@ -382,5 +427,6 @@ void loadAnomalies()
 .code { font-family: Consolas, Monaco, monospace; }
 .bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
 .rev { white-space: pre-wrap; word-break: break-word; }
+.rev-fields { padding: 4px 8px 8px; }
 h4 { margin: 12px 0 6px; }
 </style>

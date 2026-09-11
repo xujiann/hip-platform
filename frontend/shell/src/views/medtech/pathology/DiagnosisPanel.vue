@@ -122,6 +122,8 @@
         </el-descriptions-item>
         <el-descriptions-item label="取材部位">{{ fmt(specimen.sampling_site) }}</el-descriptions-item>
         <el-descriptions-item label="临床诊断">{{ fmt(specimen.clinical_diagnosis) }}</el-descriptions-item>
+        <!-- v60（2530 尾）：登记时录入的标本描述（/reports 头里本就带 specimen_desc）——医师出报告前该看得见送检登记写的是什么 -->
+        <el-descriptions-item label="标本描述" :span="4">{{ fmt(specimen.specimen_desc) }}</el-descriptions-item>
       </el-descriptions>
 
       <!-- ---- 双签状态：先给判据与提示，不等提交被拒 ---- -->
@@ -384,6 +386,8 @@
           <el-descriptions :column="2" border size="small" class="cav">
             <el-descriptions-item label="取材部位">{{ fmt(specimen.sampling_site) }}</el-descriptions-item>
             <el-descriptions-item label="临床诊断">{{ fmt(specimen.clinical_diagnosis) }}</el-descriptions-item>
+            <!-- v60（2530 尾）：对照框两栏各带标本描述——对比既往先看「当年送的是什么」 -->
+            <el-descriptions-item label="标本描述" :span="2">{{ fmt(specimen.specimen_desc) }}</el-descriptions-item>
             <el-descriptions-item label="状态">{{ statusName(specimen.status) }}</el-descriptions-item>
             <el-descriptions-item label="签发时刻">{{ fmtDateTime(specimen.report_issued_at) }}</el-descriptions-item>
           </el-descriptions>
@@ -411,6 +415,7 @@
           <el-descriptions :column="2" border size="small" class="cav">
             <el-descriptions-item label="取材部位">{{ fmt(compareRow.sampling_site) }}</el-descriptions-item>
             <el-descriptions-item label="临床诊断">{{ fmt(compareRow.clinical_diagnosis) }}</el-descriptions-item>
+            <el-descriptions-item label="标本描述" :span="2">{{ fmt(compareRow.specimen_desc) }}</el-descriptions-item>
             <el-descriptions-item label="写完诊断">{{ fmtDateTime(compareRow.diagnosed_at) }}</el-descriptions-item>
             <el-descriptions-item label="签发时刻">{{ fmtDateTime(compareRow.report_issued_at) }}</el-descriptions-item>
           </el-descriptions>
