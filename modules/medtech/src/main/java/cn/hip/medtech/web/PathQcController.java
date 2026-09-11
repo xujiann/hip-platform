@@ -1417,6 +1417,7 @@ public class PathQcController {
                               from (select sl.stain_type, sl.stain_item, count(*) as n
                                       from path_slide sl where sl.tech_order_id = t.id
                                      group by sl.stain_type, sl.stain_item) g) as attached_stain,
+            """ + PathologyReportController.TECH_DERIVED_COLUMNS + """
                            b.block_code,
                            s.id                                  as specimen_id,
                            s.path_no, s.barcode,
@@ -1445,7 +1446,9 @@ public class PathQcController {
      */
     private static List<Map<String, Object>> withTechProgress(List<Map<String, Object>> rows) {
         for (var r : rows) {
-            String p = PathologyReportController.techProgress(r.get("status"), r.get("slide_count"), r.get("stained_count"));
+            // v60：穿透行现在带 sampled_block_count（TECH_DERIVED_COLUMNS），走四参口径才派得出 SAMPLED
+            String p = PathologyReportController.techProgress(r.get("status"), r.get("slide_count"), r.get("stained_count"),
+                    r.get("sampled_block_count"));
             r.put("progress", p);
             r.put("progress_name", PathologyReportController.TECH_PROGRESS_NAMES.getOrDefault(p, p));
         }
@@ -1810,6 +1813,9 @@ public class PathQcController {
             case "slide_count" -> "挂接切片数";
             // v58 执行进度派生（只读：由挂接切片 + stained_at 与 status 算出，不是库列）
             case "stained_count" -> "已染色挂接切片数";
+            case "sampled_block_count" -> "已补取材蜡块数";
+            case "blocks_derived" -> "关联蜡块";
+            case "attached_stain_name" -> "挂接切片染色";
             case "progress" -> "执行进度编码";
             case "progress_name" -> "执行进度";
             // v59 挂接切片实际染色类型 / 项目的去重汇总（如「IHC CK7 ×2」）

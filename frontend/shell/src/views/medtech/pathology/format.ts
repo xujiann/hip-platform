@@ -463,6 +463,7 @@ const ZH: Record<string, string> = {
   attached_stain: '挂接切片染色',
   // v60 车道 B 契约（规划节写死、由 C 统一补键）：清单「蜡块」列在 block_id 空时按挂接蜡块 / 切片派生（「块码1、块码2」文本）；
   // attached_stain 的中文版（「免疫组化 CK7 ×2」）
+  sampled_block_count: '已补取材蜡块数',
   blocks_derived: '关联蜡块',
   attached_stain_name: '挂接切片染色',
   // 覆盖率段

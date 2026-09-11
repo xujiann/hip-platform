@@ -260,7 +260,8 @@
               <template #default="{ row }">{{ fmt(row.tech_item) }}</template>
             </el-table-column>
             <el-table-column label="蜡块" width="150">
-              <template #default="{ row }">{{ fmt(row.block_code) }}</template>
+              <!-- v60 合版统一：block_id 为空时按挂接蜡块/切片所在块派生（blocks_derived），否则仍是下达时指定的块 -->
+              <template #default="{ row }">{{ fmt(row.blocks_derived ?? row.block_code) }}</template>
             </el-table-column>
             <el-table-column label="状态" width="100">
               <template #default="{ row }">
