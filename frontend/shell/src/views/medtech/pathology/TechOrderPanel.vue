@@ -1,7 +1,7 @@
 <template>
   <!-- ============ 工位五：特检技术医嘱全院工作台（技师侧：按状态 / 类型 / 时间集中处理） ============ -->
   <el-alert type="info" show-icon :closable="false" class="cav"
-            title="全院视角：不分标本列出深切 / 重切 / 补取材 / 免疫组化 / 特殊染色 / 分子病理的技术医嘱。默认只看「待执行」——这是技师今天要做的活；历史请显式切到「全部状态」。距开单小时数是原始事实，本页不判超时。取消须填写取消原因（取消人 / 取消时刻 / 取消原因留痕，与下达原因分列）。「进度」由挂接切片派生（待切片 / 切片中 / 已染色待确认），不是手工标记；点「完成」时若无已染色挂接切片，按 gate emr.gate.pathology.techdone 提示（warn）或拦截（block，5273）。「挂接切片染色」是挂接切片的实际染色类型 / 项目汇总——挂接时后端已按医嘱类型 / 项目校验（5274），这一列用于核对 v59 之前挂上去的片子。" />
+            title="全院视角：不分标本列出深切 / 重切 / 补取材 / 免疫组化 / 特殊染色 / 分子病理的技术医嘱。默认只看「待执行」——这是技师今天要做的活；历史请显式切到「全部状态」。距开单小时数是原始事实，本页不判超时。取消须填写取消原因（取消人 / 取消时刻 / 取消原因留痕，与下达原因分列）。「进度」由挂接切片 / 挂接蜡块派生（待切片 / 已补取材待切片 / 切片中 / 已染色待确认），不是手工标记；点「完成」时若无已染色挂接切片，按 gate emr.gate.pathology.techdone 提示（warn）或拦截（block，5273）。「挂接切片染色」是挂接切片的实际染色类型 / 项目汇总——挂接时后端已按医嘱类型 / 项目校验（5274），这一列用于核对 v59 之前挂上去的片子。「蜡块」列在医嘱未指定蜡块时按挂接蜡块（补取材已出块）与挂接切片所在块派生并标「派生」；V167 之前的历史补取材块永远挂不上（零回填），历史补取材医嘱仍显示「—」与「待切片」。" />
 
   <el-form inline size="small">
     <el-form-item label="状态">
@@ -61,8 +61,10 @@
     </el-table-column>
     <el-table-column label="进度" width="170">
       <template #default="{ row }">
-        <el-tag size="small" :type="progressTag(row.progress)">{{ fmt(row.progress_name ?? row.progress) }}</el-tag>
+        <el-tag size="small" :type="progressTag(row.progress)">{{ progressLabel(row) }}</el-tag>
         <span class="muted">　已染 {{ num(row.stained_count) }} / 挂接 {{ num(row.slide_count) }}</span>
+        <!-- v60：补取材医嘱的「已出块」是 SAMPLED 的事实来源（path_block.tech_order_id，V167） -->
+        <span v-if="row.tech_type === 'RESAMPLE'" class="muted">　已出块 {{ num(row.sampled_block_count) }}</span>
       </template>
     </el-table-column>
     <el-table-column label="病理号 / 条码" width="180">
@@ -82,8 +84,13 @@
         <el-tag v-if="row.urgent === true" size="small" type="danger">急</el-tag>
       </template>
     </el-table-column>
-    <el-table-column label="蜡块" width="150">
-      <template #default="{ row }"><span class="code">{{ fmt(row.block_code) }}</span></template>
+    <el-table-column label="蜡块" min-width="150" show-overflow-tooltip>
+      <template #default="{ row }">
+        <!-- v60：block_id 非空取其块码；为空时后端按挂接蜡块（补取材已出块）+ 挂接切片所在块派生（blocks_derived），
+             派生值加「派生」标记——修复前六种类型 block_id 都可空且无回写端点，从某块挂了片后这一列仍是「—」 -->
+        <span class="code">{{ fmt(row.blocks_derived ?? row.block_code) }}</span>
+        <el-tag v-if="!row.block_code && row.blocks_derived" size="small" type="info">派生</el-tag>
+      </template>
     </el-table-column>
     <el-table-column label="开单" width="200">
       <template #default="{ row }">{{ fmt(row.ordered_by_name) }}　{{ fmtTime(row.ordered_at) }}</template>
@@ -112,8 +119,9 @@
     </el-table-column>
     <el-table-column label="挂接切片染色" min-width="150" show-overflow-tooltip>
       <template #default="{ row }">
-        <!-- v59：挂接切片的实际染色类型 / 项目（后端去重汇总，如「IHC CK7 ×2」）；无挂接为「—」 -->
-        {{ fmt(row.attached_stain) }}
+        <!-- v59：挂接切片的实际染色类型 / 项目（后端去重汇总）；v60 改读中文版 attached_stain_name（如「免疫组化 CK7 ×2」），
+             英文枚举版 attached_stain 只作旧后端回落；无挂接为「—」 -->
+        {{ fmt(row.attached_stain_name ?? row.attached_stain) }}
       </template>
     </el-table-column>
     <el-table-column label="操作" width="190" fixed="right">
@@ -148,6 +156,10 @@
  *
  * <p>v59（2563 一致性）：清单多了「挂接切片染色」列（后端 attached_stain：挂接切片按染色类型 / 项目去重计数的汇总，
  * 如「IHC CK7 ×2」）——修复前三处清单 / 穿透都不回挂接切片的实际染色，挂错的片子在清单上看不出来。
+ *
+ * <p>v60（2563 尾）：「蜡块」列改读 blocks_derived（block_id 为空时后端按挂接蜡块 + 挂接切片所在块派生并标「派生」）、
+ * 「挂接切片染色」列改读中文版 attached_stain_name（如「免疫组化 CK7 ×2」，v59 是后端 SQL 直接拼的英文枚举）、
+ * 进度增第六态 SAMPLED（已补取材待切片：补取材医嘱经取材 append 挂接出了蜡块、尚未切片，V167 path_block.tech_order_id）。
  *
  * <p>「打开报告」把标本 id 交给工作台切到诊断工位并直接打开抽屉：技师做完免疫组化后，
  * 病理医师要出补充报告的入口就在那里。
@@ -185,11 +197,25 @@ function countOf(status: string): number {
 }
 
 /**
- * 执行进度五态的标签色（v58）：进度由后端按挂接切片派生（PathologyReportController.techProgress），
- * 前端只画不算——待切片灰、切片中黄、已染色待确认蓝（可以点完成了）、已完成绿、已取消灰。
+ * 执行进度六态的标签色（v58 五态 + v60 SAMPLED）：进度由后端按挂接切片 / 挂接蜡块派生（PathologyReportController.techProgress），
+ * 前端只画不算——待切片灰、已补取材待切片黄（补取材已出块、还没切片，与切片中同为「在做」）、切片中黄、
+ * 已染色待确认蓝（可以点完成了）、已完成绿、已取消灰。
  */
 function progressTag(v: unknown): 'primary' | 'success' | 'warning' | 'info' {
-  return v === 'SECTIONING' ? 'warning' : v === 'STAINED' ? 'primary' : v === 'DONE' ? 'success' : 'info'
+  return v === 'SAMPLED' || v === 'SECTIONING' ? 'warning' : v === 'STAINED' ? 'primary' : v === 'DONE' ? 'success' : 'info'
+}
+
+/** 进度中文：后端 progress_name 为准；旧后端没有该键时按编码回落（SAMPLED 是 v60 新态，旧后端派不出来） */
+const PROGRESS_FALLBACK: Record<string, string> = {
+  PENDING_SECTION: '待切片', SAMPLED: '已补取材待切片', SECTIONING: '切片中', STAINED: '已染色待确认',
+  DONE: '已完成', CANCELLED: '已取消',
+}
+
+function progressLabel(row: Row): string {
+  const name = row.progress_name
+  if (name) return String(name)
+  const code = String(row.progress ?? '')
+  return PROGRESS_FALLBACK[code] ?? fmt(code)
 }
 
 async function load() {

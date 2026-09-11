@@ -99,7 +99,19 @@ import java.util.Set;
  *       这里只回事实、不判。{@code stained_count} 语义不变。</li>
  * </ul>
  *
- * <p><b>错误码 5260–5274</b>（v48 诊断与报告段 5260–5279；5271–5272 v57、5273 v58、5274 v59 已用，5275–5279 空置）：
+ * <p><b>v60（2563 尾 + 2576 尾-①）</b>：
+ * <ul>
+ *   <li>执行进度增第六态 <b>SAMPLED</b>（已补取材待切片）：ORDERED、无挂接切片、但存在 {@code path_block.tech_order_id = t.id}
+ *       的蜡块（V167，取材 {@code append=true} 带 {@code techOrderId} 时落，见 {@link PathologyProcessController#grossing}）。
+ *       修复前补取材 RESAMPLE 医嘱的进度恒「待切片」——取材 append 路径不读不写医嘱，事实根本没采集。</li>
+ *   <li>两个清单分支再增 {@code sampled_block_count} / {@code blocks_derived}（「蜡块」列：{@code block_id} 非空取其 block_code，
+ *       否则按挂接蜡块 + 挂接切片所在块派生）/ {@code attached_stain_name}（{@code attached_stain} 的中文版，如「免疫组化 CK7 ×2」）
+ *       ——三段 SQL 抽成 {@link #TECH_DERIVED_COLUMNS}，质控 WORKLOAD_TECH 穿透同用这一份。</li>
+ *   <li>{@link #issue} 置 EXECUTED 的条件收紧为「<b>同一 order_id 的全部未拒收标本都已签发</b>」：多部位申请第一个部位签发不再把整张
+ *       申请置「已执行」，返回体新增 {@code partsPending}；单部位申请行为不变。</li>
+ * </ul>
+ *
+ * <p><b>错误码 5260–5275</b>（v48 诊断与报告段 5260–5279；5271–5272 v57、5273 v58、5274 v59、5275 v60 已用，5276–5279 空置）：
  * <ul>
  *   <li>5260 标本不存在（全部端点的「查无此标本」同码）</li>
  *   <li>5261 标本状态不允许该操作（已拒收 / 已签发 / 重复签名 / 并发抢写——归并同码，消息区分）</li>
@@ -120,6 +132,8 @@ import java.util.Set;
  *       或有挂接切片尚未染色，两条路径同码；warn 档改走 warnings、off 档不判）</li>
  *   <li>5274 切片染色类型或项目与特检医嘱不一致（v59，<b>由 {@link PathologyProcessController} 返回</b>：挂接时 stain_type
  *       与 tech_type 映射不符 / 医嘱有项目而 stain_item 不同 / 染色登记（单张、批量）把已挂接切片的项目改成别的，三条路径同码）</li>
+ *   <li>5275 补取材挂接的特检医嘱非法（v60，<b>由 {@link PathologyProcessController#grossing} 返回</b>：取材 append=true 带
+ *       techOrderId 时医嘱不存在 / 非 RESAMPLE 类型 / 不属于该标本 / 非 ORDERED 四条路径同码）</li>
  * </ul>
  */
 @RestController
@@ -141,10 +155,44 @@ public class PathologyReportController {
      */
     public static final String TECH_DONE_GATE_KEY = "emr.gate.pathology.techdone";
 
-    /** 执行进度五态（由 status + 挂接切片事实派生，不是库列，见 {@link #techProgress}）→ 中文 */
+    /**
+     * 执行进度六态（由 status + 挂接切片 / 挂接蜡块事实派生，不是库列，见 {@link #techProgress(Object, Object, Object, Object)}）→ 中文。
+     * v60 增 SAMPLED（已补取材待切片）：介于 PENDING_SECTION 与 SECTIONING 之间。
+     */
     public static final Map<String, String> TECH_PROGRESS_NAMES = Map.of(
-            "PENDING_SECTION", "待切片", "SECTIONING", "切片中", "STAINED", "已染色待确认",
+            "PENDING_SECTION", "待切片", "SAMPLED", "已补取材待切片", "SECTIONING", "切片中", "STAINED", "已染色待确认",
             "DONE", "已完成", "CANCELLED", "已取消");
+
+    /**
+     * v60：两个清单分支与质控 WORKLOAD_TECH 穿透共用的三段派生列（以 {@code t} 为 path_tech_order 别名、
+     * {@code b} 为 {@code left join path_block b on b.id = t.block_id}），紧跟在 select 列表里用、末尾自带逗号：
+     * <ul>
+     *   <li>{@code sampled_block_count}：{@code path_block.tech_order_id = t.id} 的蜡块数（补取材已出块，V167）；</li>
+     *   <li>{@code blocks_derived}：「蜡块」列的派生文本——{@code block_id} 非空取其 block_code；否则取挂接蜡块与挂接切片所在块的
+     *       block_code 去重、按块号「、」相连；都没有为 NULL；</li>
+     *   <li>{@code attached_stain_name}：挂接切片染色的中文汇总（与 {@code attached_stain} 同一去重计数，
+     *       染色类型按 PathQcController SLIDE_QUALITY 的 stain_name 口径译中文：HE→HE 染色 / IHC→免疫组化 / SPECIAL→特殊染色 /
+     *       其余→分子病理），如「免疫组化 CK7 ×2」，多组「、」相连，无挂接为 NULL。</li>
+     * </ul>
+     * 只回事实、不判一致（一致性在挂接时按 {@code TECH_TO_STAIN} 判，5274）。
+     */
+    public static final String TECH_DERIVED_COLUMNS = """
+                       (select count(*) from path_block pb where pb.tech_order_id = t.id) as sampled_block_count,
+                       coalesce(b.block_code,
+                                (select string_agg(x.block_code, '、' order by x.block_no, x.block_code)
+                                   from (select distinct pb.block_code, pb.block_no
+                                           from path_block pb
+                                          where pb.tech_order_id = t.id
+                                             or exists (select 1 from path_slide sl
+                                                         where sl.tech_order_id = t.id and sl.block_id = pb.id)) x)) as blocks_derived,
+                       (select string_agg(case g.stain_type when 'HE' then 'HE 染色' when 'IHC' then '免疫组化'
+                                                            when 'SPECIAL' then '特殊染色' else '分子病理' end
+                                          || coalesce(' ' || g.stain_item, '') || ' ×' || g.n::text, '、'
+                                          order by g.stain_type, g.stain_item)
+                          from (select sl.stain_type, sl.stain_item, count(*) as n
+                                  from path_slide sl where sl.tech_order_id = t.id
+                                 group by sl.stain_type, sl.stain_item) g)              as attached_stain_name,
+            """;
 
     /**
      * 法定署名行为（初诊签名 / 复诊签名 / 正式签发 / 补充报告）限病理医师与管理员。
@@ -455,6 +503,16 @@ public class PathologyReportController {
      * 本版不新开住院侧联动——那是住院医嘱执行状态机的事，不在签发端点里顺手改。
      * 返回体只加一个键 {@code orderExecuted}（本次是否真的把一条 CHARGED 门诊申请置成了 EXECUTED；住院来源、
      * 或门诊申请已不是 CHARGED 时为 false），既有键不动。
+     *
+     * <p><b>v60（2576 尾-①）：多部位申请的 EXECUTED 口径</b>——一张门诊病理申请可登记多个部位（{@code path_specimen.part_no}），
+     * 每个部位各出各的报告。此前第 1 个部位一签发就把整张 {@code outp_order} 置 EXECUTED，不看同申请其余部位：
+     * 医生站显示「已执行」时另外两个部位可能还在切片。现在置 EXECUTED 的条件收紧为
+     * 「<b>同一 {@code order_id} 的全部未拒收标本都已签发</b>」——同一条 update 里用 {@code not exists}
+     * 判「还有没有 {@code rejected_at is null and report_issued_at is null} 的兄弟部位」（本标本的 report_issued_at
+     * 已在同一事务里落下，所以它自己不算）。已拒收的部位不算未完成（拒收不删行、不改 status，按 rejected_at 排除）；
+     * 单部位申请与此前行为逐字相同（没有兄弟部位 → 立即 EXECUTED）。返回体新增 {@code partsPending}
+     * （同一申请、未拒收、未签发的部位数；本次签发后为 0 即全部完成；住院来源按 inp_order_id 同口径计数、只作信息）。
+     * 登记只认 CHARGED（5201）的纪律不变：各部位仍须在最后一个部位签发之前登记完。
      */
     @PutMapping("/{specimenId}/issue")
     @PreAuthorize(SIGNER_ROLES)
@@ -501,11 +559,22 @@ public class PathologyReportController {
         logProcess(specimenId, "ISSUE", uid,
                 missing.isEmpty() ? "双签完整" : "缺" + String.join("、", missing) + "（gate=" + gate + " 放行）");
 
-        // v59（2576-③）：「报告出了」= 正式签发——门诊申请在此置 EXECUTED（此前在 diagnose）；inp_order 不碰
+        // v59（2576-③）：「报告出了」= 正式签发——门诊申请在此置 EXECUTED（此前在 diagnose）；inp_order 不碰。
+        // v60（2576 尾-①）：只有同一申请的全部未拒收部位都已签发才置——not exists 在同一条 update 里判，
+        // 本标本的 report_issued_at 已在上面同一事务落下，所以它自己不会被算成「未签发的兄弟部位」
         int executed = jdbc.update("""
-                update outp_order set status = 'EXECUTED'
-                where id = (select order_id from path_specimen where id = ?) and status = 'CHARGED'
+                update outp_order o set status = 'EXECUTED'
+                where o.id = (select order_id from path_specimen where id = ?) and o.status = 'CHARGED'
+                  and not exists (select 1 from path_specimen x
+                                   where x.order_id = o.id and x.rejected_at is null and x.report_issued_at is null)
                 """, specimenId);
+        // 同一申请（门诊按 order_id、住院按 inp_order_id）未拒收、未签发的部位数——本次之后为 0 即全部完成
+        Long partsPending = jdbc.queryForObject("""
+                select count(*) from path_specimen x, path_specimen me
+                where me.id = ? and x.rejected_at is null and x.report_issued_at is null
+                  and ((me.order_id is not null and x.order_id = me.order_id)
+                       or (me.inp_order_id is not null and x.inp_order_id = me.inp_order_id))
+                """, Long.class, specimenId);
 
         var body = new LinkedHashMap<String, Object>();
         body.put("specimenId", specimenId);
@@ -515,6 +584,7 @@ public class PathologyReportController {
         body.put("doubleSignComplete", missing.isEmpty());
         body.put("warnings", warnings);
         body.put("orderExecuted", executed == 1);
+        body.put("partsPending", partsPending == null ? 0L : partsPending);   // v60：同申请未签发未拒收部位数
         return R.ok(body);
     }
 
@@ -905,6 +975,11 @@ public class PathologyReportController {
      * 汇总成一段文本，如「IHC CK7 ×2」，多组以「、」相连，无挂接切片为 NULL。修复前三处清单 / 穿透都不回挂接切片的实际
      * 染色类型 / 项目，挂错的片子（v59 之前挂上去的 HE 片）在清单上看不出来。这里只回事实、不判一致（判在挂接时，5274）；
      * 与 PathQcController 的 WORKLOAD_TECH 穿透同一段子查询。{@code stained_count} 语义不变。
+     *
+     * <p><b>v60（2563 尾）</b>：两个分支再增 {@link #TECH_DERIVED_COLUMNS} 的三列——{@code sampled_block_count}（挂接蜡块数，V167）、
+     * {@code blocks_derived}（「蜡块」列：block_id 非空取其 block_code，否则按挂接蜡块 + 挂接切片所在块派生，如「P-3、P-4」）、
+     * {@code attached_stain_name}（{@code attached_stain} 的中文版，如「免疫组化 CK7 ×2」）；{@code progress} 增第六态 SAMPLED
+     * （已补取材待切片：ORDERED、0 片、≥1 挂接蜡块）。修复前 RESAMPLE 医嘱的「蜡块」列永远「—」、进度永远「待切片」。仍是只增不改。
      */
     @GetMapping("/tech-orders")
     public R<Map<String, Object>> techOrders(@RequestParam(required = false) Long specimenId,
@@ -964,6 +1039,9 @@ public class PathologyReportController {
                           from (select sl.stain_type, sl.stain_item, count(*) as n
                                   from path_slide sl where sl.tech_order_id = t.id
                                  group by sl.stain_type, sl.stain_item) g)              as attached_stain,
+                """)
+                .append(TECH_DERIVED_COLUMNS)   // v60：sampled_block_count / blocks_derived / attached_stain_name
+                .append("""
                        s.barcode, s.path_no, s.part_no, s.specimen_type, s.urgent,
                        p.id as patient_id, p.patient_no, p.name as patient_name,
                        round((extract(epoch from (now() - t.ordered_at)) / 3600)::numeric, 1)
@@ -1023,9 +1101,7 @@ public class PathologyReportController {
         boolean truncated = rows.size() > cap;
         for (var r : rows) {
             r.put("tech_type_name", TECH_TYPE_NAMES.getOrDefault(String.valueOf(r.get("tech_type")), null));
-            String progress = techProgress(r.get("status"), r.get("slide_count"), r.get("stained_count"));
-            r.put("progress", progress);
-            r.put("progress_name", TECH_PROGRESS_NAMES.getOrDefault(progress, progress));
+            applyTechProgress(r);   // v60：读 sampled_block_count 派生第六态 SAMPLED
         }
 
         var body = new LinkedHashMap<String, Object>();
@@ -1043,9 +1119,11 @@ public class PathologyReportController {
                 + "传 specimenId 为该标本清单，默认全状态。hoursSinceOrdered 是距开单的小时数（原始事实），"
                 + "本端点不判超时。cancelled_at/cancelled_by_name/cancel_reason 为 NULL 且 status=CANCELLED 的是"
                 + "V163 之前的历史取消（零回填）；slide_count 是挂接到该医嘱的切片数，stained_count 是其中已染色的数；"
-                + "progress 由二者与 status 派生（PENDING_SECTION 待切片 / SECTIONING 切片中 / STAINED 已染色待确认 / "
-                + "DONE / CANCELLED），不是库列；slideId 只要该切片挂接的那条医嘱；"
-                + "attached_stain 是挂接切片按染色类型/项目去重计数的汇总（如「IHC CK7 ×2」），无挂接为 null。");
+                + "progress 由二者、sampled_block_count 与 status 派生（PENDING_SECTION 待切片 / SAMPLED 已补取材待切片 / "
+                + "SECTIONING 切片中 / STAINED 已染色待确认 / DONE / CANCELLED），不是库列；slideId 只要该切片挂接的那条医嘱；"
+                + "attached_stain 是挂接切片按染色类型/项目去重计数的汇总（如「IHC CK7 ×2」），attached_stain_name 是其中文版"
+                + "（如「免疫组化 CK7 ×2」），无挂接为 null；blocks_derived 是「蜡块」列的派生文本（block_id 非空取其块码，"
+                + "否则按挂接蜡块 + 挂接切片所在块去重「、」相连），都没有为 null；V167 之前的历史补取材块永远挂不上（零回填）。");
         return R.ok(body);
     }
 
@@ -1056,17 +1134,38 @@ public class PathologyReportController {
     }
 
     /**
-     * 执行进度派生（v58，只读；PathQcController 的 WORKLOAD_TECH 穿透同用这一份，别再抄一遍）。
-     * CANCELLED / DONE 照状态；ORDERED 且无挂接切片 → PENDING_SECTION（待切片）；有挂接切片但未全部染色 → SECTIONING（切片中）；
-     * 全部染色 → STAINED（已染色待确认）。状态不在三档内（直连改库造出来的）原样返回，不猜。
+     * 执行进度派生（v58 三参形态，只读；行里没有挂接蜡块事实时用——等价于 sampledBlockCount = 0，永远派不出 SAMPLED）。
+     * 既有调用方（PathQcController.withTechProgress）签名不动；要第六态请改用四参或 {@link #applyTechProgress}。
      */
     public static String techProgress(Object status, Object slideCount, Object stainedCount) {
+        return techProgress(status, slideCount, stainedCount, null);
+    }
+
+    /**
+     * 执行进度派生（v60 四参形态，只读；PathQcController 的 WORKLOAD_TECH 穿透同用这一份，别再抄一遍六态）。
+     * CANCELLED / DONE 照状态；ORDERED 且无挂接切片：有挂接蜡块（{@code path_block.tech_order_id = t.id}，补取材已出块）→ SAMPLED
+     * （已补取材待切片），否则 → PENDING_SECTION（待切片）；有挂接切片但未全部染色 → SECTIONING（切片中）；
+     * 全部染色 → STAINED（已染色待确认）。状态不在三档内（直连改库造出来的）原样返回，不猜。
+     * 挂接蜡块只在「0 片」时起作用——切了片之后进度以切片事实为准，蜡块只是它的上游。
+     */
+    public static String techProgress(Object status, Object slideCount, Object stainedCount, Object sampledBlockCount) {
         String st = String.valueOf(status);
         if (!"ORDERED".equals(st)) return st;
         long slides = slideCount instanceof Number n ? n.longValue() : 0L;
         long stained = stainedCount instanceof Number n ? n.longValue() : 0L;
-        if (slides == 0) return "PENDING_SECTION";
+        long sampled = sampledBlockCount instanceof Number n ? n.longValue() : 0L;
+        if (slides == 0) return sampled > 0 ? "SAMPLED" : "PENDING_SECTION";
         return stained < slides ? "SECTIONING" : "STAINED";
+    }
+
+    /**
+     * v60：给一行清单 / 穿透行补 {@code progress} / {@code progress_name}——读该行的 status / slide_count / stained_count /
+     * sampled_block_count（后者缺失即按 0，退化为 v58 五态）。两个清单分支与质控穿透都该走这一处，别各自拼。
+     */
+    public static void applyTechProgress(Map<String, Object> row) {
+        String p = techProgress(row.get("status"), row.get("slide_count"), row.get("stained_count"), row.get("sampled_block_count"));
+        row.put("progress", p);
+        row.put("progress_name", TECH_PROGRESS_NAMES.getOrDefault(p, p));
     }
 
     // ==================================================================

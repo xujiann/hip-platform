@@ -79,6 +79,9 @@ import java.util.Map;
  *   <li>5249 检索参数非法（日期格式 / 区间倒置 / 跨度过大 / 枚举取值）</li>
  *   <li>5272 切片挂接的技术医嘱非法（v57，登记在诊断与报告段 5260–5279 内、与 5271 同批：
  *       医嘱不存在 / 不属于该蜡块所在标本 / 不是 ORDERED 三条路径同码，见 {@link #slides}）</li>
+ *   <li>5275 补取材挂接的特检医嘱非法（v60，同段：取材 {@code append=true} 带 {@code techOrderId} 时医嘱不存在 /
+ *       非 RESAMPLE 类型 / 不属于该标本 / 非 ORDERED 四条路径同码，见 {@link #grossing}；{@code append=false}
+ *       带 {@code techOrderId} 走 5222「首次取材不能挂接补取材医嘱」）</li>
  * </ul>
  * 5226–5239 与 5250–5259 <b>本版未使用，也未登记</b>——不写代码就不占码。
  *
@@ -292,7 +295,14 @@ public class PathologyProcessController {
                               String grossText,
                               Boolean append,
                               String remark,
-                              List<BlockReq> blocks) {}
+                              List<BlockReq> blocks,
+                              Long techOrderId) {
+        /** v59 七参形态（既有测试与调用方仍在用），等价于不挂接补取材医嘱；JSON 反序列化走八参的规范构造器 */
+        public GrossingReq(Long specimenId, String templateCode, Map<String, String> gross, String grossText,
+                           Boolean append, String remark, List<BlockReq> blocks) {
+            this(specimenId, templateCode, gross, grossText, append, remark, blocks, null);
+        }
+    }
 
     /**
      * 取材登记：结构化大体描述 + 一次产出 N 个蜡块，并写 GROSSING 流转节点。
@@ -320,6 +330,17 @@ public class PathologyProcessController {
      * 已诊断标本的补取材同样必须显式声明（否则 5221）。这不是为了麻烦人——病理医师看完 HE 片
      * 下的补取材（RESAMPLE）技术医嘱是诊断环节的正常延伸，而误点两次「取材」凭空多出一组蜡块
      * 则是事故，两者必须由调用方明确区分。
+     *
+     * <p><b>v60（2563 尾）：补取材挂接 RESAMPLE 特检医嘱</b>——{@code append=true} 时可带 {@code techOrderId}：
+     * 校验医嘱存在 / {@code tech_type='RESAMPLE'} / 属于本标本 / 仍是 ORDERED（四条路径同返 <b>5275</b>，
+     * 都在任何写入之前）；通过则本次每个新蜡块 insert 带 {@code path_block.tech_order_id}（V167），医嘱 {@code block_id}
+     * 为空则回写为本次首块（同一事务、条件 update，不覆盖已有值），GROSSING 节点备注带「补取材医嘱#id」。
+     * {@code append=false} 带 {@code techOrderId} 返 5222「首次取材不能挂接补取材医嘱」。
+     * 修复前 append 路径不读不写 {@code path_tech_order}：新蜡块永远挂不到医嘱上、医嘱清单「蜡块」列永远「—」、
+     * 执行进度恒「待切片」——现在进度由这一事实派生出 SAMPLED（已补取材待切片，
+     * {@link PathologyReportController#techProgress(Object, Object, Object, Object)}）。
+     * <b>挂接不自动把医嘱置 DONE</b>：补出块不等于做完了（切片、染色都在后面），完成仍走 /done 由技师确认。
+     * 不传 {@code techOrderId} 一切照旧（历史契约不变，历史补取材块 tech_order_id 永远 NULL——零回填）。
      */
     @PostMapping("/grossing")
     @Transactional
@@ -381,6 +402,33 @@ public class PathologyProcessController {
         long maxNo = asLong(head.get("max_block_no"));
         if (maxNo + blocks.size() > MAX_BLOCK_NO) {
             return R.fail(5222, "蜡块序号将超过上限 " + MAX_BLOCK_NO + "（当前最大 " + maxNo + "）");
+        }
+
+        // v60（2563 尾）：补取材挂接 RESAMPLE 医嘱——四条被拒路径同返 5275，全部在任何写入之前；
+        // append=false 带 techOrderId 是调用方口径错（首次取材没有补取材医嘱可挂），5222
+        Map<String, Object> techOrder = null;
+        if (req.techOrderId() != null) {
+            if (!append) {
+                return R.fail(5222, "首次取材不能挂接补取材医嘱：techOrderId 只在 append=true 的补取材时有效"
+                        + "（收到 techOrderId=" + req.techOrderId() + "）");
+            }
+            techOrder = one("select id, specimen_id, block_id, tech_type, tech_item, status from path_tech_order where id = ?",
+                    req.techOrderId());
+            if (techOrder == null) {
+                return R.fail(5275, "补取材挂接的特检医嘱不存在：techOrderId=" + req.techOrderId());
+            }
+            if (!"RESAMPLE".equals(techOrder.get("tech_type"))) {
+                return R.fail(5275, "特检医嘱 #" + req.techOrderId() + " 不是补取材（RESAMPLE）类型（当前 "
+                        + techOrder.get("tech_type") + "），取材只能挂接补取材医嘱；切片挂接请走 POST /slides");
+            }
+            if (!req.specimenId().equals(asLongObj(techOrder.get("specimen_id")))) {
+                return R.fail(5275, "特检医嘱 #" + req.techOrderId() + " 不属于该标本（医嘱标本 "
+                        + techOrder.get("specimen_id") + "，取材标本 " + req.specimenId() + "）");
+            }
+            if (!"ORDERED".equals(techOrder.get("status"))) {
+                return R.fail(5275, "特检医嘱 #" + req.techOrderId() + " 不是待执行状态（当前 "
+                        + techOrder.get("status") + "），不能再挂接补取材蜡块");
+            }
         }
 
         // v58 审阅补（已复现）：当前用户判定必须在任何写入之前——R.fail 不是异常、@Transactional 不回滚，
@@ -451,14 +499,24 @@ public class PathologyProcessController {
             // 参数上的 ::bigint / ::varchar 不是装饰：insert ... select 的 select 列表里，
             // PostgreSQL 对未指定类型的参数（尤其传 null 时）会报
             // 「could not determine data type of parameter」，显式转型才是稳的。
+            // v60：补取材挂接时每块带 tech_order_id（V167）；不挂接为 NULL（首次取材 / 未指明医嘱的补取材，旧契约）
             var ins = jdbc.queryForList("""
-                    insert into path_block(specimen_id, block_no, block_code, tissue_desc, created_by)
-                    select ?::bigint, nb.n, ?::text || '-' || nb.n::text, ?::varchar, ?::bigint
+                    insert into path_block(specimen_id, block_no, block_code, tissue_desc, created_by, tech_order_id)
+                    select ?::bigint, nb.n, ?::text || '-' || nb.n::text, ?::varchar, ?::bigint, ?::bigint
                     from (select coalesce(max(block_no), 0) + 1 as n
                           from path_block where specimen_id = ?) nb
-                    returning id, block_no, block_code, tissue_desc, created_at
-                    """, req.specimenId(), prefix, tissueDesc, uid, req.specimenId());
+                    returning id, block_no, block_code, tissue_desc, created_at, tech_order_id
+                    """, req.specimenId(), prefix, tissueDesc, uid, req.techOrderId(), req.specimenId());
             created.add(ins.get(0));
+        }
+
+        // v60：医嘱 block_id 为空则回写为本次首块——条件 update（and block_id is null）不覆盖已有值；
+        // 下达时块还不存在，RESAMPLE 医嘱的 block_id 只可能在这里落
+        boolean orderBlockBackfilled = false;
+        if (techOrder != null && techOrder.get("block_id") == null) {
+            orderBlockBackfilled = jdbc.update(
+                    "update path_tech_order set block_id = ? where id = ? and block_id is null and status = 'ORDERED'",
+                    asLongObj(created.get(0).get("id")), req.techOrderId()) == 1;
         }
 
         // GROSSING 节点：now() 在 PostgreSQL 里是事务开始时刻且事务内恒定，
@@ -466,6 +524,7 @@ public class PathologyProcessController {
         logProcess(req.specimenId(), "GROSSING", uid,
                 "取材产出 " + created.size() + " 块"
                         + (templateCode == null ? "" : "（模板 " + templateCode + "）")
+                        + (techOrder == null ? "" : "，补取材医嘱#" + req.techOrderId() + " RESAMPLE")
                         + (remark == null ? "" : "：" + remark));
 
         var body = new LinkedHashMap<String, Object>();
@@ -476,6 +535,8 @@ public class PathologyProcessController {
         body.put("blocks", created);
         body.put("blockCount", created.size());
         body.put("totalBlockCount", existing + created.size());
+        body.put("techOrderId", req.techOrderId());                 // v60：本次挂接的补取材医嘱（未挂接为 null）
+        body.put("techOrderBlockBackfilled", orderBlockBackfilled); // v60：医嘱 block_id 本次是否由空回写为首块
         body.put("grossFinding", grossWritten ? grossToWrite : grossAssembled);   // v59：追加时是拼接后的全文
         body.put("grossFindingWritten", grossWritten);
         body.put("grossFieldCount", grossFieldCount);   // v58：本次落 path_gross_field 的字段行数（纯自由文本为 0）
@@ -903,6 +964,10 @@ public class PathologyProcessController {
      * 一条「免疫组化 CK7」医嘱可由 2 张 HE 片或 2 张 CK20 片推到「已染色待确认」再「已完成」且 warnings 为空。
      * 两条路径都在 5272 四条之后、插入之前判——被拒时一张片不插、不留 SECTION 节点。
      *
+     * <p><b>v60（2563 尾）</b>：「医嘱指定了蜡块只能挂那一块」放宽一档——蜡块本身是为该医嘱补出的
+     * （{@code path_block.tech_order_id} = 医嘱 id，取材 append 挂接落，V167）也可挂。补取材医嘱的 {@code block_id}
+     * 是回写的「首块」，一次补取材常出多块，不放宽则第 2 块起的切片挂不上。其余 5272 路径不变。
+     *
      * <p>{@code slide_no} 是<b>蜡块内序号</b>，从既有最大号 +1 续排（深切、重切追加的片接着排）；
      * {@code slide_code} =「蜡块编码-片号」=「病理号-块号-片号」。{@code stain_type} 默认 HE——
      * 绝大多数切片就是 HE，这个默认值省掉的是最高频的一次输入。
@@ -939,7 +1004,7 @@ public class PathologyProcessController {
         if (uid == null) return R.fail(5248, "无法识别当前登录用户，不能登记切片");
 
         var block = one("""
-                select b.id, b.specimen_id, b.block_no, b.block_code, b.embedded_at,
+                select b.id, b.specimen_id, b.block_no, b.block_code, b.embedded_at, b.tech_order_id,
                        (select coalesce(max(sl.slide_no), 0) from path_slide sl
                          where sl.block_id = b.id) as max_slide_no
                 from path_block b where b.id = ?
@@ -964,11 +1029,17 @@ public class PathologyProcessController {
                         + techOrder.get("specimen_id") + "，蜡块标本 " + specimenId + "）");
             }
             // v57 审阅补（主控复现后加）：医嘱若指定了蜡块，只能挂到这一块——同一标本两条 CK7 各指一块时不许挂错块；
-            // 医嘱未指定蜡块（补取材等，V144 注释「可空」）才可挂任意块
+            // 医嘱未指定蜡块（补取材等，V144 注释「可空」）才可挂任意块。
+            // v60：补取材医嘱的 block_id 是取材 append 回写的「本次首块」（一次补取材常出多块），为该医嘱补出的其余蜡块
+            // （path_block.tech_order_id = 医嘱 id，V167）同样可挂——否则第 2 块起的切片永远挂不上、进度永远算不到它们。
+            // 既非医嘱指定块、也非为它补出的块，仍 5272。
             Long orderBlock = asLongObj(techOrder.get("block_id"));
-            if (orderBlock != null && !orderBlock.equals(req.blockId())) {
+            Long blockOwnerOrder = asLongObj(block.get("tech_order_id"));
+            if (orderBlock != null && !orderBlock.equals(req.blockId())
+                    && !req.techOrderId().equals(blockOwnerOrder)) {
                 return R.fail(5272, "特检技术医嘱 #" + req.techOrderId() + " 下达在蜡块 " + orderBlock
-                        + "，不能挂到蜡块 " + req.blockId() + " 的切片上（医嘱未指定蜡块时才可挂任意块）");
+                        + "，不能挂到蜡块 " + req.blockId() + " 的切片上（医嘱未指定蜡块时才可挂任意块；"
+                        + "补取材医嘱另可挂到为它补出的蜡块）");
             }
             if (!"ORDERED".equals(techOrder.get("status"))) {
                 return R.fail(5272, "特检技术医嘱 #" + req.techOrderId() + " 不是待执行状态（当前 "
@@ -1458,6 +1529,52 @@ public class PathologyProcessController {
             lastRevisionSource = String.valueOf(r.get("source"));
         }
 
+        // v60（2530 尾，被取代版本的结构化字段可调阅）：全部版本的字段行按 revision_seq 归组——
+        // 每一版一条（revisionSeq / source / fields 按 seq 升序），无字段行的版本 fields=[]；
+        // 与 fields（只回最新有字段的那一版）并存、只加不改。字段行的 revision_seq 若没有对应修订行
+        // （直连改库造出来的孤儿版）也照列，source 为 null——不猜来源。
+        var allFieldRows = jdbc.queryForList("""
+                select f.revision_seq, f.seq, f.label, f.value
+                from path_gross_field f
+                where f.specimen_id = ?
+                order by f.revision_seq asc, f.seq asc
+                """, specimenId);
+        var byRevision = new java.util.TreeMap<Integer, Map<String, Object>>();
+        for (var r : revisions) {
+            int seq = ((Number) r.get("seq")).intValue();
+            var one = new LinkedHashMap<String, Object>();
+            one.put("revisionSeq", seq);
+            one.put("source", r.get("source"));
+            one.put("sourceName", r.get("sourceName"));
+            one.put("templateCode", r.get("templateCode"));
+            one.put("changedAt", r.get("changedAt"));
+            one.put("changedByName", r.get("changedByName"));
+            one.put("fields", new ArrayList<Map<String, Object>>());
+            byRevision.put(seq, one);
+        }
+        for (var f : allFieldRows) {
+            int seq = ((Number) f.get("revision_seq")).intValue();
+            var entry = byRevision.computeIfAbsent(seq, k -> {
+                var orphan = new LinkedHashMap<String, Object>();
+                orphan.put("revisionSeq", k);
+                orphan.put("source", null);
+                orphan.put("sourceName", null);
+                orphan.put("templateCode", null);
+                orphan.put("changedAt", null);
+                orphan.put("changedByName", null);
+                orphan.put("fields", new ArrayList<Map<String, Object>>());
+                return orphan;
+            });
+            var m = new LinkedHashMap<String, Object>();
+            m.put("seq", f.get("seq"));
+            m.put("label", f.get("label"));
+            m.put("value", f.get("value"));
+            @SuppressWarnings("unchecked")
+            var list = (List<Map<String, Object>>) entry.get("fields");
+            list.add(m);
+        }
+        var fieldsByRevision = new ArrayList<Map<String, Object>>(byRevision.values());
+
         String gross = trim((String) head.get("gross_finding"));
         var body = new LinkedHashMap<String, Object>();
         body.put("specimenId", specimenId);
@@ -1472,6 +1589,7 @@ public class PathologyProcessController {
         body.put("fieldsCurrent", fieldsCurrent);
         // v59 审阅补：分叉原因不只「被诊断修订」——取材修订或补取材追加只写自由文本时，字段行留在上一版，措辞不能写死
         body.put("fieldsNote", fieldsStaleNote(fields.isEmpty(), fieldsCurrent, fieldsRevisionSeq, textRevisionSeq, lastRevisionSource));
+        body.put("fieldsByRevision", fieldsByRevision);   // v60：全部版本的字段行（revisionSeq 升序、每版 fields 按 seq；无字段行为 []）
         body.put("revisions", revisions);
         body.put("diagnosedAt", head.get("diagnosed_at"));
         body.put("blocks", blocks);
@@ -1484,7 +1602,8 @@ public class PathologyProcessController {
                 + "fields 是按入参顺序落库的字段行（v58，V164 起），只回最大 revision_seq 中有字段行的那一版（v59，V166 起），"
                 + "fieldsAvailable=false 即无字段行（历史标本或纯自由文本），不从 grossFinding 反解析；"
                 + "fieldsRevisionSeq / textRevisionSeq 分别是字段与文本的版号，fieldsCurrent=false 表示文本已被诊断修订、以文本为准；"
-                + "revisions 是该列的修订留痕，按 seq 升序，sourceName 是来源中文名，templateCode 是本次所用模板码。");
+                + "revisions 是该列的修订留痕，按 seq 升序，sourceName 是来源中文名，templateCode 是本次所用模板码；"
+                + "fieldsByRevision 是全部版本的字段行（v60：被取代版本可调阅），revisionSeq 升序、每版 fields 按 seq、无字段行的版本 fields=[]。");
         return R.ok(body);
     }
 
@@ -1505,7 +1624,7 @@ public class PathologyProcessController {
         }
         var head = one("""
                 select s.id, s.barcode, s.path_no, s.part_no, s.specimen_type, s.sampling_site,
-                       s.clinical_diagnosis, s.urgent, s.status,
+                       s.clinical_diagnosis, s.specimen_desc, s.urgent, s.status,
                        s.collected_at, s.received_at, s.diagnosed_at, s.rejected_at, s.reject_reason,
                        s.first_signed_at, s.second_signed_at, s.report_issued_at,
                        s.pathologist_id, pu.real_name as pathologist_name,
