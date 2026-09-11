@@ -478,6 +478,10 @@ public class PathologyRegistryController {
                 insert into path_process(specimen_id, node, occurred_at, operator_id, remark)
                 values (?, 'REJECT', ?, ?, ?)
                 """, id, Timestamp.from(rejected), me, cut(reason, 255));
+        // v60 审阅修补：先签发部分部位、再拒收剩余部位——这次拒收可能正是「全部未拒收部位都已签发」成立的时刻，
+        // 不结算就永久停在 CHARGED（执行站 7004 承诺的「签发后自动置执行」永不发生、退费又被 5005 挡）。
+        // 锁与判定与签发端点共用同一处；全部拒收、没有已签发部位时不置。
+        PathologyReportController.settleOutpOrderExecuted(jdbc, id);
         return R.ok();
     }
 

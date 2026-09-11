@@ -139,8 +139,8 @@ class V60IssueAllPartsTest {
         assertEquals(0L, asLong(i1.get("partsPending")), "已拒收的不算未完成");
         assertEquals("EXECUTED", orderStatus(o));
 
-        // 反过来：先签发第 1（pending 1）再拒收第 2——拒收端点（PathologyRegistryController，不归本车道）不联动，
-        // 申请留在 CHARGED；如实钉住当前行为，主控若在拒收端点补联动请改此断言
+        // 反过来：先签发第 1（pending 1）再拒收第 2——v60 审阅修补后拒收端点也结算：
+        // 这次拒收正是「全部未拒收部位都已签发」成立的时刻 → EXECUTED（修复前永久停在 CHARGED，既不能执行也不能退）
         Long o2 = order("B2");
         long q1 = part(o2, 1, true);
         long q2 = part(o2, 2, false);
@@ -148,8 +148,15 @@ class V60IssueAllPartsTest {
         assertEquals(Boolean.FALSE, j1.get("orderExecuted"));
         assertEquals(1L, asLong(j1.get("partsPending")));
         assertEquals(0, registry.reject(q2, new RejectReq("量不足 " + tag, null), doc).getCode());
-        assertEquals("CHARGED", orderStatus(o2), "拒收端点不回头置 EXECUTED（本版范围外，如实）");
-        assertEquals(5261, report.issue(q1, doc).getCode(), "已签发的第 1 部位不能再签一次来触发");
+        assertEquals("EXECUTED", orderStatus(o2), "拒收剩余部位后由拒收端点结算置 EXECUTED（审阅 medium 修补）");
+        assertEquals(5261, report.issue(q1, doc).getCode(), "已签发的第 1 部位不能再签一次");
+        // 全部部位都拒收、没有已签发部位 → 不置：什么也没发布，退费此时应当放行
+        Long o3 = order("B3");
+        long r1 = part(o3, 1, false);
+        long r2 = part(o3, 2, false);
+        assertEquals(0, registry.reject(r1, new RejectReq("固定不良 " + tag, null), doc).getCode());
+        assertEquals(0, registry.reject(r2, new RejectReq("量不足 " + tag, null), doc).getCode());
+        assertEquals("CHARGED", orderStatus(o3), "全部拒收无已签发部位：不置 EXECUTED");
         // 拒收的部位本身不能签发（5261 已拒收）
         assertEquals(5261, report.issue(q2, doc).getCode());
     }

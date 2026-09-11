@@ -180,11 +180,12 @@ public class PathologyReportController {
                        (select count(*) from path_block pb where pb.tech_order_id = t.id) as sampled_block_count,
                        coalesce(b.block_code,
                                 (select string_agg(x.block_code, '、' order by x.block_no, x.block_code)
-                                   from (select distinct pb.block_code, pb.block_no
-                                           from path_block pb
-                                          where pb.tech_order_id = t.id
-                                             or exists (select 1 from path_slide sl
-                                                         where sl.tech_order_id = t.id and sl.block_id = pb.id)) x)) as blocks_derived,
+                                   from (select pb.block_code, pb.block_no
+                                           from path_block pb where pb.tech_order_id = t.id
+                                         union
+                                         select b2.block_code, b2.block_no
+                                           from path_slide sl join path_block b2 on b2.id = sl.block_id
+                                          where sl.tech_order_id = t.id) x)) as blocks_derived,
                        (select string_agg(case g.stain_type when 'HE' then 'HE 染色' when 'IHC' then '免疫组化'
                                                             when 'SPECIAL' then '特殊染色' else '分子病理' end
                                           || coalesce(' ' || g.stain_item, '') || ' ×' || g.n::text, '、'
@@ -562,12 +563,10 @@ public class PathologyReportController {
         // v59（2576-③）：「报告出了」= 正式签发——门诊申请在此置 EXECUTED（此前在 diagnose）；inp_order 不碰。
         // v60（2576 尾-①）：只有同一申请的全部未拒收部位都已签发才置——not exists 在同一条 update 里判，
         // 本标本的 report_issued_at 已在上面同一事务落下，所以它自己不会被算成「未签发的兄弟部位」
-        int executed = jdbc.update("""
-                update outp_order o set status = 'EXECUTED'
-                where o.id = (select order_id from path_specimen where id = ?) and o.status = 'CHARGED'
-                  and not exists (select 1 from path_specimen x
-                                   where x.order_id = o.id and x.rejected_at is null and x.report_issued_at is null)
-                """, specimenId);
+        // v60 审阅修补：结算逻辑抽成 settleOutpOrderExecuted——先 select … for update 锁申请行再判。
+        // 没有锁时并发签发最后两个部位，READ COMMITTED 下两边都看不见对方未提交的 report_issued_at、各自命中 0 行，
+        // 申请永久停在 CHARGED（审阅者两会话复现）；拒收端点也调同一处（先签部分再拒收剩余的死局）。
+        boolean executedNow = settleOutpOrderExecuted(jdbc, specimenId);
         // 同一申请（门诊按 order_id、住院按 inp_order_id）未拒收、未签发的部位数——本次之后为 0 即全部完成
         Long partsPending = jdbc.queryForObject("""
                 select count(*) from path_specimen x, path_specimen me
@@ -583,9 +582,35 @@ public class PathologyReportController {
         body.put("doubleSignGate", gate);
         body.put("doubleSignComplete", missing.isEmpty());
         body.put("warnings", warnings);
-        body.put("orderExecuted", executed == 1);
+        body.put("orderExecuted", executedNow);
         body.put("partsPending", partsPending == null ? 0L : partsPending);   // v60：同申请未签发未拒收部位数
         return R.ok(body);
+    }
+
+    /**
+     * v60 审阅修补：结算门诊申请的执行状态（签发与拒收共用）。
+     *
+     * <p>先 {@code select … for update} 锁申请行，再判「至少一个未拒收部位已签发 且 没有未拒收未签发的部位」。
+     * 并发签发最后两个部位时，第二个事务在锁上等第一个提交，READ COMMITTED 下 update 重新求值就看得见对方的
+     * {@code report_issued_at}；没有锁时两边都看不见对方、各自命中 0 行，申请永久停在 CHARGED——重复签发 5261、
+     * 执行站 7004「由病理科签发后自动置执行」永不兑现、退费被 5005 挡（审阅者两 psql 会话复现）。
+     * 拒收也要结算：先签发部分部位、再拒收剩余部位时，最后那次拒收就是条件成立的时刻。
+     * 全部部位都拒收（没有已签发部位）不置——什么也没发布，退费此时应当放行。
+     * 住院来源（order_id 为空）不结算，返回 false。
+     */
+    public static boolean settleOutpOrderExecuted(JdbcTemplate jdbc, Long specimenId) {
+        Long orderId = jdbc.query("select order_id from path_specimen where id = ?",
+                rs -> rs.next() ? (Long) rs.getObject("order_id") : null, specimenId);
+        if (orderId == null) return false;
+        jdbc.queryForList("select id from outp_order where id = ? for update", orderId);
+        return jdbc.update("""
+                update outp_order o set status = 'EXECUTED'
+                where o.id = ? and o.status = 'CHARGED'
+                  and exists (select 1 from path_specimen p
+                               where p.order_id = o.id and p.rejected_at is null and p.report_issued_at is not null)
+                  and not exists (select 1 from path_specimen x
+                                   where x.order_id = o.id and x.rejected_at is null and x.report_issued_at is null)
+                """, orderId) == 1;
     }
 
     // ==================================================================
