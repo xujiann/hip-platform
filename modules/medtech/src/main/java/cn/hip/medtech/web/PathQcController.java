@@ -1815,6 +1815,9 @@ public class PathQcController {
             case "stained_count" -> "已染色挂接切片数";
             case "sampled_block_count" -> "已补取材蜡块数";
             case "blocks_derived" -> "关联蜡块";
+            // v61（2563 复核）：「关联蜡块」这一列的来源判定（ORDERED 全为下达时指定 / DERIVED 全为派生 / MIXED 两者都有），
+            // 与并集同一处 SQL 算出；穿透复用 TECH_DERIVED_COLUMNS，故这里也要有中文名，否则 CSV 表头露英文列名
+            case "blocks_derived_source" -> "关联蜡块来源";
             case "attached_stain_name" -> "挂接切片染色";
             case "progress" -> "执行进度编码";
             case "progress_name" -> "执行进度";

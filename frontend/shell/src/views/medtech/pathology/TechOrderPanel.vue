@@ -84,12 +84,20 @@
         <el-tag v-if="row.urgent === true" size="small" type="danger">急</el-tag>
       </template>
     </el-table-column>
+    <el-table-column label="医嘱号" width="90">
+      <!-- v61（2563 复核）：流转节点备注里的「#12」此前在清单上无从对应——同一标本先取消一条 IHC CK7
+           再下一条时，两行类型项目逐字相同，只有 id 分得开。补这一列把节点备注对回清单行。 -->
+      <template #default="{ row }"><span class="code">#{{ fmt(row.id) }}</span></template>
+    </el-table-column>
     <el-table-column label="蜡块" min-width="150" show-overflow-tooltip>
       <template #default="{ row }">
-        <!-- v60：block_id 非空取其块码；为空时后端按挂接蜡块（补取材已出块）+ 挂接切片所在块派生（blocks_derived），
-             派生值加「派生」标记——修复前六种类型 block_id 都可空且无回写端点，从某块挂了片后这一列仍是「—」 -->
+        <!-- v60：「蜡块」列是下达时指定的块 + 为本医嘱补出的块 + 挂接切片所在块的并集（blocks_derived）。
+             v61（2563 复核）：「派生」标改读后端与并集同一处 SQL 算出的 blocks_derived_source，
+             不再按 !block_code 二次推断——补取材挂接会把 block_id 回写为本次首块，那样判恒为 false，
+             于是补出 2 块时显示「P-3、P-4」却不带「派生」标，与「医师指定了这两块」同形。 -->
         <span class="code">{{ fmt(row.blocks_derived ?? row.block_code) }}</span>
-        <el-tag v-if="!row.block_code && row.blocks_derived" size="small" type="info">派生</el-tag>
+        <el-tag v-if="row.blocks_derived_source === 'DERIVED'" size="small" type="info">派生</el-tag>
+        <el-tag v-else-if="row.blocks_derived_source === 'MIXED'" size="small" type="warning">含派生</el-tag>
       </template>
     </el-table-column>
     <el-table-column label="开单" width="200">
@@ -157,7 +165,11 @@
  * <p>v59（2563 一致性）：清单多了「挂接切片染色」列（后端 attached_stain：挂接切片按染色类型 / 项目去重计数的汇总，
  * 如「IHC CK7 ×2」）——修复前三处清单 / 穿透都不回挂接切片的实际染色，挂错的片子在清单上看不出来。
  *
- * <p>v60（2563 尾）：「蜡块」列改读 blocks_derived（block_id 为空时后端按挂接蜡块 + 挂接切片所在块派生并标「派生」）、
+ * <p>v61（2563 复核）：「派生」标改读后端 blocks_derived_source（ORDERED / DERIVED / MIXED，与并集同一处 SQL 算出），
+ * 不再按 !block_code 二次推断——补取材挂接会把 block_id 回写为本次首块，那样判恒为 false，页面与本说明不符；
+ * 同时补「医嘱号」列，把流转节点备注里的「#12」对回清单行。
+ *
+ * <p>v60（2563 尾）：「蜡块」列改读 blocks_derived（下达指定块 + 为本医嘱补出的块 + 挂接切片所在块的并集）、
  * 「挂接切片染色」列改读中文版 attached_stain_name（如「免疫组化 CK7 ×2」，v59 是后端 SQL 直接拼的英文枚举）、
  * 进度增第六态 SAMPLED（已补取材待切片：补取材医嘱经取材 append 挂接出了蜡块、尚未切片，V167 path_block.tech_order_id）。
  *

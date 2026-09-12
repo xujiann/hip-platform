@@ -111,6 +111,19 @@ import java.util.Set;
  *       申请置「已执行」，返回体新增 {@code partsPending}；单部位申请行为不变。</li>
  * </ul>
  *
+ * <p><b>v61（2563 复核两条：判定与值同源、节点备注去裸码）</b>：
+ * <ul>
+ *   <li>{@link #TECH_DERIVED_COLUMNS} 再增 {@code blocks_derived_source}（ORDERED / DERIVED / MIXED / NULL）——
+ *       「蜡块」列是否派生的判定与它的值在<b>同一段 SQL</b> 里算出，前端直接读，不再按 {@code !block_code} 二次推断。
+ *       修复前：v60 把值改成并集、判定没跟着改，补取材场景（block_id 被回写）判定恒 false，页面与 TechOrderPanel
+ *       自己的页首说明不符，DiagnosisPanel 同一列连标签都没有。</li>
+ *   <li>{@link #techLabel} 去掉括号里的裸英文枚举（{@code #12 免疫组化(IHC) CK7} → {@code #12 免疫组化 CK7}），
+ *       TECH_ORDER / TECH_DONE / TECH_CANCEL 三处节点备注同时生效；{@code #id} 保留（追溯要靠它），
+ *       ⑤ TechOrderPanel 与 ④ DiagnosisPanel 特检页签同版各加一列「医嘱号」把 #id 对回清单行。
+ *       <b>SECTION 备注</b>（{@code PathologyProcessController} 的「切片 N 张（…，IHC CK7），特检医嘱#12 IHC」）
+ *       同属本条缺陷，但在别的控制器里，本版未动。</li>
+ * </ul>
+ *
  * <p><b>错误码 5260–5275</b>（v48 诊断与报告段 5260–5279；5271–5272 v57、5273 v58、5274 v59、5275 v60 已用，5276–5279 空置）：
  * <ul>
  *   <li>5260 标本不存在（全部端点的「查无此标本」同码）</li>
@@ -175,6 +188,18 @@ public class PathologyReportController {
      *       一见非空就短路——补出 N 块只显示第 1 块，而同一行 {@code sampled_block_count} 是 N，同屏自相矛盾，
      *       且没有任何其它页面能补回缺的块码（2563 的两个独立反驳者同时指出）。改为并集后：v57「下达时指定蜡块」
      *       场景并集只有一行、输出逐字不变；v60 补取材场景 N 块全列出，与 {@code sampled_block_count} 对得上；</li>
+     *   <li>{@code blocks_derived_source}（<b>v61</b>）：上面那段并集的<b>来源判定</b>——{@code ORDERED}（并集里的块全是下达时
+     *       医师指定的）/ {@code DERIVED}（全是派生来的）/ {@code MIXED}（既有指定又有派生）；并集为空时为 NULL，
+     *       与 {@code blocks_derived} 同步。<b>判定与值出自同一处 SQL</b>——v60 只把值改成并集，前端「是否派生」的判定
+     *       仍写作 {@code !row.block_code && row.blocks_derived}，而 v60 自己的旗舰场景（补取材挂接）会把医嘱
+     *       {@code block_id} 由空回写为本次首块，回写一发生 {@code block_code} 就非空、判定恒 false：补取材出 2 块时
+     *       「蜡块」列显示「P-3、P-4」却<b>不带「派生」标</b>，屏幕上与「下达时医师指定了这两块」完全同形
+     *       （v60 复核原话，主控实测坐实）。现在前端只读这一列、不再二次推断。
+     *       <b>「指定」的口径</b>：{@code t.block_id} 指向的块<b>且该块不是为本医嘱补出的</b>
+     *       （{@code b.tech_order_id} 与 {@code t.id} 不同）才算医师指定——补取材回写进 {@code block_id} 的首块是系统写的、
+     *       不是医师下达时指定的，算派生；否则「回写」本身又会把一块系统产物标成「医师指定」，
+     *       等于把同一个半截修复换个地方再犯一次。同一块同时命中两个来源（指定的块上又挂了本医嘱的切片）
+     *       按块去重后算「指定」，不虚报 MIXED；</li>
      *   <li>{@code attached_stain_name}：挂接切片染色的中文汇总（与 {@code attached_stain} 同一去重计数，
      *       染色类型按 PathQcController SLIDE_QUALITY 的 stain_name 口径译中文：HE→HE 染色 / IHC→免疫组化 / SPECIAL→特殊染色 /
      *       其余→分子病理），如「免疫组化 CK7 ×2」，多组「、」相连，无挂接为 NULL。</li>
@@ -192,6 +217,21 @@ public class PathologyReportController {
                                 select b2.block_code, b2.block_no
                                   from path_slide sl join path_block b2 on b2.id = sl.block_id
                                  where sl.tech_order_id = t.id) x)            as blocks_derived,
+                       (select case when count(*) = 0            then null::text
+                                    when bool_and(y.ordered_src) then 'ORDERED'
+                                    when bool_or(y.ordered_src)  then 'MIXED'
+                                    else                              'DERIVED' end
+                          from (select x2.block_code, bool_or(x2.ordered_src) as ordered_src
+                                  from (select b.block_code, (b.tech_order_id is distinct from t.id) as ordered_src
+                                          where b.id is not null
+                                        union all
+                                        select pb.block_code, false
+                                          from path_block pb where pb.tech_order_id = t.id
+                                        union all
+                                        select b2.block_code, false
+                                          from path_slide sl join path_block b2 on b2.id = sl.block_id
+                                         where sl.tech_order_id = t.id) x2
+                                 group by x2.block_code) y)      as blocks_derived_source,
                        (select string_agg(case g.stain_type when 'HE' then 'HE 染色' when 'IHC' then '免疫组化'
                                                             when 'SPECIAL' then '特殊染色' else '分子病理' end
                                           || coalesce(' ' || g.stain_item, '') || ' ×' || g.n::text, '、'
@@ -1011,6 +1051,11 @@ public class PathologyReportController {
      * {@code blocks_derived}（「蜡块」列：block_id 非空取其 block_code，否则按挂接蜡块 + 挂接切片所在块派生，如「P-3、P-4」）、
      * {@code attached_stain_name}（{@code attached_stain} 的中文版，如「免疫组化 CK7 ×2」）；{@code progress} 增第六态 SAMPLED
      * （已补取材待切片：ORDERED、0 片、≥1 挂接蜡块）。修复前 RESAMPLE 医嘱的「蜡块」列永远「—」、进度永远「待切片」。仍是只增不改。
+     *
+     * <p><b>v61（2563 复核）</b>：两个分支再增 {@code blocks_derived_source}（ORDERED / DERIVED / MIXED / null）——
+     * 「蜡块」列<b>是否派生</b>的判定，与 {@code blocks_derived} 的并集同一处 SQL 算出（见 {@link #TECH_DERIVED_COLUMNS}）。
+     * 前端两处清单的「派生」标直接读这一列；修复前前端按 {@code !row.block_code && row.blocks_derived} 自己推断，
+     * 补取材回写 {@code block_id} 后恒为 false。仍是只增不改。
      */
     @GetMapping("/tech-orders")
     public R<Map<String, Object>> techOrders(@RequestParam(required = false) Long specimenId,
@@ -1153,8 +1198,11 @@ public class PathologyReportController {
                 + "progress 由二者、sampled_block_count 与 status 派生（PENDING_SECTION 待切片 / SAMPLED 已补取材待切片 / "
                 + "SECTIONING 切片中 / STAINED 已染色待确认 / DONE / CANCELLED），不是库列；slideId 只要该切片挂接的那条医嘱；"
                 + "attached_stain 是挂接切片按染色类型/项目去重计数的汇总（如「IHC CK7 ×2」），attached_stain_name 是其中文版"
-                + "（如「免疫组化 CK7 ×2」），无挂接为 null；blocks_derived 是「蜡块」列的派生文本（block_id 非空取其块码，"
-                + "否则按挂接蜡块 + 挂接切片所在块去重「、」相连），都没有为 null；V167 之前的历史补取材块永远挂不上（零回填）。");
+                + "（如「免疫组化 CK7 ×2」），无挂接为 null；blocks_derived 是「蜡块」列的文本（下达时指定的块 + 为本医嘱补出的块 "
+                + "+ 挂接切片所在块，去重后按块号「、」相连），都没有为 null；blocks_derived_source 是这段并集的来源判定"
+                + "（ORDERED 全为下达时指定 / DERIVED 全为派生 / MIXED 两者都有；并集为空为 null）——「派生」标读这一列，"
+                + "别再按 block_code 是否为空二次推断（补取材会把 block_id 回写为首块，那样判恒为 false）；"
+                + "V167 之前的历史补取材块永远挂不上（零回填）。");
         return R.ok(body);
     }
 
@@ -1347,10 +1395,20 @@ public class PathologyReportController {
         };
     }
 
-    /** 流转节点留痕文案里的医嘱标识：#id 中文类型(编码) 项目——技师与评委看流转轨迹时不用再回头查字典 */
+    /**
+     * 流转节点留痕文案里的医嘱标识：{@code #id 中文类型 项目}（如 {@code #12 免疫组化 CK7}）。
+     *
+     * <p><b>v61（2563 复核第二条）</b>：去掉括号里的裸英文枚举——此前拼的是 {@code #12 免疫组化(IHC) CK7}，
+     * 复核者原话「评委在 ④ 抽屉「流转节点」/⑥「流转与异常」看到的备注正文里同时有<b>内部主键</b>与<b>裸英文枚举</b>，
+     * 而且全平台没有任何页面能把这个 #id 对回一条医嘱」。中文名取 {@link #TECH_TYPE_NAMES}（值域外的脏数据原样回码，不猜）。
+     *
+     * <p><b>{@code #id} 刻意保留</b>：追溯要靠它把一条节点对回一条医嘱（同一标本先取消一条 IHC CK7 再下一条时，
+     * 两行类型项目逐字相同，只有 id 分得开）。对得回去的前提是清单上有这一列，故同版在 ⑤ TechOrderPanel 与
+     * ④ DiagnosisPanel 特检页签各加一列「医嘱号」（显示 {@code #id}）。
+     */
     private static String techLabel(Object id, Object type, Object item) {
         String t = String.valueOf(type);
-        return "#" + id + " " + TECH_TYPE_NAMES.getOrDefault(t, t) + "(" + t + ")" + (item == null ? "" : " " + item);
+        return "#" + id + " " + TECH_TYPE_NAMES.getOrDefault(t, t) + (item == null ? "" : " " + item);
     }
 
     /** 签名类端点共用的前置：已拒收 / 已签发的标本一律不许再签 */

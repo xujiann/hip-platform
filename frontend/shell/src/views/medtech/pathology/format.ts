@@ -139,6 +139,18 @@ export function techTypeName(v: unknown): string {
   return TECH_TYPES.find((t) => t.value === s)?.label ?? s
 }
 
+/**
+ * v61（2563 复核）：「关联蜡块」这一列的来源判定，由后端与并集同一处 SQL 算出（blocks_derived_source）。
+ * 前端只读不推断——此前「派生」标写作 `!row.block_code && row.blocks_derived`，而补取材挂接会把医嘱
+ * block_id 回写为本次首块，回写一发生判定恒为 false：补出 2 块时显示两个块码却不带「派生」标，
+ * 与「下达时医师指定了这两块」完全同形。值域外原样回码，不猜。
+ */
+export const BLOCKS_DERIVED_SOURCES: Record<string, string> = {
+  ORDERED: '下达时指定',
+  DERIVED: '派生',
+  MIXED: '指定 + 派生',
+}
+
 export function qualityName(v: unknown): string {
   const s = v == null ? '' : String(v)
   return SLIDE_QUALITIES.find((q) => q.value === s)?.label ?? s
@@ -465,6 +477,7 @@ const ZH: Record<string, string> = {
   // attached_stain 的中文版（「免疫组化 CK7 ×2」）
   sampled_block_count: '已补取材蜡块数',
   blocks_derived: '关联蜡块',
+  blocks_derived_source: '关联蜡块来源',
   attached_stain_name: '挂接切片染色',
   // 覆盖率段
   with_specimen_type: '已录标本类别',
@@ -529,6 +542,9 @@ export function cellText(col: string, v: unknown, row?: Row): string {
     case 'node':
     case 'last_node':
       return nodeName(v)
+    // v61（2563 复核）：新列若原样显示 ORDERED/DERIVED 就是新的裸英文枚举——正是本轮要消灭的形态
+    case 'blocks_derived_source':
+      return BLOCKS_DERIVED_SOURCES[String(v)] ?? String(v)
     case 'tech_type':
       return techTypeName(v)
     case 'kind':

@@ -253,15 +253,25 @@
           <el-alert type="info" :closable="false" class="cav"
                     title="取消特检医嘱须填写取消原因（v57 起留痕：取消人 / 取消时刻 / 取消原因）。取消原因与下达原因分列，不覆盖 reason——「当初为什么要做这个免疫组化」与「后来为什么不做了」都留着；V163 之前取消的历史行三列为空。「进度」由挂接切片派生（v58）：待切片 / 切片中 / 已染色待确认，不是手工标记；下达 / 完成 / 取消都进「流转节点」页签。" />
           <el-table :data="techRows" size="small" border max-height="380">
+            <el-table-column label="医嘱号" width="80">
+              <!-- v61（2563 复核）：流转节点备注里的「#12」此前在清单上无从对应，补这一列对回来 -->
+              <template #default="{ row }"><span class="code">#{{ fmt(row.id) }}</span></template>
+            </el-table-column>
             <el-table-column label="类型" width="110">
               <template #default="{ row }">{{ techName(row.tech_type) }}</template>
             </el-table-column>
             <el-table-column label="项目" width="130">
               <template #default="{ row }">{{ fmt(row.tech_item) }}</template>
             </el-table-column>
-            <el-table-column label="蜡块" width="150">
-              <!-- v60 合版统一：block_id 为空时按挂接蜡块/切片所在块派生（blocks_derived），否则仍是下达时指定的块 -->
-              <template #default="{ row }">{{ fmt(row.blocks_derived ?? row.block_code) }}</template>
+            <el-table-column label="蜡块" width="160">
+              <!-- v60：「蜡块」= 下达指定块 + 为本医嘱补出的块 + 挂接切片所在块的并集。
+                   v61（2563 复核）：与 ⑤ 特检工作台同标——「派生」读后端 blocks_derived_source，
+                   两处口径此前不齐（这里连标签都没有）。 -->
+              <template #default="{ row }">
+                {{ fmt(row.blocks_derived ?? row.block_code) }}
+                <el-tag v-if="row.blocks_derived_source === 'DERIVED'" size="small" type="info">派生</el-tag>
+                <el-tag v-else-if="row.blocks_derived_source === 'MIXED'" size="small" type="warning">含派生</el-tag>
+              </template>
             </el-table-column>
             <el-table-column label="状态" width="100">
               <template #default="{ row }">

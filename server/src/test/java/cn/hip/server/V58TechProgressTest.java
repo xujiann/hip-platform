@@ -152,9 +152,12 @@ class V58TechProgressTest {
         var ordered = node(a, "TECH_ORDER", ihc);
         assertEquals(userId(tag + "d1").longValue(), asLong(ordered.get("operator_id")), "TECH_ORDER 的操作人是下达人");
         String orderedRemark = String.valueOf(ordered.get("remark"));
-        assertTrue(orderedRemark.contains("#" + ihc + " ") && orderedRemark.contains("IHC")
+        // v61（2563 复核）：备注去掉括号里的裸英文枚举——此前是「#12 免疫组化(IHC) CK7」，复核者原话
+        // 「备注正文里同时有内部主键与裸英文枚举」。#id 保留（追溯要靠它对回清单的「医嘱号」列）。
+        assertTrue(orderedRemark.contains("#" + ihc + " ")
                         && orderedRemark.contains("免疫组化") && orderedRemark.contains("CK7") && orderedRemark.contains(reason),
-                "TECH_ORDER 备注应带「#id 类型 项目」与下达原因，实际：" + orderedRemark);
+                "TECH_ORDER 备注应带「#id 中文类型 项目」与下达原因，实际：" + orderedRemark);
+        assertFalse(orderedRemark.contains("(IHC)"), "备注不得再出现括号里的裸英文枚举：" + orderedRemark);
         assertRecent(ordered.get("occurred_at"), "TECH_ORDER.occurred_at");
 
         // 完成（默认 warn、0 片：放行但节点写明缺口）
