@@ -444,7 +444,10 @@ const ZH: Record<string, string> = {
   activity: '操作',
   act_time: '操作时刻',
   // v60（2576-②）送检科室维度 WORKLOAD_DEPT：与后端 zh() 同名 case 逐字一致（dept_name / registered / issued / rejected 复用上面的既有键）
-  in_progress: '在办数',
+  // v61（2576 复核）：WORKLOAD_DEPT 的三列是存量（本期登记的这批标本、截至查询时刻的状态），
+  // 与 REPORT_* 的「签发份数」（流量）在表头上就要分开——此前 issued 两处同名同中文
+  issued_of_registered: '本期登记中已签发',
+  in_progress: '本期登记中在办',
   dept_count: '送检科室数',
   unknown_dept: '未知科室标本数',
   stage: '办理阶段',

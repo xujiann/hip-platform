@@ -87,9 +87,13 @@ class V60DeptDimensionTest {
     static final String UNKNOWN = PathQcController.UNKNOWN_DEPT;
 
     /** 汇总行列序（与 rowsOf 的 select 别名顺序一致） */
-    static final List<String> ROW_COLUMNS = List.of("dept_name", "registered", "issued", "rejected", "in_progress");
+    // v61（2576 复核）：issued → issued_of_registered。此前这一列与 REPORT_* 锚 report_issued_at 的流量列
+    // 同名同中文「签发份数」，而本指标的时间窗是 collected_at——数的是「本期登记的标本里、截至查询那一刻
+    // 已签发的条数」（存量），同一个已结束的历史区间今天查与下周查会变，据此做的科室工作量表不可复现。
+    static final List<String> ROW_COLUMNS =
+            List.of("dept_name", "registered", "issued_of_registered", "rejected", "in_progress");
     /** 合计行列 */
-    static final List<String> SUMMARY_COLUMNS = List.of("registered", "issued", "rejected", "in_progress", "dept_count", "unknown_dept");
+    static final List<String> SUMMARY_COLUMNS = List.of("registered", "issued_of_registered", "rejected", "in_progress", "dept_count", "unknown_dept");
     /** 穿透明细里必须有的 SPEC_SELECT 列（能核对到人、到标本、到科室、到状态时刻）+ 本指标派生列 stage */
     static final List<String> DETAIL_COLUMNS = List.of("specimen_id", "path_no", "barcode", "part_no", "specimen_type", "source",
             "patient_no", "patient_name", "dept_name", "collected_at", "received_at", "report_issued_at", "rejected_at",
@@ -167,14 +171,14 @@ class V60DeptDimensionTest {
         // 合计行：与各行相加一致；dept_count = 行数；unknown_dept = 未知行的 registered
         var summary = map(ind, "summary");
         assertEquals(SUMMARY_COLUMNS, new ArrayList<>(summary.keySet()));
-        for (String col : List.of("registered", "issued", "rejected", "in_progress")) {
+        for (String col : List.of("registered", "issued_of_registered", "rejected", "in_progress")) {
             long sum = list.stream().mapToLong(r -> n(r.get(col))).sum();
             assertEquals(sum, n(summary.get(col)), "summary." + col + " 应等于各科室行之和");
         }
         assertEquals(list.size(), n(summary.get("dept_count")), "dept_count = 行数（含未知科室行）");
         assertEquals(1L, n(summary.get("unknown_dept")));
         assertEquals(n(summary.get("registered")),
-                n(summary.get("issued")) + n(summary.get("rejected")) + n(summary.get("in_progress")),
+                n(summary.get("issued_of_registered")) + n(summary.get("rejected")) + n(summary.get("in_progress")),
                 "签发 / 拒收 / 在办三分且互斥，之和 = 登记数");
 
         // 独立的交叉对照：WORKLOAD_REGISTER 同窗的 registered / rejected 必须相等（同分母、同锚点）——科室维度只是换了分组，不换总体
@@ -195,7 +199,8 @@ class V60DeptDimensionTest {
 
         // CSV 与页面同口径：表头走 zh()，各科室一行
         String csv = pathQc.indicatorsCsv(CODE, from, to);
-        assertTrue(csv.contains("科室,登记标本数,签发份数,拒收数,在办数"), csv);
+        // v61（2576 复核）：表头上就要能与 REPORT_* 的「签发份数」（锚 report_issued_at 的流量）分开
+        assertTrue(csv.contains("科室,登记标本数,本期登记中已签发,拒收数,本期登记中在办"), csv);
         assertTrue(csv.contains(a.name() + ",3,1,1,1"), csv);
         assertTrue(csv.contains(b.name() + ",4,1,1,2"), csv);
         assertTrue(csv.contains(UNKNOWN + ",1,0,0,1"), csv);
@@ -289,7 +294,9 @@ class V60DeptDimensionTest {
             assertTrue(zh.containsKey(k), "前端 ZH 缺 " + k + "（后端叫「" + backend.get(k) + "」）");
             assertEquals(backend.get(k), zh.get(k), "ZH." + k + " 与后端同名 case 中文不一致");
         }
-        assertEquals("在办数", backend.get("in_progress"));
+        // v61（2576 复核）：两列正名，表头上就能与 REPORT_* 的「签发份数」（流量）分开
+        assertEquals("本期登记中已签发", backend.get("issued_of_registered"));
+        assertEquals("本期登记中在办", backend.get("in_progress"));
         assertEquals("送检科室数", backend.get("dept_count"));
         assertEquals("未知科室标本数", backend.get("unknown_dept"));
         assertEquals("办理阶段", backend.get("stage"));
@@ -567,7 +574,7 @@ class V60DeptDimensionTest {
         var row = rows.stream().filter(r -> dept.equals(r.get("dept_name"))).findFirst()
                 .orElseGet(() -> fail("汇总里没有科室行「" + dept + "」：" + rows));
         assertEquals(registered, n(row.get("registered")), dept + ".registered");
-        assertEquals(issued, n(row.get("issued")), dept + ".issued");
+        assertEquals(issued, n(row.get("issued_of_registered")), dept + ".issued_of_registered");
         assertEquals(rejected, n(row.get("rejected")), dept + ".rejected");
         assertEquals(inProgress, n(row.get("in_progress")), dept + ".in_progress");
     }

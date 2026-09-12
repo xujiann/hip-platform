@@ -65,8 +65,10 @@
           <el-button link type="primary" size="small" @click="openDetail(ind)">穿透明细</el-button>
           <el-button link type="primary" size="small" @click="exportCsv('indicators', ind)">
             导出汇总</el-button>
-          <el-button link type="primary" size="small" @click="exportCsv('detail', ind)">
-            导出明细</el-button>
+          <!-- v61（2576 复核）：这里导的是**全科室**；要按科室导请在穿透抽屉里点「导出本次明细」 -->
+          <el-button link type="primary" size="small" @click="exportCsv('detail', ind)"
+                     :title="ind.code === 'WORKLOAD_DEPT' ? '导出全部科室的明细；要按某个科室导，请点「穿透明细」后在抽屉里导出' : ''">
+            导出明细{{ ind.code === 'WORKLOAD_DEPT' ? '（全科室）' : '' }}</el-button>
         </span>
       </div>
 
@@ -125,6 +127,14 @@
       <el-alert v-if="detailCaveat" type="warning" :closable="false" class="cav" :title="mdText(detailCaveat)" />
       <el-alert v-if="detailTruncated" type="warning" show-icon :closable="false" class="cav"
                 :title="`命中超过 ${detailLimit} 条，仅显示前 ${detailLimit} 条（不做翻页）；请缩小统计区间后再穿透`" />
+      <!-- v61（2576 复核）：此前抽屉里没有导出按钮，科室过滤只有 E2E 调得到——
+           评委看完某科室明细、关掉抽屉点指标头部的「导出明细」，拿到的是全科室的另一份 -->
+      <div class="drawer-actions">
+        <el-button size="small" type="primary" plain @click="exportDetailInDrawer">
+          导出本次明细{{ detailDept ? `（科室：${detailDept}）` : '' }}
+        </el-button>
+        <span class="muted">与上表同时间窗、同锚点、同过滤条件；CSV 页脚写明过滤与口径</span>
+      </div>
       <!-- 表头 zh()、取值 cellText()；_id 主键列挪到最后并置灰（不删：对账与 CSV 导出仍要它） -->
       <el-table :data="detailItems" v-loading="detailLoading" size="small" border
                 height="calc(100vh - 260px)">
@@ -302,19 +312,31 @@ async function openDetail(ind: Row, dept?: string) {
   }
 }
 
-/* ---------------- CSV 导出（口径页脚随文件走，不只写在页面上） ---------------- */
-async function exportCsv(kind: 'indicators' | 'detail', ind: Row) {
+/* ---------------- CSV 导出（口径页脚随文件走，不只写在页面上） ----------------
+ * v61（2576 复核）：dept 过滤此前只有 E2E 调得到——后端 detailCsv 早有 dept 形参、toCsv 也会写「科室过滤：X」页脚，
+ * 但前端两个导出按钮都在指标头部、params 只有 {indicator, from, to}，穿透抽屉里根本没有导出按钮。
+ * 评委看完某科室明细再点「导出明细」，拿到的是全科室最多 200 条且页脚不写过滤——与屏幕上刚看的不是同一份，
+ * 恰好撞上抽屉顶部那句「明细与汇总同时间窗、同锚点、同过滤条件——对不上账即为缺陷」。
+ * 现在抽屉里的「导出本次明细」把当前 dept 传下去；指标头部那个仍导全科室，按钮文案已注明区别。 */
+async function exportCsv(kind: 'indicators' | 'detail', ind: Row, dept?: string) {
   const resp = await client.get(`/path-qc/${kind}.csv`, {
-    params: { indicator: ind.code, from: applied.value[0], to: applied.value[1] },
+    params: { indicator: ind.code, from: applied.value[0], to: applied.value[1], dept: dept || undefined },
     responseType: 'blob',
   })
   const href = URL.createObjectURL(resp.data as Blob)
   const a = document.createElement('a')
   a.href = href
   a.download = `病理质控${ind.code}_${ind.name}_${kind === 'indicators' ? '汇总' : '明细'}`
-    + `_${applied.value[0]}至${applied.value[1]}.csv`
+    + (dept ? `_${dept}` : '') + `_${applied.value[0]}至${applied.value[1]}.csv`
   a.click()
   URL.revokeObjectURL(href)
+}
+
+/** 抽屉里导出：带上本次穿透的科室过滤，与屏幕上看到的那份逐行一致 */
+async function exportDetailInDrawer() {
+  if (!detailCode.value) return
+  await exportCsv('detail', { code: detailCode.value, name: detailName.value } as Row,
+    detailDept.value || undefined)
 }
 
 onMounted(async () => {
@@ -325,6 +347,8 @@ onMounted(async () => {
 
 <style scoped>
 .cav { margin-bottom: 8px; }
+.drawer-actions { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.drawer-actions .muted { color: var(--el-text-color-secondary); font-size: 12px; }
 .cov { margin-bottom: 12px; }
 h4 { margin: 16px 0 8px; }
 .indicator {

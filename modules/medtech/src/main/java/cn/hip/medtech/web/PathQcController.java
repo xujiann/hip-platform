@@ -406,8 +406,13 @@ public class PathQcController {
                 + " 送检科室取自申请归属：门诊按挂号科室（outp_registration.dept_id）、住院按在院科室（inp_admission.dept_id），"
                 + "与穿透明细的 dept_name 同一条联接链；取不到科室或科室名为空白的标本归「" + UNKNOWN_DEPT + "」一行，**不丢行**；"
                 + "同名科室（不同编码）合并为一行。registered 是本期**登记**的标本条数（与 WORKLOAD_REGISTER 同分母），"
-                + "issued / rejected / in_progress 是这批标本**截至查询时刻**的状态（已签发 / 已拒收 / 两者皆非）——"
-                + "按登记日归集而不是按签发日或拒收日，要看「本期签发了多少」请走 WORKLOAD_REPORT。"
+                + "issued_of_registered / rejected / in_progress 是这批标本**截至查询时刻**的状态（已签发 / 已拒收 / 两者皆非）。"
+                + "**这三列是存量不是流量**：按登记日归集，同一个已结束的历史区间今天查与下周查，"
+                + "issued_of_registered 会变大、in_progress 会变小——上月登记、本月才签发的标本会被追加进上月那一行，"
+                + "**据此做的科室工作量表不可复现**，发出去之前请连同查询时刻一起注明（v61 复核修补：此前这一列叫 issued，"
+                + "与 REPORT_* 系列锚 report_issued_at 的流量列同名同中文「签发份数」，两个口径混在一块看板上）。"
+                + "**平台目前拿不出「本期签发量按科室分」**：REPORT_* 只按日分组、没有科室维度，本指标的 dept 过滤也只对自己生效——"
+                + "要这个口径须另开指标，本版不做（不写代码就不占码）。"
                 + "三列之和等于 registered：签发端点拒绝已拒收标本、拒收端点拒绝已诊断标本，两态互斥。");
 
         def("WORKLOAD_BLOCK", "蜡块产出数（按日）",
@@ -839,10 +844,16 @@ public class PathQcController {
                     order by 1 desc
                     """, w);
             // v60（2576-②）：送检科室维度。args: from, to
+            // v61（2576 复核）：issued → issued_of_registered。此前这一列叫 issued，与 REPORT_* 系列的
+            // issued 同名同中文「签发份数」，但两者锚点不同：这里的时间窗是 {wc}=collected_at（登记时刻），
+            // 数的是「本期**登记**的标本里、截至查询那一刻已签发的条数」（存量、随查询时刻变化）；
+            // REPORT_* 的 issued 锚 {wi}=report_issued_at，数的是「本期**签发**了多少」（流量、区间关闭后不再变）。
+            // 后果：同一个已结束的历史区间今天导一次、下周再导一次，科室这一列会变大——上月登记、本月才签发的
+            // 标本会被追加进上月那一行，一张已经发给科室做工作量考核的表因此不可复现（复核者原话，主控实测坐实）。
             case "WORKLOAD_DEPT" -> query("""
                     select {deptName}                                                  as dept_name,
                            count(*)                                                    as registered,
-                           count(*) filter (where s.report_issued_at is not null)      as issued,
+                           count(*) filter (where s.report_issued_at is not null)      as issued_of_registered,
                            count(*) filter (where s.rejected_at is not null)           as rejected,
                            count(*) filter (where s.report_issued_at is null
                                               and s.rejected_at is null)               as in_progress
@@ -1096,7 +1107,7 @@ public class PathQcController {
             // v60：dept_count 是本期有登记的科室数（含「（未知科室）」这一行）；unknown_dept 是落到该行的标本条数
             case "WORKLOAD_DEPT" -> one(q("""
                     select count(*)                                                    as registered,
-                           count(*) filter (where s.report_issued_at is not null)      as issued,
+                           count(*) filter (where s.report_issued_at is not null)      as issued_of_registered,
                            count(*) filter (where s.rejected_at is not null)           as rejected,
                            count(*) filter (where s.report_issued_at is null
                                               and s.rejected_at is null)               as in_progress,
@@ -1787,7 +1798,10 @@ public class PathQcController {
             case "activity" -> "操作";
             case "act_time" -> "操作时刻";
             // v60（2576-②）送检科室维度：dept_name / registered / issued / rejected 复用上面的既有键，这四个是新键
-            case "in_progress" -> "在办数";
+            // v61（2576 复核）：WORKLOAD_DEPT 的三列是「本期登记的这批标本、截至查询时刻的状态」（存量），
+            // 与 REPORT_* 锚 report_issued_at 的「签发份数」（流量）必须在表头上就能分开——此前两者同名同中文
+            case "issued_of_registered" -> "本期登记中已签发";
+            case "in_progress" -> "本期登记中在办";
             case "dept_count" -> "送检科室数";
             case "unknown_dept" -> "未知科室标本数";
             case "stage" -> "办理阶段";

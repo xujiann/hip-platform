@@ -585,20 +585,22 @@ assert len(inds) == 1 and inds[0].get('code') == 'WORKLOAD_DEPT' and inds[0].get
 ind = inds[0]
 assert ind.get('anchorField') == 'path_specimen.collected_at' and '（未知科室）' in str(ind.get('caveat')), f'按登记时刻落窗、口径写明未知科室归法：{ind.get("anchorField")} / {ind.get("caveat")}'
 rows = ind.get('rows') or []
-assert rows and list(rows[0]) == ['dept_name', 'registered', 'issued', 'rejected', 'in_progress'], f'汇总行列序：{rows[:1]}'
+# v61（2576 复核）：issued → issued_of_registered——此前与 REPORT_* 锚 report_issued_at 的流量列同名同中文「签发份数」，
+# 而本指标时间窗是 collected_at，数的是存量（本期登记的标本里、截至查询那一刻已签发的条数）
+assert rows and list(rows[0]) == ['dept_name', 'registered', 'issued_of_registered', 'rejected', 'in_progress'], f'汇总行列序：{rows[:1]}'
 names = [r.get('dept_name') for r in rows]
 assert len(names) == len(set(names)), f'一科一行：{names}'
 mine = next((r for r in rows if r.get('dept_name') == DEPT1), None)
 assert mine, f'**本科室「{DEPT1}」必须有一行**（本套刚在该科室登记了十余条）：{names}'
 # 本套在该科室登记：s1 s2 / sA sB sC / sP1 sP2 sP3 sP4 / sS = 10 条；签发 sP1 sP2 sS = 3；拒收 sP3 sP4 = 2；在办 ≥ 5
-assert mine['registered'] >= 10 and mine['issued'] >= 3 and mine['rejected'] >= 2 and mine['in_progress'] >= 5, f'**WORKLOAD_DEPT 非零且与本套造数相容**：{mine}'
-assert mine['registered'] == mine['issued'] + mine['rejected'] + mine['in_progress'], f'三列互斥之和 = 登记数：{mine}'
+assert mine['registered'] >= 10 and mine['issued_of_registered'] >= 3 and mine['rejected'] >= 2 and mine['in_progress'] >= 5, f'**WORKLOAD_DEPT 非零且与本套造数相容**：{mine}'
+assert mine['registered'] == mine['issued_of_registered'] + mine['rejected'] + mine['in_progress'], f'三列互斥之和 = 登记数：{mine}'
 assert [r['registered'] for r in rows] == sorted((r['registered'] for r in rows), reverse=True), f'按 registered 降序：{rows}'
 summ = ind.get('summary') or {}
-assert list(summ) == ['registered', 'issued', 'rejected', 'in_progress', 'dept_count', 'unknown_dept'], f'合计行列：{summ}'
-for col in ('registered', 'issued', 'rejected', 'in_progress'):
+assert list(summ) == ['registered', 'issued_of_registered', 'rejected', 'in_progress', 'dept_count', 'unknown_dept'], f'合计行列：{summ}'
+for col in ('registered', 'issued_of_registered', 'rejected', 'in_progress'):
     assert summ[col] == sum(r[col] for r in rows), f'summary.{col} = 各行之和：{summ} / {rows}'
-assert summ['dept_count'] == len(rows) and summ['registered'] == summ['issued'] + summ['rejected'] + summ['in_progress'], f'{summ}'
+assert summ['dept_count'] == len(rows) and summ['registered'] == summ['issued_of_registered'] + summ['rejected'] + summ['in_progress'], f'{summ}'
 reg_ind = ok(api('GET', f'/path-qc/indicators?indicator=WORKLOAD_REGISTER&from={f_}&to={to_}'), '质控 WORKLOAD_REGISTER')['indicators'][0]
 assert reg_ind['summary']['registered'] == summ['registered'] and reg_ind['summary']['rejected'] == summ['rejected'], (
     f'**与 WORKLOAD_REGISTER 同窗同分母**（科室维度只换分组不换总体）：{reg_ind["summary"]} vs {summ}')
@@ -627,8 +629,8 @@ def csv_text(path):
 
 
 csv_ind = csv_text(f'/path-qc/indicators.csv?indicator=WORKLOAD_DEPT&from={f_}&to={to_}')
-assert '科室,登记标本数,签发份数,拒收数,在办数' in csv_ind, f'**汇总 CSV 表头走 zh() 中文**：{csv_ind[:300]!r}'
-assert f'{DEPT1},{mine["registered"]},{mine["issued"]},{mine["rejected"]},{mine["in_progress"]}' in csv_ind, 'CSV 与页面同口径'
+assert '科室,登记标本数,本期登记中已签发,拒收数,本期登记中在办' in csv_ind, f'**汇总 CSV 表头走 zh() 中文且与 REPORT_* 的「签发份数」区分**：{csv_ind[:300]!r}'
+assert f'{DEPT1},{mine["registered"]},{mine["issued_of_registered"]},{mine["rejected"]},{mine["in_progress"]}' in csv_ind, 'CSV 与页面同口径'
 csv_det = csv_text(f'/path-qc/detail.csv?indicator=WORKLOAD_DEPT&from={f_}&to={to_}&dept={q(DEPT1)}')
 assert f'科室过滤：{DEPT1}' in csv_det and ',办理阶段' in csv_det and ',已签发' in csv_det and ',已拒收' in csv_det, f'穿透 CSV 页脚写明过滤、表头含 stage 中文：{csv_det[:400]!r}'
 
