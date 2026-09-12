@@ -7,7 +7,10 @@ import os
 import sys
 import urllib.request
 
-BASE = os.environ.get('HIP_BASE', 'http://localhost:8080/api')
+# 地址优先级：HIP_E2E_BASE > HIP_BASE > 8080 默认。**为什么先认 HIP_E2E_BASE**：本脚本被
+# e2e-phase38 / e2e-phase3537 以子进程调用，而 E2E 全家走 e2elib 统一读 HIP_E2E_BASE；两个变量名不一致时，
+# 在非 8080 端口的实例上跑整套（如全新库验收起在 8085）子进程仍连 8080 必然失败。CI 恰好起在 8080 才没暴露。
+BASE = os.environ.get('HIP_E2E_BASE') or os.environ.get('HIP_BASE', 'http://localhost:8080/api')
 # 口令可被环境变量覆盖：在线演示会把 admin 默认口令改掉，改掉后仍要能重灌数据
 USER = os.environ.get('HIP_USER', 'admin')
 PASSWORD = os.environ.get('HIP_PASSWORD', 'admin123')
