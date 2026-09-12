@@ -435,7 +435,8 @@ vC = grossing_view(sC)
 assert vC['blockCount'] == 0 and vC['revisions'] == [] and vC['grossFinding'] is None and tech_row(sC, rsC).get('block_id') is None, f'5222 零写入：{vC}'
 ok(api('POST', '/pathology/process/grossing', {'specimenId': sC, 'grossText': '首次取材 ' + uniq('C'), 'blocks': [{'tissueDesc': 'x'}]}), '同标本不带 techOrderId 照旧能首次取材')
 
-# 正向：append=true 带 techOrderId → 两块都挂医嘱、医嘱 block_id 回写首块、GROSSING 节点备注带医嘱、SAMPLED、blocks_derived=首块码
+# 正向：append=true 带 techOrderId → 两块都挂医嘱、医嘱 block_id 回写首块、GROSSING 节点备注带医嘱、SAMPLED、
+# blocks_derived 列出**为本医嘱补出的每一块**（v60 复核修补：旧写法被回写的 block_id 短路，只显示第 1 块）
 ga = ok(api('POST', '/pathology/process/grossing',
             {'specimenId': sA, 'grossText': '补取材灰白组织两块 ' + uniq('G'), 'append': True, 'remark': '补切缘',
              'blocks': [{'tissueDesc': '切缘一'}, {'tissueDesc': '切缘二'}], 'techOrderId': rs}), '补取材挂接 RESAMPLE（修复前无此入参）')
@@ -448,7 +449,7 @@ assert code1 != code2 and code1 != codeA
 row = tech_row(sA, rs)
 assert row.get('block_id') == nb1 and row.get('block_code') == code1, f'**医嘱 block_id 回写为本次首块**：{row}'
 assert_progress(sA, rs, 'SAMPLED', '已补取材待切片', 0, 0)
-assert_derived(sA, rs, code1, 2, None)
+assert_derived(sA, rs, code1 + '、' + code2, 2, None)
 gn = [x for x in trail(sA).get('nodes') or [] if x.get('node') == 'GROSSING']
 assert len(gn) == 2 and f'补取材医嘱#{rs}' in str(gn[-1].get('remark')) and '取材产出 2 块' in str(gn[-1].get('remark')), f'GROSSING 节点备注带医嘱：{gn}'
 assert gn[-1].get('occurred_at') and gn[-1].get('operator_id'), f'节点带人与时刻（库端 now()）：{gn[-1]}'
@@ -456,8 +457,12 @@ assert gn[-1].get('occurred_at') and gn[-1].get('operator_id'), f'节点带人�
 ga2 = ok(api('POST', '/pathology/process/grossing', {'specimenId': sA, 'append': True, 'blocks': [{'tissueDesc': '切缘三'}], 'techOrderId': rs}), '再补一块')
 assert ga2.get('techOrderBlockBackfilled') is False and ga2['blocks'][0].get('tech_order_id') == rs, f'{ga2}'
 nb3 = ga2['blocks'][0]['id']
+code3 = ga2['blocks'][0]['block_code']
 assert tech_row(sA, rs).get('block_id') == nb1, 'block_id 不覆盖'
-assert_derived(sA, rs, code1, 3, None)
+# 「蜡块」列列出为本医嘱补出的**每一块**：v60 复核时两个独立反驳者指出旧写法
+# coalesce(b.block_code, union…) 被回写的 block_id 短路，补出 N 块只显示第 1 块，
+# 而同一行 sampled_block_count 是 N——同屏自相矛盾。改并集后三块都在。
+assert_derived(sA, rs, code1 + '、' + code2 + '、' + code3, 3, None)
 assert_progress(sA, rs, 'SAMPLED', '已补取材待切片', 0, 0)
 # 派生路径：未指定蜡块的 IHC 从 blockA 挂片后「蜡块」列由挂接切片所在块派生（修复前永远「—」）；中文汇总
 ck20 = tech_order(sA, None, 'IHC', 'CK20')
@@ -475,7 +480,7 @@ sl1 = ok(api('POST', '/pathology/process/slides', {'blockId': nb1, 'count': 1, '
 assert_progress(sA, rs, 'SECTIONING', '切片中', 1, 0)
 sl2 = ok(api('POST', '/pathology/process/slides', {'blockId': nb2, 'count': 1, 'stainType': 'HE', 'techOrderId': rs}), 'RESAMPLE 第 2 块切片（放宽）')
 assert_progress(sA, rs, 'SECTIONING', '切片中', 2, 0)
-assert_derived(sA, rs, code1, 3, 'HE 染色 ×2')
+assert_derived(sA, rs, code1 + '、' + code2 + '、' + code3, 3, 'HE 染色 ×2')
 assert tech_row(sA, rs).get('attached_stain') == 'HE ×2'
 # 既非医嘱指定块、也非为它补出的块：仍 5272 一张不插；类型不符仍 5274
 r = api('POST', '/pathology/process/slides', {'blockId': blockA, 'count': 1, 'stainType': 'HE', 'techOrderId': rs})
@@ -492,7 +497,7 @@ assert_progress(sA, rs, 'STAINED', '已染色待确认', 2, 2)
 done = ok(api('PUT', f'/pathology/report/tech-orders/{rs}/done', {}), '完成 RESAMPLE')
 assert done.get('progress') == 'DONE' and done.get('warnings') == [], f'{done}'
 assert_progress(sA, rs, 'DONE', '已完成', 2, 2)
-assert_derived(sA, rs, code1, 3, 'HE 染色 ×2')
+assert_derived(sA, rs, code1 + '、' + code2 + '、' + code3, 3, 'HE 染色 ×2')
 r = api('POST', '/pathology/process/grossing', {'specimenId': sA, 'append': True, 'blocks': [{'tissueDesc': 'x'}], 'techOrderId': rs})
 assert r['code'] == 5275 and '待执行' in (r.get('message') or ''), f'已完成的医嘱不能再挂补取材块：{r}'
 assert len(blocks_of(sA)) == 4, '5275 不加块'
@@ -505,7 +510,7 @@ assert_progress(sA, rs2, 'PENDING_SECTION', '待切片', 0, 0)
 assert_derived(sA, rs2, None, 0, None)
 assert '补取材医嘱' not in str([x for x in trail(sA)['nodes'] if x.get('node') == 'GROSSING'][-1].get('remark')), '不挂接的节点备注不提医嘱'
 print('[2] 2563 尾 OK（**append=true 带 techOrderId → 新块 tech_order_id=医嘱、医嘱 block_id 回写首块、GROSSING 备注带医嘱、'
-      '三处进度 SAMPLED、blocks_derived=首块码、sampled_block_count=2→3** / **IHC · 他标本 · 已取消 · 不存在四路 5275 零写入** / '
+      '三处进度 SAMPLED、blocks_derived 列出补出的每一块、sampled_block_count=2→3** / **IHC · 他标本 · 已取消 · 不存在四路 5275 零写入** / '
       '**append=false 带 techOrderId 5222 零写入** / 未指定蜡块的 IHC 从挂接切片派生 blocks_derived / '
       '**attached_stain_name 中文「免疫组化 CK20 ×2」「HE 染色 ×2」、attached_stain 英文不动** / '
       '首块与补出的第 2 块可挂片、blockA 仍 5272、IHC 片 5274 / SECTIONING → STAINED → DONE / 已完成再挂 5275 / 旧路径照旧）')
