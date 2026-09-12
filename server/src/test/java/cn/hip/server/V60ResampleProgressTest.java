@@ -173,9 +173,12 @@ class V60ResampleProgressTest {
                 "GROSSING 备注应带块数、补取材医嘱#id 与备注，实际：" + remark);
         assertRecent(node.get("occurred_at"), "GROSSING.occurred_at");
 
-        // 修复前反向事实：进度恒「待切片」——现在两个清单分支都是 SAMPLED；block_id 已回写 → 「蜡块」列取其块码
+        // 修复前反向事实：进度恒「待切片」——现在两个清单分支都是 SAMPLED。
+        // 「蜡块」列须列出**为本医嘱补出的每一块**：v60 复核时两个独立反驳者指出旧写法
+        // coalesce(b.block_code, union…) 被回写的 block_id 短路，补出 N 块只显示第 1 块，
+        // 而同一行 sampled_block_count 是 N——同屏自相矛盾。改并集后两块都在。
         assertProgress(rs, "SAMPLED", "已补取材待切片", 0, 0);
-        assertDerived(rs, code1, 2, null);
+        assertDerived(rs, code1 + "、" + code2, 2, null);
         // 刚下达的返回体仍是 PENDING_SECTION（此时不可能有块）——既有契约不动
         assertEquals("PENDING_SECTION", ok(report.createTechOrder(new TechOrderReq(a, null, "RESAMPLE", null, null), doc1)).get("progress"));
 
@@ -184,16 +187,17 @@ class V60ResampleProgressTest {
         assertEquals(Boolean.FALSE, gr2.get("techOrderBlockBackfilled"), "block_id 已非空：不覆盖");
         assertEquals(nb1, orderBlockId(rs));
         long nb3 = idOf(rows(gr2, "blocks").get(0));
+        String code3 = blockCode(nb3);
         assertEquals(rs, blockTechOrderId(nb3));
         assertProgress(rs, "SAMPLED", "已补取材待切片", 0, 0);
-        assertDerived(rs, code1, 3, null);
+        assertDerived(rs, code1 + "、" + code2 + "、" + code3, 3, null);
 
         // 切片挂接：首块（医嘱回写的 block_id）→ SECTIONING；为该医嘱补出的第 2 块也可挂（v60 放宽 5272 一档）
         var s1 = rows(ok(process.slides(new SlideReq(nb1, 1, "HE", null, null, rs), doc1)), "slides");
         assertProgress(rs, "SECTIONING", "切片中", 1, 0);
         var s2 = rows(ok(process.slides(new SlideReq(nb2, 1, "HE", null, null, rs), doc1)), "slides");
         assertProgress(rs, "SECTIONING", "切片中", 2, 0);
-        assertDerived(rs, code1, 3, "HE 染色 ×2");
+        assertDerived(rs, code1 + "、" + code2 + "、" + code3, 3, "HE 染色 ×2");
         // 既非医嘱指定块、也非为它补出的块：仍 5272，一张片不插
         var bad = process.slides(new SlideReq(blockA, 1, "HE", null, null, rs), doc1);
         assertEquals(5272, bad.getCode(), bad.getMessage());

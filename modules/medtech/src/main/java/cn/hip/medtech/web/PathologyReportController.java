@@ -168,8 +168,13 @@ public class PathologyReportController {
      * {@code b} 为 {@code left join path_block b on b.id = t.block_id}），紧跟在 select 列表里用、末尾自带逗号：
      * <ul>
      *   <li>{@code sampled_block_count}：{@code path_block.tech_order_id = t.id} 的蜡块数（补取材已出块，V167）；</li>
-     *   <li>{@code blocks_derived}：「蜡块」列的派生文本——{@code block_id} 非空取其 block_code；否则取挂接蜡块与挂接切片所在块的
-     *       block_code 去重、按块号「、」相连；都没有为 NULL；</li>
+     *   <li>{@code blocks_derived}：「蜡块」列的派生文本——<b>三个来源的并集</b>：下达时指定的 {@code block_id}、
+     *       为本医嘱补出的蜡块（{@code path_block.tech_order_id = t.id}）、挂接切片所在块；block_code 去重后按块号「、」相连，
+     *       都没有为 NULL。<b>v60 复核修补</b>：此前写作 {@code coalesce(b.block_code, union…)}，而 v60 的补取材会把医嘱
+     *       {@code block_id} 回写为本次首块（见 {@code PathologyProcessController.grossing} 的 append 分支），于是 coalesce
+     *       一见非空就短路——补出 N 块只显示第 1 块，而同一行 {@code sampled_block_count} 是 N，同屏自相矛盾，
+     *       且没有任何其它页面能补回缺的块码（2563 的两个独立反驳者同时指出）。改为并集后：v57「下达时指定蜡块」
+     *       场景并集只有一行、输出逐字不变；v60 补取材场景 N 块全列出，与 {@code sampled_block_count} 对得上；</li>
      *   <li>{@code attached_stain_name}：挂接切片染色的中文汇总（与 {@code attached_stain} 同一去重计数，
      *       染色类型按 PathQcController SLIDE_QUALITY 的 stain_name 口径译中文：HE→HE 染色 / IHC→免疫组化 / SPECIAL→特殊染色 /
      *       其余→分子病理），如「免疫组化 CK7 ×2」，多组「、」相连，无挂接为 NULL。</li>
@@ -178,14 +183,15 @@ public class PathologyReportController {
      */
     public static final String TECH_DERIVED_COLUMNS = """
                        (select count(*) from path_block pb where pb.tech_order_id = t.id) as sampled_block_count,
-                       coalesce(b.block_code,
-                                (select string_agg(x.block_code, '、' order by x.block_no, x.block_code)
-                                   from (select pb.block_code, pb.block_no
-                                           from path_block pb where pb.tech_order_id = t.id
-                                         union
-                                         select b2.block_code, b2.block_no
-                                           from path_slide sl join path_block b2 on b2.id = sl.block_id
-                                          where sl.tech_order_id = t.id) x)) as blocks_derived,
+                       (select string_agg(x.block_code, '、' order by x.block_no, x.block_code)
+                          from (select b.block_code, b.block_no where b.id is not null
+                                union
+                                select pb.block_code, pb.block_no
+                                  from path_block pb where pb.tech_order_id = t.id
+                                union
+                                select b2.block_code, b2.block_no
+                                  from path_slide sl join path_block b2 on b2.id = sl.block_id
+                                 where sl.tech_order_id = t.id) x)            as blocks_derived,
                        (select string_agg(case g.stain_type when 'HE' then 'HE 染色' when 'IHC' then '免疫组化'
                                                             when 'SPECIAL' then '特殊染色' else '分子病理' end
                                           || coalesce(' ' || g.stain_item, '') || ' ×' || g.n::text, '、'
