@@ -4,16 +4,21 @@
 仍有同名同号风险时请先补全证件号。
 CSV 列：姓名,证件号,手机号,住址,医保类型   （表头必须为这五列，见 migrate-templates/patients.csv）
 用法：python tools/import-patients.py <csv路径> [接口地址]
+接口地址取值优先级：命令行第 2 参 > 环境变量 HIP_E2E_BASE > http://localhost:8080/api。
+**为什么认 HIP_E2E_BASE**：本脚本被 e2e-phase1821 以子进程调用，而 E2E 全家都用该变量指向被测实例；
+此前只认命令行参数，在非 8080 端口的实例上跑（如全新库验收起在 8085）必然连不上 8080 而整套失败——
+CI 恰好把服务起在 8080 才一直没暴露。
 """
 import csv
 import json
+import os
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 
 src = sys.argv[1]
-base = sys.argv[2] if len(sys.argv) > 2 else 'http://localhost:8080/api'
+base = sys.argv[2] if len(sys.argv) > 2 else os.environ.get('HIP_E2E_BASE', 'http://localhost:8080/api')
 
 
 def call(method, path, body=None, token=None):
