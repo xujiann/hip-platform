@@ -1513,6 +1513,7 @@ public class PathologyProcessController {
         var revisions = new ArrayList<Map<String, Object>>(revisionRows.size());
         Integer textRevisionSeq = null;
         String lastRevisionSource = null;   // v59 审阅补：字段与文本分叉时，措辞要按最新一版是谁改的来写
+        boolean lastIsAppend = false;       // v61（2530 复核）：最新一版是补取材追加——文本累积、字段只覆盖这一次
         for (var r : revisionRows) {
             var m = new LinkedHashMap<String, Object>();
             m.put("seq", r.get("seq"));
@@ -1527,6 +1528,9 @@ public class PathologyProcessController {
             revisions.add(m);
             if (r.get("seq") instanceof Number n) textRevisionSeq = n.intValue();   // 按 seq 升序，最后一条即最大
             lastRevisionSource = String.valueOf(r.get("source"));
+            // v61（2530 复核）：最新一版是不是「补取材追加」——source=GROSSING 且 old_text 非空即是。
+            // 追加时文本是**累积全文**（旧文本 + 「。补取材：」+ 本次），而字段行只落本次那几项。
+            lastIsAppend = "GROSSING".equals(r.get("source")) && r.get("old_text") != null;
         }
 
         // v60（2530 尾，被取代版本的结构化字段可调阅）：全部版本的字段行按 revision_seq 归组——
@@ -1585,10 +1589,20 @@ public class PathologyProcessController {
         body.put("fields", fields);
         body.put("fieldsRevisionSeq", fields.isEmpty() ? null : fieldsRevisionSeq);   // v59：fields 属于哪一版
         body.put("textRevisionSeq", textRevisionSeq);                                   // v59：文本的最新版号（无修订为 null）
-        boolean fieldsCurrent = !fields.isEmpty() && fieldsRevisionSeq != null && fieldsRevisionSeq.equals(textRevisionSeq);
+        // v61（2530 复核）：补取材追加时字段版号与文本版号**相等**（都是这一版），此前据此判 fieldsCurrent=true——
+        // 而文本是累积全文、字段行只覆盖最后那一次追加，等于把「覆盖不全」标成「与当前文本同版」，
+        // 口径与事实相反（复核者原话：「且没有任何一处能调阅出与当前全文对应的完整结构化记录」）。
+        // 现在追加一律判 false，并由 fieldsNote 说清；要看全量结构化记录走 fieldsByRevision（各版都在）。
+        boolean sameSeq = !fields.isEmpty() && fieldsRevisionSeq != null && fieldsRevisionSeq.equals(textRevisionSeq);
+        boolean fieldsCurrent = sameSeq && !lastIsAppend;
         body.put("fieldsCurrent", fieldsCurrent);
+        body.put("textIsCumulative", lastIsAppend);   // v61：当前文本是累积全文（补取材追加），不是某一版字段的拼装结果
         // v59 审阅补：分叉原因不只「被诊断修订」——取材修订或补取材追加只写自由文本时，字段行留在上一版，措辞不能写死
-        body.put("fieldsNote", fieldsStaleNote(fields.isEmpty(), fieldsCurrent, fieldsRevisionSeq, textRevisionSeq, lastRevisionSource));
+        body.put("fieldsNote", lastIsAppend && sameSeq
+                ? "当前大体所见是**累积全文**（含第 " + fieldsRevisionSeq + " 版之前各次取材/追加的内容），"
+                  + "而字段级记录只覆盖第 " + fieldsRevisionSeq + " 版这一次补取材；"
+                  + "要看各版完整的结构化记录请切换版本（各版字段都在）"
+                : fieldsStaleNote(fields.isEmpty(), fieldsCurrent, fieldsRevisionSeq, textRevisionSeq, lastRevisionSource));
         body.put("fieldsByRevision", fieldsByRevision);   // v60：全部版本的字段行（revisionSeq 升序、每版 fields 按 seq；无字段行为 []）
         body.put("revisions", revisions);
         body.put("diagnosedAt", head.get("diagnosed_at"));
@@ -1601,7 +1615,10 @@ public class PathologyProcessController {
                 + "diagnosedAt 是诊断时刻，请自行对时间线。"
                 + "fields 是按入参顺序落库的字段行（v58，V164 起），只回最大 revision_seq 中有字段行的那一版（v59，V166 起），"
                 + "fieldsAvailable=false 即无字段行（历史标本或纯自由文本），不从 grossFinding 反解析；"
-                + "fieldsRevisionSeq / textRevisionSeq 分别是字段与文本的版号，fieldsCurrent=false 表示文本已被诊断修订、以文本为准；"
+                + "fieldsRevisionSeq / textRevisionSeq 分别是字段与文本的版号；fieldsCurrent=false 表示字段级记录覆盖不全当前文本"
+                + "（文本被诊断修订过，或当前文本是补取材追加的累积全文而字段只覆盖最后一次追加——后者由 textIsCumulative 标出，"
+                + "v61 复核修补：此前两版号相等即判 true，把「覆盖不全」标成「与当前文本同版」，口径与事实相反），"
+                + "两种情形都以文本为准、要看完整结构化记录走 fieldsByRevision；"
                 + "revisions 是该列的修订留痕，按 seq 升序，sourceName 是来源中文名，templateCode 是本次所用模板码；"
                 + "fieldsByRevision 是全部版本的字段行（v60：被取代版本可调阅），revisionSeq 升序、每版 fields 按 seq、无字段行的版本 fields=[]。");
         return R.ok(body);

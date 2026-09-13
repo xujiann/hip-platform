@@ -273,6 +273,24 @@
       <template v-if="showGrossInputs">
         <el-form-item v-for="f in grossFields" :key="f" :label="f">
           <el-input v-model="form.gross[f]" maxlength="300" show-word-limit />
+          <!-- v61（2530 复核）：本次自己加的字段可以删；模板自带的不给删（删了下次换模板又回来，徒增困惑） -->
+          <el-button v-if="customFields.includes(f)" link type="danger" size="small"
+                     style="margin-left: 6px" @click="removeCustomField(f)">删除</el-button>
+        </el-form-item>
+
+        <!-- v61（2530 复核）：此前字段名集合是封闭的——输入框只按「模板字段 ∪ 已填键」渲染，
+             全页唯一的「增加」按钮是加蜡块，没有任何自定义字段名入口；模板清单又只能由运维直改 sys_config。
+             于是「模板里没有『淋巴结清扫组数』这一项怎么办」的唯一答案是写进自由描述，
+             即回落成一段非结构化文本——正是「确保描述内容的结构化存储」要消灭的形态。
+             后端 assembleGross 本就支持任意字段名（20 项 / 32 字 / trim 后不得重名），是典型的「只做了后端」。 -->
+        <el-form-item label="添加字段">
+          <el-input v-model="newFieldName" size="small" maxlength="32" show-word-limit
+                    style="width: 240px" placeholder="模板里没有的项，在这里加"
+                    @keyup.enter="addCustomField" />
+          <el-button size="small" style="margin-left: 6px" @click="addCustomField">添加</el-button>
+          <span class="muted" style="margin-left: 8px">
+            本次取材内有效，不写回模板；共 {{ grossFields.length }} 项（上限 20），字段名 32 字内、不得与已有项重名
+          </span>
         </el-form-item>
 
         <el-form-item label="自由描述">
@@ -439,6 +457,32 @@ const grossFields = computed<string[]>(() => {
   return out
 })
 
+/* ---------------- v61（2530 复核）：自定义字段名 ----------------
+ * 反驳者原话：「结构化字段的字段名集合是封闭的……没有任何自定义字段名的入口；模板字段清单只能由运维直改
+ * sys_config。于是评委现场问『模板里没有淋巴结清扫组数这一项怎么办』，唯一答案是写进自由描述——即回落成
+ * 一段非结构化文本，正是参数摘要『确保描述内容的结构化存储』要消灭的形态。后端明明支持任意 label，
+ * 前端却不给录入口，这是『只做了后端 / 演示走不完』的典型。」
+ * 校验口径与后端 assembleGross 同源（20 项 / 32 字 / trim 后不得重名），**不新开一套**：
+ * 前端先拦是为了当场给话，真正的守门仍在后端（越界 5222、自定义字段名本身非法 5276）。 */
+const newFieldName = ref('')
+const customFields = ref<string[]>([])
+
+function addCustomField() {
+  const name = newFieldName.value.trim()
+  if (!name) return ElMessage.warning('字段名不能为空')
+  if (name.length > 32) return ElMessage.warning('字段名最多 32 字')
+  if (grossFields.value.some((f) => f.trim() === name)) return ElMessage.warning(`已有「${name}」这一项`)
+  if (grossFields.value.length >= 20) return ElMessage.warning('大体描述字段最多 20 项')
+  form.gross[name] = ''
+  customFields.value.push(name)
+  newFieldName.value = ''
+}
+
+function removeCustomField(name: string) {
+  delete form.gross[name]
+  customFields.value = customFields.value.filter((f) => f !== name)
+}
+
 /** 换模板：同名字段保留已填值，不在新模板里但已填了内容的字段也保留——悄悄吞掉用户写的字比多显示一个输入框坏得多 */
 function onTemplateChange() {
   const kept = { ...form.gross }
@@ -553,6 +597,8 @@ function openGrossing(row: Row) {
   existingGross.value = ''
   existingTextSeq.value = null
   revisePrefillNote.value = ''
+  newFieldName.value = ''
+  customFields.value = []   // v61：上次的自定义字段名不能带到这次，否则「删除」按钮挂在别的标本的字段上
   dialog.value = true
   void loadExistingGross(Number(row.id))
   void loadResampleOrders(Number(row.id))   // v60：勾「补取材」后可挂接的 RESAMPLE 医嘱，先取好、不让人勾了再等
@@ -620,6 +666,10 @@ async function openRevise(row: Row) {
     : '当前文本不是由库里最新字段直接拼出的形态（如经补取材追加、或只有自由文本），已整段放入自由描述、字段留空；如需字段化请自行拆分'
   existingGross.value = text
   existingTextSeq.value = d.textRevisionSeq ?? null
+  newFieldName.value = ''
+  // v61：预填自库里字段行的项都算「已有字段」，本次没加过自定义项——不给删除按钮，
+  // 免得一键删掉上一版录进去的字段却以为只是去掉一个输入框
+  customFields.value = []
   dialog.value = true
 }
 

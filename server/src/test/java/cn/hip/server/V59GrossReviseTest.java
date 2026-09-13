@@ -355,7 +355,12 @@ class V59GrossReviseTest {
         var view = ok(process.grossingView(f.id()));
         assertEquals(2, ((Number) view.get("fieldsRevisionSeq")).intValue());
         assertEquals(2, ((Number) view.get("textRevisionSeq")).intValue());
-        assertEquals(Boolean.TRUE, view.get("fieldsCurrent"));
+        // v61（2530 复核）：追加场景一律 fieldsCurrent=false——文本是累积全文（第 1 版 + 「。补取材：」+ 第 2 版），
+        // 而字段行只覆盖第 2 版这一次；此前两版号相等就判 true，把「覆盖不全」标成「与当前文本同版」，口径与事实相反。
+        assertEquals(Boolean.FALSE, view.get("fieldsCurrent"), "追加后字段只覆盖最后一次，不算与全文同版");
+        assertEquals(Boolean.TRUE, view.get("textIsCumulative"), "当前文本是累积全文");
+        assertTrue(String.valueOf(view.get("fieldsNote")).contains("累积全文"),
+                "口径要说清：" + view.get("fieldsNote"));
         assertEquals(List.of("块数", "最大径"), labels(rows(view, "fields")));
         assertEquals("补取材追加", rows(view, "revisions").get(1).get("sourceName"),
                 "GROSSING 且带原文的是追加，不叫「首写」");
@@ -390,7 +395,10 @@ class V59GrossReviseTest {
         assertEquals(List.of("块数", "最大径"), labels(fieldRowsOfRevision(legacy.id(), 1)));
         var lv = ok(process.grossingView(legacy.id()));
         assertEquals(1, ((Number) lv.get("fieldsRevisionSeq")).intValue());
-        assertEquals(Boolean.TRUE, lv.get("fieldsCurrent"));
+        // v61（2530 复核）：历史标本（V164 前只有一段文本、无字段行）首次补取材追加后，
+        // 当前文本 = 那段历史文本 + 「。补取材：」+ 本次——同样是累积全文，字段只覆盖本次这一版
+        assertEquals(Boolean.FALSE, lv.get("fieldsCurrent"), "追加后字段覆盖不全当前文本");
+        assertEquals(Boolean.TRUE, lv.get("textIsCumulative"));
 
         // 已诊断标本的补取材（RESAMPLE）：诊断空白保留原值 → append=true 带描述 → 新版本；这正是修复前没有任何入口的场景
         Fixture fd = specimenWithGross("E3", g1, free1);
