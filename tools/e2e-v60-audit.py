@@ -729,10 +729,49 @@ assert backend_label('issued') == '签发份数', '流量列的中文不动（�
 assert backend_label('in_progress') == '本期登记中在办' and backend_label('stage') == '办理阶段' and zh_label('blocks_derived') == '关联蜡块', '契约措辞'
 assert zh_label('attached_stain') == zh_label('attached_stain_name') == '挂接切片染色', '编码版与中文版同一个表头叫法'
 assert backend_label('zz_probe_none') is None and zh_label('zz_probe_none') is None, '探针：不存在的键两侧都解析不出'
+
+# ---------------------------------------------------------------------------
+# v62（2576 复核）：同一块看板上两个「蜡块数」正名 + 按日归集可回溯变动写进 caveat
+#   修复前：WORKLOAD_BLOCK 的 blocks（count(*)，锚 coalesce(embedded_at, created_at)）与 WORKLOAD_SLIDE 的
+#   blocks（count(distinct block_id)，锚 coalesce(stained_at, created_at)）同名同中文「蜡块数」，同页顺序渲染；
+#   同型的还有 molecular（登记总量数标本类别、切片产出数染色类型）。两处 caveat 一个字没提。
+# ---------------------------------------------------------------------------
+_blk = ok(api('GET', f'/path-qc/indicators?indicator=WORKLOAD_BLOCK&from={f_}&to={to_}'), '质控 WORKLOAD_BLOCK')['indicators'][0]
+_sld = ok(api('GET', f'/path-qc/indicators?indicator=WORKLOAD_SLIDE&from={f_}&to={to_}'), '质控 WORKLOAD_SLIDE')['indicators'][0]
+_reg_rows = reg_ind.get('rows') or []
+_blk_rows, _sld_rows = _blk.get('rows') or [], _sld.get('rows') or []
+assert _blk_rows and _sld_rows and _reg_rows, f'本套已造蜡块与切片，三条指标都该有行：{len(_blk_rows)}/{len(_sld_rows)}/{len(_reg_rows)}'
+_blk_cols, _sld_cols, _reg_cols = set(_blk_rows[0]), set(_sld_rows[0]), set(_reg_rows[0])
+assert 'blocks_produced' in _blk_cols and 'blocks' not in _blk_cols, f'**WORKLOAD_BLOCK 的蜡块数列已正名**：{sorted(_blk_cols)}'
+assert 'blocks_stained' in _sld_cols and 'blocks' not in _sld_cols, f'**WORKLOAD_SLIDE 的蜡块数列已正名**：{sorted(_sld_cols)}'
+assert 'molecular_slides' in _sld_cols and 'molecular' not in _sld_cols, f'**切片产出的分子病理列已正名**：{sorted(_sld_cols)}'
+assert 'molecular_specimens' in _reg_cols and 'molecular' not in _reg_cols, f'**登记总量的分子病理列已正名**：{sorted(_reg_cols)}'
+# 修复前 BLOCK∩SLIDE = {stat_day, blocks}、REGISTER∩SLIDE = {stat_day, molecular}；正名后只剩日期这一列真同义
+for _a, _b, _an, _bn in ((_blk_cols, _sld_cols, 'WORKLOAD_BLOCK', 'WORKLOAD_SLIDE'),
+                         (_reg_cols, _sld_cols, 'WORKLOAD_REGISTER', 'WORKLOAD_SLIDE'),
+                         (_reg_cols, _blk_cols, 'WORKLOAD_REGISTER', 'WORKLOAD_BLOCK')):
+    assert _a & _b == {'stat_day'}, f'**{_an} 与 {_bn} 除日期外不得有同名列**（同名即同一个中文表头两个口径）：{sorted(_a & _b)}'
+assert (_blk['summary'] or {}).get('blocks_produced') is not None and (_sld['summary'] or {}).get('molecular_slides') is not None, \
+    f'汇总行同步正名：{_blk.get("summary")} / {_sld.get("summary")}'
+for _k, _zh in (('blocks_produced', '当日产出蜡块数'), ('blocks_stained', '当日染色涉及蜡块数(去重)'),
+                ('molecular_slides', '分子病理切片数(染色类型)'), ('molecular_specimens', '分子病理标本数(标本类别)')):
+    assert backend_label(_k) == _zh and zh_label(_k) == _zh, f'**{_k} 前后端中文逐字一致**：后端 {backend_label(_k)!r} 前端 {zh_label(_k)!r}'
+assert backend_label('blocks_produced') != backend_label('blocks_stained'), '两个「蜡块数」的中文必须互不相同（修复前同为「蜡块数」）'
+# caveat 必须写明「按日数事后会变、历史报表不可复现」（修复前只写了「回落建档时刻」）
+for _ind, _who in ((_blk, 'WORKLOAD_BLOCK'), (_sld, 'WORKLOAD_SLIDE')):
+    _cv = str(_ind.get('caveat'))
+    assert '同一个已关闭区间' in _cv and '不可复现' in _cv, f'**{_who} caveat 须写明按日数事后会变、不可复现**（修复前一个字没提）：{_cv[:200]!r}'
+assert '不可复现' not in str(reg_ind.get('caveat')), '对照组：WORKLOAD_REGISTER 锚 collected_at 不会事后迁移，不得跟着抄这句'
+# CSV 表头：两张表不能再各出一个孤零零的「蜡块数」字段
+for _code, _want in (('WORKLOAD_BLOCK', '当日产出蜡块数'), ('WORKLOAD_SLIDE', '当日染色涉及蜡块数(去重)')):
+    _t = csv_text(f'/path-qc/indicators.csv?indicator={_code}&from={f_}&to={to_}')
+    _hdr = next(ln for ln in _t.splitlines()[3:] if ln.strip()).split(',')
+    assert _want in _hdr and '蜡块数' not in _hdr, f'**{_code} 汇总 CSV 表头正名且不再有裸「蜡块数」字段**：{_hdr}'
 print('[3] 2576 尾 OK（**三部位（一拒收）：第 1 部位签发 orderExecuted=false、partsPending=1、医生站仍 CHARGED；中途仍可登记第 4 部位；'
       '第 2 部位签发 → EXECUTED、partsPending=0** / 重复 · 拒收部位签发 5261 / EXECUTED 后登记 5201 / 单部位签发即 EXECUTED / '
       f'**WORKLOAD_DEPT 本科室行 {mine}、与 WORKLOAD_REGISTER 同分母、穿透按 dept 过滤且 stage 三态、CSV 表头中文** / '
-      '**后端 caveats · coverage note 原样带 **（事实），mdText 规则回放后零星号；PathQcView 九个口径绑定全经 mdText、无 v-html** / ZH ⊇ zh()）')
+      '**后端 caveats · coverage note 原样带 **（事实），mdText 规则回放后零星号；PathQcView 九个口径绑定全经 mdText、无 v-html** / ZH ⊇ zh() / '
+      '**两个「蜡块数」正名 blocks_produced · blocks_stained、molecular 正名 _specimens · _slides、三指标除日期外零同名列、BLOCK · SLIDE caveat 写明按日数事后会变不可复现**）')
 
 # ===========================================================================
 # 4) 边界：V167 零回填——剥注释后无顶层 update / insert 形态；对照组 V22:40 / V161 抓得到；探针证明扫描器在咬

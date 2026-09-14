@@ -398,7 +398,11 @@ public class PathQcController {
                 + " 分母口径：registered 是当日登记的**标本条数**，不是申请单数——"
                 + "多部位送检一份申请对应多条标本（V144 的 (来源, part_no) 唯一），"
                 + "这正是病理科的真实工作量单位。rejected 一列是当日登记的标本里**后来**被拒收的条数"
-                + "（按登记日归集，不是按拒收日），要看「本期拒了多少」请走 PROCESS_TAT 的 REJECT 节点。");
+                + "（按登记日归集，不是按拒收日），要看「本期拒了多少」请走 PROCESS_TAT 的 REJECT 节点。"
+                + " molecular_specimens 数的是 specimen_type='MOLECULAR' 的**标本条数**，"
+                + "与 WORKLOAD_SLIDE 的 molecular_slides（stain_type='MOLECULAR' 的**切片张数**，锚染色时刻）"
+                + "**既不同分母也不同锚点**，两个数不相等是正常的，不是对不上账"
+                + "（v62 复核修补：此前两列都叫 molecular、中文都叫「分子病理」，并排显示在同一块看板上）。");
 
         // v60（2576-②）：科室维度——此前 dept_name 只在穿透明细里，六条 WORKLOAD_* 汇总行没有一条按送检科室分组
         def("WORKLOAD_DEPT", "送检科室工作量",
@@ -415,15 +419,53 @@ public class PathQcController {
                 + "要这个口径须另开指标，本版不做（不写代码就不占码）。"
                 + "三列之和等于 registered：签发端点拒绝已拒收标本、拒收端点拒绝已诊断标本，两态互斥。");
 
+        // v62（2576 复核）：blocks → blocks_produced。此前本指标的 blocks（count(*) from path_block、锚
+        // coalesce(embedded_at, created_at)）与 WORKLOAD_SLIDE 的 blocks（count(distinct block_id)、锚
+        // coalesce(stained_at, created_at)）同名同中文「蜡块数」，两个指标在同一页顺序渲染——演示数据下
+        // 一屏之内就是「蜡块数 6」与「蜡块数 3」两个数，页面上没有一行字能回答「到底做了几块」（复核者原话，主控实测坐实）。
+        // 同时补写「按日数事后会变」：未包埋的蜡块拿 created_at 顶替 embedded_at 先算进取材日，包埋登记一落
+        // 就从取材日消失、跳到包埋日——同一个已关闭区间今天导与明天导不一样，此前 caveat 一个字没提。
         def("WORKLOAD_BLOCK", "蜡块产出数（按日）",
                 "coalesce(path_block.embedded_at, created_at)",
                 "按蜡块**包埋时刻**归集（未录包埋时刻的回落建档时刻）", WORKLOAD_NOTE
+                + " blocks_produced（当日产出蜡块数）是 count(*) from path_block、锚"
+                + " coalesce(embedded_at, created_at)：这一天**产出**了几块蜡块。"
+                + "WORKLOAD_SLIDE 那张表里另有一列 blocks_stained（当日染色涉及蜡块数，去重），"
+                + "是 count(distinct block_id)、锚 coalesce(stained_at, created_at)：这一天染出来的切片**来自**几块蜡块。"
+                + "**两列都是「蜡块数」，但一个 count(*)、一个 count(distinct)，锚点也不同**——"
+                + "同一天两行并排时两个数不相等是正常的（取材 2 块、只从其中 1 块切片，产出 2 / 涉及 1），"
+                + "不是对不上账（v62 复核修补：此前两列都叫 blocks、中文都叫「蜡块数」）。"
                 + " blocks_per_specimen 是当日蜡块数 / 当日涉及标本数，"
-                + "**不是「每份标本平均取几块」**——同一标本的蜡块可能跨日建，两端分母不同。");
+                + "**不是「每份标本平均取几块」**——同一标本的蜡块可能跨日建，两端分母不同。"
+                + " **按日数事后会变、导出的历史报表不可复现**：未包埋的蜡块（embedded_at 为空）"
+                + "按**建档时刻**暂记，先算进取材那天的产出；等包埋登记落下去，同一块蜡块就从建档日消失、"
+                + "移到包埋日——**同一个已关闭区间今天导与明天导的按日数不一样（某天会变小）**。"
+                + "脱水过夜跨日是病理常规，不是边角情形。embedded 一列是该行里已录包埋时刻的条数，"
+                + "它与 blocks_produced 差得越大，该行后面越可能还会变。"
+                + "本平台**不为此回填包埋时刻**（V144 零回填纪律：宁可少算，不可假算），"
+                + "发出去之前请连同导出时刻一起注明（与 WORKLOAD_DEPT 存量三列同一体例）。");
 
+        // v62（2576 复核）：blocks → blocks_stained、molecular → molecular_slides；并补写按日数事后会变。
+        // 此前本指标的 caveat 只挂了通用 WORKLOAD_NOTE（讲的是「不折算工时」），对这两列零说明。
         def("WORKLOAD_SLIDE", "切片产出数（按日、按染色类型）",
                 "coalesce(path_slide.stained_at, created_at)",
-                "按切片**染色时刻**归集（未录染色时刻的回落建档时刻）", WORKLOAD_NOTE);
+                "按切片**染色时刻**归集（未录染色时刻的回落建档时刻）", WORKLOAD_NOTE
+                + " blocks_stained（当日染色涉及蜡块数，去重）是 count(distinct block_id)、锚"
+                + " coalesce(stained_at, created_at)：这一天染出来的切片**来自**几块蜡块，"
+                + "**不是当日蜡块产出量**——后者是 WORKLOAD_BLOCK 的 blocks_produced"
+                + "（count(*) from path_block、锚 coalesce(embedded_at, created_at)）。"
+                + "两列同在一块看板上、同一天两行并排，数不相等是正常的"
+                + "（v62 复核修补：此前两列都叫 blocks、中文都叫「蜡块数」）。"
+                + " molecular_slides 数的是 stain_type='MOLECULAR' 的**切片张数**，"
+                + "WORKLOAD_REGISTER 的 molecular_specimens 数的是 specimen_type='MOLECULAR' 的**标本条数**，"
+                + "**既不同分母也不同锚点**（v62 复核修补：此前两列都叫 molecular、中文都叫「分子病理」）。"
+                + " **按日数事后会变、导出的历史报表不可复现**：未染色的切片（stained_at 为空）"
+                + "按**建档时刻**暂记，先算进制片那天；等染色登记落下去，同一张切片就从建档日消失、"
+                + "移到染色日——**同一个已关闭区间今天导与明天导的按日数不一样（某天会变小）**，"
+                + "blocks_stained 这一列同理（它按同一锚点去重数蜡块）。stained 一列是该行里已录染色时刻的条数，"
+                + "它与 slides 差得越大，该行后面越可能还会变。"
+                + "本平台**不为此回填染色时刻**（V144 零回填纪律：宁可少算，不可假算），"
+                + "发出去之前请连同导出时刻一起注明（与 WORKLOAD_DEPT 存量三列同一体例）。");
 
         def("WORKLOAD_REPORT", "报告签发量（首次报告 / 补充报告分列）",
                 "path_specimen.report_issued_at 与 path_report.signed_at", ANCHOR_ISSUED,
@@ -836,7 +878,7 @@ public class PathQcController {
                            count(*) filter (where s.specimen_type = 'FROZEN')            as frozen,
                            count(*) filter (where s.specimen_type = 'CYTOLOGY')          as cytology,
                            count(*) filter (where s.specimen_type = 'CONSULT')           as consult,
-                           count(*) filter (where s.specimen_type = 'MOLECULAR')         as molecular,
+                           count(*) filter (where s.specimen_type = 'MOLECULAR')         as molecular_specimens,
                            count(*) filter (where s.specimen_type is null)               as type_unfilled
                     from path_specimen s
                     where {wc}
@@ -864,9 +906,11 @@ public class PathQcController {
                     order by registered desc, 1
                     """, w);
             // args: from, to
+            // v62（2576 复核）：blocks → blocks_produced（count(*)，当日产出）——与 WORKLOAD_SLIDE 的
+            // blocks_stained（count(distinct block_id)，当日染色涉及）此前同名同中文「蜡块数」，并排两个数。
             case "WORKLOAD_BLOCK" -> query("""
                     select coalesce(b.embedded_at, b.created_at)::date                    as stat_day,
-                           count(*)                                                       as blocks,
+                           count(*)                                                       as blocks_produced,
                            count(*) filter (where b.embedded_at is not null)              as embedded,
                            count(distinct b.specimen_id)                                  as specimens,
                            round(count(*)::numeric
@@ -885,8 +929,8 @@ public class PathQcController {
                            count(*) filter (where sl.stain_type = 'HE')                   as he,
                            count(*) filter (where sl.stain_type = 'IHC')                  as ihc,
                            count(*) filter (where sl.stain_type = 'SPECIAL')              as special_stain,
-                           count(*) filter (where sl.stain_type = 'MOLECULAR')            as molecular,
-                           count(distinct sl.block_id)                                    as blocks
+                           count(*) filter (where sl.stain_type = 'MOLECULAR')            as molecular_slides,
+                           count(distinct sl.block_id)                                    as blocks_stained
                     from path_slide sl
                     where {ws}
                     group by 1
@@ -1118,7 +1162,7 @@ public class PathQcController {
                     where {wc}
                     """), w.args());
             case "WORKLOAD_BLOCK" -> one(q("""
-                    select count(*)                                                as blocks,
+                    select count(*)                                                as blocks_produced,
                            count(*) filter (where b.embedded_at is not null)       as embedded,
                            count(distinct b.specimen_id)                           as specimens,
                            round(count(*)::numeric
@@ -1132,7 +1176,7 @@ public class PathQcController {
                            count(*) filter (where sl.stain_type = 'HE')            as he,
                            count(*) filter (where sl.stain_type = 'IHC')           as ihc,
                            count(*) filter (where sl.stain_type = 'SPECIAL')       as special_stain,
-                           count(*) filter (where sl.stain_type = 'MOLECULAR')     as molecular
+                           count(*) filter (where sl.stain_type = 'MOLECULAR')     as molecular_slides
                     from path_slide sl
                     where {ws}
                     """), w.args());
@@ -1746,7 +1790,10 @@ public class PathQcController {
             case "he" -> "HE";
             case "ihc" -> "免疫组化";
             case "special_stain" -> "特殊染色";
-            case "molecular" -> "分子病理";
+            // v62（2576 复核）：molecular 正名成两列——WORKLOAD_REGISTER 数的是标本类别 MOLECULAR 的标本条数，
+            // WORKLOAD_SLIDE 数的是染色类型 MOLECULAR 的切片张数；此前两列同名同中文「分子病理」
+            case "molecular_slides" -> "分子病理切片数(染色类型)";
+            case "molecular_specimens" -> "分子病理标本数(标本类别)";
             // 蜡块
             case "block_id" -> "蜡块ID";
             case "block_code" -> "蜡块编码";
@@ -1756,7 +1803,13 @@ public class PathQcController {
             case "dehydrate_batches" -> "脱水篮批次数";
             case "embedded_at" -> "包埋时刻";
             case "embedded_by_name" -> "包埋人";
-            case "blocks" -> "蜡块数";
+            // v62（2576 复核）：blocks 正名成两列——WORKLOAD_BLOCK 是 count(*)（当日产出），
+            // WORKLOAD_SLIDE 是 count(distinct block_id)（当日染色涉及、去重）；此前两列同名同中文「蜡块数」，
+            // 演示数据下一屏之内就是 6 与 3 两个数。覆盖率段（coverage()）里也有两个裸 blocks 键，
+            // 但那一段是 JSON-only、表头走前端 ZH 且各在自己的小标题下（「蜡块（按包埋时刻落窗）」/
+            // 「切片（按染色时刻落窗）」），不进 CSV、不经本方法——本方法只登记确实出现在 rowsOf / detailRows 别名里的键。
+            case "blocks_produced" -> "当日产出蜡块数";
+            case "blocks_stained" -> "当日染色涉及蜡块数(去重)";
             case "embedded" -> "已确认包埋";
             case "blocks_per_specimen" -> "蜡块/标本";
             case "specimens" -> "涉及标本数";

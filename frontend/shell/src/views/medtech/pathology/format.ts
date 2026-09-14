@@ -376,7 +376,11 @@ const ZH: Record<string, string> = {
   he: 'HE',
   ihc: '免疫组化',
   special_stain: '特殊染色',
-  molecular: '分子病理',
+  // v62（2576 复核）：molecular 正名成两列，中文与后端 zh() 逐字一致——
+  // WORKLOAD_SLIDE 数的是染色类型 MOLECULAR 的切片张数，WORKLOAD_REGISTER 数的是标本类别 MOLECULAR 的标本条数。
+  // 此前两列同名同中文「分子病理」，经这张扁平字典（zh(col) = ZH[col] ?? col，不带指标上下文）渲染成同一个表头。
+  molecular_slides: '分子病理切片数(染色类型)',
+  molecular_specimens: '分子病理标本数(标本类别)',
   // 蜡块
   block_id: '蜡块ID',
   block_code: '蜡块编码',
@@ -388,6 +392,14 @@ const ZH: Record<string, string> = {
   embedded_at: '包埋时刻',
   embedded_by: '包埋人ID',
   embedded_by_name: '包埋人',
+  // v62（2576 复核）：WORKLOAD_BLOCK 的 blocks（count(*)，当日产出）与 WORKLOAD_SLIDE 的 blocks
+  // （count(distinct block_id)，当日染色涉及）此前同名同中文「蜡块数」，并排两行两个数（演示数据下 6 与 3），
+  // 两处 caveat 一个字没提。两列已在后端正名，这里跟着正名、中文与后端 zh() 逐字一致。
+  blocks_produced: '当日产出蜡块数',
+  blocks_stained: '当日染色涉及蜡块数(去重)',
+  // 下面这个裸 blocks 留着是给「本时段字段录入覆盖率」四段用的（coverage 的 blocks / slides 两节各有一个
+  // blocks 列，走 JSON、不进 CSV，各自挂在「蜡块（按包埋时刻落窗）」/「切片（按染色时刻落窗）」小标题下）——
+  // 工作量汇总行已不再有这个键，后端 zh() 也不再登记它。
   blocks: '蜡块数',
   embedded: '已确认包埋',
   embedded_count: '已包埋数',

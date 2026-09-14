@@ -353,7 +353,9 @@ assert m and int(m.group(1)) == 4, f'--count 3 = 3 个阶梯标本 + 固定 1 �
 qc = ok(api('GET', '/path-qc/indicators'), '质控概览（默认时间窗）')
 by = {i.get('code'): i for i in (qc.get('indicators') or [])}
 three = {}
-for code, key in (('WORKLOAD_REGISTER', 'registered'), ('WORKLOAD_BLOCK', 'blocks'), ('WORKLOAD_REPORT', 'issued_reports')):
+# v62（2576 复核）：WORKLOAD_BLOCK.blocks → blocks_produced（与 WORKLOAD_SLIDE 的 blocks_stained 正名分开，
+# 此前两列同名同中文「蜡块数」）。本断言是该列唯二的线上消费方之一，改列名必须同步，否则 .get(key) 恒 None 即红。
+for code, key in (('WORKLOAD_REGISTER', 'registered'), ('WORKLOAD_BLOCK', 'blocks_produced'), ('WORKLOAD_REPORT', 'issued_reports')):
     ind = by.get(code) or {}
     assert ind.get('available') is True, f'{code} 应 available:true：{ind}'
     v = (ind.get('summary') or {}).get(key)
