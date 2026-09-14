@@ -509,11 +509,58 @@ assert tech_row(sA, rs2).get('block_id') is None
 assert_progress(sA, rs2, 'PENDING_SECTION', '待切片', 0, 0)
 assert_derived(sA, rs2, None, 0, None)
 assert '补取材医嘱' not in str([x for x in trail(sA)['nodes'] if x.get('node') == 'GROSSING'][-1].get('remark')), '不挂接的节点备注不提医嘱'
+
+# ---------------------------------------------------------------------------
+# v62（2563 复核第二条）：完成 gate 认「补取材已出块」——三档 gate 下「已出块、未切片」的 RESAMPLE 医嘱都能完成。
+# 修复前 doneTechOrder 的事实查询里根本没有这一列：block 档下补取材医嘱**永远完不成**；warn 档（出厂默认）
+# 放行但把「挂接 0 片 / 已染色 0；无挂接切片（slide_count=0）」永久写进 TECH_DONE 备注——
+# 等于给这条医嘱留下一条「无证据完成」的假账，而证据（已出块 2）就在同一屏的隔壁列。
+# ---------------------------------------------------------------------------
+TECH_DONE_GATE = 'emr.gate.pathology.techdone'
+
+
+def set_gate(v):
+    """抄 e2e-v58-audit.py：PUT /config/{key}?value= 只改既有行（V165 已 seed），配置端点自己 evict 缓存"""
+    ok(api('PUT', f'/config/{TECH_DONE_GATE}?value={v}'), f'置 {TECH_DONE_GATE}={v}')
+
+
+try:
+    for gate in ('off', 'warn', 'block'):
+        set_gate(gate)
+        rsx = tech_order(sA, None, 'RESAMPLE', None, '补切缘 ' + uniq('E'))
+        gx = ok(api('POST', '/pathology/process/grossing',
+                    {'specimenId': sA, 'append': True, 'techOrderId': rsx,
+                     'blocks': [{'tissueDesc': '切缘甲 ' + gate}, {'tissueDesc': '切缘乙 ' + gate}]}),
+                f'{gate}：补取材出两块')
+        assert len(gx['blocks']) == 2, f'{gate} 夹具前提：出两块：{gx}'
+        assert_progress(sA, rsx, 'SAMPLED', '已补取材待切片', 0, 0)
+        dx = ok(api('PUT', f'/pathology/report/tech-orders/{rsx}/done', {}),
+                f'{gate}：补取材已出块即可完成（**修复前 block 档下这条医嘱永远完不成**）')
+        assert dx.get('sampledBlockCount') == 2 and dx.get('slideCount') == 0 and dx.get('stainedCount') == 0, (
+            f'{gate}：三个事实任何档位都算都带：{dx}')
+        assert dx.get('doneGap') is None and dx.get('warnings') == [], f'{gate}：有已出块就不判缺口：{dx}'
+        assert dx.get('stainedComplete') is False, f'{gate}：一张片子都没有，不能报「染色完整」：{dx}'
+        dn = [x for x in trail(sA)['nodes'] if x.get('node') == 'TECH_DONE' and f'#{rsx} ' in (x.get('remark') or '')]
+        assert len(dn) == 1 and '已出块 2 / 挂接 0 片 / 已染色 0' in dn[0]['remark'], (
+            f'{gate}：TECH_DONE 备注须如实写三个事实：{dn}')
+        assert '无挂接切片' not in dn[0]['remark'] and 'slide_count' not in dn[0]['remark'], (
+            f'{gate}：**修复前这里被写进一条「无证据完成」的假账，还带着库列名**：{dn}')
+    # 活的对照组：真的一块一片都没有时 block 档仍拦得住——上面的放行是因为认了蜡块，不是 gate 被整体放空
+    set_gate('block')
+    barex = tech_order(sA, None, 'RESAMPLE', None)
+    rb = api('PUT', f'/pathology/report/tech-orders/{barex}/done', {})
+    assert rb['code'] == 5273 and '既无挂接切片、也无补取材已出块' in (rb.get('message') or ''), f'对照组：{rb}'
+    assert tech_row(sA, barex).get('status') == 'ORDERED', '对照组：被拦后行仍 ORDERED'
+finally:
+    set_gate('warn')
+
 print('[2] 2563 尾 OK（**append=true 带 techOrderId → 新块 tech_order_id=医嘱、医嘱 block_id 回写首块、GROSSING 备注带医嘱、'
       '三处进度 SAMPLED、blocks_derived 列出补出的每一块、sampled_block_count=2→3** / **IHC · 他标本 · 已取消 · 不存在四路 5275 零写入** / '
       '**append=false 带 techOrderId 5222 零写入** / 未指定蜡块的 IHC 从挂接切片派生 blocks_derived / '
       '**attached_stain_name 中文「免疫组化 CK20 ×2」「HE 染色 ×2」、attached_stain 英文不动** / '
-      '首块与补出的第 2 块可挂片、blockA 仍 5272、IHC 片 5274 / SECTIONING → STAINED → DONE / 已完成再挂 5275 / 旧路径照旧）')
+      '首块与补出的第 2 块可挂片、blockA 仍 5272、IHC 片 5274 / SECTIONING → STAINED → DONE / 已完成再挂 5275 / 旧路径照旧 / '
+      '**v62：三档 gate 下「已出块未切片」的补取材医嘱都能完成、TECH_DONE 备注写「已出块 2 / 挂接 0 片 / 已染色 0」，'
+      '真无证据的仍吃 5273**）')
 
 # ===========================================================================
 # 3) 2576 尾：同一申请三部位（第 3 部位拒收）：第 1 部位签发 → 仍 CHARGED、orderExecuted=false、partsPending=1；
@@ -727,7 +774,18 @@ for key in list(rows[0]) + list(summ) + ['stage', 'sampled_block_count', 'blocks
 assert backend_label('issued_of_registered') == '本期登记中已签发', '存量列中文要自带「本期登记中」，与流量列分开'
 assert backend_label('issued') == '签发份数', '流量列的中文不动（对照组：两列不能再同名）'
 assert backend_label('in_progress') == '本期登记中在办' and backend_label('stage') == '办理阶段' and zh_label('blocks_derived') == '关联蜡块', '契约措辞'
-assert zh_label('attached_stain') == zh_label('attached_stain_name') == '挂接切片染色', '编码版与中文版同一个表头叫法'
+# v62（2563 复核第三条）：**后端 CSV 表头**里编码版与中文版必须分得开——此前 zh() 把两个键映射成同一个中文名，
+# 同一份穿透 CSV 里「挂接切片染色」这个表头出现两次，导出后无从分辨哪列是 IHC CK7 ×2、哪列是免疫组化 CK7 ×2。
+assert backend_label('attached_stain_name') == '挂接切片染色', '中文版留原名'
+assert backend_label('attached_stain') == '挂接切片染色编码', '**编码版正名**（修复前与中文版同名）'
+assert backend_label('attached_stain') != backend_label('attached_stain_name'), '对照组：两列在 CSV 表头上必须分得开'
+# 同理 status：穿透行里它是 ORDERED/DONE/CANCELLED，而同一行的 blocks_derived_source 是 ORDERED/DERIVED/MIXED
+assert backend_label('status') == '医嘱状态' and backend_label('blocks_derived_source') == '关联蜡块来源', (
+    '**同一行两个 ORDERED 含义完全相反，表头必须分得开**')
+assert backend_label('tech_name') == '技术类型' and backend_label('tech_type') == '技术类型编码', (
+    '穿透明细的中文技术分类列（修复前中文只存在于汇总行的 case 分支里）')
+# 前端 ZH 的这两个键仍同名：format.ts 本轮归车道 C，屏上靠列位与 cellText 区分，CSV 表头已先正名
+assert zh_label('attached_stain') == zh_label('attached_stain_name') == '挂接切片染色', '前端 ZH 本轮不动'
 assert backend_label('zz_probe_none') is None and zh_label('zz_probe_none') is None, '探针：不存在的键两侧都解析不出'
 print('[3] 2576 尾 OK（**三部位（一拒收）：第 1 部位签发 orderExecuted=false、partsPending=1、医生站仍 CHARGED；中途仍可登记第 4 部位；'
       '第 2 部位签发 → EXECUTED、partsPending=0** / 重复 · 拒收部位签发 5261 / EXECUTED 后登记 5201 / 单部位签发即 EXECUTED / '

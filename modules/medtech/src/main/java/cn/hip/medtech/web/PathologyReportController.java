@@ -124,6 +124,24 @@ import java.util.Set;
  *       同属本条缺陷，但在别的控制器里，本版未动。</li>
  * </ul>
  *
+ * <p><b>v62（2563 复核第二条：完成 gate 认蜡块，与六态派生同口径）</b>：
+ * <ul>
+ *   <li>{@link #doneTechOrder} 的事实查询补 {@code sampled_block_count}（补取材已出块，V167），缺口判定改由
+ *       {@link #techDoneGap} 出——而 {@code techDoneGap} 是直接读 {@link #techProgress} 的六态结果翻译成文字，
+ *       <b>两套口径从此是同一处算的同一件事</b>，不再各写一份。
+ *       <b>修复前的反向事实</b>（v61 复核，主控实测坐实）：同一屏上进度列已写着「已补取材待切片 · 已出块 2」，
+ *       点「完成」时 {@code doneTechOrder} 的事实查询里<b>根本没有这一列</b>，于是判 gap =「无挂接切片（slide_count=0）」：
+ *       warn 档弹告警并把「挂接 0 片 / 已染色 0；无挂接切片」永久写进 TECH_DONE 节点备注（给这条医嘱留下一条
+ *       <b>「无证据完成」的假账，而证据就在隔壁列</b>），block 档下补取材医嘱<b>永远完不成</b>。</li>
+ *   <li>TECH_DONE 节点备注如实写「已出块 N / 挂接 M 片 / 已染色 K」三个事实（此前只写后两个，且缺口文案里
+ *       逐字带着库列名 {@code slide_count=0}——评委在流转节点正文里看到的是内部列名）。</li>
+ *   <li>返回体增 {@code sampledBlockCount}（任何档位都算都带，与 slideCount / stainedCount 同待遇）与
+ *       {@code doneGap}（缺口原文，无缺口为 null——off 档 warnings 为空数组时缺口也有地方可查）。
+ *       {@code stainedComplete} 的<b>取值逐例不变</b>，但定义与 gap 解耦为「有挂接切片且全部已染色」：
+ *       v62 之前它写作 {@code gap == null}，而 SAMPLED（已出块未切片）现在 gap 为 null，
+ *       再挂着这个定义就会把「一张片子都没有」报成「染色完整」。</li>
+ * </ul>
+ *
  * <p><b>错误码 5260–5275</b>（v48 诊断与报告段 5260–5279；5271–5272 v57、5273 v58、5274 v59、5275 v60 已用，5276–5279 空置）：
  * <ul>
  *   <li>5260 标本不存在（全部端点的「查无此标本」同码）</li>
@@ -165,6 +183,8 @@ public class PathologyReportController {
     /**
      * 特检技术医嘱完成校验 gate 配置键（v58，V165 seed，默认 warn）。
      * 默认 warn 而非 block：V163 之前的历史医嘱普遍没有挂接切片（tech_order_id 零回填），直接 block 会让存量医嘱永远完不成。
+     * <p>v62：它管的「缺口」由 {@link #techDoneGap} 算，而后者读的是 {@link #techProgress} 的六态结果——
+     * 补取材已出块（SAMPLED）算执行证据，此前 block 档下这类医嘱永远完不成、warn 档下留一条「无证据完成」的假账。
      */
     public static final String TECH_DONE_GATE_KEY = "emr.gate.pathology.techdone";
 
@@ -895,9 +915,12 @@ public class PathologyReportController {
     /**
      * 完成特检技术医嘱（v58 起带完成校验 gate {@value #TECH_DONE_GATE_KEY}）。
      *
-     * <p>事实与判定分开算（照抄 {@link #issue} 的双签口径）：{@code slideCount}（挂接到该医嘱的切片数）与
-     * {@code stainedCount}（其中 {@code stained_at} 非空的数）<b>任何档位都算、返回体都带</b>；
-     * 缺口 = slideCount == 0，或 stainedCount &lt; slideCount。
+     * <p>事实与判定分开算（照抄 {@link #issue} 的双签口径）：{@code slideCount}（挂接到该医嘱的切片数）、
+     * {@code stainedCount}（其中 {@code stained_at} 非空的数）与 <b>v62 起</b>的 {@code sampledBlockCount}
+     * （{@code path_block.tech_order_id = t.id}，补取材已出块）<b>任何档位都算、返回体都带</b>；
+     * 缺口由 {@link #techDoneGap} 判——<b>既无挂接切片、也无补取材已出块</b>才算无执行证据，
+     * 有片未染完仍算缺口。补取材医嘱出了块就是有执行证据：修复前它在 block 档永远完不成、
+     * 在 warn 档留下「无挂接切片」的假账，而「已出块 2」就写在同一屏的隔壁列。
      * <ul>
      *   <li>block 且有缺口：返 5273，行仍 ORDERED，不写节点；</li>
      *   <li>warn 且有缺口：照常置 DONE，返回体 {@code warnings} 回带，TECH_DONE 节点 remark 写明「gate=warn 放行」——
@@ -920,7 +943,9 @@ public class PathologyReportController {
                 select t.id, t.specimen_id, t.tech_type, t.tech_item, t.status,
                        (select count(*) from path_slide sl where sl.tech_order_id = t.id)          as slide_count,
                        (select count(*) from path_slide sl
-                         where sl.tech_order_id = t.id and sl.stained_at is not null)              as stained_count
+                         where sl.tech_order_id = t.id and sl.stained_at is not null)              as stained_count,
+                       -- v62：补取材已出块（V167）。六态派生早就读它派 SAMPLED，完成 gate 此前不读，两套口径自相矛盾
+                       (select count(*) from path_block pb where pb.tech_order_id = t.id)          as sampled_block_count
                 from path_tech_order t
                 where t.id = ?
                 """, id);
@@ -930,10 +955,10 @@ public class PathologyReportController {
         var f = facts.get(0);
         long slideCount = ((Number) f.get("slide_count")).longValue();
         long stainedCount = ((Number) f.get("stained_count")).longValue();
+        long sampledBlockCount = ((Number) f.get("sampled_block_count")).longValue();
         String label = techLabel(id, f.get("tech_type"), f.get("tech_item"));
-        String gap = slideCount == 0 ? "无挂接切片（slide_count=0）"
-                : stainedCount < slideCount ? "挂接 " + slideCount + " 片中 " + (slideCount - stainedCount) + " 片尚未染色"
-                : null;
+        // v62：缺口与六态派生同一处算（techDoneGap 直接读 techProgress 的结果），不再在这里另写一套两参判定
+        String gap = techDoneGap(f.get("status"), slideCount, stainedCount, sampledBlockCount);
 
         String gate = techDoneGate();
         if (gap != null && "block".equals(gate)) {
@@ -953,14 +978,21 @@ public class PathologyReportController {
                 """, uid, id);
         if (updated.isEmpty()) return R.fail(5268, "特检技术医嘱不存在或不是待执行状态：id=" + id);
 
+        // v62：三个事实都写进备注（此前只有后两个，补取材医嘱的证据「已出块 N」在备注里查不到）
         logProcess(asLong(f.get("specimen_id")), "TECH_DONE", uid,
-                "确认完成特检医嘱 " + label + "，挂接 " + slideCount + " 片 / 已染色 " + stainedCount
+                "确认完成特检医嘱 " + label + "，已出块 " + sampledBlockCount
+                        + " / 挂接 " + slideCount + " 片 / 已染色 " + stainedCount
                         + (gap == null ? "" : "；" + gap + "（gate=" + gate + " 放行）"));
 
         var body = new LinkedHashMap<String, Object>(updated.get(0));
         body.put("slideCount", slideCount);
         body.put("stainedCount", stainedCount);
-        body.put("stainedComplete", gap == null);
+        body.put("sampledBlockCount", sampledBlockCount);
+        // v62：定义与 gap 解耦——「有挂接切片且全部已染色」。逐例取值与 v62 之前的 gap == null 完全相同
+        // （旧 gap 为 null 当且仅当 slides > 0 且 stained == slides），但 SAMPLED 现在 gap 为 null，
+        // 再写 gap == null 就会把「一张片子都没有」报成「染色完整」。
+        body.put("stainedComplete", slideCount > 0 && stainedCount == slideCount);
+        body.put("doneGap", gap);
         body.put("progress", "DONE");
         body.put("progressName", TECH_PROGRESS_NAMES.get("DONE"));
         body.put("techDoneGate", gate);
@@ -1235,6 +1267,28 @@ public class PathologyReportController {
         long sampled = sampledBlockCount instanceof Number n ? n.longValue() : 0L;
         if (slides == 0) return sampled > 0 ? "SAMPLED" : "PENDING_SECTION";
         return stained < slides ? "SECTIONING" : "STAINED";
+    }
+
+    /**
+     * 完成校验的缺口判定（v62，2563 复核第二条）：<b>与六态派生同一处口径</b>——
+     * 直接读 {@link #techProgress} 派出来的进度，再把它翻译成一句「为什么还不能算完成」，
+     * 不在完成端点里另写一套两参判定（v58 的写法与 v60 的六态派生自 v60 起就在同一条医嘱上自相矛盾）。
+     * <ul>
+     *   <li>{@code PENDING_SECTION}（既无挂接切片、也无补取材已出块）→ 无执行证据；</li>
+     *   <li>{@code SECTIONING}（有挂接切片但未全部染色）→ 有缺口，指出还差几片；</li>
+     *   <li>{@code SAMPLED}（补取材已出块、尚未切片）→ <b>有执行证据，不是缺口</b>（v62 改口径处）；</li>
+     *   <li>{@code STAINED} / 其它（非 ORDERED 的状态在完成端点已被 5268 挡住）→ 无缺口。</li>
+     * </ul>
+     * 返回 null 表示可以完成；非 null 是给 5273 消息、warnings 与 TECH_DONE 备注共用的同一句原文。
+     */
+    public static String techDoneGap(Object status, Object slideCount, Object stainedCount, Object sampledBlockCount) {
+        long slides = slideCount instanceof Number n ? n.longValue() : 0L;
+        long stained = stainedCount instanceof Number n ? n.longValue() : 0L;
+        return switch (techProgress(status, slideCount, stainedCount, sampledBlockCount)) {
+            case "PENDING_SECTION" -> "既无挂接切片、也无补取材已出块";
+            case "SECTIONING" -> "挂接 " + slides + " 片中 " + (slides - stained) + " 片尚未染色";
+            default -> null;
+        };
     }
 
     /**

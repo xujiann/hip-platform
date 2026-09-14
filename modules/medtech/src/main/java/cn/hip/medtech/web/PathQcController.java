@@ -174,6 +174,21 @@ public class PathQcController {
     public static final String UNKNOWN_DEPT = "（未知科室）";
 
     /**
+     * v62（2563 复核第三条）：WORKLOAD_TECH 的中文技术分类表达式（以 {@code t} 为 path_tech_order 别名），
+     * 由 {@link #q(String)} 以 <code>{techName}</code> 占位展开——<b>汇总行与穿透明细共用这一份</b>，不各写一段 case。
+     *
+     * <p>修复前：中文只存在于汇总行的 case 分支里，穿透 SQL 只选 {@code t.tech_type}，于是
+     * <b>穿透 CSV 里压根没有中文「技术分类」列</b>，表头却写作「技术类型编码」——屏上靠前端 cellText
+     * 逐列翻译掩盖，导出一离开页面就只剩 DEEP_CUT / IHC。值域与措辞与
+     * {@code PathologyReportController.TECH_TYPE_NAMES}、前端 {@code format.ts} 的 techTypeName 逐字一致。
+     */
+    private static final String TECH_NAME_CASE =
+            "case t.tech_type"
+            + " when 'DEEP_CUT' then '深切' when 'RECUT' then '重切'"
+            + " when 'RESAMPLE' then '补取材' when 'IHC' then '免疫组化'"
+            + " when 'SPECIAL_STAIN' then '特殊染色' else '分子病理' end";
+
+    /**
      * 科室显示名：门诊科室优先、住院科室其次；首尾空白剥掉后为空的视同缺失（sys_dept.name not null 但不禁止空白）。
      * 用 regexp_replace 的 \s 而不是 trim()：PostgreSQL 的 trim() 只剥空格，制表 / 换行会漏成一个「看不见的科室」。
      */
@@ -252,6 +267,7 @@ public class PathQcController {
                 .replace("{unknownDept}", UNKNOWN_DEPT)
                 .replace("{patName}", "coalesce(op.name, ipa.name)")
                 .replace("{typeName}", TYPE_NAME)
+                .replace("{techName}", TECH_NAME_CASE)
                 .replace("{wc}", W_COLLECTED)
                 .replace("{wi}", W_ISSUED)
                 .replace("{ws}", W_SLIDE)
@@ -910,12 +926,9 @@ public class PathQcController {
                     """, w.args());
             case "WORKLOAD_PATHOLOGIST" -> pathologistRows(w);
             // args: from, to
-            case "WORKLOAD_TECH" -> jdbc.queryForList("""
+            case "WORKLOAD_TECH" -> jdbc.queryForList(q("""
                     select t.tech_type,
-                           case t.tech_type
-                               when 'DEEP_CUT'      then '深切'     when 'RECUT'     then '重切'
-                               when 'RESAMPLE'      then '补取材'   when 'IHC'       then '免疫组化'
-                               when 'SPECIAL_STAIN' then '特殊染色' else '分子病理' end        as tech_name,
+                           {techName}                                                         as tech_name,
                            count(*)                                                           as ordered,
                            count(*) filter (where t.status = 'DONE')                          as done,
                            count(*) filter (where t.status = 'ORDERED')                       as pending,
@@ -928,7 +941,7 @@ public class PathQcController {
                     where t.ordered_at >= ?::date and t.ordered_at < ?::date + 1
                     group by t.tech_type
                     order by ordered desc, 1
-                    """, w.args());
+                    """), w.args());
             default -> List.of();
         };
     }
@@ -1411,7 +1424,9 @@ public class PathQcController {
             case "WORKLOAD_PATHOLOGIST" -> pathologistDetail(w);
             case "WORKLOAD_TECH" -> withTechProgress(jdbc.queryForList(q("""
                     select t.id                                  as tech_order_id,
-                           t.tech_type, t.tech_item, t.reason, t.status,
+                           t.tech_type,
+                           {techName}                            as tech_name,
+                           t.tech_item, t.reason, t.status,
                            t.ordered_at, t.done_at,
                            ou.real_name                          as ordered_by_name,
                            du.real_name                          as done_by_name,
@@ -1454,6 +1469,8 @@ public class PathQcController {
      * v59：穿透行的 {@code attached_stain}（挂接切片实际染色类型 / 项目的去重汇总，如「IHC CK7 ×2」）与
      * PathologyReportController.techOrders 同一段子查询——只回事实、不判一致（一致性在挂接时按
      * {@code PathologyProcessController.TECH_TO_STAIN} 判，5274）。
+     * <p>v62：穿透行增中文 {@code tech_name}（与汇总行共用 {@link #TECH_NAME_CASE}，不抄第二份），
+     * 导出的 CSV 从此有一列人读得懂的「技术类型」；{@code tech_type} 编码列照旧保留，两列表头以有无「编码」区分。
      */
     private static List<Map<String, Object>> withTechProgress(List<Map<String, Object>> rows) {
         for (var r : rows) {
@@ -1810,7 +1827,10 @@ public class PathQcController {
             case "tech_type" -> "技术类型编码";
             case "tech_name" -> "技术类型";
             case "tech_item" -> "技术项目";
-            case "status" -> "状态";
+            // v62（2563 复核第三条）：WORKLOAD_TECH 穿透里 status 是 ORDERED/DONE/CANCELLED，
+            // 而同一行的 blocks_derived_source 是 ORDERED/DERIVED/MIXED——**同一行两个 ORDERED 含义完全相反**，
+            // 表头只写「状态」在导出的 CSV 里无从分辨。status 只在本指标的穿透行里作为列出现（SPEC_SELECT 不含它）
+            case "status" -> "医嘱状态";
             case "ordered" -> "开单数";
             case "done" -> "已完成";
             case "pending" -> "未完成";
@@ -1836,7 +1856,9 @@ public class PathQcController {
             case "progress" -> "执行进度编码";
             case "progress_name" -> "执行进度";
             // v59 挂接切片实际染色类型 / 项目的去重汇总（如「IHC CK7 ×2」）
-            case "attached_stain" -> "挂接切片染色";
+            // v62（2563 复核第三条）：英文版与中文版 attached_stain_name 此前被映射成同一个中文名，
+            // 同一份 CSV 里「挂接切片染色」这个表头**出现两次**；编码版按本类既有惯例（tech_type / progress）加「编码」
+            case "attached_stain" -> "挂接切片染色编码";
             default -> col;
         };
     }
