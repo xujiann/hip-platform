@@ -17,6 +17,12 @@
              v59 地基上前端 ZH 漏了 stat_day / issue_day / stained_count / progress_name 四键——页面表头英文、CSV 表头中文；
   [5] 边界 ——V166 零回填：剥注释后无 `^\\s*update <表> set` / `^\\s*insert into` 形态（对照组 V22:40 / V161 抓得到）。
 
+**v62 随本轮口径同步**（本套钉着 fieldsCurrent / textIsCumulative 与修订返回体，口径一改就得跟）：
+  · 修订返回体由三键变四键（多 `warnings`：结构化退化 gate 的告警口，off / 无退化时为空数组而非缺键）；
+  · 新增 (e2) 段：追加后 `fields` 照给（**修订预填的口径源是它，与 fieldsCurrent 无关**——
+    修复前前端拿 fieldsCurrent 当预填开关，v61 把追加场景判 false 后预填当场落空、字段被整段塞进自由描述），
+    以及 `emr.gate.pathology.grossfield` 三档：block 返 5277 且零写入 / warn 落库带 warnings / off 不判 / 坏配置回落 warn。
+
 助手逐字抄自 e2e-v58-audit.py（已验证能跑通）；调用形态照抄 V59GrossReviseTest / V59PriorHistoryTest /
 V59TechConsistencyTest / V59QcLabelsTest 钉住的 HTTP 契约，不凭印象猜契约——本仓已因猜契约返工多次
 （驼峰/蛇形、rows/items/groups、排班是 POST 建、开药前须先 start、登记只认 CHARGED、签发才置 EXECUTED）。
@@ -229,7 +235,9 @@ FREE2 = '切面实性，局灶出血 ' + uniq('E')
 EXPECTED2 = '大小：3.5×2×1cm；颜色：灰白；质地：质硬。' + FREE2
 rv = ok(api('PUT', f'/pathology/process/grossing/{s1}/fields',
             {'templateCode': 'generic', 'gross': G2, 'grossText': FREE2}), '取材修订（修复前根本没有这个端点）')
-assert set(rv) == {'revisionSeq', 'grossFieldCount', 'grossFinding'}, f'修订返回体三键：{rv}'
+# v62：多一个 warnings（结构化退化 gate 的告警口，off / 无退化时为空数组而不是缺键）
+assert set(rv) == {'revisionSeq', 'grossFieldCount', 'grossFinding', 'warnings'}, f'修订返回体四键（v62 起含 warnings）：{rv}'
+assert rv['warnings'] == [], f'本次修订带 3 项字段，不退化 → 空告警：{rv}'
 assert rv['revisionSeq'] == 2 and rv['grossFieldCount'] == 3 and rv['grossFinding'] == EXPECTED2, f'{rv}'
 v = grossing_view(s1)
 assert v['grossFinding'] == EXPECTED2, f'gross_finding 更新为新文本：{v["grossFinding"]!r}'
@@ -324,6 +332,65 @@ ok(api('POST', '/pathology/process/grossing', {'specimenId': s2, 'append': True,
 v = grossing_view(s2)
 assert v['blockCount'] == 3 and len(v['revisions']) == 2 and v['grossFinding'] == EXPECTED_A, f'不带描述的补取材不出版本：{v}'
 
+# ---------------------------------------------------------------------------
+# (e2) v62（2530 复核）：修订预填的口径源 + 结构化退化守卫 5277 三档
+#
+# 修复前：前端「修订取材描述」按 fieldsCurrent 决定是否预填字段
+#   const fields = (d.fieldsCurrent === true ? (d.fields ?? []) : []) as Row[]
+# 而 v61 恰恰把补取材追加场景的 fieldsCurrent 判为 false（判定本身是对的）——
+# 于是库里已落的字段一项都不预填、累积全文整段进「自由描述」，用户照单提交即
+# 「新版 = 当前全文、结构化字段归零」；而后端对 gross=null 零防线
+# （只要求「字段与自由描述至少填一项」，storeGrossFields 落 0 行）。
+# 本段钉两件事：读端点给的预填口径源与 fieldsCurrent 无关；退化路径受 gate 管辖。
+# ---------------------------------------------------------------------------
+GROSS_FIELD_GATE = 'emr.gate.pathology.grossfield'
+
+
+def set_grossfield_gate(value):
+    ok(api('PUT', f'/config/{GROSS_FIELD_GATE}?value={q(value)}'), f'置 {GROSS_FIELD_GATE}={value}')
+
+
+v = grossing_view(s2)
+assert v['fieldsCurrent'] is False and labels(v['fields']) == list(GA), (
+    f'**预填的口径源是 fields（最新一版有字段行的那一版），与 fieldsCurrent 无关**：追加后 fieldsCurrent=false '
+    f'而 fields 仍是第 2 版那两项——修复前前端拿 fieldsCurrent 当预填开关，这里恒取空：{v}')
+
+# block：修订后一行字段都不剩 → 5277 且零写入
+set_grossfield_gate('block')
+before = (v['grossFinding'], len(v['revisions']), labels(v['fields']))
+r = api('PUT', f'/pathology/process/grossing/{s2}/fields', {'grossText': '去结构化的一段文本 ' + uniq('Z')})
+assert r['code'] == 5277 and '=block' in (r.get('message') or ''), (
+    f'**block 档：修订使已有结构化字段全部丢失 → 5277**（修复前这条路径合法、静默退化成扁平文本）：{r}')
+v = grossing_view(s2)
+assert (v['grossFinding'], len(v['revisions']), labels(v['fields'])) == before, f'5277 路径零写入：{v}'
+
+# block 档但本次仍带字段 → 不算退化，照常放行、无告警
+KEEP = {'块数': '3', '最大径': '0.6cm'}
+rv = ok(api('PUT', f'/pathology/process/grossing/{s2}/fields',
+            {'gross': KEEP, 'grossText': '仍有字段 ' + uniq('K')}), 'block 档带字段修订')
+assert rv['grossFieldCount'] == 2 and rv['warnings'] == [], f'不退化就放行且无告警：{rv}'
+
+# warn：照常落库，warnings 回带
+set_grossfield_gate('warn')
+FLAT = '只剩自由描述 ' + uniq('W')
+rv = ok(api('PUT', f'/pathology/process/grossing/{s2}/fields', {'grossText': FLAT}), 'warn 档去结构化修订')
+assert rv['grossFieldCount'] == 0 and len(rv['warnings']) == 1 and '不再有结构化字段' in rv['warnings'][0], (
+    f'**warn：照常落库且 warnings 说清后果**（修复前返回体根本没有这个键）：{rv}')
+assert grossing_view(s2)['grossFinding'] == FLAT, 'warn 必须真落库，不是只喊一声'
+
+# off：不判；warnings 仍是空数组而不是缺键
+set_grossfield_gate('off')
+FLAT2 = '再改一次的自由描述 ' + uniq('O')
+rv = ok(api('PUT', f'/pathology/process/grossing/{s2}/fields', {'grossText': FLAT2}), 'off 档去结构化修订')
+assert rv['warnings'] == [], f'off 不判、warnings 键仍在：{rv}'
+
+# 坏配置回落 warn 而非 off（把笔误当成静默关闭校验是更坏的默认）
+set_grossfield_gate('BLOKC')
+FLAT3 = '坏配置下的自由描述 ' + uniq('B')
+rv = ok(api('PUT', f'/pathology/process/grossing/{s2}/fields', {'grossText': FLAT3}), '坏配置档去结构化修订')
+assert len(rv['warnings']) == 1, f'坏配置回落 warn 而非 off：{rv}'
+set_grossfield_gate('warn')   # 还原出厂档位，不给后面的用例留脏配置
+
 # (f) 旧端点 POST /pathology/specimens：描述缺失 / 空白 → 4554 且零行（修复前描述可空、旧页写死「手术切除标本」落库）
 mine_before = [x for x in ok(api('GET', f'/pathology/registry/specimens/search?patientName={q(n1)}'), '检索').get('items') or []]
 assert len(mine_before) == 3, f'夹具前提：本患者已有 s1/s2/s0 三条：{[x.get("id") for x in mine_before]}'
@@ -334,7 +401,8 @@ mine_after = ok(api('GET', f'/pathology/registry/specimens/search?patientName={q
 assert {x.get('id') for x in mine_after} == {x.get('id') for x in mine_before}, '4554 路径不落任何标本行'
 print('[1] 2530 OK（**模板码落修订行 GI_BIOPSY** / **PUT …/fields → 第 2 版 GROSSING_EDIT、fieldsRevisionSeq=2、fieldsCurrent=true、sourceName=取材修订** / '
       '被拒六路零写入 / **diagnose 覆盖 → fieldsCurrent=false、textRevisionSeq=3** / 诊断后修订 5221 / '
-      '**append=true 带描述 → 「。补取材：」新版本 sourceName=补取材追加** / append=false 5223 与超长 5222 零写入 / 旧端点无描述 4554 零行）')
+      '**append=true 带描述 → 「。补取材：」新版本 sourceName=补取材追加** / append=false 5223 与超长 5222 零写入 / 旧端点无描述 4554 零行 / '
+      '**v62：追加后 fields 照给（预填口径源与 fieldsCurrent 无关）+ 5277 三档 block 零写入 / warn 落库带 warnings / off 不判 / 坏配置回落 warn**）')
 
 # ===========================================================================
 # 2) 2558 既往对比：同一患者三条（签发 + 补充报告 / 核收 / 拒收）+ 同名他人；prior 带全文与补充正文、拒收不算既往，

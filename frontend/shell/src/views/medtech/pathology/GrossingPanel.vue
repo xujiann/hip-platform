@@ -116,19 +116,20 @@
             <el-option v-for="v in viewFieldVersions" :key="String(v.revisionSeq)" :value="Number(v.revisionSeq)"
                        :label="versionLabel(v)" />
           </el-select>
-          <el-tag size="small" style="margin-left: 6px"
-                  :type="viewVersionIsLatestFields ? (view.fieldsCurrent === false ? 'warning' : 'success') : 'info'">
-            {{ viewVersionIsLatestFields
-              ? `最新字段版（第 ${fmt(view.fieldsRevisionSeq)} 版，${viewFields.length} 项）${view.fieldsCurrent === false ? '' : '，与当前文本同版'}`
-              : `被取代版本（第 ${fmt(viewVersion?.revisionSeq)} 版，${viewFields.length} 项）：已被第 ${fmt(view.fieldsRevisionSeq)} 版字段取代，仅供调阅` }}</el-tag>
+          <!-- v62（2530 复核 demo 镜头）：标签文案与配色一律由 viewVersionTag 派生——
+               「被取代版本」只在**真有更晚的字段版**时出现，0 项 / 唯一版走诚实兜底，不再打「已被第 — 版取代」 -->
+          <el-tag size="small" style="margin-left: 6px" :type="viewVersionTag.type">{{ viewVersionTag.text }}</el-tag>
           <div class="muted" style="margin-top: 4px">
             来源：{{ versionSourceName(viewVersion) }}　模板：<span class="code">{{ fmt(viewVersion?.templateCode) }}</span>
             <span v-if="view.fieldsByRevision == null">　（后端未回 fieldsByRevision：只能查看最新字段版，被取代版本暂不可调阅）</span>
           </div>
-          <!-- v59：字段随版本走；诊断只改文本不改字段，两者分叉时明说，不让两处并排自相矛盾 -->
-          <el-alert v-if="viewVersionIsLatestFields && view.fieldsCurrent === false" type="warning" show-icon :closable="false" style="margin-top: 4px"
-                    :title="String(view.fieldsNote || `字段级记录对应第 ${fmt(view.fieldsRevisionSeq)} 版，文本已在第 ${fmt(view.textRevisionSeq)} 版修订，以文本为准`)" />
-          <span v-if="!viewFields.length" class="muted" style="display: block; margin-top: 4px">本版未填写字段（只写了自由文本，或该版由诊断端点修订文本）</span>
+          <!-- v59：字段随版本走；诊断只改文本不改字段，两者分叉时明说，不让两处并排自相矛盾。
+               v62（2530 复核，审计者 met=false 第 (b) 点）：此前这条 v-if 还要求「是最新字段版」——
+               切到第 1 版时，说真话的 fieldsNote 提示消失、而上面那条说假话的「被取代版本」标签恰好出现，
+               两者互斥。fieldsNote 讲的是「字段版 vs 文本版」的全局关系，与当前在看哪一版无关，故只看它有没有值。 -->
+          <el-alert v-if="view.fieldsNote" type="warning" show-icon :closable="false" style="margin-top: 4px"
+                    :title="String(view.fieldsNote)" />
+          <span v-if="!viewFields.length" class="muted" style="display: block; margin-top: 4px">{{ viewNoFieldsNote }}</span>
           <el-table v-else :data="viewFields" size="small" border max-height="200" style="margin-top: 4px">
             <el-table-column label="#" width="50">
               <template #default="{ row }">{{ fmt(row.seq) }}</template>
@@ -218,7 +219,9 @@
       <pre>{{ existingGross }}</pre>
     </div>
 
-    <!-- v59：修订预填——字段来自库里最新一版字段行，自由描述由当前文本剥掉字段前缀得到；拆不开时整段放自由描述 -->
+    <!-- v59：修订预填——字段来自库里最新一版字段行，自由描述由当前文本剥掉字段前缀得到；拆不开时整段放自由描述。
+         v62（2530 复核 data 镜头）：此前这条提示在补取材追加后是一句自相矛盾的假话
+         （「属于第 2 版，与当前第 2 版文本不同版」——同一个版号被说成「不同版」）。现在措辞由 revisePrefillNote 分四档给出。 -->
     <el-alert v-if="mode === 'REVISE' && revisePrefillNote" type="warning" show-icon :closable="false" class="cav"
               :title="revisePrefillNote" />
 
@@ -612,19 +615,65 @@ function canRevise(row: Row): boolean {
   return row.diagnosed_at == null && row.rejected_at == null
 }
 
+/** 取材追加时后端拼的分隔标记（PathologyProcessController.grossing：新文本 = 既有文本 + 「。补取材：」 + 本次拼装） */
+const APPEND_MARK = '。补取材：'
+
 /**
  * 把当前文本按取材端点的拼装规则（「标签：值」以「；」相连，末尾「。」接自由文本）拆回字段 + 自由描述。
- * 字段来自库里最新一版字段行，不从文本猜；文本与字段拼不上（如经补取材追加、或只有自由文本）时，
- * 整段放进自由描述、字段留空——既不丢字，也不会提交后拼出重复内容。
+ * 字段来自库里最新一版字段行，不从文本猜。
+ *
+ * v62（2530 复核 decompose 镜头）：补取材追加后，这一版的字段前缀落在累积全文的**中段**
+ * （旧文本 + 「。补取材：」 + 本版拼装），此前 startsWith 对不上就直接 `gross: {}` ——
+ * 库里已落的字段一项都不预填、累积全文整段进自由描述，用户照单提交即「新版 = 当前全文、结构化字段归零」。
+ * 现在按同一个分隔标记切开：本版字段原样预填，自由描述 = 更早各版内容 + 本版自由描述，**一个字不丢**
+ * （字段会被重新拼到最前，所以提示条要说清「本次修订将整体替换当前全文」）。
  */
-function splitGross(text: string, fields: Row[]): { gross: Record<string, string>; free: string; parsed: boolean } {
+type SplitMode = 'EXACT' | 'PREFIX' | 'CUMULATIVE' | 'UNPARSED'
+function splitGross(text: string, fields: Row[]): { gross: Record<string, string>; free: string; mode: SplitMode } {
   const gross: Record<string, string> = {}
   for (const f of fields) gross[String(f.label)] = String(f.value ?? '')
-  if (!fields.length) return { gross, free: text, parsed: true }
+  if (!fields.length) return { gross, free: text, mode: 'EXACT' }
   const prefix = fields.map((f) => `${String(f.label)}：${String(f.value ?? '')}`).join('；')
-  if (text === prefix) return { gross, free: '', parsed: true }
-  if (text.startsWith(prefix + '。')) return { gross, free: text.slice(prefix.length + 1), parsed: true }
-  return { gross: {}, free: text, parsed: false }
+  if (text === prefix) return { gross, free: '', mode: 'EXACT' }
+  if (text.startsWith(prefix + '。')) return { gross, free: text.slice(prefix.length + 1), mode: 'PREFIX' }
+  const at = text.lastIndexOf(APPEND_MARK)
+  if (at >= 0) {
+    const older = text.slice(0, at)
+    const seg = text.slice(at + APPEND_MARK.length)
+    const free = seg === prefix ? '' : seg.startsWith(prefix + '。') ? seg.slice(prefix.length + 1) : null
+    if (free !== null) {
+      return { gross, free: free ? older + APPEND_MARK + free : older, mode: 'CUMULATIVE' }
+    }
+  }
+  return { gross: {}, free: text, mode: 'UNPARSED' }
+}
+
+/**
+ * 修订弹窗顶上那条提示：按「字段版 vs 文本版」的**真实关系**分档，不自己推断累积与否（读后端 textIsCumulative）。
+ * 同版且拆得开 → 无提示（正常预填）；其余三档各自说清「预填了什么、当前文本是什么、提交会发生什么」。
+ */
+function prefillNote(d: Row, mode: SplitMode, fieldCount: number): string {
+  const fSeq = fmt(d.fieldsRevisionSeq)
+  const tSeq = fmt(d.textRevisionSeq)
+  const hasFields = d.fieldsAvailable === true
+  if (mode === 'UNPARSED') {
+    return hasFields
+      ? `当前文本不是由库里第 ${fSeq} 版字段直接拼出的形态（经多次追加或整体改写），无法判断哪一段对应哪一项字段：`
+        + '已把当前文本整段放入自由描述、字段留空。本次修订将整体替换当前全文，请自行拆分字段后提交'
+      : '该标本无字段级记录（历史标本或纯自由文本，平台不从文本反解析字段），已把当前文本整段放入自由描述；'
+        + '本次修订将整体替换当前全文'
+  }
+  if (!hasFields) return ''
+  if (d.textIsCumulative === true) {
+    return `已按库里第 ${fSeq} 版字段（${fieldCount} 项）原样预填。当前文本是累积全文，`
+      + `含第 ${fSeq} 版之前各次取材/追加的内容，那部分已放入「自由描述」；`
+      + '本次修订将整体替换当前全文（字段会重新拼到最前），请核对后提交'
+  }
+  if (d.fieldsCurrent === false) {
+    return `已按库里第 ${fSeq} 版字段（${fieldCount} 项）原样预填，但当前文本已是第 ${tSeq} 版`
+      + '（见轨迹抽屉的修订留痕），以文本为准：请核对字段与自由描述是否仍对得上再提交'
+  }
+  return ''
 }
 
 async function openRevise(row: Row) {
@@ -641,7 +690,12 @@ async function openRevise(row: Row) {
   mode.value = 'REVISE'
   current.value = row
   const text = String(d.grossFinding ?? '')
-  const fields = (d.fieldsCurrent === true ? (d.fields ?? []) : []) as Row[]
+  // v62（2530 复核 decompose 镜头，本轮头号纪律）：预填**不再依赖 fieldsCurrent**。
+  // fieldsCurrent 回答的是「字段版是否等于文本版」，而修订表单要预填的是「库里最新一版有字段行的那一版」——
+  // 这正是后端 fields / fieldsRevisionSeq 的口径（max(revision_seq) from path_gross_field），两者无关。
+  // v61 把补取材追加场景的 fieldsCurrent 改判为 false（判定本身是对的），这里恰好拿它当预填开关，
+  // 于是库里已落的字段一项都不预填、提交即把结构化记录洗成扁平文本。
+  const fields = (d.fields ?? []) as Row[]
   const split = splitGross(text, fields)
   const revisions = (d.revisions ?? []) as Row[]
   const lastTemplate = revisions.length ? revisions[revisions.length - 1]?.templateCode : null
@@ -659,11 +713,7 @@ async function openRevise(row: Row) {
   // 模板字段里没填过的也给输入框（值空则提交时略去），顺序：模板字段在前、既有字段在后
   const tf = (templates.value.find((t) => String(t.code) === templateCode)?.fields ?? []) as string[]
   for (const f of tf) if (!(f in form.gross)) form.gross[f] = ''
-  revisePrefillNote.value = split.parsed
-    ? (d.fieldsAvailable === true && d.fieldsCurrent !== true
-        ? `库里的字段行属于第 ${fmt(d.fieldsRevisionSeq)} 版，与当前第 ${fmt(d.textRevisionSeq)} 版文本不同版，未按它预填；已把当前文本整段放入自由描述`
-        : '')
-    : '当前文本不是由库里最新字段直接拼出的形态（如经补取材追加、或只有自由文本），已整段放入自由描述、字段留空；如需字段化请自行拆分'
+  revisePrefillNote.value = prefillNote(d, split.mode, fields.length)
   existingGross.value = text
   existingTextSeq.value = d.textRevisionSeq ?? null
   newFieldName.value = ''
@@ -689,6 +739,9 @@ async function submitRevise() {
     })).data.data as Row
     dialog.value = false
     ElMessage.success(`已生成第 ${fmt(r.revisionSeq)} 版取材描述（字段 ${num(r.grossFieldCount)} 项）`)
+    // v62：gate emr.gate.pathology.grossfield=warn 时后端照常落库但回带 warnings
+    //（本次修订后该标本不再有结构化字段）——不静默吞掉，block 档则根本走不到这里（5277 由拦截器提示）
+    for (const w of ((r.warnings ?? []) as unknown[])) ElMessage.warning(String(w))
     await load()
     emit('changed')
   } finally {
@@ -702,6 +755,7 @@ const viewLoading = ref(false)
 const view = ref<{ specimen?: Row; grossFinding?: unknown; grossFindingPresent?: unknown;
   fieldsAvailable?: unknown; fields?: Row[]; revisions?: Row[];
   fieldsRevisionSeq?: unknown; textRevisionSeq?: unknown; fieldsNote?: unknown; fieldsCurrent?: unknown;   // v59：字段与文本各自的版号
+  textIsCumulative?: unknown;   // v61：当前文本是补取材追加的累积全文（v62 起前端真消费它，此前全仓零消费）
   fieldsByRevision?: Row[];   // v60（车道 B 契约）：[{revisionSeq, source, sourceName, templateCode, fields:[{seq,label,value}]}]，B 未合入前为 undefined
   diagnosedAt?: unknown; blocks?: Row[]; grossingEvents?: Row[]; note?: unknown }>({})
 const viewBlocks = computed<Row[]>(() => (view.value.blocks ?? []) as Row[])
@@ -737,7 +791,55 @@ const viewFields = computed<Row[]>(() => {
   if (!v) return []
   const latest = (view.value.fields ?? []) as Row[]
   if (viewVersionIsLatestFields.value && latest.length) return latest
-  return (v.fields ?? []) as Row[]
+  // v62（2530 复核，审计者 met=false 第 (a) 点）：fieldsByRevision 的字段行只有 seq/label/value，
+  // 而本表有「录入」列——切到被取代版本该列此前恒显示「— —」（最新版走 view.fields 带
+  // operatorName/createdAt，同屏一眼看得出是缺数据）。一版字段是一次修订里一次性落的，
+  // 录入人/时刻就是**该版版本头**的 changedByName / changedAt，按版回填、不编造；
+  // 孤儿版（字段行有、修订行没有，直连改库造出来的）版本头本就为 null，照样显示「—」，不猜。
+  return ((v.fields ?? []) as Row[]).map((f) => ({
+    ...f,
+    operatorName: f.operatorName ?? v.changedByName ?? null,
+    createdAt: f.createdAt ?? v.changedAt ?? null,
+  }))
+})
+
+/**
+ * 0 项时的诚实兜底：整份标本一行字段都没有 vs 只是这一版没填，是两件事，不能共用一句话。
+ * 标签位置只放短的那半句，表格位置放整句——同屏两处不重复念同一段话。
+ */
+const viewNoFieldsTag = computed(() => (view.value.fieldsRevisionSeq == null ? '无字段级记录' : '本版未填写字段'))
+const viewNoFieldsNote = computed(() => (view.value.fieldsRevisionSeq == null
+  ? '纯自由文本，无字段级记录（平台不从文本反解析字段）'
+  : '本版未填写字段（只写了自由文本，或该版由诊断端点修订文本）'))
+
+/**
+ * v62（2530 复核 demo 镜头）：字段版本标签——「被取代版本」只在**真有更晚的字段版**时出现。
+ *
+ * <p>修复前：只写了自由描述、没有结构化字段的标本（零种子库里最普通的一种，也是 tools/demo-pathology.py
+ * 铺出来的全部标本）走 else 分支，屏上打出「被取代版本（第 1 版，0 项）：已被第 — 版字段取代，仅供调阅」——
+ * 它既没被任何版本取代（就是当前版、唯一版），「第 —」也不是版本号而是 fmt(null)；
+ * 而那句诚实的兜底「历史标本或纯自由文本，无字段级记录」在当时的代码里对全新库标本永远不可达。
+ */
+const viewVersionTag = computed<{ type: 'success' | 'warning' | 'info'; text: string }>(() => {
+  const v = viewVersion.value
+  if (!v) return { type: 'info', text: '无可调阅的字段版本' }
+  const seq = fmt(v.revisionSeq)
+  const n = viewFields.value.length
+  const latestSeq = view.value.fieldsRevisionSeq
+  // 真被取代 = 存在一个更晚的、有字段行的版本（latestSeq 就是它；全无字段行时它为 null）
+  const superseded = latestSeq != null && Number(v.revisionSeq) < Number(latestSeq)
+  if (n === 0) return { type: 'info', text: `第 ${seq} 版：${viewNoFieldsTag.value}` }
+  if (superseded) {
+    return { type: 'info', text: `被取代版本（第 ${seq} 版，${n} 项）：已被第 ${fmt(latestSeq)} 版字段取代，仅供调阅` }
+  }
+  if (view.value.textIsCumulative === true) {
+    return { type: 'warning', text: `最新字段版（第 ${seq} 版，${n} 项）：当前文本是累积全文，本版字段只覆盖最后一次补取材` }
+  }
+  if (view.value.fieldsCurrent === false) {
+    return { type: 'warning',
+             text: `最新字段版（第 ${seq} 版，${n} 项）：文本已在第 ${fmt(view.value.textRevisionSeq)} 版修订，以文本为准` }
+  }
+  return { type: 'success', text: `最新字段版（第 ${seq} 版，${n} 项），与当前文本同版` }
 })
 
 /** 默认版 = 最新有字段的版（与后端 fieldsRevisionSeq 同口径）；全都没字段就取最后一版 */

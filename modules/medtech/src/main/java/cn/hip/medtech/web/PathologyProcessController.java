@@ -3,6 +3,7 @@ package cn.hip.medtech.web;
 import cn.hip.platform.core.common.R;
 import cn.hip.platform.core.config.BusinessDates;
 import cn.hip.platform.core.security.CurrentUserService;
+import cn.hip.platform.core.service.ConfigReader;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -118,6 +119,21 @@ public class PathologyProcessController {
 
     private final JdbcTemplate jdbc;
     private final CurrentUserService currentUserService;
+    private final ConfigReader configReader;
+
+    /**
+     * v62（2530 复核）：<b>「修订使已有结构化字段全部丢失」</b>的三态 gate 配置键（V168 seed，默认 warn）。
+     *
+     * <p>管的是 {@link #reviseGrossFields} 的一条退化：修订前该标本<b>任意版有字段行</b>、
+     * 而本次修订<b>一行字段都不落</b>——此前端点只要求「字段与自由描述至少填一项」，于是这条路径合法，
+     * 结构化记录静默退化成一段扁平文本。block 档以 5277 拦、零写入；warn 档照常落库但返回体 {@code warnings} 回带；
+     * off 档不判。
+     *
+     * <p><b>默认 warn 而非 block</b>：存量标本本就可能一行字段都没有（V164 之前 / 纯自由文本），
+     * 而这条守卫看的是「修订前有、修订后没有」，仍有正当场景（例如把录错的字段整体改写成自由描述再重填），
+     * 直接 block 会拦住正常修订。<b>坏配置回落 warn 而非 off</b>——把笔误当成静默关闭校验是更坏的默认。
+     */
+    public static final String GROSS_FIELD_GATE_KEY = "emr.gate.pathology.grossfield";
 
     /** 检索类端点硬上限：超限回 {@code truncated=true}，<b>不做翻页也不静默截断</b> */
     private static final int MAX_LIMIT = 200;
@@ -565,8 +581,18 @@ public class PathologyProcessController {
      *       字段行落在新 revision_seq 下、{@code gross_finding} 更新为新文本。<b>不写流转节点</b>——修订不是流转环节；</li>
      *   <li>被拒路径全部在任何写入之前返回（R.fail 不是异常，@Transactional 不回滚）；{@code gross_finding} 的
      *       update 带原值做乐观比对，并发下 0 行即 5222，不落半截。</li>
+     *   <li><b>v62（2530 复核）：结构化退化守卫</b>——修订前该标本任意版已有字段行、而本次修订落 0 行字段时，
+     *       受 {@link #GROSS_FIELD_GATE_KEY} 三态管辖：block 返 <b>5277</b> 且<b>零写入</b>（判定在第一条 update 之前），
+     *       warn 照常落库、返回体 {@code warnings} 说明「本次修订后该标本不再有结构化字段」，off 不判。
+     *       {@code warnings} 恒在（off / 无退化时为空数组），调用方不必判键在不在。</li>
      * </ul>
-     * 返回 {@code revisionSeq}（本版号）、{@code grossFieldCount}（本版字段行数）、{@code grossFinding}（新文本）。
+     * 返回 {@code revisionSeq}（本版号）、{@code grossFieldCount}（本版字段行数）、{@code grossFinding}（新文本）、
+     * {@code warnings}（v62）。
+     *
+     * <p><b>为什么这条守卫非有不可</b>：触发它的恰是平台自己的预填缺陷——前端此前按 {@code fieldsCurrent}
+     * 决定是否预填字段，而补取材追加场景该键为 false，预填落空、库里已落的字段被整段塞进自由描述 textarea，
+     * 用户照单提交即「新版 = 当前全文、结构化字段归零」。预填已在同版修好（GrossingPanel 改读 {@code fields}），
+     * 这条守卫是第二道闸：<b>预填再出问题，也不会静默把结构化记录洗成扁平文本</b>。
      */
     @PutMapping("/grossing/{specimenId}/fields")
     @Transactional
@@ -609,6 +635,26 @@ public class PathologyProcessController {
         Long uid = currentUserService.idOf(auth);
         if (uid == null) return R.fail(5224, "无法识别当前登录用户，不能修订取材描述");
 
+        // v62（2530 复核）：结构化退化守卫——**所有判定都在第一条写入之前**，block 档零写入。
+        // 「本次落几行字段」与 storeGrossFields 同源（effectiveGrossFields），不各算一遍免得口径漂。
+        Integer priorFieldRows = jdbc.queryForObject(
+                "select count(*) from path_gross_field where specimen_id = ?", Integer.class, specimenId);
+        boolean hadFields = priorFieldRows != null && priorFieldRows > 0;
+        int plannedFieldCount = effectiveGrossFields(req.gross()).size();
+        boolean degrades = hadFields && plannedFieldCount == 0;
+        String gate = gate(GROSS_FIELD_GATE_KEY);
+        var warnings = new ArrayList<String>();
+        if (degrades && "block".equals(gate)) {
+            return R.fail(5277, "本次修订不含任何结构化字段，而该标本已有 " + priorFieldRows
+                    + " 行字段级记录：提交后大体所见将退化成一段扁平文本，结构化记录全部丢失"
+                    + "（gate " + GROSS_FIELD_GATE_KEY + "=block）。"
+                    + "若确要去结构化，请先把 gate 调到 warn；若是预填没带出字段，请刷新修订表单后再改。");
+        }
+        if (degrades && "warn".equals(gate)) {
+            warnings.add("本次修订后该标本不再有结构化字段（修订前 " + priorFieldRows
+                    + " 行、本次 0 行），大体所见退化为扁平文本（gate=warn 放行）");
+        }
+
         int written = jdbc.update("""
                 update path_specimen set gross_finding = ?
                 where id = ? and gross_finding = ? and diagnosed_at is null
@@ -623,7 +669,23 @@ public class PathologyProcessController {
         body.put("revisionSeq", revisionSeq);
         body.put("grossFieldCount", grossFieldCount);
         body.put("grossFinding", assembled);
+        body.put("warnings", warnings);   // v62：恒在；off / 无退化时为空数组
         return R.ok(body);
+    }
+
+    /**
+     * gate 三态解析（与 {@code PathologyReportController.gate} 同一份规则，两处各自持有自己的键）。
+     *
+     * <p><b>坏配置回落 warn 而非 off</b>：把 'blocked'、'true'、'1' 这类写错的值当成 off，
+     * 等于让一个笔误静默关掉校验；回落 warn 至少还会在返回体里喊一声。
+     */
+    private String gate(String key) {
+        String v = configReader.get(key, "warn");
+        v = v == null ? "" : v.trim().toLowerCase(Locale.ROOT);
+        return switch (v) {
+            case "off", "warn", "block" -> v;
+            default -> "warn";
+        };
     }
 
     /**
@@ -2118,19 +2180,33 @@ public class PathologyProcessController {
      * 顺序来自调用方的 {@link Map} 迭代序：Jackson 反序列化的 Map 是 LinkedHashMap，即前端字段顺序。
      */
     private int storeGrossFields(Long specimenId, int revisionSeq, Map<String, String> gross, Long uid) {
-        if (gross == null || gross.isEmpty()) return 0;
+        var rows = effectiveGrossFields(gross);
         int n = 0;
-        for (var e : gross.entrySet()) {
-            String label = trim(e.getKey());
-            String value = trim(e.getValue());
-            if (label == null || value == null) continue;
+        for (var kv : rows) {
             n++;
             jdbc.update("""
                     insert into path_gross_field(specimen_id, revision_seq, seq, label, value, operator_id)
                     values (?, ?, ?, ?, ?, ?)
-                    """, specimenId, revisionSeq, n, label, value, uid);
+                    """, specimenId, revisionSeq, n, kv[0], kv[1], uid);
         }
         return n;
+    }
+
+    /**
+     * v62（2530 复核）：入参 map 里<b>真会落库的那几项</b>（label / value 都 trim；任一为空整条略去），
+     * 按入参顺序。{@link #storeGrossFields} 落库与 5277 守卫的「本次落 0 行字段」判定<b>共用这一处</b>——
+     * 两边各写一遍 skip 规则，规则一改就必然漂：守卫说「落 0 行」而实际落了 1 行（或反过来）是最难查的一类假。
+     */
+    private static List<String[]> effectiveGrossFields(Map<String, String> gross) {
+        if (gross == null || gross.isEmpty()) return List.of();
+        var out = new ArrayList<String[]>(gross.size());
+        for (var e : gross.entrySet()) {
+            String label = trim(e.getKey());
+            String value = trim(e.getValue());
+            if (label == null || value == null) continue;
+            out.add(new String[] {label, value});
+        }
+        return out;
     }
 
     /**

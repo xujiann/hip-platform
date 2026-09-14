@@ -192,7 +192,10 @@ class V59GrossReviseTest {
 
         // 修复前：根本没有这个端点，字段永远是第 1 版
         var r = ok(process.reviseGrossFields(f.id(), new GrossReviseReq("generic", g2, free2), doc));
-        assertEquals(Set.of("revisionSeq", "grossFieldCount", "grossFinding"), r.keySet());
+        // v62：多一个 warnings（结构化退化 gate emr.gate.pathology.grossfield 的告警口，
+        // off / 无退化时为空数组而不是缺键——调用方不必判键在不在）。三档行为由 V62GrossReviseGuardTest 钉。
+        assertEquals(Set.of("revisionSeq", "grossFieldCount", "grossFinding", "warnings"), r.keySet());
+        assertEquals(List.of(), r.get("warnings"), "本次修订带 3 项字段，不退化 → 空告警");
         assertEquals(2, ((Number) r.get("revisionSeq")).intValue());
         assertEquals(3, ((Number) r.get("grossFieldCount")).intValue());
         assertEquals(expected2, r.get("grossFinding"));

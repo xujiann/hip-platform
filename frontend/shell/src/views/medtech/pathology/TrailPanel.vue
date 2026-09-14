@@ -195,10 +195,13 @@
       <!-- ============ 大体所见修订（v58，2530：path_gross_revision 留痕，按 seq 列 old→new） ============ -->
       <h4>大体所见修订</h4>
       <div v-loading="gLoading">
-        <!-- v59：字段随版本走——标出字段属于第几版；与文本不同版（诊断只改文本）时明说，以文本为准 -->
+        <!-- v59：字段随版本走——标出字段属于第几版；与文本不同版（诊断只改文本）时明说，以文本为准。
+             v62（2530 复核）：后端没回 fieldsNote 时的那句兜底此前写死「文本已在第 N 版修订」——
+             补取材追加场景里字段版号与文本版号**相等**，这句话会把「第 2 版字段 / 第 2 版文本」说成「文本已在第 2 版修订」，
+             同一个版号被说成两件事。改为消费 textIsCumulative（v61 起后端就给了这个键，此前全仓零消费）分档兜底。 -->
         <el-tag v-if="gross.fieldsAvailable === true" size="small" :type="gross.fieldsCurrent === false ? 'warning' : 'success'">
           第 {{ fmt(gross.fieldsRevisionSeq) }} 版字段级记录（{{ grossFields.length }} 项）{{
-            gross.fieldsCurrent === false ? `；${gross.fieldsNote || `文本已在第 ${fmt(gross.textRevisionSeq)} 版修订，以文本为准`}` : '，与当前文本同版' }}</el-tag>
+            gross.fieldsCurrent === false ? `；${gross.fieldsNote || grossStaleFallback}` : '，与当前文本同版' }}</el-tag>
         <el-tag v-else size="small" type="info">历史标本，无字段级记录（或本次取材只写了自由文本；不从文本反解析）</el-tag>
         <el-table v-if="grossRevisions.length" :data="grossRevisions" size="small" border max-height="320"
                   style="margin-top: 6px" row-key="seq">
@@ -360,6 +363,13 @@ const gross = ref<Row>({})
 const gSpecimen = computed<Row>(() => (gross.value.specimen ?? {}) as Row)   // v60：GET /grossing/{id} 的标本头（带 specimen_desc）
 const grossFields = computed<Row[]>(() => (gross.value.fields ?? []) as Row[])
 const grossRevisions = computed<Row[]>(() => (gross.value.revisions ?? []) as Row[])
+/**
+ * v62（2530 复核）：后端 fieldsNote 缺失时的兜底措辞——**消费 textIsCumulative，不自己推断**。
+ * 补取材追加时字段版号与文本版号相等，写死「文本已在第 N 版修订」就是把同一个版号说成两件事。
+ */
+const grossStaleFallback = computed(() => (gross.value.textIsCumulative === true
+  ? `当前文本是累积全文，本版字段只覆盖最后一次补取材（更早各版字段见下方逐版展开）`
+  : `文本已在第 ${fmt(gross.value.textRevisionSeq)} 版修订，以文本为准`))
 
 /**
  * v60（2530 尾）：某一版修订的字段行。fieldsByRevision（车道 B 契约：[{revisionSeq, source, sourceName, templateCode,
