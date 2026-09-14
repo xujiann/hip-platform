@@ -722,7 +722,11 @@ for key in list(rows[0]) + list(summ) + ['stage', 'sampled_block_count', 'blocks
     be, fe = backend_label(key), zh_label(key)
     assert be, f'后端 zh() 缺 case "{key}"'
     assert fe == be, f'**前端 ZH.{key} 须与后端 zh() 同名 case 逐字一致**：前端 {fe!r} 后端 {be!r}'
-assert backend_label('in_progress') == '在办数' and backend_label('stage') == '办理阶段' and zh_label('blocks_derived') == '关联蜡块', '契约措辞'
+# v61（2576 复核）：存量两列正名——此前 issued 与 REPORT_* 锚 report_issued_at 的流量列同名同中文「签发份数」，
+# 而本指标的窗是 collected_at（数的是「本期登记的标本里、截至查询那一刻已签发」的存量）：同一块看板两个口径。
+assert backend_label('issued_of_registered') == '本期登记中已签发', '存量列中文要自带「本期登记中」，与流量列分开'
+assert backend_label('issued') == '签发份数', '流量列的中文不动（对照组：两列不能再同名）'
+assert backend_label('in_progress') == '本期登记中在办' and backend_label('stage') == '办理阶段' and zh_label('blocks_derived') == '关联蜡块', '契约措辞'
 assert zh_label('attached_stain') == zh_label('attached_stain_name') == '挂接切片染色', '编码版与中文版同一个表头叫法'
 assert backend_label('zz_probe_none') is None and zh_label('zz_probe_none') is None, '探针：不存在的键两侧都解析不出'
 print('[3] 2576 尾 OK（**三部位（一拒收）：第 1 部位签发 orderExecuted=false、partsPending=1、医生站仍 CHARGED；中途仍可登记第 4 部位；'

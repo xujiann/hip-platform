@@ -315,7 +315,11 @@ assert len(by_node['TECH_CANCEL']) == 1, f'一次取消 = 一条 TECH_CANCEL：{
 for tid in (t1, t2, t3, t4, t5):
     assert has('TECH_ORDER', tid), f'医嘱 {tid} 的 TECH_ORDER 节点缺失：{by_node["TECH_ORDER"]}'
 o1n = has('TECH_ORDER', t1)
-assert 'IHC' in o1n['remark'] and 'CK7' in o1n['remark'] and R1 in o1n['remark'], f'TECH_ORDER 备注带「#id 类型 项目」与下达原因：{o1n}'
+# v61（2563 复核）：类型由裸码 IHC 改中文「免疫组化」——评委在流转节点里看到的不再是英文枚举；
+# 项目名（CK7）与下达原因原样保留，医嘱号 #id 保留（清单已补「医嘱号」列，能对回去）
+assert '免疫组化' in o1n['remark'] and 'IHC' not in o1n['remark'], (
+    f'TECH_ORDER 备注的类型要中文、不得再有裸码 IHC（v61 复核修补）：{o1n}')
+assert 'CK7' in o1n['remark'] and R1 in o1n['remark'], f'TECH_ORDER 备注带「#id 类型 项目」与下达原因：{o1n}'
 done1, done2 = has('TECH_DONE', t1), has('TECH_DONE', t2)
 assert done1 and '挂接 2 片 / 已染色 2' in done1['remark'] and 'gate=warn' not in done1['remark'], f'染完的 TECH_DONE 备注只带事实：{done1}'
 assert done2 and '挂接 0 片' in done2['remark'] and 'gate=warn 放行' in done2['remark'], (

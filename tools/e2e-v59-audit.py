@@ -296,7 +296,13 @@ assert ga.get('grossFindingWritten') is True and ga.get('grossFieldCount') == 2 
 assert ga.get('totalBlockCount') == 2, f'蜡块照常追加：{ga}'
 v = grossing_view(s2)
 assert v['grossFinding'] == EXPECTED_A
-assert v['fieldsRevisionSeq'] == 2 and v['textRevisionSeq'] == 2 and v['fieldsCurrent'] is True, f'{v}'
+# v61（2530 复核）：追加时字段版号与文本版号相等，此前据此判 fieldsCurrent=true——而文本是**累积全文**
+# （旧文本 + 「。补取材：」+ 本次）、字段行只覆盖最后那一次追加，等于把「覆盖不全」标成「与当前文本同版」，
+# 口径与事实相反（复核 data 镜头原话）。现在追加场景 fieldsCurrent=false，并另给 textIsCumulative。
+assert v['fieldsRevisionSeq'] == 2 and v['textRevisionSeq'] == 2, f'{v}'
+assert v['fieldsCurrent'] is False and v.get('textIsCumulative') is True, (
+    f'**追加后文本是累积全文、字段只覆盖最后一次追加——不得标成「与当前文本同版」**（v61 复核修补）：{v}')
+assert '累积' in str(v.get('fieldsNote') or ''), f'fieldsNote 要点明文本为累积全文：{v.get("fieldsNote")!r}'
 assert labels(v['fields']) == list(GA), f'本次字段落在第 2 版、读端点回第 2 版：{v["fields"]}'
 revs = v['revisions']
 assert len(revs) == 2 and revs[1].get('source') == 'GROSSING' and revs[1].get('sourceName') == '补取材追加', (
