@@ -255,7 +255,13 @@ class V57TechTraceTest {
                 order by id desc limit 1
                 """, String.class, a);
         assertNotNull(remark);
-        assertTrue(remark.contains("特检医嘱#" + ihcOnA + " IHC"), "SECTION 备注应带「特检医嘱#id 类型」，实际：" + remark);
+        // v62 合并后补齐：本条原本钉的是「特检医嘱#id IHC」——那个裸枚举正是 2563 复核第三条要消灭的形态。
+        // 口径改了，钉它的断言就得同改（v61 复核的教训：改口径时 SQL / 单测 / E2E 三处必须同改），
+        // 但**不是放宽**：#id 仍要在（追溯靠它），类型改钉中文，项目名 CK7 仍原样保留。
+        assertTrue(remark.contains("特检医嘱#" + ihcOnA + " 免疫组化 CK7"),
+                "SECTION 备注应带「特检医嘱#id 中文类型 项目」，实际：" + remark);
+        assertFalse(remark.contains("#" + ihcOnA + " IHC"),
+                "v62 起备注里不得再有裸枚举 IHC（项目名 CK7 不受影响）：" + remark);
 
         assertEquals(3L, asLong(techRow(ok(report.techOrders(a, null, null, null, null, null, null, null, null)), ihcOnA)
                 .get("slide_count")), "标本清单 slide_count 应等于挂接到该医嘱的切片数");

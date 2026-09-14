@@ -51,10 +51,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *       ORDERED 而含义完全相反。屏上靠前端 cellText 掩盖，导出一离开页面就原形毕露。</li>
  * </ul>
  *
- * <p><b>本轮未动、留给主控合并后补的</b>：STAIN（{@code 质量 GOOD}）/ SECTION（{@code ，IHC CK7），特检医嘱#12 IHC}）/
- * GROSSING（{@code ，补取材医嘱#12 RESAMPLE}）三类节点的备注仍在 {@code PathologyProcessController} 里逐字打裸码，
- * 那个文件本轮归车道 A 独占。本类第 ① 条只钉本车道管得到的三个节点，但<b>对照组用的正是那三处的真实形态</b>——
- * 同一组正则抓得到它们，才说明上面三条不是恒真的。
+ * <p><b>当时未动、已由合并后补齐处理</b>：STAIN（{@code 质量 GOOD}）/ SECTION（{@code ，IHC CK7），特检医嘱#12 IHC}）/
+ * GROSSING（{@code ，补取材医嘱#12 RESAMPLE}）三类节点的备注在 {@code PathologyProcessController} 里逐字打裸码，
+ * 而那个文件本轮归车道 A 独占，故本类第 ① 条只钉本车道管得到的三个节点，
+ * <b>对照组用的正是那三处当时的真实形态</b>——同一组正则抓得到它们，才说明上面三条不是恒真的。
+ * 合并后由 {@link V62NodeRemarkCodeTest} 把那三个节点补齐并<b>实查落库正文</b>；
+ * 本类的对照组是<b>历史形态的字面量</b>，不随修复变化，两边各自成立。
+ *
+ * <p>{@link #RAW_ENUM} / {@link #RAW_COLUMN} 对包内可见，供 {@code V62NodeRemarkCodeTest} 复用——
+ * 「备注里什么算裸码」只该有一份定义，抄第二份就是两套口径，改一处漂一处。
  *
  * <p>夹具照抄 V61TechLabelTest（同一条演示路径），gate 在 setUp 里钉成出厂值 warn。
  */
@@ -68,13 +73,13 @@ class V62TechRemarkTest {
      * 刻意不写成「任意大写串」——医嘱项目名（CK7 / PAS / P53）本来就该原样保留，
      * 那样的正则会把合法内容一起咬掉，而一条咬错的断言迟早被改宽到形同虚设。
      */
-    private static final Pattern RAW_ENUM = Pattern.compile(
+    static final Pattern RAW_ENUM = Pattern.compile(
             "(?<![A-Za-z0-9_])(?:DEEP_CUT|RECUT|RESAMPLE|IHC|SPECIAL_STAIN|MOLECULAR|SPECIAL"
             + "|ORDERED|DONE|CANCELLED|PENDING_SECTION|SAMPLED|SECTIONING|STAINED"
             + "|DERIVED|MIXED|GOOD|FAIR|POOR|HE)(?![A-Za-z0-9_])");
 
     /** 备注正文里的<b>库列名 / 内部标识</b>：snake_case 形态（slide_count / tech_order_id / sampled_block_count） */
-    private static final Pattern RAW_COLUMN = Pattern.compile(
+    static final Pattern RAW_COLUMN = Pattern.compile(
             "(?<![A-Za-z0-9_])[a-z][a-z0-9]*(?:_[a-z0-9]+)+(?![A-Za-z0-9_])");
 
     @Autowired PathologyProcessController process;

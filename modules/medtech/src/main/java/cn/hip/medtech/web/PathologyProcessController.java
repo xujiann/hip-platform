@@ -170,6 +170,26 @@ public class PathologyProcessController {
     public static final List<String> STAIN_TYPES = List.of("HE", "IHC", "SPECIAL", "MOLECULAR");
 
     /**
+     * v62（2563 复核第三条·合并后补齐）：染色类型 → 中文。<b>流转节点正文里不许出现库枚举</b>——
+     * 车道 B 已把 {@code PathologyReportController} 的 TECH_ORDER / TECH_DONE / TECH_CANCEL 三处备注去了裸码，
+     * 而 SECTION / STAIN 两处备注在本控制器里，同属那一条缺陷、当时列进 blocked_notes 未动。
+     *
+     * <p>中文名<b>不是新起的一套</b>：逐字取自 {@code PathQcController} SLIDE_QUALITY 行的 {@code stain_name}
+     * 分支（'HE 染色' / '免疫组化' / '特殊染色' / '分子病理'），与前端 {@code format.ts} 的 STAIN_TYPES 同名。
+     * 三处同名由 {@code V62NodeRemarkCodeTest} 逐档钉死——一份 Java map 抄一段 SQL CASE，
+     * 不带断言就是第四份独立口径，改一处漂一处。
+     */
+    public static final Map<String, String> STAIN_TYPE_NAMES = Map.of(
+            "HE", "HE 染色", "IHC", "免疫组化", "SPECIAL", "特殊染色", "MOLECULAR", "分子病理");
+
+    /**
+     * v62：切片质量 → 中文（优 / 良 / 差）。同样只用于流转节点正文；
+     * 前端 {@code format.ts} 的 SLIDE_QUALITIES 标签是「优（GOOD）」这种带码形态（那是下拉选项，要能对回库值），
+     * 节点正文是给人读的散文，只留中文。两者的对应关系由 {@code V62NodeRemarkCodeTest} 钉。
+     */
+    public static final Map<String, String> SLIDE_QUALITY_NAMES = Map.of("GOOD", "优", "FAIR", "良", "POOR", "差");
+
+    /**
      * v59（2563 一致性）：特检技术类型（chk_path_tech_type 六档）→ 挂接到该医嘱的切片<b>必须</b>登记的染色类型
      * （{@link #STAIN_TYPES} 四档）。免疫组化 / 特殊染色 / 分子病理各对应自己的染色类型；深切 / 重切 / 补取材
      * 是 HE 片的再制，落 HE。{@link #slides} 挂接时按它判 5274——修复前只校验医嘱存在 / 同标本 / 同蜡块 / ORDERED，
@@ -540,7 +560,10 @@ public class PathologyProcessController {
         logProcess(req.specimenId(), "GROSSING", uid,
                 "取材产出 " + created.size() + " 块"
                         + (templateCode == null ? "" : "（模板 " + templateCode + "）")
-                        + (techOrder == null ? "" : "，补取材医嘱#" + req.techOrderId() + " RESAMPLE")
+                        // v62：此前逐字写死裸枚举 RESAMPLE；techLabel 同时把医嘱项目带出来
+                        + (techOrder == null ? "" : "，补取材医嘱"
+                                + PathologyReportController.techLabel(
+                                        req.techOrderId(), techOrder.get("tech_type"), techOrder.get("tech_item")))
                         + (remark == null ? "" : "：" + remark));
 
         var body = new LinkedHashMap<String, Object>();
@@ -1017,7 +1040,7 @@ public class PathologyProcessController {
      *
      * <p><b>v57 挂接特检技术医嘱</b>：{@code techOrderId} 传了就校验四件事——医嘱存在、属于该蜡块所在标本、医嘱若指定了蜡块则必须是这一块、
      * 仍是 ORDERED（四条路径同返 5272，任何一条不过就一张片也不插）。校验通过则每张新切片的
-     * {@code tech_order_id} 都等于它，SECTION 节点备注带「特检医嘱#id 类型」。
+     * {@code tech_order_id} 都等于它，SECTION 节点备注带「特检医嘱#id 中文类型 项目」（v62 起走 techLabel，此前是裸枚举）。
      * <b>挂接不自动把医嘱置 DONE</b>：切了片不等于做完了（染色、质控都在后面），完成仍走 /done 由技师确认。
      *
      * <p><b>v59（2563 一致性）挂接切片须与医嘱一致，否则 5274</b>：{@code stainType} 必须等于 {@link #TECH_TO_STAIN}
@@ -1133,9 +1156,14 @@ public class PathologyProcessController {
 
         // now() 是事务开始时刻且事务内恒定：SECTION 节点时间与各切片 created_at 逐位相等
         logProcess(specimenId, "SECTION", uid,
-                "切片 " + created.size() + " 张（" + block.get("block_code") + "，" + stainType
+                // v62：染色类型与医嘱类型此前都是裸枚举（「，HE」「特检医嘱#12 IHC」）——
+                // 评委在流转节点正文里读到的是库枚举值，不是业务语言
+                "切片 " + created.size() + " 张（" + block.get("block_code") + "，"
+                        + STAIN_TYPE_NAMES.getOrDefault(stainType, stainType)
                         + (stainItem == null ? "" : " " + stainItem) + "）"
-                        + (techOrder == null ? "" : "，特检医嘱#" + req.techOrderId() + " " + techOrder.get("tech_type"))
+                        + (techOrder == null ? "" : "，特检医嘱"
+                                + PathologyReportController.techLabel(
+                                        req.techOrderId(), techOrder.get("tech_type"), techOrder.get("tech_item")))
                         + (rk == null ? "" : "：" + rk));
 
         var warnings = new ArrayList<String>();
@@ -1233,9 +1261,12 @@ public class PathologyProcessController {
                 from path_slide sl join path_block b on b.id = sl.block_id
                 where sl.id = ?
                 """, uid,
-                clip("染色 " + row.get("slide_code") + "（" + row.get("stain_type")
+                // v62：染色类型与质量此前都是裸枚举（「（HE），质量 GOOD」）
+                clip("染色 " + row.get("slide_code") + "（"
+                        + STAIN_TYPE_NAMES.getOrDefault(String.valueOf(row.get("stain_type")),
+                                String.valueOf(row.get("stain_type")))
                         + (row.get("stain_item") == null ? "" : " " + row.get("stain_item")) + "）"
-                        + (quality == null ? "" : "，质量 " + quality)
+                        + (quality == null ? "" : "，质量 " + SLIDE_QUALITY_NAMES.getOrDefault(quality, quality))
                         + (rk == null ? "" : "：" + rk), REMARK_MAX),
                 id);
 

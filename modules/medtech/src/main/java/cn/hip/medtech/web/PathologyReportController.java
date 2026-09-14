@@ -120,8 +120,11 @@ import java.util.Set;
  *   <li>{@link #techLabel} 去掉括号里的裸英文枚举（{@code #12 免疫组化(IHC) CK7} → {@code #12 免疫组化 CK7}），
  *       TECH_ORDER / TECH_DONE / TECH_CANCEL 三处节点备注同时生效；{@code #id} 保留（追溯要靠它），
  *       ⑤ TechOrderPanel 与 ④ DiagnosisPanel 特检页签同版各加一列「医嘱号」把 #id 对回清单行。
- *       <b>SECTION 备注</b>（{@code PathologyProcessController} 的「切片 N 张（…，IHC CK7），特检医嘱#12 IHC」）
- *       同属本条缺陷，但在别的控制器里，本版未动。</li>
+ *       <b>SECTION / STAIN / GROSSING 三处备注</b>（{@code PathologyProcessController} 的
+ *       「切片 N 张（…，IHC CK7），特检医嘱#12 IHC」「质量 GOOD」「补取材医嘱#12 RESAMPLE」）同属本条缺陷，
+ *       但在别的控制器里、本车道动不到，故列进 blocked_notes；<b>已在 v62 合并后补齐</b>——
+ *       三处共用本类的 {@link #techLabel} 与 {@code PathologyProcessController.STAIN_TYPE_NAMES} /
+ *       {@code SLIDE_QUALITY_NAMES}，由 {@code V62NodeRemarkCodeTest} 实查落库正文钉死。</li>
  * </ul>
  *
  * <p><b>v62（2563 复核第二条：完成 gate 认蜡块，与六态派生同口径）</b>：
@@ -1460,7 +1463,9 @@ public class PathologyReportController {
      * 两行类型项目逐字相同，只有 id 分得开）。对得回去的前提是清单上有这一列，故同版在 ⑤ TechOrderPanel 与
      * ④ DiagnosisPanel 特检页签各加一列「医嘱号」（显示 {@code #id}）。
      */
-    private static String techLabel(Object id, Object type, Object item) {
+    // v62 合并后补齐：改 public——PathologyProcessController 的 GROSSING / SECTION 两处节点备注
+    // 此前各自拼「#id + 裸枚举」，现在共用这一处，去裸码与「带出医嘱项目」两件事一次到位
+    public static String techLabel(Object id, Object type, Object item) {
         String t = String.valueOf(type);
         return "#" + id + " " + TECH_TYPE_NAMES.getOrDefault(t, t) + (item == null ? "" : " " + item);
     }
