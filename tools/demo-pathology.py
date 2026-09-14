@@ -381,7 +381,8 @@ def qc_overview(tok):
         return ((by.get(code) or {}).get('summary') or {}).get(key)
     return body, by, {
         '登记总量 WORKLOAD_REGISTER.registered': val('WORKLOAD_REGISTER', 'registered'),
-        '蜡块产出 WORKLOAD_BLOCK.blocks': val('WORKLOAD_BLOCK', 'blocks'),
+        # v62（2576 复核）：blocks → blocks_produced（与 WORKLOAD_SLIDE 的 blocks_stained 分开命名）
+        '蜡块产出 WORKLOAD_BLOCK.blocks_produced': val('WORKLOAD_BLOCK', 'blocks_produced'),
         '报告签发量 WORKLOAD_REPORT.issued_reports': val('WORKLOAD_REPORT', 'issued_reports'),
     }
 
@@ -439,7 +440,7 @@ def main():
     print(f"demo-pathology OK  specimens={len(rows)} "
           f"({' '.join(f'{k}={v}' for k, v in n_by.items())})  "
           f"path-qc registered={three['登记总量 WORKLOAD_REGISTER.registered']} "
-          f"blocks={three['蜡块产出 WORKLOAD_BLOCK.blocks']} "
+          f"blocks_produced={three['蜡块产出 WORKLOAD_BLOCK.blocks_produced']} "
           f"issued_reports={three['报告签发量 WORKLOAD_REPORT.issued_reports']}  suffix={SUF}"
           f"  prior_checked={'yes' if prior_line else 'skipped(count<2)'}")
 
