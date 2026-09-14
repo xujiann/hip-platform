@@ -256,12 +256,17 @@ d1 = ok(api('PUT', f'/pathology/report/tech-orders/{t1}/done', {}), '完成（�
 assert d1.get('warnings') == [], f'染完再确认：warnings 必须是空数组（不是 null）：{d1}'
 assert d1.get('slideCount') == 2 and d1.get('stainedCount') == 2 and d1.get('stainedComplete') is True, (
     f'返回体带 slideCount/stainedCount/stainedComplete 事实（修复前 DONE 不看任何切片）：{d1}')
+# v62（2563 复核第二条）：完成 gate 的事实从两项变三项——补取材已出块也是执行证据，任何档位都算都带
+assert d1.get('sampledBlockCount') == 0 and d1.get('doneGap') is None, (
+    f'**返回体带 sampledBlockCount 与 doneGap**（修复前只有两项事实、缺口只存在于告警文案里）：{d1}')
 assert d1.get('status') == 'DONE' and d1.get('progress') == 'DONE' and d1.get('techDoneGate') == 'warn', f'{d1}'
 assert_progress(sA, t1, 'DONE', '已完成', 2, 2)
 # ④ 另一条 0 片直接 done（gate 出厂 warn）→ code 0 且 warnings 非空、slideCount=0
 t2 = tech_order(sA, blockA, 'IHC', 'CK20')
 d2 = ok(api('PUT', f'/pathology/report/tech-orders/{t2}/done', {}), '完成（0 片，warn）')
 assert d2.get('slideCount') == 0 and d2.get('stainedCount') == 0 and d2.get('stainedComplete') is False, f'{d2}'
+assert d2.get('sampledBlockCount') == 0 and d2.get('doneGap') == '既无挂接切片、也无补取材已出块', (
+    f'**v62：缺口口径是「既无挂接切片、也无补取材已出块」**（修复前是「无挂接切片（slide_count=0）」，逐字带库列名）：{d2}')
 assert isinstance(d2.get('warnings'), list) and len(d2['warnings']) == 1, (
     f'**warn 且 0 片：放行但 warnings 恰一条**（修复前 DONE 仅靠手点、什么都不说）：{d2}')
 assert d2['warnings'][0].startswith('无已染色挂接切片即确认完成（gate=warn 放行）'), f'告警文案：{d2["warnings"]}'
@@ -321,9 +326,14 @@ assert '免疫组化' in o1n['remark'] and 'IHC' not in o1n['remark'], (
     f'TECH_ORDER 备注的类型要中文、不得再有裸码 IHC（v61 复核修补）：{o1n}')
 assert 'CK7' in o1n['remark'] and R1 in o1n['remark'], f'TECH_ORDER 备注带「#id 类型 项目」与下达原因：{o1n}'
 done1, done2 = has('TECH_DONE', t1), has('TECH_DONE', t2)
-assert done1 and '挂接 2 片 / 已染色 2' in done1['remark'] and 'gate=warn' not in done1['remark'], f'染完的 TECH_DONE 备注只带事实：{done1}'
-assert done2 and '挂接 0 片' in done2['remark'] and 'gate=warn 放行' in done2['remark'], (
+# v62（2563 复核第二条）：TECH_DONE 备注如实写**三个**事实「已出块 N / 挂接 M 片 / 已染色 K」——
+# 补取材医嘱的执行证据（已出块）此前在这条备注里根本查不到；缺口文案也不再逐字带库列名 slide_count
+assert done1 and '已出块 0 / 挂接 2 片 / 已染色 2' in done1['remark'] and 'gate=warn' not in done1['remark'], (
+    f'染完的 TECH_DONE 备注只带三个事实：{done1}')
+assert done2 and '已出块 0 / 挂接 0 片 / 已染色 0' in done2['remark'] and 'gate=warn 放行' in done2['remark'], (
     f'**warn 放行的 TECH_DONE 必须写明缺口与放行**（放行不等于没发生过）：{done2}')
+assert '既无挂接切片、也无补取材已出块' in done2['remark'] and 'slide_count' not in done2['remark'], (
+    f'**缺口文案用人话、不把库列名写进给评委看的正文**（修复前是「无挂接切片（slide_count=0）」）：{done2}')
 assert has('TECH_DONE', t3) is None, f'**5273 被拦不写 TECH_DONE 节点**：{by_node["TECH_DONE"]}'
 cn = has('TECH_CANCEL', t3)
 assert cn and C3 in cn['remark'] and '免疫组化' in cn['remark'], f'TECH_CANCEL 备注带「#id 类型」与取消原因：{cn}'
@@ -332,7 +342,7 @@ for x in by_node['TECH_ORDER'] + by_node['TECH_DONE'] + by_node['TECH_CANCEL']:
     assert x.get('node_name') in ('下达特检医嘱', '确认完成特检医嘱', '取消特检医嘱'), f'三类节点须有中文名：{x}'
 assert tr.get('lastNode') == 'TECH_CANCEL', f'最后一个节点是刚才的取消：{tr.get("lastNode")}'
 print('[2] 2563 OK（**PENDING_SECTION → SECTIONING → STAINED → DONE 由挂接切片派生** / 染完 done 无告警 / '
-      '**warn 0 片放行带 warnings、slideCount=0** / **block 0 片 5273 仍 ORDERED、有片未染完 5273** / '
+      '**warn 0 片放行带 warnings、slideCount=0、doneGap 三事实** / **block 0 片 5273 仍 ORDERED、有片未染完 5273** / '
       '恢复 warn 生效 / **trail 里 TECH_ORDER×5、TECH_DONE×4、TECH_CANCEL×1，被拦不留节点**）')
 
 # ===========================================================================
