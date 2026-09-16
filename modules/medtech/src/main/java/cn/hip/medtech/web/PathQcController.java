@@ -126,6 +126,26 @@ public class PathQcController {
             + "把标本数直接当工作量会让「一台大标本多部位取材」与「一份细胞学涂片」等值。"
             + "要折算须先建权重主数据，本只读统计层不建表。";
 
+    /**
+     * <b>「蜡块按日产出数」这一条事实的唯一口径结论</b>（v63，2576 复核第二条）。
+     *
+     * <p>{@code WORKLOAD_BLOCK} 的 {@code blocks_produced} 与覆盖率段 {@code coverage.blocks.blocks}
+     * 是<b>同一个 {@code count(*) from path_block}、同一条落窗谓词 {@code W_BLOCK}</b>——同一个数只能有一个结论。
+     *
+     * <p>修复前的反向事实（v62 交付后复核，反驳者原话）：v62 只把「这个数事后会变、导出的历史报表不可复现」
+     * 写进了 WORKLOAD_BLOCK 自己的 caveat，而同一块看板上<b>位置更靠前、且被 {@code DATA_CAVEAT} 点名
+     * 「请先看」</b>的覆盖率段仍写着这个数「蜡块产出量仍可信（建档即产出）」——
+     * 同一页对同一个蜡块产出数给出两个相反的结论，而说反话的那一句先上屏。
+     * 两处各写一段散文必然漂移，故结论只在这里写一遍，两边引用同一个常量。
+     */
+    public static final String BLOCK_DAY_CAVEAT =
+            "**按日数事后会变、导出的历史报表不可复现**：未包埋的蜡块（embedded_at 为空）"
+            + "按**建档时刻**暂记，先算进取材那天的产出；等包埋登记落下去，同一块蜡块就从建档日消失、"
+            + "移到包埋日——**同一个已关闭区间今天导与明天导的按日数不一样（某天会变小）**。"
+            + "脱水过夜跨日是病理常规，不是边角情形。"
+            + "本平台**不为此回填包埋时刻**（V144 零回填纪律：宁可少算，不可假算），"
+            + "发出去之前请连同导出时刻一起注明（与 WORKLOAD_DEPT 存量三列同一体例）。";
+
     /** 统计时间窗最大跨度（天）：与 AnesQcController / StatsController.daily 同量级 */
     static final int MAX_SPAN_DAYS = 366;
 
@@ -453,13 +473,10 @@ public class PathQcController {
                 + "不是对不上账（v62 复核修补：此前两列都叫 blocks、中文都叫「蜡块数」）。"
                 + " blocks_per_specimen 是当日蜡块数 / 当日涉及标本数，"
                 + "**不是「每份标本平均取几块」**——同一标本的蜡块可能跨日建，两端分母不同。"
-                + " **按日数事后会变、导出的历史报表不可复现**：未包埋的蜡块（embedded_at 为空）"
-                + "按**建档时刻**暂记，先算进取材那天的产出；等包埋登记落下去，同一块蜡块就从建档日消失、"
-                + "移到包埋日——**同一个已关闭区间今天导与明天导的按日数不一样（某天会变小）**。"
-                + "脱水过夜跨日是病理常规，不是边角情形。embedded 一列是该行里已录包埋时刻的条数，"
-                + "它与 blocks_produced 差得越大，该行后面越可能还会变。"
-                + "本平台**不为此回填包埋时刻**（V144 零回填纪律：宁可少算，不可假算），"
-                + "发出去之前请连同导出时刻一起注明（与 WORKLOAD_DEPT 存量三列同一体例）。");
+                // v63（2576 复核）：这句结论与覆盖率段 coverage.blocks.note 同源，只在 BLOCK_DAY_CAVEAT 里写一遍
+                + " " + BLOCK_DAY_CAVEAT
+                + "embedded 一列是该行里已录包埋时刻的条数，"
+                + "它与 blocks_produced 差得越大，该行后面越可能还会变。");
 
         // v62（2576 复核）：blocks → blocks_stained、molecular → molecular_slides；并补写按日数事后会变。
         // 此前本指标的 caveat 只挂了通用 WORKLOAD_NOTE（讲的是「不折算工时」），对这两列零说明。
@@ -679,8 +696,15 @@ public class PathQcController {
                 from path_block b
                 where {wb}
                 """), w.args()));
-        blocks.put("note", "按 coalesce(embedded_at, created_at) 落窗。with_embedded_at 低"
-                + "说明包埋确认环节没在系统里打点，蜡块产出量仍可信（建档即产出），但包埋耗时算不出来。");
+        // v63（2576 复核）：这一段的 blocks 与 WORKLOAD_BLOCK 的 blocks_produced 是同一个 count(*)、
+        // 同一条落窗谓词 W_BLOCK，结论必须同源。修复前这里写的是「蜡块产出量仍可信（建档即产出）」，
+        // 与同页 WORKLOAD_BLOCK 的 caveat「按日数事后会变、导出的历史报表不可复现」结论相反，
+        // 而覆盖率段先于所有指标渲染——说反话的那一句先上屏（复核者原话）。
+        blocks.put("note", "按 coalesce(embedded_at, created_at) 落窗，与 WORKLOAD_BLOCK 的 blocks_produced "
+                + "是同一个 count(*)、同一条落窗谓词，故结论与该指标的 caveat 同源："
+                + BLOCK_DAY_CAVEAT
+                + "with_embedded_at 低说明包埋确认环节没在系统里打点：包埋耗时算不出来，"
+                + "且这一行的蜡块数后面还会变（它与本段 blocks 差得越大，越可能变）。");
         m.put("blocks", blocks);
 
         var slides = new LinkedHashMap<String, Object>(one(q("""
