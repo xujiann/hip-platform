@@ -1,6 +1,7 @@
 package cn.hip.server;
 
 import cn.hip.medtech.web.PathologyProcessController;
+import cn.hip.medtech.web.PathologyProcessController.BatchCompleteReq;
 import cn.hip.medtech.web.PathologyProcessController.BlockReq;
 import cn.hip.medtech.web.PathologyProcessController.GrossingReq;
 import cn.hip.medtech.web.PathologyProcessController.SlideReq;
@@ -57,6 +58,13 @@ import static org.junit.jupiter.api.Assertions.fail;
  * <p><b>第 ③ 条钉的是「中文名不是新起的一套」</b>：{@code STAIN_TYPE_NAMES} 是一份 Java map，
  * 而同一套染色类型中文在仓库里另有两份 SQL {@code case} 展开与一份前端字典。
  * 一份 Java map 抄一段 SQL CASE，不带断言就是第四份独立口径——改一处漂一处，这正是 v61 复核的总模式。
+ *
+ * <p><b>v63（2563 复核）补的那一半</b>：本类 v62 版<b>全程只调 {@code process.stain(...)}</b>，
+ * 而同一个 STAIN 节点有<b>两个</b>写入口——「批量核销」（{@code process.batchComplete}）也写 STAIN 备注，
+ * 那一句 v62 原样留着「，质量 GOOD」，于是本类对那一半结构上永远绿。复核者原话：
+ * 「评委会看到「批量核销染色 3 张，质量 GOOD」，与隔壁刚修好的「染色 …（免疫组化 CK7），质量 优」并排，
+ * 而 GOOD 正是本轮自己的裸码正则明文列入的值；新增的守卫全程只调 process.stain(...)，
+ * 从不调 batchComplete，结构上永远抓不到这一半。」第 ④ 条真的调用 batchComplete 并实查落库正文。
  *
  * <p>夹具照抄 {@link V62TechRemarkTest}（同一条演示路径）。事务回滚，库里不留痕。
  */
@@ -232,6 +240,49 @@ class V62NodeRemarkCodeTest {
                     code + "：节点正文用「" + zh + "」，前端下拉用「" + zh + "（" + code + "）」，"
                             + "两者必须是同一个中文打头（前端要能对回库值，正文是散文只留中文）");
         }
+    }
+
+    // =====================================================================================
+    // ④ v63（2563 复核）：STAIN 的**第二个写入口**——批量核销。本类 v62 版零次调用它
+    // =====================================================================================
+
+    @Test
+    void batchCompleteIsTheOtherStainEntryAndItsRemarkIsCleanToo() {
+        var sec = ok(process.slides(new SlideReq(blockA, 3, "HE", null, null, null), doc1));
+        var slides = rows(sec, "slides");
+        assertEquals(3, slides.size(), "夹具：一次切 3 张，才凑得出复核者原话里的「批量核销染色 3 张」");
+        var ids = new java.util.ArrayList<Long>();
+        for (var sl : slides) ids.add(idOf(sl));
+
+        // **真的走 batchComplete**——不是断返回体，是把这条写入路径真跑一遍
+        var res = ok(process.batchComplete(new BatchCompleteReq(ids, "good", null, null), doc1));
+        assertEquals(3, ((Number) res.get("completed")).intValue(), "三张都核销掉");
+
+        String remark = latestRemark(a, "STAIN");
+        assertClean(remark, "STAIN（批量核销）");
+        assertTrue(remark.contains("批量核销染色 3 张"), "本批张数照旧如实写：" + remark);
+        assertTrue(remark.contains("，质量 优"),
+                "**修复前的反向事实**：这一句写的是「，质量 GOOD」——同一个 STAIN 节点的第二个入口，"
+                        + "与隔壁单张登记刚修好的「质量 优」并排：" + remark);
+        // 与单张登记同一份中文字典，不是各写各的（本轮头号纪律）
+        assertTrue(remark.contains("，质量 " + PathologyProcessController.SLIDE_QUALITY_NAMES.get("GOOD")),
+                "批量核销走的就是 SLIDE_QUALITY_NAMES：" + remark);
+
+        // ---- 活的对照组：修复前那条**真实**形态必须被同一组正则抓到，否则上面的 assertClean 恒真 ----
+        assertTrue(V62TechRemarkTest.RAW_ENUM.matcher("批量核销染色 3 张，质量 GOOD").find(),
+                "活对照组：批量核销修复前形态抓不到，则本条永远绿——v62 的守卫正是这样漏掉这一半的");
+        assertFalse(V62TechRemarkTest.RAW_ENUM.matcher("批量核销染色 3 张，质量 优").find(),
+                "活对照组：修好的形态不该被抓到");
+
+        // ---- 两个入口并排：同一个 GOOD，两条备注里的中文必须逐字相同 ----
+        // （单张那条的染色类型是 HE，中文名「HE 染色」本身带 HE 两个字母，不走 assertClean 的
+        //   裸枚举正则——那是 STAIN_TYPE_NAMES 的既有取名，不是本条要钉的事）
+        var sec2 = ok(process.slides(new SlideReq(blockA, 1, "HE", null, null, null), doc1));
+        ok(process.stain(idOf(rows(sec2, "slides").get(0)), new StainReq("GOOD", null, null), doc1));
+        String single = latestRemark(a, "STAIN");
+        assertTrue(single.contains("，质量 优") && remark.contains("，质量 优"),
+                "同一个节点的两个入口，质量中文逐字相同（修复前一个「优」一个「GOOD」）："
+                        + single + " / " + remark);
     }
 
     // ==================================================================================

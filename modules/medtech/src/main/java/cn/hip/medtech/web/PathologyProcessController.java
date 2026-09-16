@@ -216,6 +216,14 @@ public class PathologyProcessController {
             // v58（V165）：技术医嘱的建/完/取消进流转节点
             Map.entry("TECH_ORDER", "下达特检医嘱"), Map.entry("TECH_DONE", "确认完成特检医嘱"), Map.entry("TECH_CANCEL", "取消特检医嘱"));
 
+    /**
+     * v59：补取材追加时两段文本之间的分隔标记——{@link #grossing} 的 append 分支拼的就是它。
+     *
+     * <p>v63（2530 复核）：读侧拆「标签：值」形态的 {@link #grossFieldForms} <b>用的是同一个常量</b>。
+     * 拼一处、拆一处，两边各写一个字面量就必然漂——本轮要修的正是这类「同一事实两套口径」。
+     */
+    static final String GROSS_APPEND_MARK = "。补取材：";
+
     /** v59：大体所见修订来源中文名，与 chk_path_gross_revision_source（V166）三档逐字一致 */
     static final Map<String, String> REVISION_SOURCE_NAMES = Map.of(
             "GROSSING", "取材首写", "GROSSING_EDIT", "取材修订", "DIAGNOSE", "诊断修订");
@@ -482,7 +490,7 @@ public class PathologyProcessController {
                 return R.fail(5222, "该标本已有大体所见，本端点不覆盖既有内容："
                         + "补取材记描述请显式传 append=true（将作为新版本追加），修订大体所见请走取材修订入口或诊断端点");
             }
-            grossToWrite = existingGross + "。补取材：" + grossAssembled;
+            grossToWrite = existingGross + GROSS_APPEND_MARK + grossAssembled;
             if (grossToWrite.length() > GROSS_MAX) {
                 return R.fail(5222, "追加后的大体描述总长超过 " + GROSS_MAX + " 字（当前 "
                         + grossToWrite.length() + "），请精简或改写在各蜡块的组织描述里");
@@ -608,6 +616,21 @@ public class PathologyProcessController {
      *       受 {@link #GROSS_FIELD_GATE_KEY} 三态管辖：block 返 <b>5277</b> 且<b>零写入</b>（判定在第一条 update 之前），
      *       warn 照常落库、返回体 {@code warnings} 说明「本次修订后该标本不再有结构化字段」，off 不判。
      *       {@code warnings} 恒在（off / 无退化时为空数组），调用方不必判键在不在。</li>
+     *   <li><b>v63（2530 复核）：部分退化也纳入守卫</b>——v62 的判定是 {@code plannedFieldCount == 0}，
+     *       于是「修订前最新一版 4 项、本次只落 2 项」<b>既不 block 也不 warn</b>，提交后读端点还判
+     *       {@code fieldsCurrent=true}、{@code fieldsNote=null}。现在「本次行数 &lt; 修订前最新一版行数」
+     *       即回带一条 {@code warnings}（off 档不判）。</li>
+     * </ul>
+     *
+     * <p><b>为什么部分退化不占错误码（预分配的 5278 本轮判定不启用，照 5276 先例改回空置）</b>：
+     * <ul>
+     *   <li>「用户确实想删掉一项」是<b>正当场景</b>（把录错拆细的两项合成一项、把不适用的一项删掉），
+     *       而「一项不剩」才是那种「预填落空、用户照单提交」的病理形态——后者已由 5277 管住；</li>
+     *   <li>gate 是<b>运维配置</b>，录入者当场改不了。给部分退化开 block 路径，等于让一次配置笔误
+     *       把整个取材台的正常修订全堵死，而唯一的出路是找运维改配置——这条路径没有真实用途；</li>
+     *   <li>本条的真正缺口是<b>读侧说了假话</b>（屏上打绿色「与当前文本同版」），
+     *       归宿是 {@link #grossingView} 的 {@code textFieldForms / textFieldFormsBacked / fieldsCoverText}，
+     *       不是多一个拦截码。<b>要的是让人看见，不是拦住。</b></li>
      * </ul>
      * 返回 {@code revisionSeq}（本版号）、{@code grossFieldCount}（本版字段行数）、{@code grossFinding}（新文本）、
      * {@code warnings}（v62）。
@@ -660,22 +683,41 @@ public class PathologyProcessController {
 
         // v62（2530 复核）：结构化退化守卫——**所有判定都在第一条写入之前**，block 档零写入。
         // 「本次落几行字段」与 storeGrossFields 同源（effectiveGrossFields），不各算一遍免得口径漂。
+        // v63（2530 复核）：守卫从「本次落 0 行」扩到「本次落的行数 < 修订前最新一版的行数」——
+        // v62 只认全丢（plannedFieldCount == 0），于是「本来 4 项、修订后只剩 2 项」既不 block 也不 warn。
         Integer priorFieldRows = jdbc.queryForObject(
                 "select count(*) from path_gross_field where specimen_id = ?", Integer.class, specimenId);
+        // v63：部分退化的比较基准是**修订前最新一版**的行数，不是全部版本的累计行数——
+        // 累计行数随版本数单调增长，拿它当基准会把「第 3 次修订仍填满 4 项」误判成退化（4 < 8）。
+        Integer priorLatestRows = jdbc.queryForObject("""
+                select count(*) from path_gross_field f
+                where f.specimen_id = ?
+                  and f.revision_seq = (select max(f2.revision_seq) from path_gross_field f2
+                                         where f2.specimen_id = ?)
+                """, Integer.class, specimenId, specimenId);
+        int priorLatest = priorLatestRows == null ? 0 : priorLatestRows;
         boolean hadFields = priorFieldRows != null && priorFieldRows > 0;
         int plannedFieldCount = effectiveGrossFields(req.gross()).size();
-        boolean degrades = hadFields && plannedFieldCount == 0;
+        boolean losesAll = hadFields && plannedFieldCount == 0;
+        boolean losesSome = hadFields && plannedFieldCount > 0 && plannedFieldCount < priorLatest;
         String gate = gate(GROSS_FIELD_GATE_KEY);
         var warnings = new ArrayList<String>();
-        if (degrades && "block".equals(gate)) {
+        if (losesAll && "block".equals(gate)) {
             return R.fail(5277, "本次修订不含任何结构化字段，而该标本已有 " + priorFieldRows
                     + " 行字段级记录：提交后大体所见将退化成一段扁平文本，结构化记录全部丢失"
                     + "（gate " + GROSS_FIELD_GATE_KEY + "=block）。"
                     + "若确要去结构化，请先把 gate 调到 warn；若是预填没带出字段，请刷新修订表单后再改。");
         }
-        if (degrades && "warn".equals(gate)) {
+        if (losesAll && "warn".equals(gate)) {
             warnings.add("本次修订后该标本不再有结构化字段（修订前 " + priorFieldRows
                     + " 行、本次 0 行），大体所见退化为扁平文本（gate=warn 放行）");
+        }
+        // v63：**部分退化三档都不拦、只告警**——本轮据此判定不启用预分配的 5278（理由见端点注释）。
+        // off 档连这一声也不喊（off 就是「不判」），warn 与 block 都喊。
+        if (losesSome && !"off".equals(gate)) {
+            warnings.add("本次修订使结构化字段由 " + priorLatest + " 项减至 " + plannedFieldCount
+                    + " 项（少 " + (priorLatest - plannedFieldCount) + " 项）：少掉的那几项此后只留在大体所见文本里，"
+                    + "字段级查询与统计取不到（部分删字段有正当场景，gate=" + gate + " 三档均只告警不拦截）");
         }
 
         int written = jdbc.update("""
@@ -1375,8 +1417,11 @@ public class PathologyProcessController {
             var nodeArgs = new ArrayList<Object>();
             nodeArgs.add(sid);
             nodeArgs.add(uid);
+            // v63（2563 复核）：这是 STAIN 节点的**第二个写入口**。v62 只把单张登记（上面 stain()）的
+            // 「质量 GOOD」改成了中文，这一句原样留着——评委会看到「批量核销染色 3 张，质量 GOOD」
+            // 与隔壁刚修好的「染色 …（免疫组化 CK7），质量 优」并排。走同一份 SLIDE_QUALITY_NAMES，不新起一套。
             nodeArgs.add(clip("批量核销染色 " + cnt + " 张"
-                    + (quality == null ? "" : "，质量 " + quality)
+                    + (quality == null ? "" : "，质量 " + SLIDE_QUALITY_NAMES.getOrDefault(quality, quality))
                     + (rk == null ? "" : "：" + rk), REMARK_MAX));
             nodeArgs.add(sid);
             nodeArgs.addAll(ids);
@@ -1687,15 +1732,45 @@ public class PathologyProcessController {
         // 口径与事实相反（复核者原话：「且没有任何一处能调阅出与当前全文对应的完整结构化记录」）。
         // 现在追加一律判 false，并由 fieldsNote 说清；要看全量结构化记录走 fieldsByRevision（各版都在）。
         boolean sameSeq = !fields.isEmpty() && fieldsRevisionSeq != null && fieldsRevisionSeq.equals(textRevisionSeq);
-        boolean fieldsCurrent = sameSeq && !lastIsAppend;
+        boolean versionCurrent = sameSeq && !lastIsAppend;   // v59 / v61 的口径：**只比版号**
+
+        // v63（2530 复核）：**读侧诚实**——只比版号答不出复核者那一问。
+        // 走最普通的一条路「取材登记 → 补取材 → 修订取材描述（照预填原样提交）」：第 1 版那几项被
+        // v62 自己的新预填原样搬进「自由描述」，新版只落第 2 版那两项字段行——版号相等、
+        // 文本也不再是累积拼装（textIsCumulative=false），于是 v62 判 fieldsCurrent=true、fieldsNote=null，
+        // 屏上打绿色「最新字段版（第 3 版，2 项），与当前文本同版」，
+        // 而当前这段描述里的 4 个「标签：值」只有 2 个有结构化记录，屏上没有一处说得出来。
+        // 现在把「字段是否覆盖全文」补成 fieldsCurrent 的第二维，并把 N / M 两个数原样回出去。
+        var latestForms = new ArrayList<String[]>(fields.size());
+        for (var f : fields) {
+            latestForms.add(new String[] {String.valueOf(f.get("label")), String.valueOf(f.get("value"))});
+        }
+        int[] cover = grossFormCoverage(gross, latestForms);
+        int textFieldForms = cover[0];         // N：当前文本里「标签：值」形态的个数
+        int textFieldFormsBacked = cover[1];   // M：其中在最新字段版里有对应字段行的个数
+        boolean fieldsCoverText = textFieldForms == textFieldFormsBacked;
+        boolean fieldsCurrent = versionCurrent && fieldsCoverText;
+        body.put("textFieldForms", textFieldForms);
+        body.put("textFieldFormsBacked", textFieldFormsBacked);
+        body.put("fieldsCoverText", fieldsCoverText);
         body.put("fieldsCurrent", fieldsCurrent);
         body.put("textIsCumulative", lastIsAppend);   // v61：当前文本是累积全文（补取材追加），不是某一版字段的拼装结果
         // v59 审阅补：分叉原因不只「被诊断修订」——取材修订或补取材追加只写自由文本时，字段行留在上一版，措辞不能写死
-        body.put("fieldsNote", lastIsAppend && sameSeq
+        // v63：版号这一维的措辞仍按 versionCurrent 算。拿新的 fieldsCurrent 去算会打出
+        // 「字段级记录对应第 3 版，文本已在第 3 版被修订」这种**同一个版号说两件事**的假话
+        // （正是 v62 复核点名的那一类）；覆盖这一维单出一句，有就接在版号那句后面。
+        String versionNote = lastIsAppend && sameSeq
                 ? "当前大体所见是**累积全文**（含第 " + fieldsRevisionSeq + " 版之前各次取材/追加的内容），"
                   + "而字段级记录只覆盖第 " + fieldsRevisionSeq + " 版这一次补取材；"
                   + "要看各版完整的结构化记录请切换版本（各版字段都在）"
-                : fieldsStaleNote(fields.isEmpty(), fieldsCurrent, fieldsRevisionSeq, textRevisionSeq, lastRevisionSource));
+                : fieldsStaleNote(fields.isEmpty(), versionCurrent, fieldsRevisionSeq, textRevisionSeq, lastRevisionSource);
+        String coverNote = fields.isEmpty() || fieldsCoverText ? null
+                : "当前大体所见文本里有 " + textFieldForms + " 个「标签：值」形态，其中 " + textFieldFormsBacked
+                  + " 个在最新字段版（第 " + fieldsRevisionSeq + " 版）里有对应的结构化字段行——"
+                  + "余下 " + (textFieldForms - textFieldFormsBacked) + " 个只是这段文本里的一句话，"
+                  + "字段级查询与统计取不到；要补齐请在「修订取材描述」里把它们填成字段";
+        body.put("fieldsNote", versionNote == null ? coverNote
+                : coverNote == null ? versionNote : versionNote + "；" + coverNote);
         body.put("fieldsByRevision", fieldsByRevision);   // v60：全部版本的字段行（revisionSeq 升序、每版 fields 按 seq；无字段行为 []）
         body.put("revisions", revisions);
         body.put("diagnosedAt", head.get("diagnosed_at"));
@@ -1708,6 +1783,11 @@ public class PathologyProcessController {
                 + "diagnosedAt 是诊断时刻，请自行对时间线。"
                 + "fields 是按入参顺序落库的字段行（v58，V164 起），只回最大 revision_seq 中有字段行的那一版（v59，V166 起），"
                 + "fieldsAvailable=false 即无字段行（历史标本或纯自由文本），不从 grossFinding 反解析；"
+                + "textFieldForms / textFieldFormsBacked 是「当前文本里有 N 个『标签：值』形态、其中 M 个在最新字段版里有字段行」"
+                + "（v63：按 assembleGross 自己的分隔规则数出来的形态数，不是从文本反解析字段；"
+                + "自由描述里自己敲的「切缘：阴性」同样计入 N——它确实只是文本，字段级查询取不到），"
+                + "fieldsCoverText=N==M；fieldsCurrent 自 v63 起是「版号相同」与「字段覆盖全文」两维之与——"
+                + "v62 只比版号，于是「取材→补取材→照预填原样修订」后 4 个形态只剩 2 行字段仍打「与当前文本同版」；"
                 + "fieldsRevisionSeq / textRevisionSeq 分别是字段与文本的版号；fieldsCurrent=false 表示字段级记录覆盖不全当前文本"
                 + "（文本被诊断修订过，或当前文本是补取材追加的累积全文而字段只覆盖最后一次追加——后者由 textIsCumulative 标出，"
                 + "v61 复核修补：此前两版号相等即判 true，把「覆盖不全」标成「与当前文本同版」，口径与事实相反），"
@@ -2200,6 +2280,63 @@ public class PathologyProcessController {
                     + assembled.length() + "），请精简或改写在各蜡块的组织描述里");
         }
         return assembled;
+    }
+
+    /**
+     * v63（2530 复核）：把一段 {@code gross_finding} 拆回它里面的「标签：值」<b>形态</b>清单。
+     *
+     * <p><b>用的是 {@link #assembleGross} 自己的分隔规则，不另写一套解析</b>（两套解析必然漂）：
+     * 字段以「；」相连、自由描述以「。」接在字段之后、补取材追加以 {@link #GROSS_APPEND_MARK}
+     * 接在旧文本之后。所以这里「先切追加标记、再切『。』与『；』」还原 token，
+     * 再用 assembleGross 的同一套取舍判一个 token 是不是「标签：值」形态：
+     * 标签非空、不超 {@value #GROSS_LABEL_MAX} 字，值非空（值为空的字段 assembleGross 整条略去，
+     * 根本拼不出这种形态）。
+     *
+     * <p><b>这不是「从文本反解析出字段」</b>——{@link #grossingView} 明确不猜字段（猜错就是假结构化）。
+     * 本方法只回答一个可数的事实：<b>这段文字里有几处长得像「标签：值」</b>。自由描述里用户
+     * 自己敲的「切缘：阴性」同样计入——它确实只是一句文本、字段级查询与统计取不到它，
+     * 而这正是要让读的人看见的那半句。
+     */
+    public static List<String> grossFieldForms(String text) {
+        if (text == null) return List.of();
+        var out = new ArrayList<String>();
+        for (String seg : text.split(java.util.regex.Pattern.quote(GROSS_APPEND_MARK), -1)) {
+            for (String piece : seg.split("[。；]", -1)) {
+                String t = trim(piece);
+                if (t == null) continue;
+                int at = t.indexOf('：');
+                if (at <= 0) continue;                // 没有「：」，或「：」打头（标签为空，assembleGross 拒）
+                if (at > GROSS_LABEL_MAX) continue;   // 标签超上限，assembleGross 拼不出这种形态
+                if (at + 1 >= t.length()) continue;   // 值为空，assembleGross 整条略去
+                out.add(t);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * v63（2530 复核）：当前文本与<b>最新字段版</b>的覆盖关系，返回 {@code {N, M}}——
+     * N = 文本里「标签：值」形态的总数，M = 其中有对应字段行的个数（恒有 M ≤ N）。
+     *
+     * <p>算法刻意<b>先扣字段、再数余量</b>：逐条把字段行拼成的「标签：值」整串从文本里扣掉
+     * （扣成一个「。」，即 assembleGross 的分隔符），剩下的文本再按形态数。这样
+     * 字段值里含「；」「。」时也不会被切碎、误报成「这一项没有字段行」；
+     * 同一形态在累积全文里出现两次时只认一条字段行，另一次如实计入「只是文本」。
+     *
+     * @param fieldForms 最新字段版的 {@code {label, value}}，顺序无关
+     */
+    static int[] grossFormCoverage(String text, List<String[]> fieldForms) {
+        if (text == null || text.isEmpty()) return new int[] {0, 0};
+        String rest = text;
+        int backed = 0;
+        for (String[] kv : fieldForms) {
+            String form = kv[0] + "：" + kv[1];
+            int at = rest.indexOf(form);
+            if (at < 0) continue;
+            backed++;
+            rest = rest.substring(0, at) + "。" + rest.substring(at + form.length());
+        }
+        return new int[] {backed + grossFieldForms(rest).size(), backed};
     }
 
     /**

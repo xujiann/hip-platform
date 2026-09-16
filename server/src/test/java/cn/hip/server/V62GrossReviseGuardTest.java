@@ -50,6 +50,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *       而诚实的 {@code fieldsNote} 警示条 {@code v-if} 要求「是最新字段版」，切到第 1 版即消失。</li>
  * </ul>
  *
+ * <p><b>v63（2530 复核）补的那一半</b>：复核者走完最普通的一条路
+ * 「取材登记 → 补取材 → 修订取材描述（照预填原样提交）」后，第 1 版那几项被 v62 自己的新预填
+ * <b>原样搬进「自由描述」</b>，新版只落第 2 版那两项字段行；而 5277 只认「本次落 0 行」
+ * （{@code plannedFieldCount == 0}），这种「4 项变 2 项」的部分退化<b>既不 block 也不 warn</b>；
+ * 提交之后读端点判 {@code fieldsCurrent=true}、{@code fieldsNote=null}，屏上打绿色
+ * 「最新字段版（第 3 版，2 项），与当前文本同版」——当前这段描述里的 4 个「标签：值」
+ * 只有 2 个有结构化记录，屏上没有一处说得出来。本轮补：第 ① 条末尾那条
+ * {@code assertEquals(Boolean.TRUE, v2.get("fieldsCurrent"))} <b>正是钉死这个缺陷的断言，已翻过来</b>；
+ * 另加第 ②b（部分退化三档）与第 ②c（N/M 事实的正反用例）。
+ *
  * <p><b>本类钉住</b>：(a) 追加后读端点仍给出最新一版字段行、按前端同一套规则能原样预填且不丢更早各版内容
  * （并把「按 fieldsCurrent 取字段」的旧写法当场算成空，钉住反向事实）；(b) 5277 三档 gate 行为与坏配置回落；
  * (c) 源码扫描（剥注释、带活对照组）：预填不再读 fieldsCurrent、前端真消费 textIsCumulative、
@@ -156,8 +166,20 @@ class V62GrossReviseGuardTest {
         assertEquals(List.of(), warningsOf(r), "没有退化就没有告警");
         var v2 = ok(process.grossingView(specimenId));
         assertEquals(List.of("补取块数", "最大径"), labelsOf(rows(v2, "fields")));
-        assertEquals(Boolean.TRUE, v2.get("fieldsCurrent"), "修订后字段版 = 文本版，且文本不再是累积拼装");
-        assertEquals(Boolean.FALSE, v2.get("textIsCumulative"));
+        assertEquals(Boolean.FALSE, v2.get("textIsCumulative"), "新版文本是一次拼装的，不再带「。补取材：」");
+
+        // v63（2530 复核）：**这条断言原来写的是 assertEquals(Boolean.TRUE, v2.get("fieldsCurrent"),
+        // "修订后字段版 = 文本版，且文本不再是累积拼装")——它钉死的正是本轮被打回的那个缺陷。**
+        // 原来那条为什么是错的：它把「版号相等 + 不是累积形态」直接当成「字段覆盖了当前文本」，
+        // 而这条路径走完，新版文本里有 4 个「标签：值」（第 1 版那两项被预填搬进了自由描述），
+        // 结构化字段行却只有 2 项。屏上据此打绿色「与当前文本同版」，等于对评委说了假话。
+        // fieldsCurrent 现在是「版号相同」与「字段覆盖全文」两维之与，这条路上必须是 false。
+        assertEquals(Boolean.FALSE, v2.get("fieldsCurrent"),
+                "版号相等、文本也不是累积形态，但 4 个「标签：值」只有 2 个有字段行");
+        assertEquals(4, ((Number) v2.get("textFieldForms")).intValue(),
+                "当前文本里 4 个「标签：值」形态：" + v2.get("grossFinding"));
+        assertEquals(2, ((Number) v2.get("textFieldFormsBacked")).intValue(), "其中只有 2 个有结构化字段行");
+        assertEquals(Boolean.FALSE, v2.get("fieldsCoverText"));
     }
 
     // =====================================================================================
@@ -184,13 +206,27 @@ class V62GrossReviseGuardTest {
                 "5277 消息要说清是哪个 gate 拦的、拦的是什么：" + blocked.getMessage());
         assertEquals(snap, snapshot(specimenId), "block 档一个字都不许写（R.fail 不是异常，@Transactional 不回滚）");
 
-        // block 档但本次仍带字段 → 不算退化，照常放行、无告警
+        // v63（2530 复核）：**这里原来是 assertEquals(List.of(), warningsOf(kept), "不退化就没有告警")。**
+        // 原来那条为什么是错的：这一次修订把字段从 2 项砍到 1 项，它<b>正是</b>被打回的那种部分退化，
+        // 而当时的判定只认「落 0 行」，于是仓库自己有一条断言要求「2 项变 1 项必须一声不吭」。
+        // 现在 block 档也不拦它（部分删字段有正当场景，理由见端点注释），但必须喊一声。
+        assertEquals(1, setGate("block"), "仍在 block 档");
         var keep = new LinkedHashMap<String, String>();
         keep.put("大小", "3.5cm");
         var kept = ok(process.reviseGrossFields(specimenId,
                 new GrossReviseReq(null, keep, "仍有字段 " + tag), doc));
         assertEquals(1, ((Number) kept.get("grossFieldCount")).intValue());
-        assertEquals(List.of(), warningsOf(kept), "不退化就没有告警");
+        var partial = warningsOf(kept);
+        assertEquals(1, partial.size(), "**修复前这里是空数组**：2 项变 1 项既不 block 也不 warn：" + partial);
+        assertTrue(partial.get(0).contains("由 2 项减至 1 项") && partial.get(0).contains("gate=block"),
+                "部分退化在 block 档也只告警不拦截，且要把两个数与档位说出来：" + partial.get(0));
+
+        // 活的对照组：项数不减就是真的不退化，一声不吭——否则上面那条成了「只要带字段就告警」
+        var same = new LinkedHashMap<String, String>();
+        same.put("大小", "3.6cm");
+        var unchanged = ok(process.reviseGrossFields(specimenId,
+                new GrossReviseReq(null, same, "只改了值 " + tag), doc));
+        assertEquals(List.of(), warningsOf(unchanged), "活对照组：修订前最新一版 1 项、本次 1 项，不减就不告警");
 
         // ---- warn：照常落库，返回体带 warnings ----
         assertEquals(1, setGate("warn"));
@@ -204,7 +240,7 @@ class V62GrossReviseGuardTest {
         assertEquals(warnText, grossFinding(specimenId), "warn 必须**真落库**，不是只喊一声");
         int warnSeq = ((Number) warned.get("revisionSeq")).intValue();
         assertEquals(0, fieldRowsOfRevision(specimenId, warnSeq), "本版 0 行字段行");
-        assertEquals(3, fieldRows(specimenId), "更早各版的字段行不动（2 + 1）");
+        assertEquals(4, fieldRows(specimenId), "更早各版的字段行不动（2 + 1 + 1）");
 
         // ---- off：不判，warnings 是空数组而不是缺键 ----
         assertEquals(1, setGate("off"));
@@ -229,6 +265,147 @@ class V62GrossReviseGuardTest {
         var freeR = ok(process.reviseGrossFields(freeTextId,
                 new GrossReviseReq(null, null, "改过的纯自由文本 " + tag), doc));
         assertEquals(List.of(), warningsOf(freeR), "守卫看的是「修订前有、修订后没有」，本来就没有不算退化");
+    }
+
+    // =====================================================================================
+    // ②b v63（2530 复核）：**部分**退化——「4 项变 2 项」此前既不 block 也不 warn
+    // =====================================================================================
+
+    @Test
+    void partialFieldLossWarnsOnEveryGateButNeverBlocks() {
+        var four = new LinkedHashMap<String, String>();
+        four.put("标本大小", "5×4×3cm");
+        four.put("切面", "灰白");
+        four.put("边界", "清");
+        four.put("取材块数", "4");
+        ok(process.grossing(new GrossingReq(specimenId, null, four, "首次 " + tag, false, null,
+                List.of(new BlockReq("块 " + tag))), doc));
+        assertEquals(4, fieldRows(specimenId), "前置：最新一版 4 行字段");
+
+        // ---- block 档：部分退化**不拦**（不占预分配的 5278，理由见端点注释）----
+        assertEquals(1, setGate("block"));
+        var two = new LinkedHashMap<String, String>();
+        two.put("标本大小", "5×4×3cm");
+        two.put("切面", "灰白");
+        var r = process.reviseGrossFields(specimenId, new GrossReviseReq(null, two, "只留两项 " + tag), doc);
+        assertEquals(0, r.getCode(),
+                "部分删字段有正当场景、gate 又是运维配置（录入者当场改不了），block 路径没有真实用途：" + r.getMessage());
+        var body = r.getData();
+        assertEquals(2, ((Number) body.get("grossFieldCount")).intValue());
+        var ws = warningsOf(body);
+        assertEquals(1, ws.size(),
+                "**修复前的反向事实**：4 项变 2 项时 warnings 是空数组——5277 只认 plannedFieldCount == 0：" + ws);
+        assertTrue(ws.get(0).contains("由 4 项减至 2 项") && ws.get(0).contains("少 2 项"),
+                "告警要把「修订前 N 项、本次 M 项」两个数说出来：" + ws.get(0));
+        assertTrue(ws.get(0).contains("gate=block"), "告警要说清是哪一档放行的：" + ws.get(0));
+        int seq2 = ((Number) body.get("revisionSeq")).intValue();
+        assertEquals(2, fieldRowsOfRevision(specimenId, seq2), "warn 不是「只喊一声」：本版真落 2 行");
+
+        // ---- warn 档：同一条告警；且基准是**修订前最新一版**、不是全部版本累计 ----
+        assertEquals(1, setGate("warn"));
+        var one = new LinkedHashMap<String, String>();
+        one.put("标本大小", "5×4×3cm");
+        var w = warningsOf(ok(process.reviseGrossFields(specimenId,
+                new GrossReviseReq(null, one, "只留一项 " + tag), doc)));
+        assertEquals(1, w.size(), "warn 档同样告警：" + w);
+        assertTrue(w.get(0).contains("由 2 项减至 1 项"),
+                "基准是修订前最新一版的 2 行，不是全部版本累计的 6 行（拿累计当基准会把「仍填满」误判成退化）："
+                        + w.get(0));
+
+        // ---- off 档：不判 ----
+        assertEquals(1, setGate("off"));
+        var z = ok(process.reviseGrossFields(specimenId,
+                new GrossReviseReq(null, null, "整段自由描述 " + tag), doc));
+        assertEquals(List.of(), warningsOf(z), "off 就是不判，全丢与部分退化一视同仁");
+
+        // ---- 活对照组：项数不减就不告警（这几条不是「只要带字段就喊」）----
+        assertEquals(1, setGate("warn"));
+        var keepOne = new LinkedHashMap<String, String>();
+        keepOne.put("标本大小", "6×4×3cm");
+        var k = ok(process.reviseGrossFields(specimenId, new GrossReviseReq(null, keepOne, "改了值 " + tag), doc));
+        assertEquals(List.of(), warningsOf(k),
+                "活对照组：修订前最新一版 1 行（上一次整段自由描述没落字段行）、本次 1 行，不减就不告警");
+    }
+
+    // =====================================================================================
+    // ②c v63（2530 复核）：读侧诚实——「文本里 N 个『标签：值』，其中 M 个有字段行」
+    // =====================================================================================
+
+    @Test
+    void theReadEndpointSaysHowManyLabelValueFormsActuallyHaveFieldRows() {
+        // 复核者走的就是最普通的这一条：取材登记 → 补取材 → 修订取材描述（照预填原样提交）
+        var first = new LinkedHashMap<String, String>();
+        first.put("标本大小", "5×4×3cm");
+        first.put("切面", "灰白");
+        ok(process.grossing(new GrossingReq(specimenId, null, first, "首次 " + tag, false, null,
+                List.of(new BlockReq("首块 " + tag))), doc));
+        var second = new LinkedHashMap<String, String>();
+        second.put("补取块数", "2 块");
+        second.put("最大径", "0.8cm");
+        ok(process.grossing(new GrossingReq(specimenId, null, second, "补取材 " + tag, true, null,
+                List.of(new BlockReq("补块 " + tag))), doc));
+
+        // 累积全文阶段：4 个形态、只有最后一版那 2 项有字段行（fieldsCurrent 这一步 v61 已判 false）
+        var v = ok(process.grossingView(specimenId));
+        assertEquals(4, ((Number) v.get("textFieldForms")).intValue(),
+                "累积全文里 4 个「标签：值」：" + v.get("grossFinding"));
+        assertEquals(2, ((Number) v.get("textFieldFormsBacked")).intValue());
+        assertEquals(Boolean.FALSE, v.get("fieldsCoverText"));
+
+        // 照 GrossingPanel 的预填原样提交（Java 同构版 prefill 与那段 TS 逐条对应）
+        var fixed = prefill(String.valueOf(v.get("grossFinding")), rows(v, "fields"));
+        assertEquals("CUMULATIVE", fixed.mode());
+        var r = ok(process.reviseGrossFields(specimenId,
+                new GrossReviseReq(null, new LinkedHashMap<>(fixed.gross()), fixed.free()), doc));
+        assertEquals(2, ((Number) r.get("grossFieldCount")).intValue());
+        assertEquals(List.of(), warningsOf(r),
+                "本次 2 项、修订前最新一版也是 2 项（追加那一版），不减——所以 gate 这一侧沉默，"
+                        + "**这条路只能靠读侧说实话**");
+
+        // ---- 复核者站的那一格 ----
+        var v2 = ok(process.grossingView(specimenId));
+        int fseq = ((Number) v2.get("fieldsRevisionSeq")).intValue();
+        int tseq = ((Number) v2.get("textRevisionSeq")).intValue();
+        // **修复前的反向事实**：v62 判 fieldsCurrent 的两个条件在这里全都成立，于是它判 true、
+        // fieldsNote 给 null，查看弹窗打绿色「最新字段版（第 N 版，2 项），与当前文本同版」。
+        assertEquals(fseq, tseq, "v62 条件一：字段版号 = 文本版号");
+        assertEquals(Boolean.FALSE, v2.get("textIsCumulative"), "v62 条件二：文本不是累积拼装形态");
+        assertEquals(4, ((Number) v2.get("textFieldForms")).intValue(),
+                "而当前这段描述里有 4 个「标签：值」：" + v2.get("grossFinding"));
+        assertEquals(2, ((Number) v2.get("textFieldFormsBacked")).intValue(), "其中只有 2 个有结构化字段行");
+        assertEquals(Boolean.FALSE, v2.get("fieldsCoverText"));
+        assertEquals(Boolean.FALSE, v2.get("fieldsCurrent"),
+                "**修复前这里是 true**：只比版号，把「覆盖不全」标成「与当前文本同版」");
+        String note = String.valueOf(v2.get("fieldsNote"));
+        assertTrue(note.contains("4 个「标签：值」形态") && note.contains("其中 2 个"),
+                "**修复前 fieldsNote 是 null**：屏上没有一处说得出这两个数：" + note);
+        assertFalse(note.contains("第 " + tseq + " 版取材修订只写了自由文本"),
+                "措辞不许倒退成「同一个版号说两件事」——本次修订真写了 2 项字段：" + note);
+
+        // ---- 正向：把 4 项都填成字段 → N == M，这时才准说「与当前文本同版」----
+        var all4 = new LinkedHashMap<String, String>();
+        all4.put("补取块数", "2 块");
+        all4.put("最大径", "0.8cm");
+        all4.put("标本大小", "5×4×3cm");
+        all4.put("切面", "灰白");
+        ok(process.reviseGrossFields(specimenId, new GrossReviseReq(null, all4, "首次 " + tag), doc));
+        var v3 = ok(process.grossingView(specimenId));
+        assertEquals(4, ((Number) v3.get("textFieldForms")).intValue());
+        assertEquals(4, ((Number) v3.get("textFieldFormsBacked")).intValue());
+        assertEquals(Boolean.TRUE, v3.get("fieldsCoverText"));
+        assertEquals(Boolean.TRUE, v3.get("fieldsCurrent"), "四个形态都有字段行，这才是真的「与当前文本同版」");
+        assertNull(v3.get("fieldsNote"), "没有分叉就不编一句");
+
+        // ---- 活的对照组：拆解器是活的，也没把自由描述里的普通句子数成「标签：值」----
+        assertEquals(List.of("大小：3cm", "切面：灰白"),
+                PathologyProcessController.grossFieldForms("大小：3cm；切面：灰白。质软，无出血"),
+                "活对照组：按 assembleGross 的分隔规则拆得出形态，而「质软，无出血」不是形态");
+        assertEquals(List.of(),
+                PathologyProcessController.grossFieldForms("送检组织质软，切面灰白，未见明确肿物"),
+                "活对照组：一段没有「：」的散文数出 0 个形态——否则上面几条是恒真的");
+        assertEquals(List.of("补取块数：2 块"),
+                PathologyProcessController.grossFieldForms("旧文本。补取材：补取块数：2 块。补取材组织"),
+                "活对照组：追加标记「。补取材：」是分隔符，不能被自己数成一个「补取材：…」形态");
     }
 
     // =====================================================================================
