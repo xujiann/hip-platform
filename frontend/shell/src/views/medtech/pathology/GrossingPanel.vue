@@ -24,7 +24,9 @@
     </el-form-item>
   </el-form>
 
-  <el-alert v-if="note" type="info" :closable="false" class="cav" :title="note" />
+  <!-- v63（2530 复核 demo 镜头）：后端口径文本可能带 **强调**（本目录 format.ts 的 mdText 专治这个），
+       一律去标记后按纯文本插值——不做 Markdown 渲染、不用 v-html -->
+  <el-alert v-if="note" type="info" :closable="false" class="cav" :title="mdText(note)" />
   <el-alert v-if="truncated" type="warning" show-icon :closable="false" class="cav"
             :title="`命中超过 ${limit} 条，仅显示前 ${limit} 条（不做翻页）；请收窄条件`" />
 
@@ -126,9 +128,13 @@
           <!-- v59：字段随版本走；诊断只改文本不改字段，两者分叉时明说，不让两处并排自相矛盾。
                v62（2530 复核，审计者 met=false 第 (b) 点）：此前这条 v-if 还要求「是最新字段版」——
                切到第 1 版时，说真话的 fieldsNote 提示消失、而上面那条说假话的「被取代版本」标签恰好出现，
-               两者互斥。fieldsNote 讲的是「字段版 vs 文本版」的全局关系，与当前在看哪一版无关，故只看它有没有值。 -->
-          <el-alert v-if="view.fieldsNote" type="warning" show-icon :closable="false" style="margin-top: 4px"
-                    :title="String(view.fieldsNote)" />
+               两者互斥。fieldsNote 讲的是「字段版 vs 文本版」的全局关系，与当前在看哪一版无关，故只看它有没有值。
+               v63（2530 复核 data 镜头）：这句话是**全屏唯一**的「字段覆盖到哪一段」结论，来源是 format.ts 的
+               grossFieldsNote（后端 fieldsNote 优先、后端没给才兜底），轨迹抽屉用的是同一个函数；
+               上面那个 el-tag 只报版本身份，不再自己推断一句可能与这条相反的话。
+               后端这句带裸 Markdown「**累积全文**」，经 mdText 去标记后上屏（此前 String() 直出、星号打在屏幕上）。 -->
+          <el-alert v-if="viewFieldsNote" type="warning" show-icon :closable="false" style="margin-top: 4px"
+                    :title="viewFieldsNote" />
           <span v-if="!viewFields.length" class="muted" style="display: block; margin-top: 4px">{{ viewNoFieldsNote }}</span>
           <el-table v-else :data="viewFields" size="small" border max-height="200" style="margin-top: 4px">
             <el-table-column label="#" width="50">
@@ -409,7 +415,7 @@
 import { computed, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import client, { type BizError } from '../../../api/client'
-import { SPECIMEN_TYPES, fmt, fmtTime, num, typeName, type Row } from './format'
+import { SPECIMEN_TYPES, fmt, fmtTime, grossFieldsNote, mdText, num, typeName, type Row } from './format'
 
 const emit = defineEmits<{ (e: 'changed'): void }>()
 
@@ -664,9 +670,21 @@ function prefillNote(d: Row, mode: SplitMode, fieldCount: number): string {
         + '本次修订将整体替换当前全文'
   }
   if (!hasFields) return ''
-  if (d.textIsCumulative === true) {
+  // v63（2530 复核 data 镜头，本轮头号纪律）：累积全文还要再分一档。
+  // 字段版号 == 文本版号 时，库里最新那一版字段就是最后一次补取材写的，说「含第 fSeq 版之前各次…」才成立；
+  // 而最后一次补取材**可能一行字段都没写**（该版 path_gross_field 零行），字段级记录停在更早的第 fSeq 版，
+  // 此时当前全文里既有第 fSeq 版之前的、也有它之后那次追加的内容，原来那句话把后半段说漏了。
+  const fieldsSeqIsTextSeq = d.fieldsRevisionSeq !== null && d.fieldsRevisionSeq !== undefined
+    && d.textRevisionSeq !== null && d.textRevisionSeq !== undefined
+    && Number(d.fieldsRevisionSeq) === Number(d.textRevisionSeq)
+  if (d.textIsCumulative === true && fieldsSeqIsTextSeq) {
     return `已按库里第 ${fSeq} 版字段（${fieldCount} 项）原样预填。当前文本是累积全文，`
       + `含第 ${fSeq} 版之前各次取材/追加的内容，那部分已放入「自由描述」；`
+      + '本次修订将整体替换当前全文（字段会重新拼到最前），请核对后提交'
+  }
+  if (d.textIsCumulative === true) {
+    return `已按库里第 ${fSeq} 版字段（${fieldCount} 项）原样预填——第 ${tSeq} 版补取材未再填写字段。`
+      + `当前文本是累积全文，第 ${fSeq} 版之前与其后各次追加的内容都已放入「自由描述」；`
       + '本次修订将整体替换当前全文（字段会重新拼到最前），请核对后提交'
   }
   if (d.fieldsCurrent === false) {
@@ -813,12 +831,32 @@ const viewNoFieldsNote = computed(() => (view.value.fieldsRevisionSeq == null
   : '本版未填写字段（只写了自由文本，或该版由诊断端点修订文本）'))
 
 /**
+ * 「字段级记录覆盖到当前文本的哪一段」——**全屏只说一次**，来源是 format.ts 的 grossFieldsNote
+ * （后端 fieldsNote 优先，后端没给才兜底）。轨迹抽屉里那条同名标签用的是同一个函数：同一事实两个入口一套措辞。
+ */
+const viewFieldsNote = computed(() => grossFieldsNote(view.value as Row))
+
+/**
  * v62（2530 复核 demo 镜头）：字段版本标签——「被取代版本」只在**真有更晚的字段版**时出现。
  *
  * <p>修复前：只写了自由描述、没有结构化字段的标本（零种子库里最普通的一种，也是 tools/demo-pathology.py
  * 铺出来的全部标本）走 else 分支，屏上打出「被取代版本（第 1 版，0 项）：已被第 — 版字段取代，仅供调阅」——
  * 它既没被任何版本取代（就是当前版、唯一版），「第 —」也不是版本号而是 fmt(null)；
  * 而那句诚实的兜底「历史标本或纯自由文本，无字段级记录」在当时的代码里对全新库标本永远不可达。
+ *
+ * <p><b>v63（2530 复核 demo + data 两个镜头，本轮头号纪律）</b>，两处都是「标签自己推断、与同屏后端文案对撞」：
+ * <ul>
+ *   <li><b>demo</b>：superseded 此前压根不看 textIsCumulative。补取材追加场景里当前 gross_finding 是
+ *       <b>累积全文</b>，更早各版写下的内容一个字没少地留在正文里——<b>没有被任何版取代</b>，
+ *       而屏上打的是「被取代版本（第 1 版，3 项）：已被第 2 版字段取代，仅供调阅」，
+ *       正下方那条后端 fieldsNote 同屏说着「各版字段都在」。现在 superseded 把 textIsCumulative 算进去，
+ *       累积全文里的更早版本改走「较早字段版」一档，与后端那句话同时成立。</li>
+ *   <li><b>data</b>：此前只凭单键 textIsCumulative 就断言「本版字段只覆盖最后一次补取材」。
+ *       最后那次补取材<b>可能一行字段都没写</b>（该版 path_gross_field 零行，字段级记录停在第 1 版「取材首写」），
+ *       这句话与库内事实相反，且被同屏后端文案「第 2 版补取材追加未填写字段」逐字打脸。
+ *       现在标签<b>不再自己下这个结论</b>：覆盖范围由 viewFieldsNote（后端同源）在正下方那条 alert 里说一次，
+ *       标签只报版本身份与配色——同屏两处不重复念同一段话，更不会念出两套说法。</li>
+ * </ul>
  */
 const viewVersionTag = computed<{ type: 'success' | 'warning' | 'info'; text: string }>(() => {
   const v = viewVersion.value
@@ -826,18 +864,22 @@ const viewVersionTag = computed<{ type: 'success' | 'warning' | 'info'; text: st
   const seq = fmt(v.revisionSeq)
   const n = viewFields.value.length
   const latestSeq = view.value.fieldsRevisionSeq
-  // 真被取代 = 存在一个更晚的、有字段行的版本（latestSeq 就是它；全无字段行时它为 null）
-  const superseded = latestSeq != null && Number(v.revisionSeq) < Number(latestSeq)
+  const cumulative = view.value.textIsCumulative === true
+  const earlier = latestSeq != null && Number(v.revisionSeq) < Number(latestSeq)
+  // 真被取代 = 存在一个更晚的、有字段行的版本（latestSeq 就是它；全无字段行时它为 null），
+  // **且当前正文不是累积全文**——累积全文场景里这一版写下的内容仍原样留在当前 gross_finding 里，没被谁取代
+  const superseded = earlier && !cumulative
   if (n === 0) return { type: 'info', text: `第 ${seq} 版：${viewNoFieldsTag.value}` }
   if (superseded) {
     return { type: 'info', text: `被取代版本（第 ${seq} 版，${n} 项）：已被第 ${fmt(latestSeq)} 版字段取代，仅供调阅` }
   }
-  if (view.value.textIsCumulative === true) {
-    return { type: 'warning', text: `最新字段版（第 ${seq} 版，${n} 项）：当前文本是累积全文，本版字段只覆盖最后一次补取材` }
+  if (earlier) {
+    return { type: 'info',
+             text: `较早字段版（第 ${seq} 版，${n} 项）：当前文本是累积全文，本版字段写下的内容仍在正文里，未被取代` }
   }
-  if (view.value.fieldsCurrent === false) {
-    return { type: 'warning',
-             text: `最新字段版（第 ${seq} 版，${n} 项）：文本已在第 ${fmt(view.value.textRevisionSeq)} 版修订，以文本为准` }
+  // 覆盖范围那句话归正下方的 viewFieldsNote（后端同源）说；这里只报身份与配色，不另起一套措辞
+  if (viewFieldsNote.value !== '') {
+    return { type: 'warning', text: `最新字段版（第 ${seq} 版，${n} 项）：字段与当前文本的覆盖关系见下方提示` }
   }
   return { type: 'success', text: `最新字段版（第 ${seq} 版，${n} 项），与当前文本同版` }
 })

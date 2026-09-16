@@ -190,7 +190,8 @@
         </el-timeline-item>
       </el-timeline>
       <el-empty v-else description="该标本尚无流转打点" :image-size="50" />
-      <p v-if="trail.note" class="muted">{{ trail.note }}</p>
+      <!-- v63（2530 复核）：后端口径文本可能带 **强调**，经同目录 format.ts 的 mdText 去标记后按纯文本插值 -->
+      <p v-if="trail.note" class="muted">{{ mdText(trail.note) }}</p>
 
       <!-- ============ 大体所见修订（v58，2530：path_gross_revision 留痕，按 seq 列 old→new） ============ -->
       <h4>大体所见修订</h4>
@@ -198,10 +199,15 @@
         <!-- v59：字段随版本走——标出字段属于第几版；与文本不同版（诊断只改文本）时明说，以文本为准。
              v62（2530 复核）：后端没回 fieldsNote 时的那句兜底此前写死「文本已在第 N 版修订」——
              补取材追加场景里字段版号与文本版号**相等**，这句话会把「第 2 版字段 / 第 2 版文本」说成「文本已在第 2 版修订」，
-             同一个版号被说成两件事。改为消费 textIsCumulative（v61 起后端就给了这个键，此前全仓零消费）分档兜底。 -->
-        <el-tag v-if="gross.fieldsAvailable === true" size="small" :type="gross.fieldsCurrent === false ? 'warning' : 'success'">
+             同一个版号被说成两件事。改为消费 textIsCumulative（v61 起后端就给了这个键，此前全仓零消费）分档兜底。
+             v63（2530 复核 data 镜头，本轮头号纪律）：这句话与取材查看弹窗说的是**同一件事**，
+             此前一个按后端文案渲染、一个自己推断，同一份返回体两个入口两套说法。现在两处都调 format.ts 的
+             grossFieldsNote（后端 fieldsNote 优先、后端没给才兜底），措辞只此一份；
+             后端那句带裸 Markdown「**累积全文**」，grossFieldsNote 内部已经过 mdText 去标记。
+             标签配色也改由这句话在不在决定——颜色与文字不会再各说各的。 -->
+        <el-tag v-if="gross.fieldsAvailable === true" size="small" :type="grossNote ? 'warning' : 'success'">
           第 {{ fmt(gross.fieldsRevisionSeq) }} 版字段级记录（{{ grossFields.length }} 项）{{
-            gross.fieldsCurrent === false ? `；${gross.fieldsNote || grossStaleFallback}` : '，与当前文本同版' }}</el-tag>
+            grossNote ? `；${grossNote}` : '，与当前文本同版' }}</el-tag>
         <el-tag v-else size="small" type="info">历史标本，无字段级记录（或本次取材只写了自由文本；不从文本反解析）</el-tag>
         <el-table v-if="grossRevisions.length" :data="grossRevisions" size="small" border max-height="320"
                   style="margin-top: 6px" row-key="seq">
@@ -212,6 +218,9 @@
               <div class="rev-fields">
                 <template v-if="revisionFields(row.seq).length">
                   <el-tag size="small" type="success">第 {{ fmt(row.seq) }} 版字段级记录（{{ revisionFields(row.seq).length }} 项）</el-tag>
+                  <!-- v63（2530 复核 demo 镜头）：更早各版的身份与取材查看弹窗那个标签同一判定——
+                       累积全文场景里它们写下的内容仍原样留在当前 gross_finding 里，不是「被取代」 -->
+                  <span v-if="olderVersionNote(row.seq)" class="muted" style="margin-left: 6px">{{ olderVersionNote(row.seq) }}</span>
                   <span v-if="gross.fieldsByRevision == null" class="muted" style="margin-left: 6px">后端未回 fieldsByRevision：仅最新字段版可展开</span>
                   <el-table :data="revisionFields(row.seq)" size="small" border style="margin-top: 4px; max-width: 640px">
                     <el-table-column label="#" width="50">
@@ -279,8 +288,8 @@ import { computed, reactive, ref } from 'vue'
 import client from '../../../api/client'
 import { fmtDateTime } from '../../../utils/date'
 import {
-  ANOMALY_KINDS, SPECIMEN_TYPES, anomalyName, anomalyTag, defaultRange, fmt, fmtTime, nodeName, num,
-  reportStage, typeName, type Row,
+  ANOMALY_KINDS, SPECIMEN_TYPES, anomalyName, anomalyTag, defaultRange, fmt, fmtTime, grossFieldsNote,
+  mdText, nodeName, num, reportStage, typeName, type Row,
 } from './format'
 
 const emit = defineEmits<{ (e: 'changed'): void; (e: 'open-specimen', specimenId: number): void }>()
@@ -366,10 +375,29 @@ const grossRevisions = computed<Row[]>(() => (gross.value.revisions ?? []) as Ro
 /**
  * v62（2530 复核）：后端 fieldsNote 缺失时的兜底措辞——**消费 textIsCumulative，不自己推断**。
  * 补取材追加时字段版号与文本版号相等，写死「文本已在第 N 版修订」就是把同一个版号说成两件事。
+ *
+ * <p>v63（2530 复核 data 镜头，本轮头号纪律）：这段兜底与取材查看弹窗那一份<b>合并成一处</b>
+ * （format.ts 的 grossFieldsNote：后端 fieldsNote 优先、后端没给才兜底）。此前本抽屉按后端文案渲染、
+ * 查看弹窗自己推断，<b>同一份返回体两个入口两套说法</b>；而 v62 的兜底原文「本版字段只覆盖最后一次补取材」
+ * 在「最后一次补取材一行字段都没写」的库态下同样是假话，故共享的那一份刻意不点名是哪一次取材。
  */
-const grossStaleFallback = computed(() => (gross.value.textIsCumulative === true
-  ? `当前文本是累积全文，本版字段只覆盖最后一次补取材（更早各版字段见下方逐版展开）`
-  : `文本已在第 ${fmt(gross.value.textRevisionSeq)} 版修订，以文本为准`))
+const grossNote = computed(() => grossFieldsNote(gross.value))
+
+/**
+ * 逐版展开里那一版的身份：比 fieldsRevisionSeq 早的版本，是**真被取代**还是**内容仍在正文里**。
+ *
+ * <p>v63（2530 复核 demo 镜头）：判定与 GrossingPanel 的 viewVersionTag 逐字同源——
+ * 当前正文是累积全文（补取材追加）时，更早各版写下的内容一个字没少地留在 gross_finding 里，
+ * <b>没有被任何版取代</b>；只有非累积（诊断改写 / 取材整体修订）才谈得上「已被第 N 版字段取代」。
+ * 最新字段版及其之后的版本不加这句话（空串 = 不显示）。
+ */
+function olderVersionNote(seq: unknown): string {
+  const latestSeq = gross.value.fieldsRevisionSeq
+  if (latestSeq == null || seq == null || !(Number(seq) < Number(latestSeq))) return ''
+  return gross.value.textIsCumulative === true
+    ? '较早字段版：当前文本是累积全文，本版字段写下的内容仍在正文里，未被取代'
+    : `被取代版本：已被第 ${fmt(latestSeq)} 版字段取代，仅供调阅`
+}
 
 /**
  * v60（2530 尾）：某一版修订的字段行。fieldsByRevision（车道 B 契约：[{revisionSeq, source, sourceName, templateCode,

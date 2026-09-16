@@ -91,14 +91,18 @@
         <el-alert v-if="ind.caveat" type="warning" :closable="false" class="cav"
                   :title="mdText(ind.caveat)" />
         <el-descriptions v-if="ind.summary" :column="4" border size="small" class="cav">
-          <el-descriptions-item v-for="k in keysOf(ind.summary as Row)" :key="k" :label="zh(k)">
+          <el-descriptions-item v-for="k in keysOf(ind.summary as Row)" :key="k"
+                                :label="colLabel(k, keysOf(ind.summary as Row))">
             {{ fmt((ind.summary as Row)[k]) }}
           </el-descriptions-item>
         </el-descriptions>
         <el-alert v-if="ind.rowsTruncated === true" type="warning" show-icon :closable="false" class="cav"
                   :title="mdText(ind.rowsTruncatedNote ?? '汇总行超限，已截断，请缩小统计区间')" />
         <el-table v-if="rowsOf(ind).length" :data="rowsOf(ind)" size="small" border max-height="360">
-          <el-table-column v-for="c in columnsOf(rowsOf(ind))" :key="c" :prop="c" :label="zh(c)"
+          <!-- v63（2563 复核 demo 镜头）：表头改走 colLabel——它与格子里的 cellText 共用「中文名列在不在场」
+               这一个判定，不会再出现「标着编码的列显示中文名」「并排两列表头逐字相同」 -->
+          <el-table-column v-for="c in columnsOf(rowsOf(ind))" :key="c" :prop="c"
+                           :label="colLabel(c, columnsOf(rowsOf(ind)))"
                            :min-width="colWidth(c)" show-overflow-tooltip>
             <template #default="{ row }">{{ cellText(c, row[c], row) }}</template>
           </el-table-column>
@@ -135,10 +139,10 @@
         </el-button>
         <span class="muted">与上表同时间窗、同锚点、同过滤条件；CSV 页脚写明过滤与口径</span>
       </div>
-      <!-- 表头 zh()、取值 cellText()；_id 主键列挪到最后并置灰（不删：对账与 CSV 导出仍要它） -->
+      <!-- 表头 colLabel()、取值 cellText()（两者同一个判定）；_id 主键列挪到最后并置灰（不删：对账与 CSV 导出仍要它） -->
       <el-table :data="detailItems" v-loading="detailLoading" size="small" border
                 height="calc(100vh - 260px)">
-        <el-table-column v-for="c in detailColumns" :key="c" :prop="c" :label="zh(c)"
+        <el-table-column v-for="c in detailColumns" :key="c" :prop="c" :label="colLabel(c, detailColumns)"
                          :min-width="colWidth(c)" :class-name="isIdColumn(c) ? 'id-col' : ''"
                          show-overflow-tooltip>
           <template #default="{ row }">{{ cellText(c, row[c], row) }}</template>
@@ -172,8 +176,8 @@
 import { computed, onMounted, ref } from 'vue'
 import client from '../../../api/client'
 import {
-  cellText, colWidth, columnsOf, defaultRange, fmt, idColumnsLast, isIdColumn, keysOf, mdText, num, ratio, zh,
-  type Row,
+  cellText, colLabel, colWidth, columnsOf, defaultRange, fmt, idColumnsLast, isIdColumn, keysOf, mdText,
+  num, ratio, zh, type Row,
 } from './format'
 
 const range = ref<[string, string]>(defaultRange())
@@ -205,13 +209,63 @@ function missingOf(ind: Row): string[] {
 interface CovItem { key: string; label: string; text: string }
 interface CovSection { key: string; title: string; note: string; items: CovItem[] }
 
-/** 各段的分母列：覆盖率必须相对本段分母算，跨段拿别的分母就是张冠李戴 */
-const COVERAGE_SECTIONS: { key: string; title: string; denom: string }[] = [
-  { key: 'specimens', title: '标本（按登记时刻落窗）', denom: 'specimens' },
-  { key: 'blocks', title: '蜡块（按包埋时刻落窗，未录则回落建档时刻）', denom: 'blocks' },
-  { key: 'slides', title: '切片（按染色时刻落窗，未录则回落建档时刻）', denom: 'slides' },
-  { key: 'process', title: '流转与文书（各按自己的事件时刻落窗）', denom: '' },
+/**
+ * 各段的分母列、<b>本段专属中文</b>、以及「相对本段分母」的占比列。
+ *
+ * <p><b>v63（2576 复核 demo 镜头，本轮头号纪律）</b>，本段是**先于所有指标渲染**的第一屏，两处都要修：
+ * <ul>
+ *   <li><b>按段给中文</b>：{@code blocks} 一个键服务两段语义不同的列——蜡块段是 {@code count(*)}（本段分母、
+ *       产出数），切片段是 {@code count(distinct sl.block_id)}（这批切片涉及多少蜡块、去重）。
+ *       走 format.ts 那张<b>扁平字典</b> {@code zh(col)} 必然渲染成同一屏上两个一模一样的中文表头「蜡块数」
+ *       （演示数据下就是「蜡块数 6」与「蜡块数 3」）。{@code specimens} 同型（标本段是本段分母、蜡块段是涉及标本数）。
+ *       v62 只把这件事做到了工作量指标层（blocks_produced / blocks_stained），而<b>本段还在共用一个键</b>。</li>
+ *   <li><b>区分「覆盖率列」与「计数列」</b>：此前只分「是不是分母」，不是分母就一律套 {@code ratio()}。
+ *       切片段的 {@code blocks} 既不是本段分母、也不是本段分母的子集（单位都不同：蜡块 vs 切片），
+ *       却被打成「3 / 8（37.5%）」——一个 {@code not null} 外键的去重计数就此变成一条「37.5% 的覆盖率」，
+ *       而这一屏的标题正是「本时段字段录入覆盖率」。蜡块段的 {@code specimens} 同型。</li>
+ * </ul>
+ *
+ * <p>覆盖率列的判据是「本段分母的子集」——后端 {@code PathQcController.coverage()} 里这些一律是
+ * {@code count(*) filter (...)}，列名以 {@code with_} 开头，另加各段列进 {@code rates} 的那几个。
+ * <b>默认按计数列走（给原始数）</b>：漏登一列最多是少一个百分比，多算一列却是一个假百分比。
+ */
+const COVERAGE_SECTIONS: {
+  key: string; title: string; denom: string; rates: string[]; labels: Record<string, string>
+}[] = [
+  {
+    key: 'specimens',
+    title: '标本（按登记时刻落窗）',
+    denom: 'specimens',
+    // 都是 path_specimen 同一批行的子集计数，占比相对本段分母成立
+    rates: ['outp_source', 'inp_source', 'rejected', 'diagnosed_not_issued'],
+    labels: { specimens: '登记标本数（本段分母）' },
+  },
+  {
+    key: 'blocks',
+    title: '蜡块（按包埋时刻落窗，未录则回落建档时刻）',
+    denom: 'blocks',
+    rates: [],
+    // specimens 在这一段是 count(distinct b.specimen_id)：涉及多少个标本，不是本段分母的子集
+    labels: { blocks: '产出蜡块数（本段分母）', specimens: '涉及标本数（去重）' },
+  },
+  {
+    key: 'slides',
+    title: '切片（按染色时刻落窗，未录则回落建档时刻）',
+    denom: 'slides',
+    rates: [],
+    // blocks 在这一段是 count(distinct sl.block_id)：这批切片涉及多少个蜡块，不是本段分母的子集
+    labels: { slides: '切片数（本段分母）', blocks: '涉及蜡块数（去重）' },
+  },
+  { key: 'process', title: '流转与文书（各按自己的事件时刻落窗）', denom: '', rates: [], labels: {} },
 ]
+
+/**
+ * 本段的<b>覆盖率列</b>：相对本段分母算出的子集计数（后端一律 {@code count(*) filter (...)}）。
+ * 分母本身、以及单位与分母不同的计数列（涉及标本数 / 涉及蜡块数）都不是——它们没有「占比」可言。
+ */
+function isRateColumn(sec: { denom: string; rates: string[] }, k: string): boolean {
+  return k !== sec.denom && (k.startsWith('with_') || sec.rates.includes(k))
+}
 
 const coverageSections = computed<CovSection[]>(() => {
   const cov = coverage.value
@@ -224,13 +278,12 @@ const coverageSections = computed<CovSection[]>(() => {
     const items: CovItem[] = []
     for (const k of Object.keys(seg)) {
       if (k === 'note') continue
-      const isDenom = k === sec.denom
-      // 分母本身与「无分母可比」的计数列给原始数；其余列给「分子 / 分母（百分比）」，
-      // 只给百分比会让 2/2 与 200/200 长得一模一样
+      // 覆盖率列给「分子 / 分母（百分比）」（只给百分比会让 2/2 与 200/200 长得一模一样）；
+      // 分母本身与计数列给原始数——不是本段分母的子集，套上百分比就是编一个不存在的覆盖率
       items.push({
         key: k,
-        label: zh(k),
-        text: sec.denom && !isDenom && denom > 0 ? ratio(seg[k], denom) : fmt(seg[k]),
+        label: sec.labels[k] ?? zh(k),
+        text: sec.denom && denom > 0 && isRateColumn(sec, k) ? ratio(seg[k], denom) : fmt(seg[k]),
       })
     }
     out.push({ key: sec.key, title: sec.title, note: String(seg.note ?? ''), items })
