@@ -224,6 +224,30 @@ export function mdText(v: unknown): string {
     .replace(/^[ \t]*-[ \t]+/gm, '')
 }
 
+/**
+ * 「字段级记录与当前文本是什么关系」这句话的<b>唯一来源</b>：后端 {@code fieldsNote} 优先，后端没给才兜底。
+ *
+ * <p>v63（2530 复核 data 镜头）：修复前取材查看弹窗与轨迹抽屉<b>各自推断</b>同一件事——
+ * 抽屉按后端文案渲染，弹窗却只看单键 {@code textIsCumulative} 就断言「本版字段只覆盖最后一次补取材」。
+ * 而最后那一次补取材<b>可能一行结构化字段都没写</b>（该版 path_gross_field 零行，字段级记录停在更早那一版），
+ * 此时弹窗宣称的覆盖范围与库内事实相反，且被它正下方那条后端文案「第 N 版补取材追加未填写字段」逐字打脸。
+ * 后端已按 {@code lastIsAppend / sameSeq / lastRevisionSource} 分好档（{@code PathologyProcessController.fieldsNote}），
+ * 前端<b>不重算</b>，只负责去掉 Markdown 标记（后端那句带 {@code **累积全文**}）。
+ *
+ * <p>兜底只在后端没给这句话时出现（旧包 / 该端点未回该键），措辞<b>刻意不点名是哪一次取材</b>——
+ * 光凭 {@code textIsCumulative} 分不出来，说死了就又是一句可能为假的话。返回空串 = 没有分叉可说。
+ */
+export function grossFieldsNote(v: Row | null | undefined): string {
+  if (v === null || v === undefined) return ''
+  const fromServer = mdText(v.fieldsNote)
+  if (fromServer !== '') return fromServer
+  // 没有字段行就没有「字段与文本分叉」可说（后端同样一句不编）；同版也无话可说
+  if (v.fieldsAvailable !== true || v.fieldsCurrent !== false) return ''
+  return v.textIsCumulative === true
+    ? '当前文本是累积全文（含多次取材/追加的内容），字段级记录只覆盖其中一次；各版字段都在，请切换版本调阅'
+    : `文本已在第 ${fmt(v.textRevisionSeq)} 版修订，以文本为准`
+}
+
 export function num(v: unknown): number {
   return typeof v === 'number' ? v : Number(v ?? 0)
 }
@@ -280,7 +304,11 @@ const ZH: Record<string, string> = {
   order_status: '医嘱状态',
   registered_parts: '已登记部位数',
   clinical_summary: '临床摘要',
-  specimen_type: '标本类别',
+  // v63（2563 复核）：同一屏上这两列并排出现（SPECIMEN_RECEIVE 汇总行），此前 ZH 把它们映射成同一个中文表头
+  // 「标本类别」，而左边那列显示的还是 cellText 翻出来的中文名——两列逐字相同，读的人无从分辨哪列是原始编码。
+  // 编码版的叫法与后端 PathQcController.zh() 的 case "specimen_type" 逐字一致（CSV 表头同源）；
+  // 它单独在场时（SPEC_SELECT 穿透明细没有 type_name）由 colLabel 换成不带「编码」的叫法，见 CODE_COLUMNS。
+  specimen_type: '类别编码',
   type_name: '标本类别',
   specimen_desc: '标本描述',
   sampling_site: '取材部位',
@@ -397,15 +425,19 @@ const ZH: Record<string, string> = {
   // 两处 caveat 一个字没提。两列已在后端正名，这里跟着正名、中文与后端 zh() 逐字一致。
   blocks_produced: '当日产出蜡块数',
   blocks_stained: '当日染色涉及蜡块数(去重)',
-  // 下面这个裸 blocks 留着是给「本时段字段录入覆盖率」四段用的（coverage 的 blocks / slides 两节各有一个
-  // blocks 列，走 JSON、不进 CSV，各自挂在「蜡块（按包埋时刻落窗）」/「切片（按染色时刻落窗）」小标题下）——
-  // 工作量汇总行已不再有这个键，后端 zh() 也不再登记它。
-  blocks: '蜡块数',
+  // v63（2576 复核 demo 镜头）：这里**刻意不再登记裸 blocks 键**。
+  // 它此前只服务「本时段字段录入覆盖率」的两段（蜡块段 count(*) 产出数、切片段 count(distinct block_id) 涉及数），
+  // 一个键两段语义、经这张扁平字典渲染成同一屏上两个一模一样的中文表头「蜡块数」（演示数据下就是 6 与 3）。
+  // 覆盖率段改由 PathQcView 的 COVERAGE_SECTIONS.labels **按段**给中文；工作量汇总行早已正名成
+  // blocks_produced / blocks_stained（v62），后端 zh() 也不登记 blocks，故这里没有它的位置。
   embedded: '已确认包埋',
   embedded_count: '已包埋数',
   pending_count: '未包埋数',
   batch_no: '脱水篮批次',
-  progress: '进度',
+  // v63（2563 复核）：WORKLOAD_TECH 穿透里 progress 与 progress_name 并排两列，而 cellText 把 progress
+  // 也渲染成同一行的 progress_name——两列显示的值逐字相同、表头一个叫「进度」一个叫「执行进度」。
+  // 叫法照后端 zh() 的 case "progress" 抄（CSV 表头同源），格子由 CODE_COLUMNS 改回显示编码。
+  progress: '执行进度编码',
   first_block_created_at: '最早建块时刻',
   last_block_created_at: '最晚建块时刻',
   last_embedded_at: '最后包埋时刻',
@@ -487,7 +519,10 @@ const ZH: Record<string, string> = {
   stained_count: '已染色挂接切片数',
   progress_name: '执行进度',
   // v59 车道 C（2563 一致性）：挂接切片实际染色类型 / 项目的去重汇总（如「IHC CK7 ×2」），与后端 zh() 同名 case 逐字一致
-  attached_stain: '挂接切片染色',
+  // v63（2563 复核 demo 镜头）：v62 只改了后端 CSV 字典，渲染屏上表头的这张 ZH 一个字没动——
+  // 穿透抽屉里仍并排挂着两个逐字相同的「挂接切片染色」，左边那个显示的是裸英文枚举「IHC CK7 ×2」。
+  // 现在照后端 zh() 的 case "attached_stain" 逐字抄「挂接切片染色编码」（不自己起名）。
+  attached_stain: '挂接切片染色编码',
   // v60 车道 B 契约（规划节写死、由 C 统一补键）：清单「蜡块」列在 block_id 空时按挂接蜡块 / 切片派生（「块码1、块码2」文本）；
   // attached_stain 的中文版（「免疫组化 CK7 ×2」）
   sampled_block_count: '已补取材蜡块数',
@@ -532,6 +567,56 @@ export function zh(col: string): string {
 }
 
 /**
+ * 「编码列 → 同一张表里它的中文名列」，以及这个编码列<b>单独在场</b>时该用的表头。
+ *
+ * <p>v63（2563 复核 demo 镜头）：修复前这两件事是分开决定的——表头一律走 {@link zh}（里面写着「…编码」），
+ * 格子一律走 {@link cellText}（把编码翻成中文名），于是<b>标着「编码」的那一列显示的是中文名</b>，
+ * 与并排那一列逐字相同；导出 CSV 后更无从分辨哪列是 {@code IHC CK7 ×2}、哪列是「免疫组化 CK7 ×2」。
+ *
+ * <p>现在两者由<b>同一个判定</b>（{@link pairedWithNameColumn}）派生，不可能一个说编码另一个显示中文：
+ * <ul>
+ *   <li><b>中文名列在场</b>（WORKLOAD_TECH 穿透的 tech_type/tech_name、progress/progress_name、
+ *       attached_stain/attached_stain_name，SPECIMEN_RECEIVE 汇总的 specimen_type/type_name，
+ *       SLIDE_QUALITY 汇总的 stain_type/stain_name，PROCESS_TAT 汇总的 node/node_name）：
+ *       表头取 ZH 里带「编码」的叫法（与后端 {@code PathQcController.zh()} 同名 case 逐字一致），格子给原始编码。</li>
+ *   <li><b>中文名列不在场</b>（SPEC_SELECT 穿透只有 specimen_type、SLIDE_QUALITY 穿透只有 stain_type、
+ *       PROCESS_TAT 穿透只有 node）：屏上没有第二列可读，格子仍由 cellText 翻中文，表头换成这里的
+ *       {@code alone} 叫法——<b>不带「编码」</b>，免得表头说编码而格子是中文名。</li>
+ * </ul>
+ */
+const CODE_COLUMNS: Record<string, { name: string; alone: string }> = {
+  specimen_type: { name: 'type_name', alone: '标本类别' },
+  stain_type: { name: 'stain_name', alone: '染色类型' },
+  tech_type: { name: 'tech_name', alone: '技术类型' },
+  node: { name: 'node_name', alone: '环节' },
+  last_node: { name: 'last_node_name', alone: '最近环节' },
+  kind: { name: 'kind_name', alone: '异常类别' },
+  progress: { name: 'progress_name', alone: '执行进度' },
+  attached_stain: { name: 'attached_stain_name', alone: '挂接切片染色' },
+}
+
+/**
+ * 该编码列有没有中文名列作伴。<b>按键在不在判，不按值空不空判</b>：后端把 attached_stain_name 回成 null
+ * （这条医嘱还没挂片）时，那一列仍然在表上占着位置，表头与格子必须按「在场」这一档走同一条路。
+ */
+function pairedWithNameColumn(col: string, has: (k: string) => boolean): boolean {
+  const pair = CODE_COLUMNS[col]
+  return pair !== undefined && has(pair.name)
+}
+
+/**
+ * 表头中文——比 {@link zh} 多知道一件事：这张表到底有没有把中文名列一起给出来。
+ * 有 → ZH 里带「编码」的叫法（格子里就是编码）；没有 → {@code CODE_COLUMNS[col].alone}（格子里是中文名）。
+ * 不是编码列的一律与 {@link zh} 同结果。
+ */
+export function colLabel(col: string, cols: string[] | undefined): string {
+  const list = cols ?? []
+  if (pairedWithNameColumn(col, (k) => list.includes(k))) return zh(col)
+  const pair = CODE_COLUMNS[col]
+  return pair === undefined ? zh(col) : pair.alone
+}
+
+/**
  * 单元格取值中文化（v59 2576 复核）：按<b>列名族</b>把编码值翻成本文件既有字典的中文，
  * 其余列一律走 {@link fmt}。
  *
@@ -543,6 +628,11 @@ export function zh(col: string): string {
  */
 export function cellText(col: string, v: unknown, row?: Row): string {
   if (v === null || v === undefined || v === '') return fmt(v)
+  // v63（2563 复核 demo 镜头）：中文名列就在同一行时，编码列给**原始编码**——
+  // 判定与表头 colLabel 是同一个（pairedWithNameColumn），不会一个表头写「编码」而格子显示中文名。
+  if (row !== undefined && pairedWithNameColumn(col, (k) => Object.prototype.hasOwnProperty.call(row, k))) {
+    return fmt(v)
+  }
   switch (col) {
     case 'source':
       return sourceName(v)

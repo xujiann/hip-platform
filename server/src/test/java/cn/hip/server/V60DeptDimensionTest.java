@@ -35,6 +35,7 @@ import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -303,7 +304,27 @@ class V60DeptDimensionTest {
         // 车道 B 契约列（规划节写死）：B 的端点在 PathologyReportController，不进本控制器的 CSV，故只登记在前端 ZH
         assertEquals("关联蜡块", zh.get("blocks_derived"), "ZH 缺车道 B 的 blocks_derived");
         assertEquals("挂接切片染色", zh.get("attached_stain_name"), "ZH 缺车道 B 的 attached_stain_name");
-        assertEquals(zh.get("attached_stain"), zh.get("attached_stain_name"), "编码版与中文版同一个表头叫法");
+        // ---------------------------------------------------------------------------------
+        // v63（2563 复核 demo 镜头）：**下面这条断言原来是反的，而且正是它把缺陷锁成了契约**。
+        //
+        // 原文：assertEquals(zh.get("attached_stain"), zh.get("attached_stain_name"), "编码版与中文版同一个表头叫法")
+        //
+        // 为什么原来那条是错的：attached_stain（裸英文枚举「IHC CK7 ×2」）与 attached_stain_name
+        // （中文「免疫组化 CK7 ×2」）在 WORKLOAD_TECH 穿透抽屉里是**并排的两列**，它要求这两列的中文表头
+        // 逐字相同——把「同一个表头在一屏上出现两次」写成了必须维持的契约。v62 已把后端 CSV 字典正名
+        // （zh() 的 case "attached_stain" → 「挂接切片染色编码」），前端 ZH 却一个字没动，
+        // 真正的原因就是这条测试：仓库自己不许两侧分开。「同一个表头叫法」从来不是任何人定的口径，
+        // 它只是 v59 补键时的现状被顺手抄进了断言。
+        //
+        // 翻过来之后：两列必须分得开，且编码版照后端同名 case 逐字抄（不另起一个叫名）。
+        // ---------------------------------------------------------------------------------
+        assertEquals("挂接切片染色编码", zh.get("attached_stain"),
+                "ZH.attached_stain 要与后端 zh() 的 case \"attached_stain\" 逐字一致（v62 已正名后端，前端本轮跟上）");
+        assertEquals(backend.get("attached_stain"), zh.get("attached_stain"),
+                "编码版两侧逐字同源：CSV 表头与页面表头必须是同一个叫法");
+        assertNotEquals(zh.get("attached_stain"), zh.get("attached_stain_name"),
+                "**编码版与中文版必须是两个表头**：并排两列一个显示 IHC CK7 ×2、一个显示免疫组化 CK7 ×2，"
+                        + "表头同名读的人就无从分辨哪列是原始编码（修复前这里断言的正是「同一个表头叫法」）");
         // 活的对照：两侧都真解析出几十个键（不是空表撞空表）
         assertTrue(backend.size() > 50 && zh.size() > 50, backend.size() + "/" + zh.size());
     }
