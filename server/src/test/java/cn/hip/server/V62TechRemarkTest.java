@@ -4,6 +4,8 @@ import cn.hip.medtech.web.PathQcController;
 import cn.hip.medtech.web.PathologyProcessController;
 import cn.hip.medtech.web.PathologyProcessController.BlockReq;
 import cn.hip.medtech.web.PathologyProcessController.GrossingReq;
+import cn.hip.medtech.web.PathologyProcessController.SlideReq;
+import cn.hip.medtech.web.PathologyProcessController.StainReq;
 import cn.hip.medtech.web.PathologyReportController;
 import cn.hip.medtech.web.PathologyReportController.CancelTechOrderReq;
 import cn.hip.medtech.web.PathologyReportController.TechOrderReq;
@@ -22,12 +24,14 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -62,6 +66,24 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 「备注里什么算裸码」只该有一份定义，抄第二份就是两套口径，改一处漂一处。
  *
  * <p>夹具照抄 V61TechLabelTest（同一条演示路径），gate 在 setUp 里钉成出厂值 warn。
+ *
+ * <h2>v63 追加（2563 复核第六条：屏上宣告的规则与实现拉齐）</h2>
+ * <p><b>修复前的反向事实</b>（v62 交付后复核，复核者原话）：
+ * <ul>
+ *   <li><b>屏上宣告的判定规则与实现相反</b>：⑤ 特检工作台那条说明白纸黑字写着「点『完成』时若无已染色
+ *       挂接切片，按 gate {@code emr.gate.pathology.techdone} 提示（warn）或拦截（block，5273）」，
+ *       而 v62 把 SAMPLED 改判成有执行证据之后，补取材医嘱在「已出块 2 / 挂接 0 片 / 已染色 0」时
+ *       <b>三档 gate 全部静默放行</b>。同一条旧规则当时写在四处（页首说明、5273 消息、warn 告警、类 javadoc），
+ *       改判定时一处都没跟着改——因为判定与说明各写各的。
+ *       {@link #announcedGateRuleMatchesActualBehaviourForEveryProgress()} 把「说明承诺的条件」
+ *       从端点自己下发的那句话里<b>机械抽出来</b>，再拿四个进度的真实行为逐个去对。</li>
+ *   <li><b>成功提示抹掉执行证据</b>：同一次完成，库里 TECH_DONE 备注写「已出块 2 / 挂接 0 片 / 已染色 0」，
+ *       而屏上成功提示由前端另拼、只印后两项（TechOrderPanel.vue:259-260 与 DiagnosisPanel.vue:922
+ *       <b>两个入口各拼一遍、都只拼 slideCount / stainedCount</b>），
+ *       把 v62 认定为唯一执行证据的那一项整个抹掉：同一个完成动作在库内与屏上是两套口径。
+ *       {@link #successMessageIsTheSameStringAsTheTechDoneNodeRemark()} 钉住「返回体那句 = 落库那句」，
+ *       且<b>实查库</b>，不看返回体自说自话。</li>
+ * </ul>
  */
 @SpringBootTest
 @Transactional
@@ -302,9 +324,209 @@ class V62TechRemarkTest {
                 "汇总行的中文技术分类（与穿透共用同一段 case）：" + summaryCsv);
     }
 
+    // =====================================================================================
+    // ⑤ v63：端点自己宣告的完成 gate 规则，与它自己的判定逐个进度对得上（说明与判定同一张表）
+    // =====================================================================================
+
+    @Test
+    void announcedGateRuleMatchesActualBehaviourForEveryProgress() {
+        // 屏上那句规则的唯一来源：清单端点回带 techDoneGateRule，并逐字写进页面渲染的 note
+        var list = ok(report.techOrders(a, null, null, null, null, null, null, null, null, null));
+        String rule = String.valueOf(list.get("techDoneGateRule"));
+        assertEquals(PathologyReportController.techDoneGateRule(), rule,
+                "清单端点下发的规则必须就是判定表生成的那一句（不另拼一份）");
+        assertTrue(String.valueOf(list.get("note")).contains(rule),
+                "页面渲染的 note（TechOrderPanel.vue:147 `<p v-if=\"note\">`）必须逐字含这句规则——"
+                        + "屏上宣告的规则只能有这一个来源：" + list.get("note"));
+
+        // 修复前的反向事实：v58 的旧规则「若无已染色挂接切片就拦」已被 v62 的判定推翻，
+        // 不得再出现在任何一处宣告里（它正是复核者点名「屏上宣告的判定规则与实现相反」的那句）
+        assertFalse(rule.contains("无已染色挂接切片"),
+                "**规则说明里不得再宣告 v58 的旧口径**（补取材已出块即执行证据）：" + rule);
+        var doneBody = ok(report.doneTechOrder(techOrder(a, blockA, "IHC", "CK7"), doc1));
+        assertEquals(rule, String.valueOf(doneBody.get("techDoneGateRule")),
+                "完成端点回带的规则与清单端点逐字相同（同一处定义）");
+
+        // 把说明切成两半，逐个进度核对「说明怎么讲」与「实现怎么判」
+        var declared = declaredGapByProgress(rule);
+        assertEquals(PathologyReportController.TECH_DONE_VERDICTS.keySet(), declared.keySet(),
+                "四个 ORDERED 子态都要在说明里点名：" + rule);
+
+        // 探针（活的对照组）：把说明的两半互换，同一个解析器必须读出相反的结论——
+        // 否则下面那一串 assertEquals 可能只是「解析器恒返回实现的判定」的空跑
+        var forged = declaredGapByProgress(halvesSwapped(rule));
+        assertEquals(Boolean.TRUE, forged.get("SAMPLED"), "探针：两半互换后「已补取材待切片」该被读成有缺口");
+        assertEquals(Boolean.FALSE, forged.get("PENDING_SECTION"), "探针：两半互换后「待切片」该被读成放行");
+
+        // 纯判定层：说明承诺的判定 == techDoneGap 的判定
+        for (var e : declared.entrySet()) {
+            long[] facts = factsFor(e.getKey());
+            assertEquals(e.getKey(),
+                    PathologyReportController.techProgress("ORDERED", facts[0], facts[1], facts[2]),
+                    "夹具前提：这组事实要真能派生出该进度");
+            boolean actualGap =
+                    PathologyReportController.techDoneGap("ORDERED", facts[0], facts[1], facts[2]) != null;
+            assertEquals(e.getValue(), actualGap,
+                    "进度「" + PathologyReportController.TECH_PROGRESS_NAMES.get(e.getKey())
+                            + "」：说明承诺的判定与实现必须一致。说明原文：" + rule);
+        }
+
+        // 真实行为：三档 gate × 四个进度各走一遍**真实完成端点**，期望值全部由上面解析出来的说明推出，
+        // 不在这里另写一套硬编码——说明改了、判定没改（或反过来），这一段立刻红
+        for (String gate : List.of("off", "warn", "block")) {
+            assertEquals(1, setGate(gate), gate + "：sys_config 里必须有这一行可改");
+            for (var e : declared.entrySet()) {
+                String progress = e.getKey();
+                boolean declaredGap = e.getValue();
+                long id = orderWithProgress(progress);
+                assertEquals(progress, listRow(id).get("progress"), gate + "：夹具前提——真造出了该进度");
+                var r = report.doneTechOrder(id, doc1);
+                String at = gate + " × " + progress;
+                if (declaredGap && "block".equals(gate)) {
+                    assertEquals(5273, r.getCode(), at + "：说明承诺 block 档拦，实际没拦：" + r.getMessage());
+                    assertEquals("ORDERED", statusInDb(id), at + "：被拦后行仍待执行");
+                    assertNull(nodeRemarkOrNull(a, "TECH_DONE", id), at + "：被拦不写 TECH_DONE 节点");
+                } else {
+                    assertEquals(0, r.getCode(), at + "：说明承诺放行，实际被拦：" + r.getMessage());
+                    assertEquals(declaredGap, r.getData().get("doneGap") != null,
+                            at + "：说明承诺「" + (declaredGap ? "判有缺口" : "判无缺口") + "」，实际 doneGap="
+                                    + r.getData().get("doneGap"));
+                    assertEquals(declaredGap && "warn".equals(gate) ? 1 : 0,
+                            ((List<?>) r.getData().get("warnings")).size(),
+                            at + "：warn 档有缺口才提示一条，其余零条：" + r.getData().get("warnings"));
+                }
+            }
+        }
+    }
+
+    // =====================================================================================
+    // ⑥ v63：屏上成功提示与 TECH_DONE 落库备注是**同一个字符串**（实查库，不看返回体自说自话）
+    // =====================================================================================
+
+    @Test
+    void successMessageIsTheSameStringAsTheTechDoneNodeRemark() {
+        assertEquals(1, setGate("warn"), "techdone gate 行必须存在（V165 seed）");
+
+        // (a) 无缺口分支：补取材医嘱已出 2 块、零切片——「已出块 2」是这条医嘱唯一的执行证据
+        long rs = techOrder(a, null, "RESAMPLE", null);
+        ok(process.grossing(new GrossingReq(a, null, null, null, true, null,
+                List.of(new BlockReq("切缘一 " + tag), new BlockReq("切缘二 " + tag)), rs), doc1));
+        var body = ok(report.doneTechOrder(rs, doc1));
+        String doneRemark = String.valueOf(body.get("doneRemark"));
+        assertEquals(remarkOf(a, "TECH_DONE", rs), doneRemark,
+                "**返回给屏幕的那句与写进 path_process 的那句必须逐字是同一句**（实查库）：" + doneRemark);
+        assertTrue(doneRemark.contains("已出块 2"),
+                "屏上那句不得抹掉执行证据「已出块 2」：" + doneRemark);
+
+        // 活的对照组：把 v62 前端那两处各自拼的半句原样重建（TechOrderPanel.vue:259-260 /
+        // DiagnosisPanel.vue:922 都是 `挂接 ${slideCount} 片 / 已染色 ${stainedCount}`）——
+        // 它是落库那句的**真子串**，丢的正是前面的「已出块 N」。没有这一条，上面的 contains 只是恒真
+        String v62Screen = "挂接 " + asLong(body.get("slideCount")) + " 片 / 已染色 "
+                + asLong(body.get("stainedCount"));
+        assertTrue(doneRemark.contains(v62Screen),
+                "对照组：v62 屏上那半句确实是落库那句的子串：" + v62Screen + " ⊄ " + doneRemark);
+        assertFalse(v62Screen.contains("已出块"),
+                "对照组：**v62 屏上那半句确实一个「已出块」都没有**——这正是被抹掉的执行证据：" + v62Screen);
+        assertTrue(doneRemark.length() > v62Screen.length(),
+                "对照组：同源那句必须比屏上那半句长（多的就是被抹掉的部分）");
+
+        // (b) 有缺口分支（gap != null 那半个三元）：真的什么都没有的医嘱，warn 档放行
+        long bare = techOrder(a, null, "RESAMPLE", null);
+        var bareBody = ok(report.doneTechOrder(bare, doc1));
+        String bareRemark = String.valueOf(bareBody.get("doneRemark"));
+        assertEquals(remarkOf(a, "TECH_DONE", bare), bareRemark,
+                "有缺口分支同样同源（备注里多一段「；<缺口>（gate=warn 放行）」）：" + bareRemark);
+        assertTrue(bareRemark.contains(String.valueOf(bareBody.get("doneGap"))),
+                "缺口原文也随这句话上屏，技师看得见自己在没证据的情况下点了完成：" + bareRemark);
+        assertTrue(bareRemark.contains("（gate=warn 放行）"), bareRemark);
+        assertNotEquals(doneRemark, bareRemark, "对照组：两条医嘱的那句话本就不同，不是同一个常量");
+    }
+
     // ==================================================================================
     // 助手
     // ==================================================================================
+
+    /**
+     * 从端点自己下发的那句规则说明里，机械抽出「它承诺哪几个进度算有缺口」。
+     * 按 {@link PathologyReportController#TECH_DONE_RULE_GAP_MARK} /
+     * {@link PathologyReportController#TECH_DONE_RULE_PASS_MARK} 把整句切成两半，
+     * 再看每个进度的中文名落在哪一半。
+     *
+     * <p>「待切片」是「已补取材待切片」的子串，故一律带「」一起匹配：
+     * {@code 「待切片」} 不会命中 {@code 「已补取材待切片」}（后者的 待 前面是 材 而不是 「）。
+     */
+    private static Map<String, Boolean> declaredGapByProgress(String rule) {
+        String gapMark = PathologyReportController.TECH_DONE_RULE_GAP_MARK;
+        String passMark = PathologyReportController.TECH_DONE_RULE_PASS_MARK;
+        int g = rule.indexOf(gapMark);
+        int p = rule.indexOf(passMark);
+        assertTrue(g >= 0 && p > g, "规则说明里必须有两个定位标记且顺序固定：" + rule);
+        String gapHalf = rule.substring(g + gapMark.length(), p);
+        String passHalf = rule.substring(p + passMark.length());
+        var out = new LinkedHashMap<String, Boolean>();
+        for (String progress : PathologyReportController.TECH_DONE_VERDICTS.keySet()) {
+            String quoted = "「" + PathologyReportController.TECH_PROGRESS_NAMES.get(progress) + "」";
+            boolean inGap = gapHalf.contains(quoted);
+            boolean inPass = passHalf.contains(quoted);
+            assertTrue(inGap ^ inPass,
+                    "进度 " + quoted + " 必须恰好出现在两半之一（实际 gap=" + inGap + " pass=" + inPass + "）：" + rule);
+            out.put(progress, inGap);
+        }
+        return out;
+    }
+
+    /** 探针用：把规则说明的两半原样对调，其余一字不动——解析器必须据此读出相反的结论 */
+    private static String halvesSwapped(String rule) {
+        String gapMark = PathologyReportController.TECH_DONE_RULE_GAP_MARK;
+        String passMark = PathologyReportController.TECH_DONE_RULE_PASS_MARK;
+        int g = rule.indexOf(gapMark);
+        int p = rule.indexOf(passMark);
+        String gapBody = rule.substring(g + gapMark.length(), p);
+        String passBody = rule.substring(p + passMark.length());
+        return rule.substring(0, g) + gapMark + passBody + passMark + gapBody;
+    }
+
+    /** 纯判定层的代表事实 {挂接切片数, 已染色数, 补取材已出块数}，刚好派生出该进度 */
+    private static long[] factsFor(String progress) {
+        return switch (progress) {
+            case "PENDING_SECTION" -> new long[]{0, 0, 0};
+            case "SAMPLED" -> new long[]{0, 0, 2};
+            case "SECTIONING" -> new long[]{2, 1, 0};
+            case "STAINED" -> new long[]{2, 2, 0};
+            default -> throw new AssertionError("判定表里多出了没造过事实的进度：" + progress);
+        };
+    }
+
+    /**
+     * 走<b>真实端点</b>造一条处在指定进度上的待执行医嘱（不直插业务行）：
+     * 补取材经 grossing(append=true, techOrderId) 出块、切片经 slides(techOrderId) 挂接、染色经 stain。
+     */
+    private long orderWithProgress(String progress) {
+        switch (progress) {
+            case "PENDING_SECTION" -> {
+                return techOrder(a, null, "RESAMPLE", null);
+            }
+            case "SAMPLED" -> {
+                long rs = techOrder(a, null, "RESAMPLE", null);
+                ok(process.grossing(new GrossingReq(a, null, null, null, true, null,
+                        List.of(new BlockReq("切缘 " + tag), new BlockReq("切缘二 " + tag)), rs), doc1));
+                return rs;
+            }
+            case "SECTIONING", "STAINED" -> {
+                long ihc = techOrder(a, blockA, "IHC", "CK7");
+                var sl = ok(process.slides(new SlideReq(blockA, 2, "IHC", "CK7", null, ihc), doc1));
+                var made = rows(sl, "slides");
+                assertEquals(2, made.size(), "夹具前提：挂接两张切片");
+                // SECTIONING = 只染一张（还差一张）；STAINED = 两张都染完
+                int toStain = "STAINED".equals(progress) ? 2 : 1;
+                for (int i = 0; i < toStain; i++) {
+                    ok(process.stain(idOf(made.get(i)), new StainReq("GOOD", "CK7", null), doc1));
+                }
+                return ihc;
+            }
+            default -> throw new AssertionError("造不出该进度：" + progress);
+        }
+    }
 
     private void assertClean(String remark, String node) {
         assertFalse(RAW_ENUM.matcher(remark).find(), node + " 备注不得含裸英文枚举：" + remark);

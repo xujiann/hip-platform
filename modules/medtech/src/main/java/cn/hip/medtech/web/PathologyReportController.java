@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.*;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -83,8 +84,11 @@ import java.util.Set;
  *   <li>执行进度由挂接切片<b>只读派生</b>（{@link #techProgress}，不加状态列）：CANCELLED / DONE 照状态；ORDERED 且无挂接切片
  *       → PENDING_SECTION（待切片）；有挂接切片但未全部染色 → SECTIONING（切片中）；全部染色 → STAINED（已染色待确认）。
  *       两个清单分支与 PathQc WORKLOAD_TECH 穿透都带 {@code stained_count} / {@code progress} / {@code progress_name}。</li>
- *   <li>完成确认走三态 gate {@value #TECH_DONE_GATE_KEY}（默认 warn，V165 seed）：事实（挂接切片数 / 已染色数）
- *       <b>任何档位都算且返回体都带</b>，缺口 = 无挂接切片或有挂接切片未染色；block 返 5273、行仍 ORDERED、不写节点 /
+ *   <li>完成确认走三态 gate {@value #TECH_DONE_GATE_KEY}（默认 warn，V165 seed）：事实（挂接切片数 / 已染色数 /
+ *       补取材已出块数）<b>任何档位都算且返回体都带</b>；<b>哪几个进度算缺口只在 {@link #TECH_DONE_VERDICTS}
+ *       这一张判定表里定义一次</b>——{@link #techDoneGap} 照它判，{@link #techDoneGateRule()} 照它生成
+ *       屏上那句说明（v63：v62 把 SAMPLED 改成放行却只改了判定，页首说明仍在讲 v58 的旧规则，
+ *       屏上宣告的规则与实现相反）。block 返 5273、行仍 ORDERED、不写节点 /
  *       warn 照常 DONE 但 {@code warnings} 回带并写进 TECH_DONE 节点 / off 不判、warnings 为空数组。坏配置回落 warn。</li>
  * </ul>
  *
@@ -162,8 +166,10 @@ import java.util.Set;
  *   <li>5271 技术医嘱取消原因非法（v57：缺失 / 空白 / 超 255 字三条路径同码）</li>
  *   <li>5272 切片挂接的技术医嘱非法（v57，<b>由 {@link PathologyProcessController#slides} 返回</b>：
  *       医嘱不存在 / 不属于该蜡块所在标本 / 不是 ORDERED 三条路径同码）</li>
- *   <li>5273 特检技术医嘱无已染色挂接切片不得确认完成（v58，<b>只有 gate=block 才返</b>：挂接切片数为 0、
- *       或有挂接切片尚未染色，两条路径同码；warn 档改走 warnings、off 档不判）</li>
+ *   <li>5273 特检技术医嘱缺执行证据不得确认完成（v58，<b>只有 gate=block 才返</b>：进度为「待切片」
+ *       （既无挂接切片、也无补取材已出块）或「切片中」（有挂接切片尚未全部染色），两条路径同码；
+ *       warn 档改走 warnings、off 档不判。v63 措辞跟着判定表走：v62 起补取材已出块即执行证据，
+ *       再写「无已染色挂接切片不得完成」就是宣告一条实现并不执行的规则）</li>
  *   <li>5274 切片染色类型或项目与特检医嘱不一致（v59，<b>由 {@link PathologyProcessController} 返回</b>：挂接时 stain_type
  *       与 tech_type 映射不符 / 医嘱有项目而 stain_item 不同 / 染色登记（单张、批量）把已挂接切片的项目改成别的，三条路径同码）</li>
  *   <li>5275 补取材挂接的特检医嘱非法（v60，<b>由 {@link PathologyProcessController#grossing} 返回</b>：取材 append=true 带
@@ -198,6 +204,51 @@ public class PathologyReportController {
     public static final Map<String, String> TECH_PROGRESS_NAMES = Map.of(
             "PENDING_SECTION", "待切片", "SAMPLED", "已补取材待切片", "SECTIONING", "切片中", "STAINED", "已染色待确认",
             "DONE", "已完成", "CANCELLED", "已取消");
+
+    /**
+     * 完成 gate 对某个执行进度的判定：{@code gap=true} 即「无执行证据」（warn 提示 / block 拦 5273），
+     * {@code why} 是这条判定的理由——<b>屏上那句说明与拦截理由都用它，不另写第二份措辞</b>。
+     */
+    public record TechDoneVerdict(boolean gap, String why) {}
+
+    /**
+     * <b>完成 gate 的判定表——唯一定义处</b>（v63，2563 复核第六条）。
+     *
+     * <p>{@link #techDoneGap} 照它判，{@link #techDoneGateRule()} 照它生成屏上宣告的那句规则说明：
+     * 判定与说明<b>同一张表生成</b>，改一行两边一起变，不存在「判定改了、说明还在讲上一版」。
+     *
+     * <p>修复前的反向事实（v62 交付后复核，复核者原话）：⑤ 特检工作台屏上那条说明白纸黑字写着
+     * 「点『完成』时若无已染色挂接切片，按 gate 提示（warn）或拦截（block，5273）」，而 v62 把 SAMPLED
+     * 改判为有执行证据之后，补取材医嘱在「已出块 2 / 挂接 0 片 / 已染色 0」时三档 gate 全部静默放行——
+     * <b>屏上宣告的判定规则与实现相反</b>。同一条旧规则当时一共写在三处（页首说明、5273 消息、warn 告警），
+     * 改判定时一处都没跟着改。
+     *
+     * <p>本轮选择<b>保留 v62 的判定口径</b>（补取材已出块就是执行证据：交付物是蜡块不是切片，
+     * 收紧回去会让这类医嘱在 block 档永远完不成，那正是 v62 修掉的缺陷），错的是那三句说明，故改说明。
+     *
+     * <p>键是 {@link #techProgress} 派出来的 ORDERED 子态；DONE / CANCELLED 不在表内
+     * （完成端点已被 5268 挡住，判定层不再二次编故事）。
+     */
+    public static final Map<String, TechDoneVerdict> TECH_DONE_VERDICTS = techDoneVerdicts();
+
+    private static Map<String, TechDoneVerdict> techDoneVerdicts() {
+        var m = new LinkedHashMap<String, TechDoneVerdict>();
+        m.put("PENDING_SECTION", new TechDoneVerdict(true, "既无挂接切片、也无补取材已出块"));
+        m.put("SECTIONING", new TechDoneVerdict(true, "有挂接切片但未全部染色"));
+        m.put("SAMPLED", new TechDoneVerdict(false, "补取材已出块，蜡块就是这类医嘱的交付物"));
+        m.put("STAINED", new TechDoneVerdict(false, "挂接切片已全部染色"));
+        return Collections.unmodifiableMap(m);
+    }
+
+    /**
+     * {@link #techDoneGateRule()} 里「判有缺口」那半句的定位标记。
+     * 守卫测试按它把整句切成两半、再逐个进度核对「说明里怎么讲」与「实现怎么判」是否一致，
+     * 所以这两个标记是<b>契约的一部分</b>：改字要连同守卫一起改，不能只改一边。
+     */
+    public static final String TECH_DONE_RULE_GAP_MARK = "判有缺口（无执行证据）的进度：";
+
+    /** {@link #techDoneGateRule()} 里「三档都放行」那半句的定位标记，用法同 {@link #TECH_DONE_RULE_GAP_MARK} */
+    public static final String TECH_DONE_RULE_PASS_MARK = "判无缺口、三档都放行的进度：";
 
     /**
      * v60：两个清单分支与质控 WORKLOAD_TECH 穿透共用的三段派生列（以 {@code t} 为 path_tech_order 别名、
@@ -964,13 +1015,16 @@ public class PathologyReportController {
         String gap = techDoneGap(f.get("status"), slideCount, stainedCount, sampledBlockCount);
 
         String gate = techDoneGate();
+        // v63：拦截理由与告警一律逐字用 gap（TECH_DONE_VERDICTS 算出来的那一句），不再另起一句
+        // 「无已染色挂接切片」——那是 v58 的旧规则，v62 起补取材已出块即执行证据，
+        // 再宣告一条实现并不执行的规则就是复核者点名的「屏上宣告的判定规则与实现相反」。
         if (gap != null && "block".equals(gate)) {
-            return R.fail(5273, "特检技术医嘱无已染色挂接切片不得确认完成：" + label + "，" + gap
+            return R.fail(5273, "特检技术医嘱缺执行证据不得确认完成：" + label + "，" + gap
                     + "（gate " + TECH_DONE_GATE_KEY + "=block）");
         }
         var warnings = new ArrayList<String>();
         if (gap != null && !"off".equals(gate)) {
-            warnings.add("无已染色挂接切片即确认完成（gate=warn 放行）：" + label + "，" + gap
+            warnings.add("缺执行证据仍确认完成（gate=warn 放行）：" + label + "，" + gap
                     + "，本次完成已记入流转节点");
         }
 
@@ -982,10 +1036,13 @@ public class PathologyReportController {
         if (updated.isEmpty()) return R.fail(5268, "特检技术医嘱不存在或不是待执行状态：id=" + id);
 
         // v62：三个事实都写进备注（此前只有后两个，补取材医嘱的证据「已出块 N」在备注里查不到）
-        logProcess(asLong(f.get("specimen_id")), "TECH_DONE", uid,
-                "确认完成特检医嘱 " + label + "，已出块 " + sampledBlockCount
-                        + " / 挂接 " + slideCount + " 片 / 已染色 " + stainedCount
-                        + (gap == null ? "" : "；" + gap + "（gate=" + gate + " 放行）"));
+        // v63：这一句只拼一次，落库与回给前端的成功提示用的是同一个字符串（doneRemark）——
+        // 修复前库里写「已出块 2 / 挂接 0 片 / 已染色 0」而屏上成功提示由前端另拼、只印后两项，
+        // 把这条医嘱唯一的执行证据整个抹掉：同一个完成动作在库内与屏上是两套口径（复核者原话）。
+        String doneRemark = "确认完成特检医嘱 " + label + "，已出块 " + sampledBlockCount
+                + " / 挂接 " + slideCount + " 片 / 已染色 " + stainedCount
+                + (gap == null ? "" : "；" + gap + "（gate=" + gate + " 放行）");
+        logProcess(asLong(f.get("specimen_id")), "TECH_DONE", uid, doneRemark);
 
         var body = new LinkedHashMap<String, Object>(updated.get(0));
         body.put("slideCount", slideCount);
@@ -999,6 +1056,10 @@ public class PathologyReportController {
         body.put("progress", "DONE");
         body.put("progressName", TECH_PROGRESS_NAMES.get("DONE"));
         body.put("techDoneGate", gate);
+        body.put("techDoneGateRule", techDoneGateRule());
+        // v63：成功提示的原文。前端原样印这一个字符串，不再自己挑几个字段重拼一句——
+        // 它与上面写进 path_process 的 TECH_DONE 备注是同一个变量，屏上与库内不可能再是两套口径。
+        body.put("doneRemark", doneRemark);
         body.put("warnings", warnings);
         return R.ok(body);
     }
@@ -1237,7 +1298,12 @@ public class PathologyReportController {
                 + "+ 挂接切片所在块，去重后按块号「、」相连），都没有为 null；blocks_derived_source 是这段并集的来源判定"
                 + "（ORDERED 全为下达时指定 / DERIVED 全为派生 / MIXED 两者都有；并集为空为 null）——「派生」标读这一列，"
                 + "别再按 block_code 是否为空二次推断（补取材会把 block_id 回写为首块，那样判恒为 false）；"
-                + "V167 之前的历史补取材块永远挂不上（零回填）。");
+                + "V167 之前的历史补取材块永远挂不上（零回填）。"
+                // v63：完成 gate 的规则由后端下发（techDoneGateRule()，与 techDoneGap 同一张判定表），
+                // 页面原样印这一句，不再自己写一段说明——v62 的病正是判定改了而页首那段散文没跟，
+                // 屏上「若无已染色挂接切片就拦」与实现「补取材已出块即放行」当场对着干。
+                + techDoneGateRule());
+        body.put("techDoneGateRule", techDoneGateRule());
         return R.ok(body);
     }
 
@@ -1287,11 +1353,41 @@ public class PathologyReportController {
     public static String techDoneGap(Object status, Object slideCount, Object stainedCount, Object sampledBlockCount) {
         long slides = slideCount instanceof Number n ? n.longValue() : 0L;
         long stained = stainedCount instanceof Number n ? n.longValue() : 0L;
-        return switch (techProgress(status, slideCount, stainedCount, sampledBlockCount)) {
-            case "PENDING_SECTION" -> "既无挂接切片、也无补取材已出块";
-            case "SECTIONING" -> "挂接 " + slides + " 片中 " + (slides - stained) + " 片尚未染色";
-            default -> null;
-        };
+        String progress = techProgress(status, slideCount, stainedCount, sampledBlockCount);
+        // v63：哪几个进度算缺口不在这里各写一遍，一律查 TECH_DONE_VERDICTS——屏上那句说明查的是同一张表
+        TechDoneVerdict v = TECH_DONE_VERDICTS.get(progress);
+        if (v == null || !v.gap()) return null;
+        // 缺口正文 = 判定表里那条理由的实例化：SECTIONING 再补上「这一条还差几片」这个当场的数
+        return "SECTIONING".equals(progress)
+                ? "挂接 " + slides + " 片中 " + (slides - stained) + " 片尚未染色"
+                : v.why();
+    }
+
+    /**
+     * <b>屏上宣告的完成 gate 规则</b>（v63，2563 复核第六条）——由 {@link #TECH_DONE_VERDICTS} 逐条生成，
+     * 与 {@link #techDoneGap} 的判定<b>同一张表、同一处定义</b>。
+     *
+     * <p>随 {@code GET /tech-orders} 的 {@code note} 与 {@code techDoneGateRule} 两处下发：
+     * ⑤ 特检工作台把这句话原样印在页首，不再自己另写一段——v62 的病正是判定改了而页首那段散文没跟，
+     * 页上「若无已染色挂接切片就拦」与实现「补取材已出块即放行」当场对着干。
+     *
+     * <p>句子被 {@link #TECH_DONE_RULE_GAP_MARK} / {@link #TECH_DONE_RULE_PASS_MARK} 切成两半，
+     * 守卫测试据此机械核对「说明承诺的条件」与「真实行为」。
+     */
+    public static String techDoneGateRule() {
+        var gapPart = new StringBuilder();
+        var passPart = new StringBuilder();
+        for (var e : TECH_DONE_VERDICTS.entrySet()) {
+            var sb = e.getValue().gap() ? gapPart : passPart;
+            if (sb.length() > 0) sb.append("、");
+            sb.append("「").append(TECH_PROGRESS_NAMES.getOrDefault(e.getKey(), e.getKey()))
+                    .append("」（").append(e.getValue().why()).append("）");
+        }
+        return "点「完成」时按执行进度判有无执行证据（gate " + TECH_DONE_GATE_KEY + "，出厂 warn，坏配置回落 warn）："
+                + TECH_DONE_RULE_GAP_MARK + gapPart
+                + "——block 档返 5273、行仍待执行且不写流转节点，warn 档放行但返回体回带提示、缺口一并写进完成节点备注，off 档不判；"
+                + TECH_DONE_RULE_PASS_MARK + passPart + "。"
+                + "这句说明与判定由同一张判定表生成，不是另写一遍的散文。";
     }
 
     /**

@@ -27,6 +27,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -68,6 +69,18 @@ import static org.junit.jupiter.api.Assertions.fail;
  * {@code Asia/Shanghai}、库端 {@code now()::date} 按会话时区，两者可能差一天，
  * 钉死某一天那一行会在跨日时段炸（本仓已为时间字面量付过三次学费）。
  * 一切数值断言都取<b>同一窗口内的前后差</b>，不取绝对值，故与库里既有数据无关。事务回滚，库里不留痕。
+ *
+ * <h2>v63 追加（2576 复核第七条：同一页对同一个数不得给出两个相反的结论）</h2>
+ * <p><b>修复前的反向事实</b>（v62 交付后复核，反驳者原话）：v62 只把「这个数事后会变、导出的历史报表
+ * 不可复现」写进了 {@code WORKLOAD_BLOCK} 指标自己的 caveat，而同一块看板上<b>位置更靠前、且被平台
+ * 自己的顶层口径（{@code DATA_CAVEAT}）点名「请先看」</b>的「字段录入覆盖率」段，用的是同一条谓词、
+ * 同一个 {@code count(*) from path_block}，屏上却仍写着这个数「蜡块产出量仍可信（建档即产出）」
+ * （{@code PathQcController.java:683}）——<b>同一页对同一个蜡块产出数给出两个相反的结论，
+ * 而说反话的那一句先上屏</b>。而 {@link #closedIntervalDayCountsShrinkAfterEmbeddingIsRegistered()}
+ * 恰恰实证了这个数会变小，即「仍可信」那句被平台自己的测试证伪、却仍留在同一块屏幕上。
+ * {@link #coverageBlockNoteAndWorkloadBlockCaveatGiveTheSameConclusion()} 把这一条钉住：
+ * 两段文本必须<b>引用同一个常量</b>（不是各写一段散文），且剥注释后的源码里不得再有「产出量仍可信」
+ * 这类相反结论——对照组用的正是修复前那句原话与<b>未剥注释的同一份源码</b>（本文件的注释里逐字引用了它）。
  */
 @SpringBootTest
 @Transactional
@@ -301,6 +314,104 @@ class V62BlockCaliberTest {
                 "后端 zh() 仍登记着 case \"" + OLD_SHARED_COL + "\"——正名没做干净");
         assertFalse(backend.contains("molecular"),
                 "后端 zh() 仍登记着 case \"molecular\"——正名没做干净");
+    }
+
+    // =====================================================================================
+    // (e) v63：覆盖率段 note 与 WORKLOAD_BLOCK caveat 对同一个数不得给出相反结论
+    // =====================================================================================
+
+    /**
+     * 「这个数事后还可不可信」这条结论的反向形态：修复前逐字是「蜡块产出量仍可信（建档即产出）」。
+     * 刻意不写成「含『可信』二字即红」——那样会把「with_quality 越低优良率越不可信」这类合法句子一起咬掉。
+     */
+    private static final Pattern STILL_RELIABLE = Pattern.compile("(产出量|产出数|这个数)[^。；\\n]{0,16}仍可信");
+
+    /** 修复前覆盖率段那句话的逐字原文（PathQcController.java:682-683，v62 交付形态）——对照组用 */
+    private static final String LEGACY_COVERAGE_NOTE =
+            "按 coalesce(embedded_at, created_at) 落窗。with_embedded_at 低"
+            + "说明包埋确认环节没在系统里打点，蜡块产出量仍可信（建档即产出），但包埋耗时算不出来。";
+
+    @Test
+    void coverageBlockNoteAndWorkloadBlockCaveatGiveTheSameConclusion() {
+        String from = BusinessDates.today().minusDays(1).toString();
+        String to = BusinessDates.today().plusDays(1).toString();
+
+        // ---- 先证「是同一个数」：同一条谓词、同一个 count(*)，所以结论才必须一致 ----
+        long covBefore = coverageBlocksCount(from, to);
+        long producedBefore = windowSum("WORKLOAD_BLOCK", from, to, BLOCKS_PRODUCED);
+        long sid = registered("e1", "ROUTINE");
+        assertEquals(2, gross(sid, "口径一 " + tag, "口径二 " + tag).size());
+        long covDelta = coverageBlocksCount(from, to) - covBefore;
+        long producedDelta = windowSum("WORKLOAD_BLOCK", from, to, BLOCKS_PRODUCED) - producedBefore;
+        // 活的对照组：两个数都真的动了（不是 0 == 0 恒真）
+        assertEquals(2L, covDelta, "覆盖率段 coverage.blocks.blocks 是 count(*) from path_block，同一条谓词落窗");
+        assertEquals(2L, producedDelta, BLOCKS_PRODUCED + " 是同一个 count(*)、同一条谓词");
+        assertEquals(coverageBlocksCount(from, to), windowSum("WORKLOAD_BLOCK", from, to, BLOCKS_PRODUCED),
+                "**同一页上这两格就是同一个数**——所以对它的结论只能有一个");
+
+        // ---- 再证「结论同源」：两段文本引用的是同一个常量，不是各写一段散文 ----
+        String covNote = coverageBlocksNote(from, to);
+        String caveat = caveatOf("WORKLOAD_BLOCK", from, to);
+        assertTrue(covNote.length() > 60 && caveat.length() > 60,
+                "两段文本都得真取到（空串恒真是这类断言最常见的假绿）：" + covNote.length() + " / " + caveat.length());
+        assertTrue(covNote.contains(PathQcController.BLOCK_DAY_CAVEAT),
+                "覆盖率段 note 必须引用同一条口径结论常量：" + covNote);
+        assertTrue(caveat.contains(PathQcController.BLOCK_DAY_CAVEAT),
+                "WORKLOAD_BLOCK 的 caveat 必须引用同一条口径结论常量：" + caveat);
+        for (String phrase : List.of("不可复现", "同一个已关闭区间", "建档时刻", "包埋日")) {
+            assertTrue(covNote.contains(phrase) && caveat.contains(phrase),
+                    "两段结论都得含「" + phrase + "」，否则同一页仍是两套说法：\n覆盖率段=" + covNote
+                            + "\ncaveat=" + caveat);
+        }
+
+        // ---- 反向事实：说反话的那一句不得再出现 ----
+        assertFalse(STILL_RELIABLE.matcher(covNote).find(),
+                "**覆盖率段先于所有指标上屏，不得再写「产出量仍可信」**（同页 caveat 说的是这个数事后会变）：" + covNote);
+        assertFalse(STILL_RELIABLE.matcher(caveat).find(), "caveat 侧同理：" + caveat);
+        // 探针：同一个检测器抓得到修复前那句原话，否则上面两条 assertFalse 只是正则写空了
+        assertTrue(STILL_RELIABLE.matcher(LEGACY_COVERAGE_NOTE).find(),
+                "探针：检测器必须抓得到 v62 交付时那句原话：" + LEGACY_COVERAGE_NOTE);
+
+        // ---- 源码扫描：整份控制器里（剥注释后）不得再有相反结论 ----
+        String raw = read(CONTROLLER);
+        // 活的对照组：**未剥注释时同一份源码仍能命中**——本轮的 javadoc 与行内注释逐字引用了修复前那句话，
+        // 不先剥注释，这条扫描会被自己的注释绊成红；反过来，它也证明扫描器确实在读真文件（不是扫空恒绿）
+        assertTrue(STILL_RELIABLE.matcher(raw).find(),
+                "对照组：未剥注释时，源码注释里引用的修复前原话仍能匹配到——否则下面那条 false 不说明任何事");
+        assertFalse(STILL_RELIABLE.matcher(V57GrossKeepTest.stripComments(raw)).find(),
+                "剥注释后的 " + CONTROLLER + " 里不得再有「产出量仍可信」这类与 caveat 相反的结论");
+
+        // ---- 口径随 CSV 页脚走：导出的表一转手就脱离页面 ----
+        assertTrue(pathQc.indicatorsCsv("WORKLOAD_BLOCK", from, to).contains("不可复现"),
+                "CSV 页脚要带这句口径说明");
+    }
+
+    /** 覆盖率段「蜡块」那一节（{@code coverage.blocks}）——它就是上屏时排在所有指标之前的那一段 */
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> coverageBlocks(String from, String to) {
+        var body = ok(pathQc.indicators(from, to, "WORKLOAD_BLOCK"));
+        var cov = (Map<String, Object>) body.get("coverage");
+        assertNotNull(cov, "indicators 返回体必须带 coverage 段：" + body.keySet());
+        var blocks = (Map<String, Object>) cov.get("blocks");
+        assertNotNull(blocks, "coverage 段必须有 blocks 一节：" + cov.keySet());
+        return blocks;
+    }
+
+    /**
+     * 覆盖率段「蜡块」那一节的蜡块计数。<b>刻意不写死列名</b>：这一节那个裸 {@code blocks} 键正由
+     * 另一条车道正名（v63 2576⑧，前端表头重名那条），本测试要钉的是「两段结论同源」，
+     * 不该因为隔壁车道给列改了名就红。两个名字都找不到才是真出了事。
+     */
+    private long coverageBlocksCount(String from, String to) {
+        var sec = coverageBlocks(from, to);
+        for (String k : List.of(OLD_SHARED_COL, BLOCKS_PRODUCED)) {
+            if (sec.containsKey(k)) return n(sec.get(k));
+        }
+        throw new AssertionError("覆盖率段 blocks 一节里找不到蜡块计数列：" + sec.keySet());
+    }
+
+    private String coverageBlocksNote(String from, String to) {
+        return String.valueOf(coverageBlocks(from, to).get("note"));
     }
 
     // =====================================================================================

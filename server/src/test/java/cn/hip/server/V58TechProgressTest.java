@@ -294,8 +294,18 @@ class V58TechProgressTest {
                 String remark = String.valueOf(doneNode.get("remark"));
                 if ("warn".equals(gate) && !stained) {
                     assertEquals(1, warnings.size(), label + "：warn 且有缺口应恰一条告警：" + warnings);
-                    assertTrue(warnings.get(0).startsWith("无已染色挂接切片即确认完成（gate=warn 放行）"),
+                    // v63 翻转（2563 复核第六条）：原断言逐字钉的是 v58 的告警文案
+                    // 「无已染色挂接切片即确认完成（gate=warn 放行）」——**那句话自 v62 起就是假的**：
+                    // v62 把「补取材已出块」也算作执行证据（techDoneGap 走六态派生），于是同一个 gate 既会为
+                    // 「一片一块都没有」告警，也会为「有片未染完」告警，两种都不是「无已染色挂接切片」这一个描述能盖住的；
+                    // 更要命的是这条断言把这句错话**锁死在仓库里**——不翻它就改不动那处文案，
+                    // 而屏上宣告的规则与实现相反正是 v62 被复核打回的那一条。
+                    // 新口径：告警前缀改为「缺执行证据仍确认完成（gate=warn 放行）」，
+                    // 缺口原文一律来自 PathologyReportController.techDoneGap（与判定表同源），本断言只钉这两件事。
+                    assertTrue(warnings.get(0).startsWith("缺执行证据仍确认完成（gate=warn 放行）"),
                             label + "：告警文案，实际 " + warnings.get(0));
+                    assertTrue(warnings.get(0).contains("既无挂接切片、也无补取材已出块"),
+                            label + "：告警须带缺口原文（与 techDoneGap 同源），实际 " + warnings.get(0));
                     assertTrue(remark.contains("gate=warn 放行"), label + "：TECH_DONE 备注须写明放行，实际 " + remark);
                 } else {
                     assertEquals(List.of(), warnings, label + "：不该有告警");
