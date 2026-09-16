@@ -269,7 +269,15 @@ assert d2.get('sampledBlockCount') == 0 and d2.get('doneGap') == '既无挂接�
     f'**v62：缺口口径是「既无挂接切片、也无补取材已出块」**（修复前是「无挂接切片（slide_count=0）」，逐字带库列名）：{d2}')
 assert isinstance(d2.get('warnings'), list) and len(d2['warnings']) == 1, (
     f'**warn 且 0 片：放行但 warnings 恰一条**（修复前 DONE 仅靠手点、什么都不说）：{d2}')
-assert d2['warnings'][0].startswith('无已染色挂接切片即确认完成（gate=warn 放行）'), f'告警文案：{d2["warnings"]}'
+# v63（2563 复核 data 镜头）：原断言钉的是 v58 那句「无已染色挂接切片即确认完成」——
+# 而 v62 已把 SAMPLED（补取材已出块）改判为「有执行证据」，那句话从此与判定相反（屏上说拦、实际放行）。
+# v63 把判定与说明搬到同一张表（TECH_DONE_VERDICTS），告警前缀随之改为「缺执行证据仍确认完成」，
+# **缺口正文逐字用 doneGap**——所以这里连带钉「告警里必须逐字含 doneGap」，而不是只钉前缀。
+assert d2['warnings'][0].startswith('缺执行证据仍确认完成（gate=warn 放行）：'), f'告警文案：{d2["warnings"]}'
+assert d2['doneGap'] in d2['warnings'][0], (
+    f'**告警的缺口正文必须逐字来自 doneGap**（两处各写一段散文正是 v62 栽的那条）：{d2}')
+assert '无已染色挂接切片' not in d2['warnings'][0], (
+    f'v63 起不得再出现与判定相反的旧话术：{d2["warnings"]}')
 assert d2.get('techDoneGate') == 'warn' and d2.get('status') == 'DONE', f'{d2}'
 assert_progress(sA, t2, 'DONE', '已完成', 0, 0)
 # ⑤ gate=block：第三条 0 片 done → 5273、清单仍 ORDERED/PENDING_SECTION；第四条「有片未染完」是 5273 的第二条路径

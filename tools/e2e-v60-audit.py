@@ -784,8 +784,15 @@ assert backend_label('status') == '医嘱状态' and backend_label('blocks_deriv
     '**同一行两个 ORDERED 含义完全相反，表头必须分得开**')
 assert backend_label('tech_name') == '技术类型' and backend_label('tech_type') == '技术类型编码', (
     '穿透明细的中文技术分类列（修复前中文只存在于汇总行的 case 分支里）')
-# 前端 ZH 的这两个键仍同名：format.ts 本轮归车道 C，屏上靠列位与 cellText 区分，CSV 表头已先正名
-assert zh_label('attached_stain') == zh_label('attached_stain_name') == '挂接切片染色', '前端 ZH 本轮不动'
+# v63（2563 复核 demo 镜头）：上面那条注释是 v62 的现状说明，而「屏上靠列位与 cellText 区分」根本不成立——
+# 并排两列表头逐字相同，读的人无从分辨哪列是原始编码。**本仓一共有两处断言把这个重名锁成契约**：
+# V60DeptDimensionTest:306（v63 车道 B 已翻）与这一条。两处都翻过来才改得动前端字典。
+assert zh_label('attached_stain') == '挂接切片染色编码', '**前端编码版正名**（修复前与中文版同名）'
+assert zh_label('attached_stain_name') == '挂接切片染色', '中文版不动'
+assert zh_label('attached_stain') != zh_label('attached_stain_name'), (
+    '**编码版与中文版必须是两个表头**：并排两列一个显示 IHC CK7 ×2、一个显示免疫组化 CK7 ×2')
+assert zh_label('attached_stain') == backend_label('attached_stain'), (
+    '**页面表头与 CSV 表头逐字同源**：同一列在屏上与导出里不能是两个叫法')
 assert backend_label('zz_probe_none') is None and zh_label('zz_probe_none') is None, '探针：不存在的键两侧都解析不出'
 
 # ---------------------------------------------------------------------------
