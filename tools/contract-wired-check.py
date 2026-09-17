@@ -34,6 +34,12 @@ BACKEND_GLOBS = ["modules/*/src/main/java/**/web/*Controller.java"]
 # body.put("xxx", ...) / m.put("xxx", ...) / one.put("xxx", ...) —— 本仓一律是这个形态
 PUT_RE = re.compile(r'\b\w+\.put\(\s*"([A-Za-z_][A-Za-z0-9_]*)"\s*,')
 
+# 全大写键跳过：本仓返回体键一律 camelCase（fieldsCurrent / doneRemark），
+# 全大写的是**枚举键控的内部查找表**（TECH_DONE_VERDICTS 里的 PENDING_SECTION / SAMPLED…），
+# 它们本就不该出现在前端——v64 的纪律正是「屏上不许出现英文枚举码」。
+# 首跑时 PENDING_SECTION 被报成「零消费」就是这么来的：不是缺陷，是扫描器认错了形态。
+ENUMLIKE_RE = re.compile(r'^[A-Z][A-Z0-9_]*$')
+
 # 前端消费的形态：d.xxx / row.xxx / v.xxx / ['xxx'] / "xxx" / `xxx`
 def consumed_in_frontend(key: str, blob: str) -> bool:
     return (
@@ -74,7 +80,7 @@ def keys_added_since(base: str) -> set:
     added = set()
     for line in diff.splitlines():
         if line.startswith("+") and not line.startswith("+++"):
-            added.update(PUT_RE.findall(line))
+            added.update(k for k in PUT_RE.findall(line) if not ENUMLIKE_RE.match(k))
     return added
 
 
@@ -100,6 +106,8 @@ def main():
         rel = f.relative_to(ROOT).as_posix()
         for i, line in enumerate(f.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
             for k in PUT_RE.findall(line):
+                if ENUMLIKE_RE.match(k):
+                    continue
                 found.setdefault(k, []).append(f"{rel}:{i}")
 
     scope = keys_added_since(args.since) if args.since else set(found)
@@ -121,7 +129,9 @@ def main():
         print()
 
     if not unwired:
-        print("✓ 没有无人消费的契约键。")
+        # 只用 ASCII 记号：Windows 控制台默认 GBK，'✓' 会让**成功路径**直接崩在 UnicodeEncodeError
+        # （首次实跑就撞上了——一个只在「一切正常」时才炸的检查器，比没有还坏）
+        print("OK - 没有无人消费的契约键。")
         return 0
 
     print(f"── 前端零消费（{len(unwired)}）——要么本轮接上，要么删掉，要么写进 {ALLOW.name} 说明理由")

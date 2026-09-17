@@ -3,3 +3,6 @@
 #
 # 判断标准：这个键是不是**本来就不给页面用**的？只给 E2E 断言、CSV 导出、
 # 或别的后端消费的键，登记在这里是正当的；「暂时还没接」不是理由——那属于没做完。
+
+inEarlierVersion # v64 车道 A：textFieldFormsUnbacked 列表项的子字段；屏上由聚合计数 textFieldFormsInEarlierVersions 表达，逐项这两个只被 V62GrossReviseGuardTest 用来钉后端的覆盖计算（断言 earlierRevisionSeq=1 与 label 集合）——测试消费方，不是没做完
+earlierRevisionSeq # 同上：与 inEarlierVersion 同属一个列表项，守卫测试消费，屏上走聚合计数

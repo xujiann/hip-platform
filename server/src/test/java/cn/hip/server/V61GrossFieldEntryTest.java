@@ -154,8 +154,19 @@ class V61GrossFieldEntryTest {
                 "追加后字段覆盖不全当前文本，不能标成与全文同版");
         assertEquals(Boolean.TRUE, v2.get("textIsCumulative"));
         String note = String.valueOf(v2.get("fieldsNote"));
-        assertTrue(note.contains("累积全文") && note.contains("切换版本"),
-                "口径要说清覆盖范围与去哪看全量：" + note);
+        // v64（2530 复核 data 镜头）：本条原先钉的是「累积全文」「切换版本」两个词。
+        // 那句话当时还并存着一句假话——「余下 N 个只是这段文本里的一句话，字段级查询与统计取不到」，
+        // 而那 N 条此刻正以 path_gross_field 行躺在库里、同屏版本下拉点一下就能调阅。
+        // 车道 A 把余量按「字段行落在更早版本」与「任何一版都没有」分开计数后重写了措辞，
+        // 意图不变（说清覆盖范围 + 去哪看全量），但说得更具体：给出形态数与各自的归属。
+        // **不是放宽**：除了钉住新措辞，另加一条反向断言——那句假话不许回来。
+        assertTrue(note.contains("4 个「标签：值」") && note.contains("其中 2 个"),
+                "口径要说清覆盖范围（当前文本几个形态、其中几个有字段行）：" + note);
+        assertTrue(note.contains("更早的版本") && note.contains("调阅"),
+                "口径要说清去哪看全量（余下那些的字段行在更早版本，按版本调阅得到）：" + note);
+        assertFalse(note.contains("取不到"),
+                "**不许再说「字段级查询与统计取不到」**：那 2 条有字段行、按版本调阅得到，"
+                        + "这半句与库内事实相反（v63 及以前的措辞）：" + note);
 
         // 完整结构化记录仍调阅得到：各版都在，合起来正好对应累积全文的两段
         var byRev = rows(v2, "fieldsByRevision");
