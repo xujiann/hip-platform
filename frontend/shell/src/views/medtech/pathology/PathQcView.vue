@@ -91,13 +91,22 @@
         <el-alert v-if="ind.caveat" type="warning" :closable="false" class="cav"
                   :title="mdText(ind.caveat)" />
         <!-- v64（2576 复核 demo 镜头）：这一格此前是整页**唯一没有标题**的 el-descriptions，
-             屏上没有一个字说它是区间合计；而它四列的中文当时还写着「当日…」。标题带上已生效的统计区间 -->
-        <el-descriptions v-if="ind.summary" :column="4" border size="small" class="cav" :title="summaryTitle">
+             屏上没有一个字说它是区间合计；而它四列的中文当时还写着「当日…」。标题带上已生效的统计区间。
+             v65 车道 C（2576 复核）：标题改由**后端按这条指标自己的分组维度生成**（ind.summaryTitle）。
+             修复前它是本文件里一个**不带指标参数的全局 computed**，末句写死「下面那张表才按日拆分」，
+             却被无条件绑在这个 v-for 里——按科室 / 技术类型 / 标本类别 / 染色类型分组的五条指标，
+             表里连日期列都没有，屏上却每一块都在宣告自己是按日维度。**前端不再自己写这句话。** -->
+        <el-descriptions v-if="ind.summary" :column="4" border size="small" class="cav"
+                         :title="mdText(ind.summaryTitle)">
           <el-descriptions-item v-for="k in keysOf(ind.summary as Row)" :key="k"
                                 :label="colLabel(k, keysOf(ind.summary as Row))">
             {{ fmt((ind.summary as Row)[k]) }}
           </el-descriptions-item>
         </el-descriptions>
+        <!-- v65 车道 C（2576 复核）：合计与按日各行的**实际**对账关系，由后端按本次库态现算。
+             修复前这段字是指标 caveat 里两句「必然」，而演示库态只有当天一根柱、两数逐字相等 -->
+        <el-alert v-if="ind.summaryVsDailyNote" type="info" :closable="false" class="cav"
+                  :title="mdText(ind.summaryVsDailyNote)" />
         <el-alert v-if="ind.rowsTruncated === true" type="warning" show-icon :closable="false" class="cav"
                   :title="mdText(ind.rowsTruncatedNote ?? '汇总行超限，已截断，请缩小统计区间')" />
         <el-table v-if="rowsOf(ind).length" :data="rowsOf(ind)" size="small" border max-height="360">
@@ -203,20 +212,16 @@ function rowsOf(ind: Row): Row[] {
   return (ind.rows ?? []) as Row[]
 }
 
-/**
- * 合计块的标题（v64，2576 复核 demo 镜头）。
+/*
+ * 合计块的标题与它下面那条对账说明（{@code ind.summaryTitle} / {@code ind.summaryVsDailyNote}）
+ * <b>一律由后端逐指标生成</b>，本文件<b>一个字都不拼</b>——
  *
- * <p><b>修复前的反向事实</b>：整页所有 el-descriptions 里，<b>只有这一格没有 title</b>——
- * 屏上没有一个字说它是区间合计，而它四列的中文当时与按日表逐字相同（「当日产出蜡块数」），
- * 于是同一屏上「当日产出蜡块数 39」（30 天合计）与「当日产出蜡块数 3」（某一天）并存。
- * 列名与中文已在后端分成两套，这里再把「这是本期合计、不是某一天」写在标题上。
- *
- * <p>区间取<b>返回体里的 from / to / days</b>（后端此次实际统计的窗口），不取 range：
- * 用户改了日期还没点查询时，屏上的数仍是上一次的区间，标题必须跟着数走。
+ * <p>v64 在这里放过一个 {@code const summaryTitle = computed(...)}：不带指标参数的全局 computed，
+ * 末句写死「下面那张表才按日拆分」，被无条件绑在逐指标的 v-for 里。于是只对蜡块产出数成立的那句话，
+ * 被原样印到按送检科室 / 技术类型 / 标本类别 / 染色类型分组的五条指标头上，而那几张表里连日期列都没有。
+ * 分组维度是后端 group by 时就知道的事实，它必须由那个事实生成（见 {@code PathQcController#summaryTitle}），
+ * 前端再写一句话套给所有指标，就又是一次「一句话被无条件说给 N 个对象听」。
  */
-const summaryTitle = computed(() =>
-  `本期合计　${fmt(body.value?.from)} 至 ${fmt(body.value?.to)}（共 ${fmt(body.value?.days)} 天）`
-  + '　——整个统计区间一个数，不是某一天；下面那张表才按日拆分')
 
 function missingOf(ind: Row): string[] {
   return (ind.missingFields ?? []) as string[]

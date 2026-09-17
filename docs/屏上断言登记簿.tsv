@@ -32,17 +32,24 @@
 # 列：指纹	档位	文件	说明 / FACT 档的对拍用例
 #
 cd18b814d0d1	FACT	frontend/shell/src/views/inpatient/timeliness/TimelinessView.vue:90	--detect 点名（ANOMALY_NOTE 被无条件说给每条指标）。**判定：成立**——它断言的是平台级口径（负时长单列、既不进分子也不进分母），与是哪条指标无关，故对每条都真；这与 summaryTitle 那种「断言下面那张表长什么样」根本不同，后者随指标而变。对拍用例：**本轮未建**，见下方 TODO。
-c28eb573a704	FACT	frontend/shell/src/views/medtech/pathology/PathQcView.vue:58	--detect 点名（summaryTitle 被无条件说给每条指标）。**判定：不成立**——末句「下面那张表才按日拆分」对按科室/技术类型/标本类别/染色类型分组的 5 条指标是假话，那几张表里连日期列都没有。这是 v64 复核 2576 打回的两条之一，**归本轮车道 C 修**；修完这一行要跟着改（措辞变了指纹就变，棘轮会要求重新登记）。
 f1879db993e6	FACT	frontend/shell/src/views/medtech/pathology/GrossingPanel.vue:762	修订弹窗「这次提交会发生什么」两档措辞（0 项 / k 项）。**被 v64 复核打回过**（原文把「已预填在下面的字段栏里」写死，UNPARSED 档一项都不预填，两条黄条同屏互相否定），且落在 2530 热区，故 FACT。对拍用例：V62GrossReviseGuardTest#theCoverNoteAgreesWithWhatWasActuallyPrefilled（②g）——真库态走出 UNPARSED 那一格（取材填字段→补取材填字段→补取材只写描述），坐实预填 0 项后逐档求值这句话：0 项档必须说「一项都没有填」、拆得开那一档必须说「填了 N 项」（活对照组），并拿修复前的形态（coverNoteTailV64）证明它在同一格里逐字为假；措辞由 reviseFormFields（表单此刻真会提交哪几项，提交与这句话共用它）生成，②f 用源码扫描钉住「不是人手写一句」并逐字比对 Java 同构版 submitNote。本句刻意不说「提交后新版如何」——gate=block 档下这一次根本不落库。
 e0195cb365f2	FACT	frontend/shell/src/views/medtech/pathology/GrossingPanel.vue:793	修订弹窗覆盖事实条的前半句「当前文本里 N 处「标签：值」，其中 M 处在最新字段版里有字段行」。落在 2530 热区、v63/v64 两轮打回过同一段话，故 FACT。N/M 与逐条清单**原样取自后端返回体**（前端不重解析那段文本）。对拍用例：V62GrossReviseGuardTest#theReadEndpointSaysHowManyLabelValueFormsActuallyHaveFieldRows（②c）与#unbackedFormsAreSplitByWhetherAnEarlierVersionStillHoldsTheirFieldRows（②d）——真库态下算出 N=4 / M=2、逐条核 unbacked 是哪两项、并带「4 项全填成字段」的活对照组（三个余量键归零）。**v64 那句「（已预填在下面的字段栏里）」原挂在本句尾部，本轮拆走**：它断言的是表单状态，与本句的事实源无关。
 56d91898facf	FACT	frontend/shell/src/views/medtech/pathology/GrossingPanel.vue:796	修订弹窗覆盖事实条的操作指引「要让它们随本次这一版一起被记录，把它们填进下面的字段栏再提交」。它隐含一条断言：填进字段栏的项**真会**随本版落字段行。落在 2530 热区，故 FACT。对拍用例：V62GrossReviseGuardTest#appendedFieldsArePrefillableRegardlessOfFieldsCurrent（①）——照预填原样提交后 grossFieldCount=2、读端点 fields 逐项对上（修复前这里落 0 项）；#theCoverNoteAgreesWithWhatWasActuallyPrefilled（②g）覆盖「字段栏里有几项」这一维。**不再给 v64 那句基于假结论的指引**（原文叫人去重填本来就有字段行的那几处）。
 4d40bb885c74	FACT	modules/medtech/src/main/java/cn/hip/medtech/web/PathologyProcessController.java:739	取材修订「全丢」告警（warn 档回带 warnings，前端 ElMessage 原样上屏）。**被 v64 复核打回过**（基准用全版本累计行数，与隔壁部分退化那档的最新一版行数是两套口径，同一标本会是 6 与 2），故 FACT。本轮起整段只有一个基准：修订前最新一版（读端点 fields、屏上默认显示的那一版、修订预填三处同口径）。对拍用例：V62GrossReviseGuardTest#degradingReviseIsGovernedByTheGrossFieldGate（②）——warn 档实跑，逐字核「修订前最新一版是第 3 版、1 项，本次 0 项」（**修复前这里打的是累计 3 行**），并过 assertNoDeadFieldClaim；句中「第 N 版那几行仍在库里、按版本调阅得到」由 #fieldRowsAreNeverUpdatedOrDeletedAnywhere（⑥）全仓扫 path_gross_field 的 update/delete（带活对照组）撑着，一旦有人加了改写，这句话当场变假。
 186336d59420	FACT	modules/medtech/src/main/java/cn/hip/medtech/web/PathologyProcessController.java:753	取材修订「部分退化」告警。**被 v64 复核打回过**：原文「少掉的那几项此后只留在大体所见文本里，字段级查询与统计取不到」两个半句都与库内事实相反，故 FACT。现在只说两件可验的事（不进入本版的字段级记录 / 旧版那几行仍在第 N 版可调阅），并按 label 做差集**点名**是哪几项（净减 1 项可能是删 3 加 2，拿两个数相减去猜就点错名）。对拍用例：V62GrossReviseGuardTest#degradingReviseIsGovernedByTheGrossFieldGate（②）与#partialFieldLossWarnsOnEveryGateButNeverBlocks（②b）——两处实跑并 assertNoDeadFieldClaim；②里另加库内对照（第 1 版「切面」那行真的还在）与读端点对照（fieldsByRevision 真调得出第 1 版两项）；⑥ 的全仓零 update/delete 同样撑着这一句。**同槽位的兄弟句**：block 档 5277 那条消息（同文件 :732）说的是同一件事、本轮一并改（原文「结构化记录全部丢失」），它的句读落在未改动的上下文行上、棘轮抽不到它——见本簿开头 limits (a)，②的断言逐字钉着它。
+d8b4b42e3500	FACT	modules/medtech/src/main/java/cn/hip/medtech/web/PathQcController.java:summaryTitle / summaryVsDailyNote	取代 v64 的指纹 c28eb573a704（PathQcView 那个全局 computed，措辞已全改、该指纹在仓库里不复存在）。**v64 判定：不成立**——末句「下面那张表才按日拆分」对按科室/技术类型/标本类别/染色类型分组的 5 条指标是假话，那几张表里连日期列都没有；v65 车道 C 已修。**v65 判定：成立**——这句话不再由前端写死：分组维度登记在 Def.rowGroup（后端 group by 时就知道的事实），标题逐指标生成，且说出口之前拿本次真正交出去的那批行验一遍（维度列逐行取值互不相同）、验不过就一个字不说下面那张表；「不按日拆分」是否定断言，另查一遍行里确实没有按日列；区间只有一天时不再说「不是某一天」；没有行时不提「下面那张表」。对拍用例：V62BlockCaliberTest#everySummaryTitleDeclaresTheDimensionItsOwnTableIsGroupedBy（逐指标穷举 12 条，v64 原话喂同一判据判红）、#theSummaryVsDailyNoteTellsTheTruthInBothLibraryStates（一根柱 / 跨日两种库态）、V63FrontendLabelGuardTest#theRangeTotalBlockTitleIsPerIndicatorAndNeverAFileLevelConstant（标题必须引用循环变量 ind）。
+af073fb0d8dd	FACT	modules/medtech/src/main/java/cn/hip/medtech/web/PathQcController.java:WORKLOAD_BLOCK caveat（合计格口径）	**v64 判定：不成立**——原话「合计那一格不是任何一天的数」在演示库态（区间内只有一天有产出）下是假的，合计与按日唯一那一行逐字相等。v65 改成「按整个区间算、不按某一天算」并写明相等的情形。对拍用例：V62BlockCaliberTest#theSummaryVsDailyNoteTellsTheTruthInBothLibraryStates 的库态一（只有一根柱，两数相等）——同一窗口下这句话必须仍然为真。
+c7b11fee96ef	FACT	modules/medtech/src/main/java/cn/hip/medtech/web/PathQcController.java:WORKLOAD_BLOCK caveat（去重列对账）	**v64 判定：不成立**——原话宣称合计「必然小于」按日各行之和、「本期蜡块/标本」不等于按日表里的任何一行，而这两句只在跨统计日时成立；演示脚本造出来的库态只有当天一根柱，两数逐字相等。v65 改成条件句（只在没有一份标本的蜡块落进两个以上统计日时才相等），本次查询的实际关系由 summaryVsDailyNote 按库态现算（屏上在合计格下面、CSV 在页脚，同一个函数同一批行）。对拍用例：V62BlockCaliberTest#theSummaryVsDailyNoteTellsTheTruthInBothLibraryStates——造「一根柱」与「跨日两根柱」两种库态，v64 那两句原话在前者必须被判红、在后者不许被咬（它在那里恰好是真的）。
 #
-# TODO（v65 合并后补齐）：FACT 档说好了要配「对拍用例」——在真实库态下逐档求值这句话此刻是不是真的。
-# 本轮前置只建到「棘轮 + 循环变量探测器」，对拍台还没建。
-# 这两行现在靠的是**人工判定写在备注里**，不是机器每次跑都验一遍。
-# 不把这件事写在这儿、只说「已建守卫」，就又是一次「声称已记而实际没记」——v64 我犯过一次。
+# 【对拍用例的实际状态 —— 不许含糊过去】
+# 前置建完时这里写的是「对拍台还没建，全靠人工判定」。v65 三个车道各自把自己那几行的对拍用例**真建了**
+# （见各行末尾的用例名：V62GrossReviseGuardTest#… / V62BlockCaliberTest#… / V62TechRemarkTest#…），
+# 它们在真实库态下逐档求值，不是源码扫描。所以那句话现在只剩一条仍然成立：
+#
+#   · cd18b814d0d1（ANOMALY_NOTE）**至今没有对拍用例**，靠的是人工判定写在备注里。
+#     它是 --detect 点名的两条之一，另一条（summaryTitle）已由车道 C 修完并配上三条用例；
+#     这一条判为「成立」（断言的是平台级口径、与指标无关），但**判定成立不等于被机器验过**。
+#     谁接手 v66，这是现成的一件。
 #
 # v65 车道 B（2563 三条）——③ 制片工位挂接下拉
 # 注：这两句在 .vue 的**普通文本节点**里（<span class="muted"> 的正文），不是带引号的字面量，

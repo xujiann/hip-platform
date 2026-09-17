@@ -34,6 +34,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -307,21 +308,40 @@ class V63FrontendLabelGuardTest {
     private static final String LEGACY_SUMMARY_TAG =
             "<el-descriptions v-if=\"ind.summary\" :column=\"4\" border size=\"small\" class=\"cav\">";
 
+    /**
+     * v64 交付形态那一行的逐字原文（{@code PathQcView.vue:95}）——<b>活对照组</b>：
+     * 它<b>有</b>标题，所以上一轮那条「每块都要有标题」的判据放行了它；
+     * 而它绑的是个不带指标参数的全局 computed，本轮那条「标题必须随指标而变」的判据喂它必须判红。
+     */
+    private static final String LEGACY_SUMMARY_TAG_V64 =
+            "<el-descriptions v-if=\"ind.summary\" :column=\"4\" border size=\"small\" class=\"cav\" :title=\"summaryTitle\">";
+
     /** 有标题的形态（同页时限阈值那一块的逐字原文）——探针：判据不能把什么都判成「没有标题」 */
     private static final String TITLED_TAG =
             "<el-descriptions v-if=\"thresholds\" :column=\"3\" border size=\"small\" class=\"cav\" title=\"时限阈值与统计区间\">";
 
     private static final Pattern DESCRIPTIONS_OPEN = Pattern.compile("<el-descriptions(?![-\\w])[^>]*>");
     private static final Pattern HAS_TITLE = Pattern.compile("(^|\\s):?title\\s*=");
+    private static final Pattern TITLE_BIND = Pattern.compile(":title=\"([^\"]*)\"");
 
     /**
-     * <b>修复前的反向事实</b>（复核者原话）：「这个合计块在整页所有 el-descriptions 里是<b>唯一一个没有标题的</b>，
-     * 屏上没有一个字说它是区间合计。」——而它四列的中文当时还与按日表逐字相同（「当日产出蜡块数」），
-     * 于是同一屏上 30 天合计与某一天的数顶着同一个表头。本条钉三样：整页每块描述表都有标题、
-     * 合计块那一处走 {@code summaryTitle}、标题里写明「本期合计」并带<b>已生效的统计区间</b>。
+     * <b>v63 那一轮的反向事实</b>（复核者原话）：「这个合计块在整页所有 el-descriptions 里是<b>唯一一个没有标题的</b>，
+     * 屏上没有一个字说它是区间合计。」
+     *
+     * <p><b>v64 修它时带进来的新反向事实</b>（v64 交付后复核，主控实测坐实，归 v65 车道 C）：
+     * 新加的 {@code summaryTitle} 是个<b>不带指标参数的全局 computed</b>，末句写死
+     * 「下面那张表才按日拆分」，却被无条件绑在<b>逐指标的 v-for</b> 里那一块 el-descriptions 上——
+     * 送检科室工作量 / 特检技术医嘱量 / 标本接收 / 标本固定信息完整率 / 染色切片优良率这五条
+     * 分别按科室、技术类型、标本类别、标本类别、染色类型分组，<b>表里连日期列都没有</b>，
+     * 屏上却每一块都在宣告自己是按日维度。上一轮那条「每块都要有标题」的判据对它一句话也说不出来：
+     * 它盯的是「有没有」，不盯「那句话是不是真的」。
+     *
+     * <p>本条钉三样：整页每块描述表都有标题（v63 那条留着）；<b>合计块的标题必须随指标而变</b>
+     * （绑定里引用循环变量 {@code ind}）；本文件里<b>不许再有一个文件级的 summaryTitle</b>——
+     * 一个不带指标参数的常量，天然做不到「随指标而变」。
      */
     @Test
-    void theRangeTotalBlockHasATitleSayingItIsThePeriodTotalAndCarriesTheRange() {
+    void theRangeTotalBlockTitleIsPerIndicatorAndNeverAFileLevelConstant() {
         String src = stripComments(read(QC_VIEW));
 
         var tags = new ArrayList<String>();
@@ -332,49 +352,47 @@ class V63FrontendLabelGuardTest {
 
         var untitled = tags.stream().filter(t -> !HAS_TITLE.matcher(t).find()).toList();
         assertEquals(List.of(), untitled,
-                "**整页每一块 el-descriptions 都要有标题**——修复前只有合计块没有，"
+                "**整页每一块 el-descriptions 都要有标题**——v63 交付时只有合计块没有，"
                         + "屏上没有一个字说它是区间合计：" + untitled);
 
         String summaryTag = tags.stream().filter(t -> t.contains("ind.summary")).findFirst()
                 .orElseGet(() -> fail("找不到合计块那一处 el-descriptions"));
-        assertTrue(summaryTag.contains(":title=\"summaryTitle\""),
-                "合计块的标题走 summaryTitle（区间随返回体走，不是写死的一句话）：" + summaryTag);
+        assertTitleVariesPerIndicator(summaryTag);
 
-        String title = summaryTitleExpression(src);
-        assertTrue(title.contains("本期合计"),
-                "**标题要一眼说明这是区间合计、不是今天**：" + title);
-        for (String piece : List.of("body.value?.from", "body.value?.to", "body.value?.days")) {
-            assertTrue(title.contains(piece),
-                    "标题里要带统计区间（页面已有 from / to / days）——缺「" + piece + "」：" + title);
-        }
-        assertFalse(title.contains("range.value"),
-                "区间取**返回体**的 from / to（后端此次实际统计的窗口），不取 range——"
-                        + "用户改了日期还没点查询时，屏上的数仍是上一次的区间，标题必须跟着数走：" + title);
+        // 修复前的反向事实：文件级的 summaryTitle 一旦还在，就说明这句话仍可能被写死一次套给所有指标
+        assertFalse(src.contains("const summaryTitle"),
+                "**本文件不许再有文件级的 summaryTitle**：它不带指标参数，"
+                        + "做不到「按这条指标自己的分组维度说话」，而分组维度是后端 group by 时就知道的事实，"
+                        + "必须由那个事实生成（PathQcController#summaryTitle）");
+        assertTrue(src.contains("ind.summaryVsDailyNote"),
+                "合计格下面那条「本期与按日之和的实际关系」也要上屏（后端按库态现算的 summaryVsDailyNote）");
 
-        // 活对照组 / 探针：同一个判据，修复前那一行判「没有标题」、同页有标题的那一行判「有」
+        // ---- 活对照组：同一个判据喂 v63 / v64 两代的那一行，必须分别判红 ----
         assertFalse(HAS_TITLE.matcher(LEGACY_SUMMARY_TAG).find(),
                 "探针：v63 交付时的那一行正是没有 title 的形态：" + LEGACY_SUMMARY_TAG);
         assertTrue(HAS_TITLE.matcher(TITLED_TAG).find(),
                 "探针：判据不能把有标题的也判成没标题：" + TITLED_TAG);
+        assertTrue(HAS_TITLE.matcher(LEGACY_SUMMARY_TAG_V64).find(),
+                "探针：v64 那一行是**有**标题的——所以「每块都要有标题」那条判据放行了它：" + LEGACY_SUMMARY_TAG_V64);
+        assertThrows(AssertionError.class, () -> assertTitleVariesPerIndicator(LEGACY_SUMMARY_TAG_V64),
+                "**活对照组**：本轮这条判据喂 v64 交付时那一行必须判红（它绑的是全局 computed，不随指标而变）");
         assertEquals(1, DESCRIPTIONS_OPEN.matcher(LEGACY_SUMMARY_TAG).results().count(),
                 "探针：标签匹配器咬得住那一行（不咬 el-descriptions-item）");
         assertEquals(0, DESCRIPTIONS_OPEN.matcher("<el-descriptions-item label=\"x\">").results().count(),
                 "探针：el-descriptions-item 不算一块描述表");
     }
 
-    /** {@code const summaryTitle = computed(...)} 的表达式（剥注释后按小括号配对截） */
-    private static String summaryTitleExpression(String strippedVue) {
-        int at = strippedVue.indexOf("const summaryTitle");
-        assertTrue(at >= 0, "PathQcView 里找不到 const summaryTitle");
-        int open = strippedVue.indexOf('(', at);
-        assertTrue(open > at, "summaryTitle 没有 computed( 调用");
-        int depth = 0;
-        for (int i = open; i < strippedVue.length(); i++) {
-            char ch = strippedVue.charAt(i);
-            if (ch == '(') depth++;
-            else if (ch == ')' && --depth == 0) return strippedVue.substring(open + 1, i);
-        }
-        return fail("summaryTitle 的小括号不配对");
+    /**
+     * 这一块的标题绑定<b>引用了循环变量</b> {@code ind}——即这句话随指标而变。
+     * 不引用循环变量的绑定，就是「一句话被无条件说给 N 个不同对象听」
+     * （{@code tools/claim-ratchet.py --detect} 的循环变量规则，v64 的 summaryTitle 正是这个形状）。
+     */
+    private static void assertTitleVariesPerIndicator(String tag) {
+        Matcher b = TITLE_BIND.matcher(tag);
+        assertTrue(b.find(), "合计块要有 :title 绑定：" + tag);
+        assertTrue(b.group(1).contains("ind."),
+                "**合计块的标题必须随指标而变**（绑定里要引用循环变量 ind）——"
+                        + "绑一个不带指标参数的全局常量，等于把只对某一条指标成立的话印到每一条头上：" + tag);
     }
 
     // =====================================================================================
