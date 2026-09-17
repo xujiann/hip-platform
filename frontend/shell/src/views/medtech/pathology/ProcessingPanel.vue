@@ -268,7 +268,8 @@
         </el-select>
         <span class="muted">只列本标本「待执行」的特检医嘱；挂接不会把医嘱置为已完成，完成仍在特检工位由技师确认。
           挂接后染色类型 / 项目须与医嘱一致（免疫组化→IHC、特殊染色→SPECIAL、分子→MOLECULAR、深切 / 重切 / 补取材→HE），不一致后端 5274 拒绝且一张片不插。
-          补取材医嘱标「已出块 N」（取材工位补取材时挂接到该医嘱的蜡块数，v60）：N=0 表示还没为它补出块，先去取材工位补取材再来切片</span>
+          补取材医嘱标「已出块 N」（取材工位补取材时挂接到该医嘱的蜡块数，v60）：N=0 表示还没为它补出块，先去取材工位补取材再来切片。
+          括注里的块号是这条医嘱已关联的蜡块，与 ⑤ 特检工作台、④ 诊断页的「蜡块」列取自同一列，三屏给同一套答案。</span>
       </el-form-item>
       <el-form-item label="备注">
         <el-input v-model="slideForm.remark" maxlength="255" show-word-limit />
@@ -326,6 +327,14 @@
  *
  * <p>v60（2563 尾）：挂接下拉里补取材医嘱标出「补取材（已出块 N）」（后端 sampled_block_count：取材 append 挂接到该医嘱的蜡块数，
  * V167 path_block.tech_order_id），蜡块段在医嘱未指定蜡块时读派生列 blocks_derived。
+ *
+ * <p>v65（2563 复核）：挂接下拉的蜡块段改读 {@code blocks_derived ?? block_code}——与 ⑤ 特检工作台、④ 诊断页的
+ * 「蜡块」列<b>逐字同一个表达式</b>。修复前这里写作 {@code block_code ?? blocks_derived}：取材 append 挂接会把医嘱
+ * {@code block_id} 回写为本次首块（{@code PathologyProcessController.grossing}），回写一发生 block_code 就非空、
+ * {@code ??} 当场短路，并集列一轮都走不到——一条已补出 3 块的补取材医嘱在下拉上打出「#12 补取材（已出块 3）（P-3）」，
+ * 同一行左边说出了 3 块、右边只列 1 个块号，技师在 P-4 / P-5 上切片时会读成「这条医嘱不是给这块的」；
+ * 而同一条医嘱在 ⑤ 与 ④ 的「蜡块」列写的是「P-3、P-4、P-5」，三屏对同一条医嘱给出两套答案。
+ * 这正是 v60 在后端 SQL 里、v61 在那两个清单面板里修掉的同一个 coalesce 短路，这处是第三个消费方。
  *
  * <p>v59（2563 一致性）：切片登记选了特检医嘱后，染色类型按 {@code TECH_TO_STAIN} 锁定为映射值、项目按医嘱预填并只读
  * （医嘱无项目——深切 / 重切 / 补取材——才可填）。修复前 onTechOrderPick 只做预填，下拉仍可改回 HE，
@@ -479,11 +488,16 @@ async function openSlide(row: Row) {
  * v60（2563 尾）：补取材医嘱标出「补取材（已出块 N）」——N 是取材 append 挂接到该医嘱的蜡块数（path_block.tech_order_id，V167），
  * 技师据此知道这条补取材已经出了几块可以切；蜡块段改读 blocks_derived（医嘱未指定蜡块时按挂接蜡块 / 挂接切片所在块派生）。
  * 旧后端没有这两键时按 v59 文案回落。
+ *
+ * <p>v65（2563 复核）：取值顺序与两块清单屏拉齐成 {@code blocks_derived ?? block_code}——并集列在，就用并集列；
+ * 它不在（旧后端没有这一列）才回落到下达时指定的那一块。反过来写就是 v60 在 SQL 里修掉的那个短路：
+ * 补取材回写 block_id 之后 block_code 恒非空，并集列永远轮不到。
+ * 三处取的是<b>同一列</b>，不是三处各算一遍；这一条由 V62TechRemarkTest 的源码扫描钉住（活对照组用修复前的形态）。
  */
 function techOrderLabel(t: Row): string {
   const item = t.tech_item ? ` ${String(t.tech_item)}` : ''
   const resample = String(t.tech_type) === 'RESAMPLE' ? `（已出块 ${num(t.sampled_block_count)}）` : ''
-  const blockCode = t.block_code ?? t.blocks_derived
+  const blockCode = t.blocks_derived ?? t.block_code
   const block = blockCode ? `（${String(blockCode)}）` : ''
   return `#${String(t.id)} ${String(t.tech_type_name ?? t.tech_type)}${item}${resample}${block}`
 }

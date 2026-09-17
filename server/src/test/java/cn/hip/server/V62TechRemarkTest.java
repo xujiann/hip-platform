@@ -103,6 +103,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *       （活的对照组：修复前页首那两句写死的文案必须被同一个匹配器抓到）。
  *       顺带钉住「这句话既然要印在评委看的页首，就不带配置键 / 错误码 / 英文档位名」。</li>
  * </ul>
+ *
+ * <h2>v65 追加（2563 复核第一条：同一条医嘱的「关联蜡块」，三屏两套答案）</h2>
+ * <p><b>修复前的反向事实</b>（v64 交付后复核，主控实测坐实 ProcessingPanel 那行代码）：
+ * ③ 制片工位「切片登记」弹窗里的「挂接特检医嘱」下拉，蜡块段写作 {@code t.block_code ?? t.blocks_derived}——
+ * 先取医嘱 {@code block_id} 指向的那一块。而补取材（RESAMPLE）医嘱在取材 append 挂接时会被<b>回写</b>
+ * {@code block_id} 为本次首块，于是 {@code block_code} 恒非空、{@code ??} 当场短路：一条已补出 3 块的
+ * 补取材医嘱，下拉上打出「#12 补取材（已出块 3）（P-3）」——同一行左边说出了 3 块、右边只列 1 个块号，
+ * 技师在 P-4 / P-5 上切片时会读成「这条医嘱不是给这块的」；而同一条医嘱在 ⑤ 特检工作台与 ④ 诊断页的
+ * 「蜡块」列写的是「P-3、P-4、P-5」。这正是 v60 在后端 SQL 里修掉、v61 在那两个清单面板里修掉的同一个
+ * coalesce 短路，第三个消费方一轮都没跟。
+ * <p>{@link #threeScreensReadTheSameBlockColumnForOneTechOrder()} <b>把两端一起钉</b>：一头实查库
+ * （造一条真「已出块 3」的补取材医嘱，坐实回写确实发生、并集列与回写那一块确实不是同一个答案），
+ * 一头剥注释扫三处屏的源码，确认它们取的是<b>同一列、同一顺序</b>；活的对照组用修复前那一行的原文。
  */
 @SpringBootTest
 @Transactional
@@ -129,6 +142,24 @@ class V62TechRemarkTest {
      */
     static final String TECH_PANEL = "frontend/shell/src/views/medtech/pathology/TechOrderPanel.vue";
     static final String DIAG_PANEL = "frontend/shell/src/views/medtech/pathology/DiagnosisPanel.vue";
+    /** v65：coalesce 短路的第三个消费方所在的屏（③ 制片工位「切片登记」弹窗的挂接下拉） */
+    static final String PROC_PANEL = "frontend/shell/src/views/medtech/pathology/ProcessingPanel.vue";
+
+    /**
+     * 「蜡块」取值表达式的抽取器：{@code <接收者>.(blocks_derived|block_code) ?? <接收者>.(…)}。
+     * <b>按语法形态抓，抓完把接收者名归一化掉</b>——三块屏的循环变量分别叫 {@code t} 与 {@code row}，
+     * 比的是「取哪一列、谁在前」，不是比变量名。
+     */
+    static final Pattern BLOCK_EXPR = Pattern.compile(
+            "[A-Za-z_$][\\w$]*\\.(blocks_derived|block_code)\\s*\\?\\?\\s*"
+            + "[A-Za-z_$][\\w$]*\\.(blocks_derived|block_code)");
+
+    /** 活的对照组：v64 ③ 制片工位那一行的原文（ProcessingPanel.vue:486，先取 block_code 于是当场短路） */
+    static final String V64_PROC_BLOCK_EXPR = "  const blockCode = t.block_code ?? t.blocks_derived";
+
+    /** ③ 下拉那句宣告「三屏同一套答案」的上屏文案——它与本类那条用例是一对，改一处要连另一处一起改 */
+    static final String PROC_ONE_ANSWER_CLAIM =
+            "括注里的块号是这条医嘱已关联的蜡块，与 ⑤ 特检工作台、④ 诊断页的「蜡块」列取自同一列，三屏给同一套答案。";
 
     /**
      * 「完成提示又是自己拼的」检测器：成功提示的实参里只要还出现这几个事实键（或任何模板插值），
@@ -662,6 +693,61 @@ class V62TechRemarkTest {
                 "对照组：v63 ④ 页首那句写死的清单确实漏了这一档：" + V63_HARDCODED_STATES);
     }
 
+    // =====================================================================================
+    // ⑩ v65（2563 复核第一条）：同一条医嘱的「关联蜡块」，三屏只有一套答案
+    // =====================================================================================
+
+    @Test
+    void threeScreensReadTheSameBlockColumnForOneTechOrder() {
+        // ---- 库这一端：造一条真「已出块 3」的补取材医嘱（取材 append 挂接 → block_id 被系统回写为首块）----
+        long rs = techOrder(a, null, "RESAMPLE", null);
+        var gr = ok(process.grossing(new GrossingReq(a, null, null, "补取材 " + tag, true, null,
+                List.of(new BlockReq("切缘一 " + tag), new BlockReq("切缘二 " + tag),
+                        new BlockReq("切缘三 " + tag)), rs), doc1));
+        assertEquals(3, rows(gr, "blocks").size(), "夹具前提：本次补取材出三块");
+        assertEquals(Boolean.TRUE, gr.get("techOrderBlockBackfilled"),
+                "夹具前提：医嘱 block_id 由空被系统回写为本次首块——**?? 短路正是在这里当场发生**");
+
+        var row = listRow(rs);        // 标本分支：③ 制片下拉与 ④ 诊断页特检清单都走它
+        var wide = defaultDeskRow(rs);  // 全院分支的默认视图（待执行）：⑤ 特检工作台
+        assertEquals(3L, asLong(row.get("sampled_block_count")), "夹具前提：已出块 3");
+        String union = String.valueOf(row.get("blocks_derived"));
+        assertEquals(3, union.split("、").length, "「蜡块」列应把三块逐块列全：" + union);
+        assertEquals("DERIVED", row.get("blocks_derived_source"), "三块全是派生来的：" + row);
+        assertEquals(union, String.valueOf(wide.get("blocks_derived")),
+                "标本分支与全院分支是同一段 SQL，同一条医嘱必须同一个值");
+        assertEquals(row.get("blocks_derived_source"), wide.get("blocks_derived_source"), "来源判定同上");
+
+        // 修复前的反向事实：回写确实发生了，block_code 非空而且只有一块——旧表达式就停在这里
+        assertNotNull(row.get("block_code"), "回写确实发生了，block_code 非空（?? 在这里短路）");
+        String backfilled = String.valueOf(row.get("block_code"));
+        assertFalse(backfilled.contains("、"), "回写进 block_id 的只有本次首块这一块：" + backfilled);
+        assertNotEquals(backfilled, union,
+                "**修复前 ③ 下拉印这一块、⑤ 与 ④ 印那三块——同一条医嘱两套答案**："
+                        + backfilled + " vs " + union);
+
+        // ---- 屏这一端：剥注释后，三处取的是同一列、同一顺序（不是三处各算一遍）----
+        var exprs = new LinkedHashMap<String, String>();
+        for (String rel : List.of(PROC_PANEL, TECH_PANEL, DIAG_PANEL)) {
+            exprs.put(rel, blockExprOf(rel));
+        }
+        assertEquals(1, new HashSet<>(exprs.values()).size(),
+                "**三屏对同一条医嘱的关联蜡块必须给同一套答案**（取同一列、同一顺序）：" + exprs);
+        assertEquals("blocks_derived??block_code", exprs.get(PROC_PANEL),
+                "并集列在就用并集列，它不在（旧后端）才回落到下达时指定的那一块：" + exprs);
+
+        // 活的对照组：修复前那一行必须被同一个抽取器抓到，且抽出来的正是短路顺序
+        assertEquals("block_code??blocks_derived", extractBlockExpr(V64_PROC_BLOCK_EXPR),
+                "对照组：v64 ③ 那一行的原文必须被同一个抽取器抓到：" + V64_PROC_BLOCK_EXPR);
+        assertNotEquals(exprs.get(PROC_PANEL), extractBlockExpr(V64_PROC_BLOCK_EXPR),
+                "对照组：修复前后的形态确实不同，否则上面那条是恒真的");
+
+        // 屏上那句「三屏给同一套答案」是由本用例守着的：文案与守卫成对，改一处就得改另一处
+        assertTrue(stripComments(readRepoFile(PROC_PANEL)).contains(PROC_ONE_ANSWER_CLAIM),
+                "**③ 下拉那句「三屏给同一套答案」必须还在屏上**——它由本用例守着，"
+                        + "删了它或改了措辞，就得连本用例一起改：" + PROC_ONE_ANSWER_CLAIM);
+    }
+
     // ==================================================================================
     // 助手
     // ==================================================================================
@@ -860,6 +946,36 @@ class V62TechRemarkTest {
             if (!seen.add(c) && !dup.contains(c)) dup.add(c);
         }
         return dup;
+    }
+
+    /** 某块屏里那一处「蜡块」取值表达式（剥注释后取；一处只许有一个，多一个就是又各算了一遍） */
+    private static String blockExprOf(String rel) {
+        return extractBlockExpr(stripComments(readRepoFile(rel)));
+    }
+
+    /** 抽「蜡块」取值表达式并归一化掉接收者名：{@code t.blocks_derived ?? t.block_code} → {@code blocks_derived??block_code} */
+    private static String extractBlockExpr(String text) {
+        var m = BLOCK_EXPR.matcher(text);
+        assertTrue(m.find(), "抽不到「蜡块」取值表达式——先修扫描再看结论");
+        String got = m.group(1) + "??" + m.group(2);
+        // find() 为 false 时 group() 会抛 IllegalStateException，断言消息是急求值的，先取回来再拼
+        boolean again = m.find();
+        assertFalse(again, "同一块屏里有不止一处「蜡块」取值表达式（第二处："
+                + (again ? m.group() : "") + "）——那就是又各算了一遍");
+        return got;
+    }
+
+    /**
+     * ⑤ 特检工作台<b>默认视图</b>里的这一行：不传 specimenId（全院分支）、不传 status（后端默认 ORDERED），
+     * 按本标本条码收窄——脏库里按 status=ALL 全量取会被 limit 截断，截没了断言就变成恒绿。
+     */
+    private Map<String, Object> defaultDeskRow(long techOrderId) {
+        var body = ok(report.techOrders(null, null, null, null, "PB" + tag, null, null, null, 200));
+        assertEquals("ORDERED", body.get("status"), "⑤ 默认视图就是全院「待执行」");
+        for (var r : rows(body, "items")) {
+            if (asLong(r.get("id")) == techOrderId) return r;
+        }
+        throw new AssertionError("⑤ 默认视图里找不到医嘱 " + techOrderId);
     }
 
     private Map<String, Object> listRow(long techOrderId) {

@@ -27,14 +27,24 @@
 
 参数：
   --count N   阶梯标本数（默认 5）。N 个标本从阶梯**顶端往下**轮流分配（先签发、再诊断……），
-              保证 N=1、2 时也有「已签发 / 有蜡块」的数据；另**固定再加 1 个拒收标本**，
-              故实际登记 N+1 个。三个附加动作（补充报告 / IHC 医嘱挂切片并完成 / 特检医嘱带原因取消）
-              轮流分配到各「已签发」标本上；只有 1 个已签发时三者都落在它身上。
+              保证 N=1、2 时也有「已签发 / 有蜡块」的数据；另**固定再加 2 个标本**：
+              1 个拒收 + 1 个「特检在办」，故实际登记 N+2 个。三个附加动作（补充报告 /
+              IHC 医嘱挂切片并完成 / 特检医嘱带原因取消）轮流分配到各「已签发」标本上；
+              只有 1 个已签发时三者都落在它身上。
   --quiet     只打印一行成功摘要；任何一步失败打印响应并以非 0 退出。
   --base      API 根地址（默认读环境变量 HIP_E2E_BASE，再默认 http://localhost:8080/api）。
 
-退出码：0 成功；1 任一业务步骤失败（响应已打印）；2 造完数后质控概览三项
+退出码：0 成功；1 任一业务步骤失败（响应已打印，含 ⑤ 工作台自检不过）；2 造完数后质控概览三项
 （登记总量 / 蜡块产出 / 报告签发量）仍有 0——说明「造了数但质控页看不见」，这正是 2576 要钉死的。
+
+**v65（2563 复核第三条）「特检在办」标本**：复核者原话——⑤ 特检工作台是平台对 2563 的唯一答卷屏，
+它默认只查「待执行」，而本脚本 v64 版全程只下达 2 条特检医嘱、并在同一函数里当场把一条完成、一条取消，
+库里剩不下任何一条待执行：评委照培训脚本跑完点进 ⑤，落地第一屏是空表；改选「全部状态」后那两行的
+「完成」「取消」按钮全部灰掉，而它们的「当前执行进度」只可能是「已完成」「已取消」——进度列在演示数据上
+就是状态列的一份副本；⑤ 页首自己宣告的四个未完成档、「已出块」数与「派生」蜡块标记，一个实例都没有。
+现固定再造一个标本，在它上面留下**四条停在待执行的特检医嘱**，四个未完成档各一条（见 tech_backlog），
+并在造完后回读 ⑤ 的默认视图逐档核对（见 verify_tech_backlog）——**档位清单读后端字典端点下发的
+progressStates，不在脚本里写死一份**：哪天派生多出一档，这条自检自己就会要求它也有实例。
 
 所有患者名带时间戳后缀，脚本可在同一实例上反复跑而不撞名；复诊医师账号 demo_pathdoc 与
 质控账号 demo_quality 幂等复用（口令沿用 e2elib.provision_user 约定）。
@@ -197,6 +207,78 @@ def ihc_attach(sid, block_id):
     return tid, len(sl['slides'])
 
 
+def resample_append(sid, tid, descs, idx):
+    """取材工位为一条补取材（RESAMPLE）医嘱补出蜡块：append=true 带 techOrderId
+    （后端 5275 校验医嘱存在 / 是 RESAMPLE / 属于本标本 / 仍待执行，四条都在任何写入之前）。
+    返回本次新出的蜡块 id 列表。
+
+    这一步同时造出 v60 起那个「?? 短路」赖以成立的库态：医嘱 block_id 由空**被系统回写**为本次首块
+    （techOrderBlockBackfilled=true）。演示屏要看的正是这个态下三屏是否给同一套答案。"""
+    g = do('补取材（挂接补取材医嘱）', 'POST', '/pathology/process/grossing',
+           {'specimenId': sid, 'append': True, 'techOrderId': tid,
+            'grossText': f'补取材：另取切缘组织 {len(descs)} 块送检（演示 {idx}）',
+            'blocks': [{'tissueDesc': d} for d in descs]})
+    created = g.get('blocks') or []
+    assert len(created) == len(descs) and all(b.get('tech_order_id') == tid for b in created), \
+        f'本次补出的每一块都须挂到这条补取材医嘱上（V167 path_block.tech_order_id）：{g}'
+    assert g.get('techOrderBlockBackfilled') is True, \
+        f'医嘱 block_id 应由空回写为本次首块（演示要的就是这个态）：{g}'
+    return [b['id'] for b in created]
+
+
+def attach_slides(block_id, tid, stain_type, stain_item, count, stain_n, label):
+    """把 count 张切片挂到医嘱 tid 上，其中前 stain_n 张登记染色。
+    stain_n < count → 医嘱停在「切片中」；stain_n == count → 停在「已染色待确认」。
+    两者都**不调 /done**——⑤ 工作台要的就是还没完成的行。"""
+    sl = do(f'切片挂接医嘱（{label}）', 'POST', '/pathology/process/slides',
+            {'blockId': block_id, 'count': count, 'stainType': stain_type,
+             'stainItem': stain_item, 'techOrderId': tid})
+    slides = sl.get('slides') or []
+    assert len(slides) == count and all(x.get('tech_order_id') == tid for x in slides), \
+        f'每张挂接切片的 tech_order_id 都须等于医嘱 id：{sl}'
+    for x in slides[:stain_n]:
+        do(f'染色登记（{label}）', 'PUT', f"/pathology/process/slides/{x['id']}/stain",
+           {'quality': 'GOOD', 'stainItem': stain_item})
+    return len(slides)
+
+
+def tech_backlog(sid, block_ids, idx):
+    """⑤ 特检工作台的「有东西可看」：在同一个标本上留下**四条停在待执行的特检医嘱**，
+    四个未完成档各一条，一条都不完成、一条都不取消。返回 (进度编码 → 医嘱 id, 新增蜡块数, 新增切片数)。
+
+    四条分别怎么落到那一档（口径照后端 PathologyReportController.techProgress 的四参派生）：
+      · 待切片        —— 下达即止：无挂接切片、也无补取材已出块；
+      · 已补取材待切片 —— 补取材医嘱经取材 append 补出 2 块、还没切片（同时造出「已出块 2」与「派生」标）；
+      · 切片中        —— 挂接 2 张、只染 1 张；
+      · 已染色待确认   —— 挂接 1 张并染完（可以点「完成」了，但演示里刻意不点）。"""
+    backlog, blocks, slides = {}, 0, 0
+
+    backlog['PENDING_SECTION'] = do('下 IHC 医嘱（待切片）', 'POST', '/pathology/report/tech-orders',
+                                    {'specimenId': sid, 'blockId': block_ids[0], 'techType': 'IHC',
+                                     'techItem': 'Ki-67',
+                                     'reason': 'HE 片核分裂象多，加做增殖指数（演示：技师还没排片）'})['id']
+
+    rs = do('下补取材医嘱（不指定蜡块）', 'POST', '/pathology/report/tech-orders',
+            {'specimenId': sid, 'techType': 'RESAMPLE',
+             'reason': '切缘情况需补充取材（演示：取材已补出块、尚未切片）'})['id']
+    blocks += len(resample_append(sid, rs, ['切缘一（补取材）', '切缘二（补取材）'], idx))
+    backlog['SAMPLED'] = rs
+
+    sect = do('下 IHC 医嘱（切片中）', 'POST', '/pathology/report/tech-orders',
+              {'specimenId': sid, 'blockId': block_ids[-1], 'techType': 'IHC', 'techItem': 'CK20',
+               'reason': '鉴别组织来源（演示：片已切、只染了一张）'})['id']
+    slides += attach_slides(block_ids[-1], sect, 'IHC', 'CK20', 2, 1, '切片中')
+    backlog['SECTIONING'] = sect
+
+    stained = do('下特殊染色医嘱（已染色待确认）', 'POST', '/pathology/report/tech-orders',
+                 {'specimenId': sid, 'blockId': block_ids[-1], 'techType': 'SPECIAL_STAIN',
+                  'techItem': 'PAS', 'reason': '排除真菌感染（演示：已染完，等技师确认完成）'})['id']
+    slides += attach_slides(block_ids[-1], stained, 'SPECIAL', 'PAS', 1, 1, '已染色待确认')
+    backlog['STAINED'] = stained
+
+    return backlog, blocks, slides
+
+
 def tech_cancel(sid, block_id):
     """下特殊染色医嘱 → 带原因取消（v57 2563：取消原因写 cancel_reason，下达原因 reason 不动）"""
     tid = do('下特殊染色医嘱', 'POST', '/pathology/report/tech-orders',
@@ -249,7 +331,11 @@ SHARED_PATIENT_IDX = {0, 1}
 VARIANTS = ['SUPPLEMENT', 'IHC_ATTACH', 'TECH_CANCEL']
 SITES = ['左乳外上象限', '右乳内下象限', '胃窦小弯侧', '乙状结肠', '甲状腺左叶', '子宫颈 3 点']
 
-plan = [LADDER[i % len(LADDER)] for i in range(ARGS.count)] + [('REJECTED', '已拒收')]
+# v65（2563 复核第三条）：拒收之外固定再加一个「特检在办」标本——⑤ 特检工作台默认只查「待执行」，
+# 而此前脚本下达的 2 条特检医嘱在同一函数里当场一条完成、一条取消，库里一条待执行都不剩，
+# 评委落地第一屏是空表。放在最后一档：既有标本的序号与「前两条同患者」的既往演示口径都不受影响。
+plan = ([LADDER[i % len(LADDER)] for i in range(ARGS.count)]
+        + [('REJECTED', '已拒收'), ('TECH_BACKLOG', '特检在办（四档未完成）')])
 issued_idx = [i for i, (st, _) in enumerate(plan) if st == 'ISSUED']
 variants_of = {i: [] for i in range(len(plan))}
 for k, v in enumerate(VARIANTS):
@@ -297,6 +383,13 @@ def build(idx, stage, label, variants, t2):
     slide_ids = technical(sid, block_ids, idx + 1)
     rec.update(blocks=len(block_ids), slides=len(slide_ids), last='HE 切片染色')
     if stage == 'STAINED':
+        return rec
+
+    if stage == 'TECH_BACKLOG':
+        backlog, more_blocks, more_slides = tech_backlog(sid, block_ids, idx + 1)
+        rec.update(blocks=rec['blocks'] + more_blocks, slides=rec['slides'] + more_slides,
+                   backlog=backlog, last='四条特检医嘱在办（均未完成）')
+        rec['extras'].append(f'特检医嘱 {len(backlog)} 条停在待执行，四个未完成档各一条')
         return rec
 
     if 'IHC_ATTACH' in variants:
@@ -372,6 +465,53 @@ def verify_prior_history(records):
             f"{'；同患者另有 1 条拒收 ' + rejected['pathNo'] + '，④ 与 ① 默认都不算既往，① 开「含拒收」才带' if rejected else ''}")
 
 
+def verify_tech_backlog(records):
+    """v65（2563 复核第三条）：造完数后回读 ⑤ 特检工作台的**默认视图**（不传 specimenId、不传 status
+    即全院「待执行」），核对它非空，且页首宣告的每个未完成档都有本次造出的实例。
+
+    **档位清单读后端 /tech-orders/dict 下发的 progressStates（inProgress=true 的那几档），脚本里不写死一份**——
+    写死就会重演 v63 的病根：v60 加第六态时没人改屏上那句宣告，屏上宣告三态而标签打出第四态。
+    现在哪天派生多出一档，这条自检当场要求演示数据里也有它的实例（tech_backlog 没造就红）。
+    返回一行可打印的结论。"""
+    rec = next((r for r in records if r['stage'] == 'TECH_BACKLOG'), None)
+    assert rec and rec.get('backlog'), f'固定加的「特检在办」标本没造出来：{[r["stage"] for r in records]}'
+    backlog = rec['backlog']
+
+    states = do('进度字典（⑤ 页首照它列档）', 'GET', '/pathology/report/tech-orders/dict').get('progressStates') or []
+    in_progress = [x for x in states if x.get('inProgress') is True]
+    assert in_progress, f'字典端点没下发任何未完成档：{states}'
+
+    body = do('⑤ 默认视图（全院待执行）', 'GET', '/pathology/report/tech-orders')
+    assert body.get('status') == 'ORDERED', f"⑤ 默认视图应是「待执行」：{body.get('status')}"
+    rows = body.get('items') or []
+    assert rows, '⑤ 特检工作台默认第一屏是空表——这正是复核打回的那一条（评委落地看不到任何待执行医嘱）'
+    by_id = {r.get('id'): r for r in rows}
+
+    for st in in_progress:
+        tid = backlog.get(st['code'])
+        assert tid, (f"⑤ 页首宣告了「{st['name']}」这一档，演示数据里却没有实例"
+                     f'（tech_backlog 造了 {sorted(backlog)}）')
+        row = by_id.get(tid)
+        assert row, f"医嘱 #{tid}（{st['name']}）不在 ⑤ 默认视图里：命中 {len(rows)} 行"
+        assert row.get('progress') == st['code'], \
+            f"医嘱 #{tid} 的进度应是「{st['name']}」，实得「{row.get('progress_name')}」"
+
+    mine = [by_id[i] for i in backlog.values() if i in by_id]
+    sampled = [r for r in mine if (r.get('sampled_block_count') or 0) > 0]
+    derived = [r for r in mine if r.get('blocks_derived_source') in ('DERIVED', 'MIXED')]
+    assert sampled, f"「已出块」在演示数据里一个实例都没有：{[(r['id'], r.get('sampled_block_count')) for r in mine]}"
+    assert derived, f"「派生」蜡块标记在演示数据里一个实例都没有：{[(r['id'], r.get('blocks_derived_source')) for r in mine]}"
+    for r in derived:
+        assert r.get('blocks_derived'), f'标了「派生」就必须列得出块号：{r}'
+
+    names = '、'.join(f"{st['name']} #{backlog[st['code']]}" for st in in_progress)
+    d0 = derived[0]
+    return (f"⑤ 特检工作台可演示：默认「待执行」视图 {len(rows)} 行，页首宣告的 {len(in_progress)} 个未完成档"
+            f'各有实例（{names}）；'
+            f"医嘱 #{d0['id']} 已出块 {d0.get('sampled_block_count')}、蜡块列「{d0.get('blocks_derived')}」"
+            f"带「派生」标（{d0.get('blocks_derived_source')}）")
+
+
 def qc_overview(tok):
     """质控概览（QUALITY 角色令牌，默认时间窗 = 页面打开即见的近 30 天）→ 三项汇总值"""
     body = do('质控概览（QUALITY 令牌）', 'GET', '/path-qc/indicators', tok=tok)
@@ -394,7 +534,7 @@ def qc_overview(tok):
 
 def main():
     global t
-    say(f'目标 {ARGS.base}  阶梯 {ARGS.count} + 拒收 1 = {len(plan)} 个标本  后缀 {SUF}')
+    say(f'目标 {ARGS.base}  阶梯 {ARGS.count} + 拒收 1 + 特检在办 1 = {len(plan)} 个标本  后缀 {SUF}')
     _last_step[0] = '登录'
     t = login()
     _last_step[0] = '建复诊医师账号 demo_pathdoc'
@@ -410,6 +550,7 @@ def main():
         rows.append((rec, state, row))
     body, by, three = qc_overview(tq)
     prior_line = verify_prior_history(records)
+    tech_line = verify_tech_backlog(records)
 
     if not QUIET:
         print('\n==== 本次造出的标本（状态回读自 GET /pathology/registry/specimens/search） ====')
@@ -420,6 +561,7 @@ def main():
                   f"{state} | {rec['last']} | {rec['blocks']}/{rec['slides']} | "
                   f"{'；'.join(rec['extras']) or '-'}")
         print(f"  {prior_line or '既往可演示：--count 1 没有第二条，跑 --count 2 及以上'}")
+        print(f'  {tech_line}')
         print(f"\n==== 现在质控页（菜单 169 病理质控，{body.get('from')} 至 {body.get('to')}）哪些指标有数 ====")
         for code, ind in by.items():
             if ind.get('available') is not True:
@@ -447,7 +589,8 @@ def main():
           f"path-qc registered={three['登记总量 WORKLOAD_REGISTER.registered']} "
           f"blocks_produced_in_period={three['蜡块产出 WORKLOAD_BLOCK.blocks_produced_in_period']} "
           f"issued_reports={three['报告签发量 WORKLOAD_REPORT.issued_reports']}  suffix={SUF}"
-          f"  prior_checked={'yes' if prior_line else 'skipped(count<2)'}")
+          f"  prior_checked={'yes' if prior_line else 'skipped(count<2)'}"
+          f"  tech_backlog={len(next(r for r in records if r['stage'] == 'TECH_BACKLOG')['backlog'])}")
 
 
 if __name__ == '__main__':
