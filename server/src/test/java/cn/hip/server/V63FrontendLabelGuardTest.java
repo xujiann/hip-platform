@@ -313,7 +313,10 @@ class V63FrontendLabelGuardTest {
         assertEquals(2, ((Number) va.get("fieldsRevisionSeq")).intValue());
         assertEquals(2, ((Number) va.get("textRevisionSeq")).intValue());
         String noteA = String.valueOf(va.get("fieldsNote"));
-        assertTrue(noteA.contains("累积全文") && noteA.contains("各版字段都在"), noteA);
+        // v64（2530 复核 data 镜头）：后半句原文是「要看各版完整的结构化记录请切换版本（各版字段都在）」，
+        // v63 拿「；」把它与「余下 N 个……字段级查询与统计取不到」接成一句，两半互相否定。
+        // 现在两句各自成句、辖域写在句子里（见 V62GrossReviseGuardTest②d）。
+        assertTrue(noteA.contains("累积全文") && noteA.contains("按版本逐版可调阅"), noteA);
         assertTrue(noteA.contains("**"),
                 "**后端事实**：这句话带裸 Markdown 强调；去标记是前端 mdText 的事（修复前两处原样打在屏幕上）");
 

@@ -104,7 +104,7 @@
         </el-form-item>
       </el-form>
       <el-alert type="info" :closable="false" class="cav"
-                title="不限诊断状态：已核收、未拒收的标本都在这里能找到（走阅片列表的 scope=any 档）。已拒收标本请到「① 登记 → 标本检索」看。" />
+                title="不限诊断状态：已核收、未拒收的标本都在这里能找到。已拒收标本请到「① 登记 → 标本检索」看。" />
       <el-alert v-if="lTruncated" type="warning" show-icon :closable="false" class="cav"
                 :title="`命中超过 ${lLimit} 条，仅显示前 ${lLimit} 条（不做翻页）；请收窄条件`" />
       <el-table :data="lookupRows" v-loading="lLoading" size="small" border stripe max-height="440">
@@ -221,7 +221,8 @@
                   <!-- v63（2530 复核 demo 镜头）：更早各版的身份与取材查看弹窗那个标签同一判定——
                        累积全文场景里它们写下的内容仍原样留在当前 gross_finding 里，不是「被取代」 -->
                   <span v-if="olderVersionNote(row.seq)" class="muted" style="margin-left: 6px">{{ olderVersionNote(row.seq) }}</span>
-                  <span v-if="gross.fieldsByRevision == null" class="muted" style="margin-left: 6px">后端未回 fieldsByRevision：仅最新字段版可展开</span>
+                  <!-- v64（2530 复核 demo 镜头同型）：此前把内部键名 fieldsByRevision 打在屏上 -->
+                  <span v-if="gross.fieldsByRevision == null" class="muted" style="margin-left: 6px">当前服务只提供最新字段版，更早版本暂不可展开</span>
                   <el-table :data="revisionFields(row.seq)" size="small" border style="margin-top: 4px; max-width: 640px">
                     <el-table-column label="#" width="50">
                       <template #default="{ row: f }">{{ fmt(f.seq) }}</template>
@@ -236,8 +237,8 @@
                 </template>
                 <span v-else class="muted">
                   本版未填写字段{{ gross.fieldsByRevision == null
-                    ? '（后端未回 fieldsByRevision：被取代版本的字段暂不可调阅，仅最新字段版可展开）'
-                    : '（只写了自由文本，或该版由诊断端点修订文本、字段留在上一版）' }}</span>
+                    ? '（当前服务只提供最新字段版，更早版本的字段暂不可调阅）'
+                    : '（只写了自由文本，或该版由病理医师修订文本、字段留在上一版）' }}</span>
               </div>
             </template>
           </el-table-column>
@@ -249,8 +250,9 @@
               <el-tag size="small" :type="revisionTag(row.source)">{{ row.sourceName ?? revisionSource(row.source) }}</el-tag>
             </template>
           </el-table-column>
+          <!-- v64（2530 复核 demo 镜头）：此前这一列直接印英文模板码（GI_BIOPSY） -->
           <el-table-column label="模板" width="110">
-            <template #default="{ row }"><span class="code">{{ fmt(row.templateCode) }}</span></template>
+            <template #default="{ row }">{{ templateNameOf(row) }}</template>
           </el-table-column>
           <el-table-column label="时刻" width="150">
             <template #default="{ row }">{{ fmtDateTime(row.changedAt) }}</template>
@@ -414,6 +416,36 @@ function revisionFields(seq: unknown): Row[] {
   return latestSeq != null && Number(latestSeq) === Number(seq) ? grossFields.value : []
 }
 
+/* ---------------- 取材模板清单（v64：只为把英文模板码换成中文名） ---------------- */
+/**
+ * 模板名的唯一事实源是 GET /grossing/templates（内置常量 + sys_config 覆盖），本抽屉此前不取它，
+ * 于是「模板」列只能印修订行里的英文码。取不到就保持空清单——templateNameOf 此时给「—」，不猜。
+ */
+const templates = ref<Row[]>([])
+
+async function loadTemplates() {
+  try {
+    const d = (await client.get('/pathology/process/grossing/templates')).data.data as Row
+    templates.value = (d.items ?? []) as Row[]
+  } catch {
+    templates.value = []
+  }
+}
+
+/**
+ * v64（2530 复核 demo 镜头）：模板名。此前屏上直接印英文模板码（GI_BIOPSY）——
+ * 而模板清单（GET /grossing/templates，模板名的唯一事实源）本组件本就加载着，中文名 t.name 就在手边。
+ * 清单还没到就先给「—」，**不拿英文码冒充名字**、也不在清单没到时就断言「未登记」。
+ * GrossingPanel 查看弹窗的「模板」栏有一份逐字相同的实现（守卫测试钉着两处一致）。
+ */
+function templateNameOf(v: Row | null | undefined): string {
+  const code = v?.templateCode
+  if (code == null || code === '') return '—'
+  const hit = templates.value.find((t) => String(t.code) === String(code))
+  if (hit != null) return String(hit.name)
+  return templates.value.length ? '未登记的模板' : '—'
+}
+
 /** path_gross_revision.source 的三档（V166），与 chk_path_gross_revision_source 一致；后端 sourceName 优先，这里只是兜底 */
 function revisionSource(v: unknown): string {
   const s = v == null ? '' : String(v)
@@ -457,6 +489,7 @@ async function openTrail(specimenId: number) {
 defineExpose({ reload: loadAnomalies, openTrail })
 
 void loadAnomalies()
+void loadTemplates()   // v64：模板中文名的事实源，进页面就取好——别等人点开抽屉才发现列里是英文码
 </script>
 
 <style scoped>
