@@ -90,7 +90,9 @@
                   :title="`归集锚点：${ind.anchorField}　${mdText(ind.anchor)}`" />
         <el-alert v-if="ind.caveat" type="warning" :closable="false" class="cav"
                   :title="mdText(ind.caveat)" />
-        <el-descriptions v-if="ind.summary" :column="4" border size="small" class="cav">
+        <!-- v64（2576 复核 demo 镜头）：这一格此前是整页**唯一没有标题**的 el-descriptions，
+             屏上没有一个字说它是区间合计；而它四列的中文当时还写着「当日…」。标题带上已生效的统计区间 -->
+        <el-descriptions v-if="ind.summary" :column="4" border size="small" class="cav" :title="summaryTitle">
           <el-descriptions-item v-for="k in keysOf(ind.summary as Row)" :key="k"
                                 :label="colLabel(k, keysOf(ind.summary as Row))">
             {{ fmt((ind.summary as Row)[k]) }}
@@ -201,6 +203,21 @@ function rowsOf(ind: Row): Row[] {
   return (ind.rows ?? []) as Row[]
 }
 
+/**
+ * 合计块的标题（v64，2576 复核 demo 镜头）。
+ *
+ * <p><b>修复前的反向事实</b>：整页所有 el-descriptions 里，<b>只有这一格没有 title</b>——
+ * 屏上没有一个字说它是区间合计，而它四列的中文当时与按日表逐字相同（「当日产出蜡块数」），
+ * 于是同一屏上「当日产出蜡块数 39」（30 天合计）与「当日产出蜡块数 3」（某一天）并存。
+ * 列名与中文已在后端分成两套，这里再把「这是本期合计、不是某一天」写在标题上。
+ *
+ * <p>区间取<b>返回体里的 from / to / days</b>（后端此次实际统计的窗口），不取 range：
+ * 用户改了日期还没点查询时，屏上的数仍是上一次的区间，标题必须跟着数走。
+ */
+const summaryTitle = computed(() =>
+  `本期合计　${fmt(body.value?.from)} 至 ${fmt(body.value?.to)}（共 ${fmt(body.value?.days)} 天）`
+  + '　——整个统计区间一个数，不是某一天；下面那张表才按日拆分')
+
 function missingOf(ind: Row): string[] {
   return (ind.missingFields ?? []) as string[]
 }
@@ -246,7 +263,10 @@ const COVERAGE_SECTIONS: {
     denom: 'blocks',
     rates: [],
     // specimens 在这一段是 count(distinct b.specimen_id)：涉及多少个标本，不是本段分母的子集
-    labels: { blocks: '产出蜡块数（本段分母）', specimens: '涉及标本数（去重）' },
+    // v64（2576 复核）：本段这两个数落窗的是**整个统计区间**，与蜡块产出数指标的合计格是同一个数——
+    // 中文跟着合计列一起正名成「本期…」，同一个数在这一屏的两处呈现从此逐字同源；
+    // 按日表里那个「当日产出蜡块数」才是单日数，一眼分得出不是同一个口径。
+    labels: { blocks: '本期产出蜡块数（本段分母）', specimens: '本期涉及标本数(去重)' },
   },
   {
     key: 'slides',

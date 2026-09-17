@@ -425,12 +425,20 @@ const ZH: Record<string, string> = {
   // 两处 caveat 一个字没提。两列已在后端正名，这里跟着正名、中文与后端 zh() 逐字一致。
   blocks_produced: '当日产出蜡块数',
   blocks_stained: '当日染色涉及蜡块数(去重)',
+  // v64（2576 复核）：**合计格与按日表不再共用一套列名**。蜡块产出数那条指标的合计格落窗的是整个统计区间
+  // （默认 30 天），按日表才是「这一天」；此前两处共用 blocks_produced / specimens / blocks_per_specimen /
+  // embedded 四个键，中文又都写着「当日…」，于是同一屏上「当日产出蜡块数 39」（区间合计）与
+  // 「当日产出蜡块数 3」（某一天）并存，指标 caveat 还逐字把这一列定义成「这一天产出了几块」。
+  // 合计四列一律 *_in_period / 「本期…」（照 issued_of_registered =「本期登记中已签发」的体例），
+  // 中文与后端 zh() 同名 case 逐字一致。
+  blocks_produced_in_period: '本期产出蜡块数',
+  embedded_in_period: '本期已确认包埋',
   // v63（2576 复核 demo 镜头）：这里**刻意不再登记裸 blocks 键**。
   // 它此前只服务「本时段字段录入覆盖率」的两段（蜡块段 count(*) 产出数、切片段 count(distinct block_id) 涉及数），
   // 一个键两段语义、经这张扁平字典渲染成同一屏上两个一模一样的中文表头「蜡块数」（演示数据下就是 6 与 3）。
   // 覆盖率段改由 PathQcView 的 COVERAGE_SECTIONS.labels **按段**给中文；工作量汇总行早已正名成
   // blocks_produced / blocks_stained（v62），后端 zh() 也不登记 blocks，故这里没有它的位置。
-  embedded: '已确认包埋',
+  embedded: '当日已确认包埋',
   embedded_count: '已包埋数',
   pending_count: '未包埋数',
   batch_no: '脱水篮批次',
@@ -441,7 +449,12 @@ const ZH: Record<string, string> = {
   first_block_created_at: '最早建块时刻',
   last_block_created_at: '最晚建块时刻',
   last_embedded_at: '最后包埋时刻',
-  blocks_per_specimen: '蜡块/标本',
+  // v64（2576 复核）：旧的共用键 blocks_per_specimen 已不是任何行的列名，两侧字典都不再登记它。
+  blocks_per_specimen_of_day: '当日蜡块/标本',
+  blocks_per_specimen_in_period: '本期蜡块/标本',
+  specimens_of_day: '当日涉及标本数(去重)',
+  specimens_in_period: '本期涉及标本数(去重)',
+  // 裸 specimens 仍在场：特检技术医嘱量的合计格与流转环节耗时的按行列都用它，语义是「涉及标本数」
   specimens: '涉及标本数',
   specimen_count: '涉及标本数',
   // 流转

@@ -297,6 +297,87 @@ class V63FrontendLabelGuardTest {
     }
 
     // =====================================================================================
+    // ②b v64（2576 复核 demo 镜头）：合计块此前是整页唯一没有标题的 el-descriptions
+    // =====================================================================================
+
+    /**
+     * 修复前那一行的逐字原文（v63 交付形态，{@code PathQcView.vue:93}）——
+     * <b>活对照组</b>：同一个「有没有标题」的判据喂它必须判「没有」。
+     */
+    private static final String LEGACY_SUMMARY_TAG =
+            "<el-descriptions v-if=\"ind.summary\" :column=\"4\" border size=\"small\" class=\"cav\">";
+
+    /** 有标题的形态（同页时限阈值那一块的逐字原文）——探针：判据不能把什么都判成「没有标题」 */
+    private static final String TITLED_TAG =
+            "<el-descriptions v-if=\"thresholds\" :column=\"3\" border size=\"small\" class=\"cav\" title=\"时限阈值与统计区间\">";
+
+    private static final Pattern DESCRIPTIONS_OPEN = Pattern.compile("<el-descriptions(?![-\\w])[^>]*>");
+    private static final Pattern HAS_TITLE = Pattern.compile("(^|\\s):?title\\s*=");
+
+    /**
+     * <b>修复前的反向事实</b>（复核者原话）：「这个合计块在整页所有 el-descriptions 里是<b>唯一一个没有标题的</b>，
+     * 屏上没有一个字说它是区间合计。」——而它四列的中文当时还与按日表逐字相同（「当日产出蜡块数」），
+     * 于是同一屏上 30 天合计与某一天的数顶着同一个表头。本条钉三样：整页每块描述表都有标题、
+     * 合计块那一处走 {@code summaryTitle}、标题里写明「本期合计」并带<b>已生效的统计区间</b>。
+     */
+    @Test
+    void theRangeTotalBlockHasATitleSayingItIsThePeriodTotalAndCarriesTheRange() {
+        String src = stripComments(read(QC_VIEW));
+
+        var tags = new ArrayList<String>();
+        Matcher m = DESCRIPTIONS_OPEN.matcher(src);
+        while (m.find()) tags.add(m.group());
+        assertTrue(tags.size() >= 4,
+                "活对照组：PathQcView 里本该解析出好几块 el-descriptions（阈值 / 覆盖率 / 缺字段 / 合计）：" + tags);
+
+        var untitled = tags.stream().filter(t -> !HAS_TITLE.matcher(t).find()).toList();
+        assertEquals(List.of(), untitled,
+                "**整页每一块 el-descriptions 都要有标题**——修复前只有合计块没有，"
+                        + "屏上没有一个字说它是区间合计：" + untitled);
+
+        String summaryTag = tags.stream().filter(t -> t.contains("ind.summary")).findFirst()
+                .orElseGet(() -> fail("找不到合计块那一处 el-descriptions"));
+        assertTrue(summaryTag.contains(":title=\"summaryTitle\""),
+                "合计块的标题走 summaryTitle（区间随返回体走，不是写死的一句话）：" + summaryTag);
+
+        String title = summaryTitleExpression(src);
+        assertTrue(title.contains("本期合计"),
+                "**标题要一眼说明这是区间合计、不是今天**：" + title);
+        for (String piece : List.of("body.value?.from", "body.value?.to", "body.value?.days")) {
+            assertTrue(title.contains(piece),
+                    "标题里要带统计区间（页面已有 from / to / days）——缺「" + piece + "」：" + title);
+        }
+        assertFalse(title.contains("range.value"),
+                "区间取**返回体**的 from / to（后端此次实际统计的窗口），不取 range——"
+                        + "用户改了日期还没点查询时，屏上的数仍是上一次的区间，标题必须跟着数走：" + title);
+
+        // 活对照组 / 探针：同一个判据，修复前那一行判「没有标题」、同页有标题的那一行判「有」
+        assertFalse(HAS_TITLE.matcher(LEGACY_SUMMARY_TAG).find(),
+                "探针：v63 交付时的那一行正是没有 title 的形态：" + LEGACY_SUMMARY_TAG);
+        assertTrue(HAS_TITLE.matcher(TITLED_TAG).find(),
+                "探针：判据不能把有标题的也判成没标题：" + TITLED_TAG);
+        assertEquals(1, DESCRIPTIONS_OPEN.matcher(LEGACY_SUMMARY_TAG).results().count(),
+                "探针：标签匹配器咬得住那一行（不咬 el-descriptions-item）");
+        assertEquals(0, DESCRIPTIONS_OPEN.matcher("<el-descriptions-item label=\"x\">").results().count(),
+                "探针：el-descriptions-item 不算一块描述表");
+    }
+
+    /** {@code const summaryTitle = computed(...)} 的表达式（剥注释后按小括号配对截） */
+    private static String summaryTitleExpression(String strippedVue) {
+        int at = strippedVue.indexOf("const summaryTitle");
+        assertTrue(at >= 0, "PathQcView 里找不到 const summaryTitle");
+        int open = strippedVue.indexOf('(', at);
+        assertTrue(open > at, "summaryTitle 没有 computed( 调用");
+        int depth = 0;
+        for (int i = open; i < strippedVue.length(); i++) {
+            char ch = strippedVue.charAt(i);
+            if (ch == '(') depth++;
+            else if (ch == ')' && --depth == 0) return strippedVue.substring(open + 1, i);
+        }
+        return fail("summaryTitle 的小括号不配对");
+    }
+
+    // =====================================================================================
     // ③ 2530：字段覆盖范围只有一个措辞来源；累积全文里更早各版不是「被取代」
     // =====================================================================================
 

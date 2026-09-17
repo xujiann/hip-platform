@@ -81,6 +81,23 @@ import static org.junit.jupiter.api.Assertions.fail;
  * {@link #coverageBlockNoteAndWorkloadBlockCaveatGiveTheSameConclusion()} 把这一条钉住：
  * 两段文本必须<b>引用同一个常量</b>（不是各写一段散文），且剥注释后的源码里不得再有「产出量仍可信」
  * 这类相反结论——对照组用的正是修复前那句原话与<b>未剥注释的同一份源码</b>（本文件的注释里逐字引用了它）。
+ *
+ * <h2>v64 追加（2576 复核三条之①②：合计行把整个统计区间标成「当日」）</h2>
+ * <p><b>修复前的反向事实</b>（v63 交付形态，复核者原话经主控实测坐实）：合计行那段 SQL 落窗的是
+ * <b>整个统计区间</b>（默认 30 天），四列却与按日表<b>共用同一套列名</b>
+ * （{@code blocks_produced} / {@code embedded} / {@code specimens} / {@code blocks_per_specimen}），
+ * 而这套列名的中文写的是「<b>当日</b>产出蜡块数」——于是同一屏上出现三处同名不同口径：
+ * 覆盖率段 39、合计行 39、按日表某一天 3，指标自己的 caveat 还逐字把这一列定义成
+ * 「这一天<b>产出</b>了几块蜡块」，等于用口径说明给合计数背书成单日数。
+ * 同格的「涉及标本数」「蜡块/标本」同病：合计给的是<b>整窗去重</b>与<b>整窗比值</b>，
+ * 而按平台自己认定的常规形态（{@link cn.hip.medtech.web.PathQcController#BLOCK_DAY_CAVEAT}：脱水过夜跨日、
+ * 补取材隔几天再出块），同一份标本的蜡块必然分落多个 {@code stat_day} 行，于是
+ * <b>合计的涉及标本数小于按日各行之和、合计的蜡块/标本不等于任何一行</b>——三个数当时都挂在
+ * 被 caveat 定义成「当日」的表头下，屏上没有一个字解释。
+ * <p>v62 的守卫只断言了合计行「同步正名」成 {@code blocks_produced} 这个<b>键名</b>，没有断言它的中文与合计口径相符；
+ * v63 的前端守卫只比对覆盖率四段内部的表头，根本没碰 summary。
+ * {@link #summaryColumnsAreWindowCaliberAndNeverShareANameWithTheDailyTable()} 三样一起钉：
+ * 两套列名互不相交、合计中文一律「本期」且不含「当日」、合计与按日的关系（相等 / 小于 / 不等）由真实库态实证。
  */
 @SpringBootTest
 @Transactional
@@ -95,6 +112,52 @@ class V62BlockCaliberTest {
     private static final String BLOCKS_STAINED = "blocks_stained";
     private static final String MOLECULAR_SPECIMENS = "molecular_specimens";
     private static final String MOLECULAR_SLIDES = "molecular_slides";
+
+    /**
+     * v64（2576 复核）正名后的<b>合计四列</b>：落窗的是整个统计区间，中文一律「本期…」。
+     * 命名照平台既有体例（{@code WORKLOAD_DEPT} 的 {@code issued_of_registered} =「本期登记中已签发」）。
+     */
+    private static final String BLOCKS_PRODUCED_IN_PERIOD = "blocks_produced_in_period";
+    private static final List<String> PERIOD_COLS = List.of(
+            BLOCKS_PRODUCED_IN_PERIOD, "embedded_in_period",
+            "specimens_in_period", "blocks_per_specimen_in_period");
+
+    /** 与之配对的<b>按日四列</b>：一行就是一个 stat_day，中文一律「当日…」 */
+    private static final List<String> DAY_COLS = List.of(
+            BLOCKS_PRODUCED, "embedded", "specimens_of_day", "blocks_per_specimen_of_day");
+
+    /**
+     * 修复前合计行那段 SQL 的逐字原文（v63 交付形态，{@code PathQcController.java:1201-1208}）——
+     * 源码扫描的<b>活对照组</b>：同一个别名匹配器喂它，必须抓到按日列名。
+     */
+    private static final String LEGACY_SUMMARY_SQL = """
+            select count(*)                                                as blocks_produced,
+                   count(*) filter (where b.embedded_at is not null)       as embedded,
+                   count(distinct b.specimen_id)                           as specimens,
+                   round(count(*)::numeric
+                         / nullif(count(distinct b.specimen_id), 0), 2)    as blocks_per_specimen
+            from path_block b
+            where {wb}
+            """;
+
+    /**
+     * 修复前 caveat 里那三句的逐字原文（v63 交付形态）——<b>活对照组</b>：
+     * 同一个「口径说明里直呼内部键名」的匹配器喂它必须命中，否则下面那条 assertFalse 什么也不说明。
+     */
+    private static final String LEGACY_BLOCK_CAVEAT =
+            " blocks_produced（当日产出蜡块数）是 count(*) from path_block、锚"
+            + " coalesce(embedded_at, created_at)：这一天**产出**了几块蜡块。"
+            + " blocks_per_specimen 是当日蜡块数 / 当日涉及标本数，"
+            + "**不是「每份标本平均取几块」**——同一标本的蜡块可能跨日建，两端分母不同。"
+            + "embedded 一列是该行里已录包埋时刻的条数，"
+            + "它与 blocks_produced 差得越大，该行后面越可能还会变。";
+
+    /**
+     * 「口径说明里直呼内部 JSON 键」的形态。<b>刻意按「键名 + 紧随其后的定语」匹配</b>，
+     * 不写成「含 blocks 二字即红」——那样会把「两列都是「蜡块数」」这类合法中文一起咬掉。
+     */
+    private static final Pattern RAW_KEY_IN_CAVEAT = Pattern.compile(
+            "\\b(blocks_produced|blocks_stained|blocks_per_specimen|specimens|embedded)\\b\\s*(（|\\(|是|一列|数的是)");
 
     /** 修复前两列共用的那一个键与那一个中文——反向事实，出现即是回退 */
     private static final String OLD_SHARED_COL = "blocks";
@@ -168,8 +231,13 @@ class V62BlockCaliberTest {
                 "WORKLOAD_BLOCK 的蜡块数列须是 " + BLOCKS_PRODUCED + "：" + blockCols);
         assertTrue(slideCols.contains(BLOCKS_STAINED) && !slideCols.contains(OLD_SHARED_COL),
                 "WORKLOAD_SLIDE 的蜡块数列须是 " + BLOCKS_STAINED + "：" + slideCols);
-        assertTrue(summaryCols("WORKLOAD_BLOCK", from, to).contains(BLOCKS_PRODUCED),
-                "合计行同步正名：" + summaryCols("WORKLOAD_BLOCK", from, to));
+        // v64（2576 复核）：合计行**不再**与按日行共用这个键——它落窗的是整个统计区间，不是任何一天。
+        // 两套列名、两套中文与三者的数量关系由 summaryColumnsAreWindowCaliberAndNeverShareANameWithTheDailyTable 钉死。
+        assertTrue(summaryCols("WORKLOAD_BLOCK", from, to).contains(BLOCKS_PRODUCED_IN_PERIOD),
+                "合计行同步正名成窗口口径：" + summaryCols("WORKLOAD_BLOCK", from, to));
+        assertFalse(summaryCols("WORKLOAD_BLOCK", from, to).contains(BLOCKS_PRODUCED),
+                "**合计行不得再叫按日列那个名字**（它是整个统计区间的合计，不是任何一天）："
+                        + summaryCols("WORKLOAD_BLOCK", from, to));
 
         // 三条指标除「日期」外不得有同名列——同名即是同一个中文表头下的两个口径
         // 修复前：BLOCK ∩ SLIDE = {stat_day, blocks}、REGISTER ∩ SLIDE = {stat_day, molecular}
@@ -255,6 +323,124 @@ class V62BlockCaliberTest {
         // 口径随 CSV 页脚下发：导出的表一转手就脱离页面，这句话必须跟着文件走
         assertTrue(pathQc.indicatorsCsv("WORKLOAD_BLOCK", from, to).contains("不可复现"),
                 "CSV 页脚要带这句口径说明（toCsv 已把 caveat 写进页脚）");
+    }
+
+    // =====================================================================================
+    // (b2) v64：合计行是窗口口径，与按日行既不同列名也不同中文；三个数的关系由真实库态实证
+    // =====================================================================================
+
+    @Test
+    void summaryColumnsAreWindowCaliberAndNeverShareANameWithTheDailyTable() {
+        // 窗口留足余量：库端日期与 Java 侧「今天」可能差一天，钉死某一天那一行会在跨日时段炸
+        String from = BusinessDates.today().minusDays(7).toString();
+        String to = BusinessDates.today().plusDays(1).toString();
+
+        // ---- 先量基线：一切数值断言只取同一窗口内的前后差，与库里既有数据无关 ----
+        long basePeriodBlocks = summaryLong("WORKLOAD_BLOCK", from, to, BLOCKS_PRODUCED_IN_PERIOD);
+        long basePeriodSpecimens = summaryLong("WORKLOAD_BLOCK", from, to, "specimens_in_period");
+        long baseDayBlocks = windowSum("WORKLOAD_BLOCK", from, to, BLOCKS_PRODUCED);
+        long baseDaySpecimens = windowSum("WORKLOAD_BLOCK", from, to, "specimens_of_day");
+
+        // ---- 库态：**同一份标本的两块蜡块分落两天**（脱水过夜跨日 / 补取材隔几天再出块的常规形态）----
+        long sid = registered("f1", "ROUTINE");
+        List<Long> ids = gross(sid, "同标本第一块 " + tag, "同标本第二块 " + tag);
+        assertEquals(2, ids.size());
+        assertEquals(1, jdbc.update(
+                "update path_block set created_at = now() - interval '5 days' where id = ?", ids.get(0)),
+                "夹具：把其中一块的建档时刻推到 5 天前，让同一份标本的蜡块落进两个 stat_day 行");
+
+        long periodBlocks = summaryLong("WORKLOAD_BLOCK", from, to, BLOCKS_PRODUCED_IN_PERIOD);
+        long periodSpecimens = summaryLong("WORKLOAD_BLOCK", from, to, "specimens_in_period");
+        long dayBlocks = windowSum("WORKLOAD_BLOCK", from, to, BLOCKS_PRODUCED);
+        long daySpecimens = windowSum("WORKLOAD_BLOCK", from, to, "specimens_of_day");
+
+        // 计数列：合计 = 按日各行之和（没有去重，两边必然相等）——**活的对照组**，
+        // 没有它，下面那条「合计小于各行之和」也可能只是查询坏了
+        assertEquals(2L, periodBlocks - basePeriodBlocks, "本期产出蜡块数 +2");
+        assertEquals(2L, dayBlocks - baseDayBlocks, "按日各行合起来也 +2");
+        assertEquals(periodBlocks, dayBlocks,
+                "**逐块计数的那一列，合计恰等于按日各行之和**：" + periodBlocks + " vs " + dayBlocks);
+
+        // 去重列：合计只数一次，按日两行各数一次——**合计必然小于各行之和**，这正是复核者说「屏上没有一个字解释」的那件事
+        assertEquals(1L, periodSpecimens - basePeriodSpecimens, "本期涉及标本数（整窗去重）只 +1");
+        assertEquals(2L, daySpecimens - baseDaySpecimens, "按日各行的涉及标本数合起来 +2（同一份标本被两天各数一次）");
+        assertTrue(periodSpecimens < daySpecimens,
+                "**合计的涉及标本数小于按日各行之和，这是去重口径使然、不是对不上账**："
+                        + periodSpecimens + " < " + daySpecimens);
+
+        // 比值列：分子相同、分母不同（整窗去重 vs 按日各自去重）→ 合计不等于按日拼出来的任何一个值
+        double periodRatio = summaryDouble("WORKLOAD_BLOCK", from, to, "blocks_per_specimen_in_period");
+        assertEquals(round2((double) periodBlocks / periodSpecimens), periodRatio, 1e-9,
+                "**本期蜡块/标本用的是整窗分母**，不是按日各行比值的平均");
+        assertTrue(periodRatio > round2((double) dayBlocks / daySpecimens),
+                "同一个分子配更小的分母，合计比值必然高于按日各行拼出来的比值——"
+                        + "所以它**不等于按日表里的任何一行**：" + periodRatio);
+
+        // ---- 两套列名：交集必须是空集 ----
+        Set<String> rowCols = rowCols("WORKLOAD_BLOCK", from, to);
+        Set<String> sumCols = summaryCols("WORKLOAD_BLOCK", from, to);
+        assertTrue(rowCols.size() >= 5 && sumCols.size() >= 4,
+                "活的对照组：两侧列集合都得是真解析出来的：" + rowCols + " / " + sumCols);
+        var common = new LinkedHashSet<>(rowCols);
+        common.retainAll(sumCols);
+        assertEquals(Set.of(), common,
+                "**合计行与按日行不得有同名列**——合计落窗整个统计区间、按日行才是「这一天」，"
+                        + "同名即同一个中文表头下的两个口径（修复前这里是 "
+                        + "[blocks_produced, embedded, specimens, blocks_per_specimen]）：" + common);
+        assertTrue(sumCols.containsAll(PERIOD_COLS), "合计四列：" + sumCols);
+        assertTrue(rowCols.containsAll(DAY_COLS), "按日四列：" + rowCols);
+
+        // ---- 两套中文：合计一律「本期…」且**一个「当日」也不许有**；两侧字典逐字同源 ----
+        for (String k : sumCols) {
+            String label = backendLabel(k);
+            assertNotNull(label, "合计列 " + k + " 没在后端 zh() 登记，CSV 与页面表头会直接显示英文键名");
+            assertFalse(label.contains("当日"),
+                    "**合计行的中文表头不得出现「当日」字样**：" + k + " =「" + label + "」——"
+                            + "这一格是整个统计区间的合计，不是任何一天（修复前它逐字叫「当日产出蜡块数」）");
+            assertTrue(label.startsWith("本期"),
+                    "合计列的中文要自带窗口口径（照「本期登记中已签发」的体例）：" + k + " =「" + label + "」");
+            assertEquals(label, frontendLabel(k), "前端 ZH." + k + " 须与后端 zh() 逐字一致");
+        }
+        for (String k : DAY_COLS) {
+            String label = backendLabel(k);
+            assertNotNull(label, "按日列 " + k + " 没在后端 zh() 登记");
+            assertTrue(label.startsWith("当日"), "按日列的中文要自带单日口径：" + k + " =「" + label + "」");
+            assertEquals(label, frontendLabel(k), "前端 ZH." + k + " 须与后端 zh() 逐字一致");
+        }
+        // 探针：同一个「含当日即红」的判据，喂修复前合计行用的那个键必须命中
+        assertTrue(backendLabel(BLOCKS_PRODUCED).contains("当日"),
+                "探针：修复前合计行用的正是这个键，它的中文含「当日」——上面那组 assertFalse 才说明得了事");
+
+        // ---- caveat：合计与按日各自有口径说明，且把「对不上账其实是正常的」写出来 ----
+        String caveat = caveatOf("WORKLOAD_BLOCK", from, to);
+        for (String phrase : List.of("本期合计", "按日拆分", "本期产出蜡块数", "当日产出蜡块数",
+                "本期涉及标本数(去重)", "当日涉及标本数(去重)", "本期蜡块/标本",
+                "必然小于", "不等于按日表里的任何一行", "不是对不上账")) {
+            assertTrue(caveat.contains(phrase),
+                    "WORKLOAD_BLOCK 的 caveat 缺「" + phrase + "」——修复前它只讲「这一天…」，"
+                            + "合计那一格没有任何一句口径说明：" + caveat);
+        }
+        // 反向事实：口径说明里不得再直呼内部键名（屏上那段字是给评委看的，不是给读代码的人看的）
+        assertFalse(RAW_KEY_IN_CAVEAT.matcher(caveat).find(),
+                "**口径说明里不得直呼内部 JSON 键**（屏上与 CSV 页脚都印这段字）：" + caveat);
+        assertTrue(RAW_KEY_IN_CAVEAT.matcher(LEGACY_BLOCK_CAVEAT).find(),
+                "探针：同一个匹配器喂 v63 交付时那三句原话必须命中：" + LEGACY_BLOCK_CAVEAT);
+
+        // ---- 源码扫描：合计行那段 SQL 里不得再出现按日列名 ----
+        String stripped = V57GrossKeepTest.stripComments(read(CONTROLLER));
+        List<String> summaryAliases = sqlAliases(textBlockAfter(stripped, SUMMARY_ANCHOR));
+        List<String> rowAliases = sqlAliases(textBlockAfter(stripped, ROWS_ANCHOR));
+        assertTrue(summaryAliases.containsAll(PERIOD_COLS) && rowAliases.containsAll(DAY_COLS),
+                "活的对照组：扫描器真解析出了两段 SQL 的别名：" + summaryAliases + " / " + rowAliases);
+        assertEquals(List.of(), summaryAliases.stream().filter(DAY_COLS::contains).toList(),
+                "**合计行的 SQL 里不得再出现按日列名**：" + summaryAliases);
+        // 活的对照组：同一个别名匹配器喂修复前那段合计 SQL，必须抓到按日列名（否则上面那条 assertEquals 扫的是空集）
+        assertEquals(List.of("blocks_produced", "embedded"),
+                sqlAliases(LEGACY_SUMMARY_SQL).stream().filter(DAY_COLS::contains).toList(),
+                "探针：v63 交付时的合计 SQL 正是拿按日列名当合计列名：" + sqlAliases(LEGACY_SUMMARY_SQL));
+
+        // ---- CSV：导出的是按日行，表头一律「当日…」，不会再有一个含义是 30 天合计的「当日产出蜡块数」 ----
+        assertCsvHeader("WORKLOAD_BLOCK", from, to, "当日产出蜡块数");
     }
 
     // =====================================================================================
@@ -509,6 +695,57 @@ class V62BlockCaliberTest {
 
     private String backendLabel(String key) {
         return V59QcLabelsTest.backendLabels(read(CONTROLLER)).get(key);
+    }
+
+    private String frontendLabel(String key) {
+        return V59QcLabelsTest.zhEntries(read(FORMAT_TS)).get(key);
+    }
+
+    /** 合计行某一列（计数列，恒非 null） */
+    @SuppressWarnings("unchecked")
+    private long summaryLong(String code, String from, String to, String col) {
+        Object s = indicator(code, from, to).get("summary");
+        assertNotNull(s, code + " 没有合计行");
+        var map = (Map<String, Object>) s;
+        assertTrue(map.containsKey(col), code + " 的合计行里没有列 " + col + "：" + map.keySet());
+        return n(map.get(col));
+    }
+
+    /** 合计行某一列（比值列；分母为 0 时后端回 null，此处要求非 null——调用点都先造了数） */
+    @SuppressWarnings("unchecked")
+    private double summaryDouble(String code, String from, String to, String col) {
+        Object s = indicator(code, from, to).get("summary");
+        assertNotNull(s, code + " 没有合计行");
+        Object v = ((Map<String, Object>) s).get(col);
+        assertNotNull(v, code + " 的合计行里 " + col + " 为空——分母为 0？");
+        return ((Number) v).doubleValue();
+    }
+
+    private static double round2(double v) {
+        return Math.round(v * 100.0) / 100.0;
+    }
+
+    /** 两段 SQL 在源码里的锚（三个 case "WORKLOAD_BLOCK" 分属汇总行 / 合计行 / 穿透明细，调用形态各不相同） */
+    private static final String ROWS_ANCHOR = "case \"WORKLOAD_BLOCK\" -> query(";
+    private static final String SUMMARY_ANCHOR = "case \"WORKLOAD_BLOCK\" -> one(q(";
+
+    /** 锚之后的第一个文本块（按 Java 文本块的三引号配对截） */
+    private static String textBlockAfter(String src, String anchor) {
+        int at = src.indexOf(anchor);
+        assertTrue(at >= 0, "剥注释后的源码里找不到锚「" + anchor + "」");
+        int open = src.indexOf("\"\"\"", at);
+        assertTrue(open > at, "锚之后找不到文本块起始三引号");
+        int close = src.indexOf("\"\"\"", open + 3);
+        assertTrue(close > open, "文本块三引号不配对");
+        return src.substring(open + 3, close);
+    }
+
+    /** 一段 SQL 里的全部列别名（{@code as xxx}，源码顺序） */
+    private static List<String> sqlAliases(String sql) {
+        var out = new ArrayList<String>();
+        var m = Pattern.compile("\\bas\\s+([a-z_][a-z0-9_]*)").matcher(sql);
+        while (m.find()) out.add(m.group(1));
+        return out;
     }
 
     /** CSV 表头：正名后的中文在、孤零零的旧中文不在（「蜡块数」是新中文的子串，故按字段切开比对） */
