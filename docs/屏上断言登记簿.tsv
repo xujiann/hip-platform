@@ -32,7 +32,9 @@
 # 列：指纹	档位	文件	说明 / FACT 档的对拍用例
 #
 cd18b814d0d1	FACT	frontend/shell/src/views/inpatient/timeliness/TimelinessView.vue:90	--detect 点名（ANOMALY_NOTE 被无条件说给每条指标）。**判定：成立**——它断言的是平台级口径（负时长单列、既不进分子也不进分母），与是哪条指标无关，故对每条都真；这与 summaryTitle 那种「断言下面那张表长什么样」根本不同，后者随指标而变。对拍用例：**本轮未建**，见下方 TODO。
-c28eb573a704	FACT	frontend/shell/src/views/medtech/pathology/PathQcView.vue:58	--detect 点名（summaryTitle 被无条件说给每条指标）。**判定：不成立**——末句「下面那张表才按日拆分」对按科室/技术类型/标本类别/染色类型分组的 5 条指标是假话，那几张表里连日期列都没有。这是 v64 复核 2576 打回的两条之一，**归本轮车道 C 修**；修完这一行要跟着改（措辞变了指纹就变，棘轮会要求重新登记）。
+d8b4b42e3500	FACT	modules/medtech/src/main/java/cn/hip/medtech/web/PathQcController.java:summaryTitle / summaryVsDailyNote	取代 v64 的指纹 c28eb573a704（PathQcView 那个全局 computed，措辞已全改、该指纹在仓库里不复存在）。**v64 判定：不成立**——末句「下面那张表才按日拆分」对按科室/技术类型/标本类别/染色类型分组的 5 条指标是假话，那几张表里连日期列都没有；v65 车道 C 已修。**v65 判定：成立**——这句话不再由前端写死：分组维度登记在 Def.rowGroup（后端 group by 时就知道的事实），标题逐指标生成，且说出口之前拿本次真正交出去的那批行验一遍（维度列逐行取值互不相同）、验不过就一个字不说下面那张表；「不按日拆分」是否定断言，另查一遍行里确实没有按日列；区间只有一天时不再说「不是某一天」；没有行时不提「下面那张表」。对拍用例：V62BlockCaliberTest#everySummaryTitleDeclaresTheDimensionItsOwnTableIsGroupedBy（逐指标穷举 12 条，v64 原话喂同一判据判红）、#theSummaryVsDailyNoteTellsTheTruthInBothLibraryStates（一根柱 / 跨日两种库态）、V63FrontendLabelGuardTest#theRangeTotalBlockTitleIsPerIndicatorAndNeverAFileLevelConstant（标题必须引用循环变量 ind）。
+af073fb0d8dd	FACT	modules/medtech/src/main/java/cn/hip/medtech/web/PathQcController.java:WORKLOAD_BLOCK caveat（合计格口径）	**v64 判定：不成立**——原话「合计那一格不是任何一天的数」在演示库态（区间内只有一天有产出）下是假的，合计与按日唯一那一行逐字相等。v65 改成「按整个区间算、不按某一天算」并写明相等的情形。对拍用例：V62BlockCaliberTest#theSummaryVsDailyNoteTellsTheTruthInBothLibraryStates 的库态一（只有一根柱，两数相等）——同一窗口下这句话必须仍然为真。
+c7b11fee96ef	FACT	modules/medtech/src/main/java/cn/hip/medtech/web/PathQcController.java:WORKLOAD_BLOCK caveat（去重列对账）	**v64 判定：不成立**——原话宣称合计「必然小于」按日各行之和、「本期蜡块/标本」不等于按日表里的任何一行，而这两句只在跨统计日时成立；演示脚本造出来的库态只有当天一根柱，两数逐字相等。v65 改成条件句（只在没有一份标本的蜡块落进两个以上统计日时才相等），本次查询的实际关系由 summaryVsDailyNote 按库态现算（屏上在合计格下面、CSV 在页脚，同一个函数同一批行）。对拍用例：V62BlockCaliberTest#theSummaryVsDailyNoteTellsTheTruthInBothLibraryStates——造「一根柱」与「跨日两根柱」两种库态，v64 那两句原话在前者必须被判红、在后者不许被咬（它在那里恰好是真的）。
 #
 # TODO（v65 合并后补齐）：FACT 档说好了要配「对拍用例」——在真实库态下逐档求值这句话此刻是不是真的。
 # 本轮前置只建到「棘轮 + 循环变量探测器」，对拍台还没建。

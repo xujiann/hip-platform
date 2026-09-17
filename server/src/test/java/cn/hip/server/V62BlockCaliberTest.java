@@ -29,10 +29,12 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -98,6 +100,22 @@ import static org.junit.jupiter.api.Assertions.fail;
  * v63 的前端守卫只比对覆盖率四段内部的表头，根本没碰 summary。
  * {@link #summaryColumnsAreWindowCaliberAndNeverShareANameWithTheDailyTable()} 三样一起钉：
  * 两套列名互不相交、合计中文一律「本期」且不含「当日」、合计与按日的关系（相等 / 小于 / 不等）由真实库态实证。
+ *
+ * <h2>v65 车道 C 追加（2576 复核两条，<b>两条都是 v64 修复自身带进来的假话</b>）</h2>
+ * <ol>
+ *   <li><b>合计格标题被无条件说给每一条指标</b>：v64 新加的 {@code summaryTitle} 是前端一个
+ *       <b>不带指标参数的全局 computed</b>，末句写死「下面那张表才按日拆分」，却绑在逐指标的 v-for 里——
+ *       按送检科室 / 技术类型 / 标本类别 / 染色类型分组的五条指标，表里连日期列都没有。
+ *       {@link #everySummaryTitleDeclaresTheDimensionItsOwnTableIsGroupedBy()} 逐指标穷举，
+ *       拿真返回的行验出真实分组维度再核标题。</li>
+ *   <li><b>两条「必然」与库内事实相反</b>：v64 宣称「本期涉及标本数(去重)」必然小于按日各行之和、
+ *       「本期蜡块/标本」不等于按日表里的任何一行，而这两句只在跨统计日时成立；演示脚本造出来的库态
+ *       只有当天一根柱，两数逐字相等。
+ *       {@link #theSummaryVsDailyNoteTellsTheTruthInBothLibraryStates()} 造两种库态各核一遍，
+ *       v64 原话在「一根柱」下必须被判红、在跨日下不许被咬（它在那里恰好是真的）。</li>
+ * </ol>
+ * <p>两条都是「一句话里含有断言，而那个状态在某些真实路径上不成立」——上一轮的守卫全绿，
+ * 因为它们盯的是「接没接上」（键名、有没有标题），不盯「那句话是不是真的」。
  */
 @SpringBootTest
 @Transactional
@@ -413,9 +431,12 @@ class V62BlockCaliberTest {
 
         // ---- caveat：合计与按日各自有口径说明，且把「对不上账其实是正常的」写出来 ----
         String caveat = caveatOf("WORKLOAD_BLOCK", from, to);
+        // v65 车道 C（2576 复核）：「必然小于」「不等于按日表里的任何一行」两句已删——
+        // 它们只在跨统计日时成立，演示库态（当天一根柱）下两数逐字相等。通例改成条件句，
+        // 本次库态的实际关系由 summaryVsDailyNote 现算（见 theSummaryVsDailyNoteTellsTheTruthInBothLibraryStates）。
         for (String phrase : List.of("本期合计", "按日拆分", "本期产出蜡块数", "当日产出蜡块数",
                 "本期涉及标本数(去重)", "当日涉及标本数(去重)", "本期蜡块/标本",
-                "必然小于", "不等于按日表里的任何一行", "不是对不上账")) {
+                "只在本区间内没有一份标本的蜡块落进两个以上统计日时才相等", "不是对不上账")) {
             assertTrue(caveat.contains(phrase),
                     "WORKLOAD_BLOCK 的 caveat 缺「" + phrase + "」——修复前它只讲「这一天…」，"
                             + "合计那一格没有任何一句口径说明：" + caveat);
@@ -441,6 +462,268 @@ class V62BlockCaliberTest {
 
         // ---- CSV：导出的是按日行，表头一律「当日…」，不会再有一个含义是 30 天合计的「当日产出蜡块数」 ----
         assertCsvHeader("WORKLOAD_BLOCK", from, to, "当日产出蜡块数");
+    }
+
+    // =====================================================================================
+    // (b2) v65 车道 C（2576 复核第一条）：合计格标题宣告的拆分维度 == 该指标真实的 group by
+    // =====================================================================================
+
+    /** 一条指标的汇总行**真实**按什么分组。期望值写在测试里，不从被测代码读回来（否则只是把实现抄一遍） */
+    private record DimExpect(String column, String label, boolean byDay) {}
+
+    /**
+     * <b>逐指标穷举</b>：凡是有合计格的指标都要在这张表里有一行，新加指标不补这一行就红。
+     * 值取自各指标 {@code rowsOf} 那段 SQL 的 group by（本文件另有一条断言拿真实返回的行验它）。
+     */
+    private static final Map<String, DimExpect> EXPECTED_DIMS = Map.ofEntries(
+            Map.entry("SPECIMEN_RECEIVE", new DimExpect("specimen_type", "标本类别", false)),
+            Map.entry("FIXATION", new DimExpect("specimen_type", "标本类别", false)),
+            Map.entry("SLIDE_QUALITY", new DimExpect("stain_type", "染色类型", false)),
+            Map.entry("WORKLOAD_DEPT", new DimExpect("dept_name", "送检科室", false)),
+            Map.entry("WORKLOAD_TECH", new DimExpect("tech_type", "技术类型", false)),
+            Map.entry("REPORT_ROUTINE", new DimExpect("issue_day", "报告签发日", true)),
+            Map.entry("REPORT_FROZEN", new DimExpect("issue_day", "报告签发日", true)),
+            Map.entry("REPORT_DOUBLE_SIGN", new DimExpect("issue_day", "报告签发日", true)),
+            Map.entry("WORKLOAD_REGISTER", new DimExpect("stat_day", "统计日", true)),
+            Map.entry("WORKLOAD_BLOCK", new DimExpect("stat_day", "统计日", true)),
+            Map.entry("WORKLOAD_SLIDE", new DimExpect("stat_day", "统计日", true)),
+            Map.entry("WORKLOAD_REPORT", new DimExpect("stat_day", "统计日", true)));
+
+    /**
+     * v64 交付时那句标题的<b>尾巴</b>（前半截是插值出来的区间，故只留断言部分的逐字原话）——
+     * <b>活对照组</b>：本轮这条判据喂它必须判红。
+     */
+    private static final String LEGACY_TITLE_TAIL_V64 =
+            "　——整个统计区间一个数，不是某一天；下面那张表才按日拆分";
+
+    /**
+     * <b>修复前的反向事实</b>（v64 交付后复核，复核者原话经主控实测坐实）：
+     * 「送检科室工作量」「特检技术医嘱量」「标本接收」「标本固定信息完整率」「染色切片优良率」这五条指标的
+     * 合计格，屏上都顶着一行<b>写死的</b>标题「…下面那张表才按日拆分」，可这五条指标下面那张表根本不按日拆分——
+     * 分别是按送检科室、按技术类型、按标本类别、按标本类别、按染色类型分组，<b>表里连日期列都没有</b>。
+     * v64 为修「合计格没标题」而新加的 {@code summaryTitle} 是个不带指标参数的全局 computed，
+     * 被无条件绑在 v-for 循环里那一块 el-descriptions 上，于是只对 {@code WORKLOAD_BLOCK} 成立的那句话，
+     * 被原样印到了每一条有合计格的指标头上。参数要求的正是「多维度的业务数据汇总」，
+     * 而承载「多维度」的这几个维度屏每一块都在屏上宣告自己是按日维度。
+     *
+     * <p>本条<b>逐指标穷举</b>（不是只测一条）：拿后端此刻真返回的那批行验出这条指标真实的分组维度，
+     * 再断言标题里宣告的维度与它一致；非按日维度的还要断言行里<b>确实一列日期都没有</b>，
+     * 才说得出「不按日拆分」这句否定断言。
+     */
+    @Test
+    void everySummaryTitleDeclaresTheDimensionItsOwnTableIsGroupedBy() {
+        String from = BusinessDates.today().minusDays(1).toString();
+        String to = BusinessDates.today().plusDays(1).toString();
+
+        // ---- 造出五个非按日维度各自至少一行，否则「表里没有日期列」会在空集合上恒真 ----
+        long sid = registered("dim", "ROUTINE");                     // 标本类别 / 送检科室 / 按登记日
+        long blockId = gross(sid, "维度守卫取材 " + tag).get(0);        // 按包埋日
+        var sl = process.slides(new SlideReq(blockId, 1, "HE", "HE " + tag, null), doc);
+        assertEquals(0, sl.getCode(), sl.getMessage());               // 染色类型 / 按染色日
+        assertEquals(1, jdbc.update("""
+                insert into path_tech_order(specimen_id, block_id, tech_type, tech_item, status, ordered_at)
+                values (?, ?, 'IHC', ?, 'ORDERED', now())
+                """, sid, blockId, "CK7 " + tag), "夹具：特检技术医嘱量要有一行（时刻由库端 now() 落）");
+
+        var body = ok(pathQc.indicators(from, to, null));
+        var withSummary = new ArrayList<String>();
+        for (var ind : rows(body, "indicators")) {
+            String code = String.valueOf(ind.get("code"));
+            if (ind.get("summary") == null) continue;                 // 没有合计格就没有这句话
+            withSummary.add(code);
+            DimExpect exp = EXPECTED_DIMS.get(code);
+            assertNotNull(exp, "**新增了有合计格的指标 " + code + " 却没在 EXPECTED_DIMS 里登记分组维度**——"
+                    + "合计格标题会宣告「下面那张表按 X 拆分」，X 必须逐指标核对过");
+            assertTitleDeclaresDimension(code, String.valueOf(ind.get("summaryTitle")),
+                    rows(ind, "rows"), exp);
+        }
+        assertEquals(EXPECTED_DIMS.keySet().stream().sorted().toList(), withSummary.stream().sorted().toList(),
+                "活对照组：有合计格的指标集合必须与登记表逐条对上（多一条少一条都说明维度没核过）");
+
+        // ---- 活对照组：五个非按日维度这一轮确实各自有行（空行会让「没有日期列」恒真）----
+        for (String code : List.of("SPECIMEN_RECEIVE", "FIXATION", "SLIDE_QUALITY",
+                "WORKLOAD_DEPT", "WORKLOAD_TECH")) {
+            assertFalse(rows(indicator(code, from, to), "rows").isEmpty(),
+                    "活对照组：本测试已为 " + code + " 造了数据，它这一窗必须有行");
+        }
+
+        // ---- 活对照组：同一条判据喂 v64 交付时那句话，对按送检科室分组的这张表必须判红 ----
+        var deptRows = rows(indicator("WORKLOAD_DEPT", from, to), "rows");
+        String legacy = "本期合计　" + from + " 至 " + to + "（共 3 天）" + LEGACY_TITLE_TAIL_V64;
+        assertThrows(AssertionError.class,
+                () -> assertTitleDeclaresDimension("WORKLOAD_DEPT", legacy, deptRows,
+                        EXPECTED_DIMS.get("WORKLOAD_DEPT")),
+                "**活对照组**：v64 那句「下面那张表才按日拆分」印在送检科室维度上就是假话，本判据必须抓到它");
+        // 探针：判据不是见谁咬谁——把真标题配一个错的期望维度，同样必须判红
+        String deptTitle = String.valueOf(indicator("WORKLOAD_DEPT", from, to).get("summaryTitle"));
+        assertThrows(AssertionError.class,
+                () -> assertTitleDeclaresDimension("WORKLOAD_DEPT", deptTitle, deptRows,
+                        new DimExpect("stat_day", "统计日", true)),
+                "探针：判据分得出维度对不对（拿真标题配错的期望维度必须红）");
+
+        // ---- 「不是某一天」这句本身也是个断言：区间只有一天时它是假的 ----
+        String oneDay = BusinessDates.today().toString();
+        String single = String.valueOf(indicator("WORKLOAD_BLOCK", oneDay, oneDay).get("summaryTitle"));
+        assertTrue(single.contains("这一格按 " + oneDay + " 这一天算（本区间只有这一天）"),
+                "区间只有一天时，标题要直说它就是那一天：" + single);
+        assertFalse(single.contains("不是某一天的数"),
+                "**区间就一天的时候，这一格正是那一天**——此时再说「不是某一天」就是假话：" + single);
+        assertTrue(LEGACY_TITLE_TAIL_V64.contains("不是某一天"),
+                "探针：v64 那句话把「不是某一天」无条件说给每个区间，包括只有一天的区间");
+    }
+
+    /** 标题里宣告的拆分维度 == 这批行真实的分组维度（行里逐行取值互不相同的那一列） */
+    private static void assertTitleDeclaresDimension(String code, String title,
+                                                     List<Map<String, Object>> rows, DimExpect exp) {
+        assertNotNull(title, code + " 有合计格却没有 summaryTitle——屏上那一格又会变回没有一个字说它是区间合计");
+        assertTrue(title.startsWith("本期合计"), code + " 的合计格标题要一眼说明这是区间合计：" + title);
+        if (rows.isEmpty()) {
+            assertTrue(title.contains("本区间没有分组行"),
+                    code + " 这一窗没有行，标题不许再说下面有一张表：" + title);
+            assertFalse(title.contains("下面那张表"),
+                    "**没有表的时候不许提「下面那张表」**（屏上此处显示的是「该统计区间内无数据」）：" + title);
+            return;
+        }
+        // 真实分组维度：这一列在行间逐行取值互不相同（group by 的直接后果）
+        var seen = new LinkedHashSet<String>();
+        for (var r : rows) {
+            assertTrue(r.containsKey(exp.column()),
+                    code + " 的行里没有登记的维度列 " + exp.column() + "：" + r.keySet());
+            assertTrue(seen.add(String.valueOf(r.get(exp.column()))),
+                    code + " 的维度列 " + exp.column() + " 在行间重复，它不是这张表的分组维度：" + rows);
+        }
+        if (exp.byDay()) {
+            assertTrue(title.contains("下面那张表按日拆分，每行一个" + exp.label()),
+                    code + " 是按日维度，标题要这么说：" + title);
+        } else {
+            for (var r : rows) {
+                for (String dayCol : List.of("stat_day", "issue_day")) {
+                    assertFalse(r.containsKey(dayCol),
+                            code + " 按 " + exp.label() + "分组，行里不该有按日列 " + dayCol + "：" + r.keySet());
+                }
+            }
+            assertTrue(title.contains("下面那张表不按日拆分，按" + exp.label() + "分组，每行一个" + exp.label()),
+                    "**" + code + " 的表按" + exp.label() + "分组，标题必须说它自己的维度**"
+                            + "（修复前这里印的是「下面那张表才按日拆分」，而这张表里连日期列都没有）：" + title);
+        }
+        assertTrue(title.contains("共 " + rows.size() + " 行"),
+                code + " 的标题里那个行数要与真正交出去的行数一致：" + title + " / " + rows.size());
+    }
+
+    // =====================================================================================
+    // (b3) v65 车道 C（2576 复核第二条）：口径说明里的比较关系必须与真实数据一致
+    // =====================================================================================
+
+    /** v64 那两句「必然」的逐字原文——<b>活对照组</b>：同一个判据喂它，在「一根柱」的库态下必须判红 */
+    private static final String LEGACY_CALIBER_CLAIM_V64 =
+            "**「本期涉及标本数(去重)」必然小于按日各行「当日涉及标本数(去重)」之和，"
+            + "「本期蜡块/标本」也不等于按日表里的任何一行**：同一份标本的蜡块本来就分落在多天";
+
+    /**
+     * <b>修复前的反向事实</b>（v64 交付后复核，复核者原话经主控实测坐实）：蜡块产出数这条工作量汇总，
+     * 把两条<b>与库内事实相反</b>的对账口径当成「必然」加粗印在数字正上方（同一段字还随「导出汇总」的
+     * CSV 页脚发出去）：它宣称「本期涉及标本数(去重)」<b>必然</b>小于按日各行之和、且「本期蜡块/标本」
+     * 不等于按日表里的任何一行。这两句<b>只在「同一份标本的蜡块落进两个以上统计日」时才成立</b>；
+     * 而平台自己的演示脚本造出来的库态<b>只有当天一根柱</b>，默认 30 天窗口下合计格与按日唯一那一行
+     * <b>逐字相等</b>——屏上宣告「必然不等」，库里给出的是相等。
+     *
+     * <p>本条造两种库态，两次都拿<b>同一个判据</b>核「文案里宣称的比较关系与真实数据一致」：
+     * 一根柱（演示脚本的形态）与跨日两根柱。v64 那两句在前一种库态下必须被判红、在后一种下不许被咬
+     * （它在那里恰好是真的）——这才是活对照组，不是「见「必然」就咬」。
+     */
+    @Test
+    void theSummaryVsDailyNoteTellsTheTruthInBothLibraryStates() {
+        // 把窗口整体推到 200 天前（相对表达式，不写时间字面量），并先证明它是空的：
+        // 「只有一根柱」的库态，只有在一个本来就没有别的蜡块的窗口里才造得出来
+        String from = BusinessDates.today().minusDays(201).toString();
+        String to = BusinessDates.today().minusDays(199).toString();
+        assertEquals(List.of(), rows(indicator("WORKLOAD_BLOCK", from, to), "rows"),
+                "夹具前提：这个窗口必须本来就是空的，否则造不出「只有一根柱」的演示库态");
+        assertTrue(String.valueOf(indicator("WORKLOAD_BLOCK", from, to).get("summaryVsDailyNote"))
+                        .contains("本区间没有按日行"),
+                "空窗口下这句话也得如实：一行都没有的时候不许拿「合计小于各行之和」说事");
+
+        // ---- 库态一：演示脚本的形态——**只有一根柱**（同一份标本的两块蜡块落在同一天）----
+        long sid = registered("vs", "ROUTINE");
+        List<Long> ids = gross(sid, "同日第一块 " + tag, "同日第二块 " + tag);
+        assertEquals(2, ids.size());
+        assertEquals(2, jdbc.update(
+                        "update path_block set created_at = now() - interval '200 days' where id in (?, ?)",
+                        ids.get(0), ids.get(1)),
+                "夹具：两块都推到 200 天前的同一天（时刻由库端相对表达式给，不写时间字面量）");
+
+        var one = indicator("WORKLOAD_BLOCK", from, to);
+        assertEquals(1, rows(one, "rows").size(), "库态一：窗口内只有一根柱：" + rows(one, "rows"));
+        long p1 = summaryLong("WORKLOAD_BLOCK", from, to, "specimens_in_period");
+        long d1 = windowSum("WORKLOAD_BLOCK", from, to, "specimens_of_day");
+        assertEquals(1L, p1, "本期涉及标本数(去重)");
+        assertEquals(1L, d1, "按日各行之和——**与合计逐字相等**，这正是演示库态下屏上那两个数");
+        String note1 = String.valueOf(one.get("summaryVsDailyNote"));
+        assertTrue(note1.contains("「本期涉及标本数(去重)」1 等于按日各行「当日涉及标本数(去重)」之和 1"),
+                "**一根柱的库态下这句话必须如实说「等于」**：" + note1);
+        assertTrue(note1.contains("本区间内没有一份标本的蜡块落进两个以上统计日"),
+                "相等的原因也要写出来（否则读的人会以为是对不上账）：" + note1);
+        assertTrue(note1.contains("与按日表里 1 行的数值相同"),
+                "**「本期蜡块/标本」与按日唯一那一行逐字相同**，此时不许宣告它不等于任何一行：" + note1);
+        assertCaliberClaimMatchesData("本次的对账说明", note1, p1, d1);
+        assertCaliberClaimMatchesData("本指标 caveat", caveatOf("WORKLOAD_BLOCK", from, to), p1, d1);
+        // 活对照组：同一个判据喂 v64 那两句原话，在这个库态下必须判红
+        assertThrows(AssertionError.class,
+                () -> assertCaliberClaimMatchesData("v64 原话", LEGACY_CALIBER_CLAIM_V64, p1, d1),
+                "**活对照组**：v64 那两句「必然」在演示库态下与库内事实相反，本判据必须抓到它");
+        // CSV 页脚：这段字随文件走（v64 那两句正是同时印在屏上与 CSV 页脚里的）
+        String csv1 = pathQc.indicatorsCsv("WORKLOAD_BLOCK", from, to);
+        assertTrue(csv1.contains(note1), "**CSV 页脚要带同一段对账说明**（导出的表格一转手就脱离页面）：" + csv1);
+        assertFalse(csv1.contains("必然小于"), "CSV 页脚里也不许再有那句「必然小于」：" + csv1);
+
+        // ---- 库态二：跨统计日——把其中一块挪到相邻的另一天（脱水过夜跨日的常规形态）----
+        assertEquals(1, jdbc.update(
+                        "update path_block set created_at = now() - interval '199 days' where id = ?", ids.get(0)),
+                "夹具：同一份标本的两块蜡块就此分落两天");
+        var two = indicator("WORKLOAD_BLOCK", from, to);
+        assertEquals(2, rows(two, "rows").size(), "库态二：两根柱：" + rows(two, "rows"));
+        long p2 = summaryLong("WORKLOAD_BLOCK", from, to, "specimens_in_period");
+        long d2 = windowSum("WORKLOAD_BLOCK", from, to, "specimens_of_day");
+        assertEquals(1L, p2, "整窗去重仍只数一次");
+        assertEquals(2L, d2, "按日两行各数一次");
+        String note2 = String.valueOf(two.get("summaryVsDailyNote"));
+        assertTrue(note2.contains("「本期涉及标本数(去重)」1 小于按日各行「当日涉及标本数(去重)」之和 2"),
+                "**跨日的库态下这句话必须如实说「小于」**：" + note2);
+        assertTrue(note2.contains("有标本的蜡块分落在两个以上统计日") && note2.contains("不是对不上账"),
+                "小于的原因也要写出来：" + note2);
+        assertTrue(note2.contains("与按日表里的每一行都不相同"),
+                "此时「本期蜡块/标本」（2 块 / 1 份）确实与按日两行（各 1 块 / 1 份）都不同：" + note2);
+        assertCaliberClaimMatchesData("本次的对账说明", note2, p2, d2);
+        assertCaliberClaimMatchesData("本指标 caveat", caveatOf("WORKLOAD_BLOCK", from, to), p2, d2);
+        // 探针：判据不是见「必然」就咬——v64 那两句在这个库态下恰好是真的，此处不许判红
+        assertDoesNotThrow(() -> assertCaliberClaimMatchesData("v64 原话", LEGACY_CALIBER_CLAIM_V64, p2, d2),
+                "探针：同一句话在跨日库态下是真的，判据不许在这里也咬它");
+
+        // 计数列两种库态下都相等（逐块计数没有去重）——活对照组：不是所有对比都在说「小于」
+        assertTrue(note2.contains("「本期产出蜡块数」2 等于按日各行「当日产出蜡块数」之和 2"),
+                "逐块计数那一列，合计恰等于按日各行之和：" + note2);
+    }
+
+    /**
+     * 口径说明里<b>宣称的比较关系</b>必须与真实数据一致。
+     *
+     * <p>刻意<b>不写成「出现「必然」二字即红」</b>：那样会把跨日库态下同一句真话也咬掉，
+     * 而本项目真正的失败模式是「一条咬错的断言迟早被人改宽到形同虚设」。判的是
+     * 「这句话宣称的关系」与「本次库态的真实关系」对不对得上。
+     */
+    private static void assertCaliberClaimMatchesData(String what, String text, long period, long daySum) {
+        if (period == daySum) {
+            assertFalse(text.contains("必然小于"),
+                    "**" + what + "宣称合计「必然小于」按日各行之和，而本次库态两数相等**（"
+                            + period + " = " + daySum + "）：" + text);
+            assertFalse(text.contains("也不等于按日表里的任何一行"),
+                    "**" + what + "宣称合计不等于按日表里的任何一行，而本次库态只有一根柱、两数逐字相等**（"
+                            + period + " = " + daySum + "）：" + text);
+        }
+        if (period < daySum) {
+            assertFalse(text.contains(" 等于按日各行「当日涉及标本数(去重)」之和"),
+                    "**" + what + "宣称两数相等，而本次库态合计更小**（" + period + " < " + daySum + "）：" + text);
+        }
     }
 
     // =====================================================================================

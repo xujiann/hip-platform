@@ -11,13 +11,16 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * v48 车道 P4：病理质控指标与工作量（《病理专业医疗质量控制指标（2024 年版）》方向）。
@@ -46,6 +49,15 @@ import java.util.Map;
  * 聚合本期<b>登记</b>的标本条数与其截至查询时刻的状态（已签发 / 已拒收 / 在办）；取不到科室或科室名为空白的归
  * 「{@value #UNKNOWN_DEPT}」一行、<b>不丢行</b>。穿透明细复用 SPEC_SELECT，可按 {@code dept}（科室显示名）过滤到一个科室。
  * 口径文本仍是带 {@code **} / 反引号的 Markdown 味纯文本，由前端 {@code format.ts#mdText} 去标记后显示（不做 Markdown 渲染），本控制器不改文本。
+ *
+ * <h2>v65（2576 复核）：关于合计格的那两句话，由它们所断言的状态生成</h2>
+ * <p>返回体里每条有 {@code summary} 的指标另带 {@code summaryTitle}（合计格标题）；{@code WORKLOAD_BLOCK} 另带
+ * {@code summaryVsDailyNote}（合计与按日各行的<b>本次实际</b>对账关系，同一段字随 CSV 页脚走）。
+ * <b>两句都不许在前端拼</b>——v64 的教训正是：前端一个不带指标参数的全局 computed 写死「下面那张表才按日拆分」，
+ * 被无条件绑在逐指标的 v-for 里，而按科室 / 技术类型 / 标本类别 / 染色类型分组的五条指标表里连日期列都没有；
+ * 同一轮的 caveat 又把只在跨统计日时成立的关系写成「必然」，而演示库态只有当天一根柱、两数逐字相等。
+ * 分组维度见 {@link RowGroup} 与 {@link #summaryTitle(Def, List, Window)}，对账关系见
+ * {@link #summaryVsDailyNote(Def, List, Map)}：前者说出口之前拿本次真实返回的行验一遍，后者按库态现算。
  *
  * <h2>三条「符合率」指标全部缺数据源</h2>
  * <p>术中冰冻与石蜡诊断符合率、临床诊断符合率、外院会诊符合率——本仓<b>没有「符合 / 不符合」的
@@ -309,23 +321,61 @@ public class PathQcController {
      * 对账的人无法回到 SQL 去核实到底按哪一列落的窗。
      */
     private record Def(String code, String name, boolean available, String reason,
-                       List<String> missingFields, String anchorField, String anchor, String caveat) {}
+                       List<String> missingFields, String anchorField, String anchor, String caveat,
+                       RowGroup rowGroup) {}
+
+    /**
+     * 汇总行的<b>分组维度</b>：这条指标的 {@code rows} 是按什么 group by 出来的。
+     *
+     * <p><b>v65 车道 C（2576 复核第一条）：合计格标题那句「下面那张表按 X 拆分」由这里生成</b>，
+     * 前端<b>不再自己写一句话套给所有指标</b>。修复前的反向事实（复核者原话经主控实测坐实）：
+     * v64 为「合计格没标题」新加的 {@code summaryTitle} 是个<b>不带指标参数的全局 computed</b>，
+     * 末句写死「下面那张表才按日拆分」，却被无条件绑在 v-for 循环里那一块 el-descriptions 上——
+     * 于是只对 {@code WORKLOAD_BLOCK} 成立的那句话被原样印到每一条有合计格的指标头上，
+     * 而送检科室工作量 / 特检技术医嘱量 / 标本接收 / 标本固定信息完整率 / 染色切片优良率这五条
+     * 分别按科室、技术类型、标本类别、标本类别、染色类型分组，<b>表里连日期列都没有</b>。
+     * 承载本参数「多维度」的恰是这几个维度屏，而每一块都在屏上宣告自己是按日维度。
+     *
+     * <p>登记在这里还不够——<b>登记的是意图，上屏的必须是事实</b>：
+     * {@link #summaryTitle(Def, List, Window)} 在说出「每行一个 X」之前，
+     * 先拿<b>本次真实返回的那批行</b>验一遍（{@link #groupsOnePerRow}：这一列在行间逐行取值互不相同）；
+     * 验不过就<b>一个字也不说下面那张表长什么样</b>。「不按日拆分」是个否定断言，
+     * 说之前另查一遍行里确实没有按日分组列（{@link #hasDayColumn}）。
+     *
+     * @param column 该维度在返回行里的列名（就是 SQL 里 group by 的那一列）
+     * @param label  这个维度的中文名，直接上屏
+     * @param byDay  是不是按日维度（{@code stat_day} / {@code issue_day}）
+     */
+    private record RowGroup(String column, String label, boolean byDay) {}
+
+    private static final RowGroup BY_STAT_DAY = new RowGroup("stat_day", "统计日", true);
+    private static final RowGroup BY_ISSUE_DAY = new RowGroup("issue_day", "报告签发日", true);
+    private static final RowGroup BY_SPECIMEN_TYPE = new RowGroup("specimen_type", "标本类别", false);
+    private static final RowGroup BY_STAIN_TYPE = new RowGroup("stain_type", "染色类型", false);
+    private static final RowGroup BY_DEPT = new RowGroup("dept_name", "送检科室", false);
+    private static final RowGroup BY_TECH_TYPE = new RowGroup("tech_type", "技术类型", false);
+    private static final RowGroup BY_NODE = new RowGroup("node", "流转节点", false);
+    private static final RowGroup BY_PATHOLOGIST = new RowGroup("user_id", "病理医师", false);
+
+    /** 按日分组列的全集：要宣告一张表「不按日拆分」，先得证明它一列都没有 */
+    private static final Set<String> DAY_COLUMNS = Set.of("stat_day", "issue_day");
 
     private static final Map<String, Def> DEFS = new LinkedHashMap<>();
 
-    private static void def(String code, String name, String anchorField, String anchor, String caveat) {
-        DEFS.put(code, new Def(code, name, true, null, List.of(), anchorField, anchor, caveat));
+    private static void def(String code, String name, RowGroup rowGroup,
+                            String anchorField, String anchor, String caveat) {
+        DEFS.put(code, new Def(code, name, true, null, List.of(), anchorField, anchor, caveat, rowGroup));
     }
 
     private static void unavailable(String code, String name, String reason, String... missing) {
-        DEFS.put(code, new Def(code, name, false, reason, List.of(missing), null, null, null));
+        DEFS.put(code, new Def(code, name, false, reason, List.of(missing), null, null, null, null));
     }
 
     private static final String ANCHOR_COLLECTED = "按标本**登记时刻**归集（含本期登记但尚未出报告的在途标本）";
     private static final String ANCHOR_ISSUED = "按报告**正式签发时刻**归集（含上期登记、本期才签发的标本）";
 
     static {
-        def("SPECIMEN_RECEIVE", "标本接收（登记→签收）情况与时长分档",
+        def("SPECIMEN_RECEIVE", "标本接收（登记→签收）情况与时长分档", BY_SPECIMEN_TYPE,
                 "path_specimen.collected_at", ANCHOR_COLLECTED,
                 "collected_at 是**登记时刻**（V21 建表 default now()，取材登记时由系统打时间戳），"
                 + "**不是标本离体时刻**——本仓无离体时刻字段。故本指标度量的是「登记→签收」的院内流转，"
@@ -337,7 +387,7 @@ public class PathQcController {
                 + "取绝对值会把一条数据质量问题伪装成一次极快的签收。"
                 + "分母 submitted 是送检总数、**含拒收**（拒收不删记录，原样留档）。");
 
-        def("FIXATION", "标本固定信息完整率（**不是**国标口径的规范化固定率）",
+        def("FIXATION", "标本固定信息完整率（**不是**国标口径的规范化固定率）", BY_SPECIMEN_TYPE,
                 "path_specimen.collected_at", ANCHOR_COLLECTED,
                 "《2024 版》标本规范化固定的要素——固定液类型（中性缓冲福尔马林）、固定液量为标本体积 "
                 + "3–10 倍、离体后 ≤30 分钟内固定、固定时长 6–72 小时——本平台只有 fixative"
@@ -348,7 +398,7 @@ public class PathQcController {
                 + "是否规范请人工看：本平台**不按关键字（如含「福尔马林」）猜规范性**。"
                 + "分母含拒收标本。穿透明细的 minutes_to_fixation 是「登记→固定」而非「离体→固定」。");
 
-        def("REPORT_ROUTINE", "常规病理报告及时率（时限读 path.report.routine_hours）",
+        def("REPORT_ROUTINE", "常规病理报告及时率（时限读 path.report.routine_hours）", BY_ISSUE_DAY,
                 "path_specimen.report_issued_at", ANCHOR_ISSUED,
                 ISSUE_VS_DIAGNOSE_NOTE + " " + TAT_START_NOTE + " " + HOLIDAY_NOTE
                 + " 只统计 specimen_type='ROUTINE' 的标本：类别未填的历史标本**不默认算常规**"
@@ -358,7 +408,7 @@ public class PathQcController {
                 + "国标常允许这类病例延长时限，本平台**不自动放宽**，故这一列的超时不等于质量问题，"
                 + "要单独看；不放宽是因为「放宽多久」同样没有配置键，硬编码一个天数就是自造口径。");
 
-        def("REPORT_FROZEN", "术中冰冻病理报告及时率（时限读 path.report.frozen_minutes）",
+        def("REPORT_FROZEN", "术中冰冻病理报告及时率（时限读 path.report.frozen_minutes）", BY_ISSUE_DAY,
                 "path_specimen.report_issued_at", ANCHOR_ISSUED,
                 ISSUE_VS_DIAGNOSE_NOTE + " " + TAT_START_NOTE
                 + " 只统计 specimen_type='FROZEN' 的标本。冰冻的国标起点通常是「标本送达病理科」，"
@@ -366,7 +416,7 @@ public class PathQcController {
                 + "冰冻 30 分钟的时限对签收时刻的准确度要求远高于常规 120 小时：晚补 5 分钟就能把超时变及时，"
                 + "故这条指标**必须配合 coverage 看，且不建议在签收全靠事后补录的科室对外公布**。");
 
-        def("REPORT_DOUBLE_SIGN", "报告双签完成率（初诊—复诊两级签发）",
+        def("REPORT_DOUBLE_SIGN", "报告双签完成率（初诊—复诊两级签发）", BY_ISSUE_DAY,
                 "path_specimen.report_issued_at", ANCHOR_ISSUED,
                 "双签 gate emr.gate.pathology.doublesign **默认 warn**（未双签也放行签发："
                 + "存量流程可能只有一名病理医师，直接 block 会让报告发不出去）。故 double_sign_rate_pct "
@@ -412,7 +462,7 @@ public class PathQcController {
                 "path_specimen.outside_diagnosis（外院原诊断）",
                 "path_specimen.consult_concordance（符合性判定）");
 
-        def("SLIDE_QUALITY", "染色切片优良率（按染色类型分）",
+        def("SLIDE_QUALITY", "染色切片优良率（按染色类型分）", BY_STAIN_TYPE,
                 "coalesce(path_slide.stained_at, created_at)",
                 "按切片**染色时刻**归集（未录染色时刻的回落建档时刻，否则整片漏统计）",
                 "「优良」口径歧义：本仓 quality 只有 GOOD / FAIR / POOR 三档，"
@@ -422,7 +472,7 @@ public class PathQcController {
                 + "未评质量的切片**不进分母**（quality 可空），其占比见 grade_coverage_pct——"
                 + "覆盖率低时该率只代表被评价的那一小部分，通常还是被挑出来评的那部分，会系统性偏高。");
 
-        def("PROCESS_TAT", "各流转环节耗时（距签收的小时数中位数）",
+        def("PROCESS_TAT", "各流转环节耗时（距签收的小时数中位数）", BY_NODE,
                 "path_process.occurred_at", "按流转节点**打点时刻**归集",
                 "各环节耗时按 path_process 已登记的节点算，**没打点的环节不会显示为 0，"
                 + "而是根本不出现在行里**——行的缺席本身就是「这个环节没在系统里打点」的信号，"
@@ -431,7 +481,7 @@ public class PathQcController {
                 + "RECEIVE 节点本身必然接近 0；received_at 为空的标本不进中位数，其条数见 no_receive_time 列。"
                 + "同一标本同一节点可多次打点（如补取材后再次取材），events 是打点次数、specimens 是标本数。");
 
-        def("WORKLOAD_REGISTER", "登记总量（按日，含拒收与加急构成）",
+        def("WORKLOAD_REGISTER", "登记总量（按日，含拒收与加急构成）", BY_STAT_DAY,
                 "path_specimen.collected_at", ANCHOR_COLLECTED, WORKLOAD_NOTE
                 + " 分母口径：registered 是当日登记的**标本条数**，不是申请单数——"
                 + "多部位送检一份申请对应多条标本（同一份申请下按部位序号各自唯一），"
@@ -442,7 +492,7 @@ public class PathQcController {
                 + "**既不同分母也不同锚点**，两个数不相等是正常的，不是对不上账。");
 
         // v60（2576-②）：科室维度——此前 dept_name 只在穿透明细里，六条 WORKLOAD_* 汇总行没有一条按送检科室分组
-        def("WORKLOAD_DEPT", "送检科室工作量",
+        def("WORKLOAD_DEPT", "送检科室工作量", BY_DEPT,
                 "path_specimen.collected_at", ANCHOR_COLLECTED, WORKLOAD_NOTE
                 + " 送检科室取自申请归属：门诊按挂号科室（outp_registration.dept_id）、住院按在院科室（inp_admission.dept_id），"
                 + "与穿透明细的 dept_name 同一条联接链；取不到科室或科室名为空白的标本归「" + UNKNOWN_DEPT + "」一行，**不丢行**；"
@@ -461,24 +511,32 @@ public class PathQcController {
         // 一屏之内就是「蜡块数 6」与「蜡块数 3」两个数，页面上没有一行字能回答「到底做了几块」（复核者原话，主控实测坐实）。
         // 同时补写「按日数事后会变」：未包埋的蜡块拿 created_at 顶替 embedded_at 先算进取材日，包埋登记一落
         // 就从取材日消失、跳到包埋日——同一个已关闭区间今天导与明天导不一样，此前 caveat 一个字没提。
-        def("WORKLOAD_BLOCK", "蜡块产出数（本期合计 + 按日）",
+        def("WORKLOAD_BLOCK", "蜡块产出数（本期合计 + 按日）", BY_STAT_DAY,
                 "coalesce(path_block.embedded_at, created_at)",
                 "按蜡块**包埋时刻**归集（未录包埋时刻的回落建档时刻）", WORKLOAD_NOTE
                 + " **本指标一屏两套口径，列名与中文都已分开**：最上面那一格是**本期合计**"
                 + "（整个统计区间只出一个数），四列一律以「本期」起头；下面那张表才是**按日拆分**，"
-                + "各列一律以「当日」起头。**合计那一格不是任何一天的数**，"
-                + "「本期产出蜡块数」与某一天的「当日产出蜡块数」不是同一个口径，别当成今天的产量看。"
+                + "各列一律以「当日」起头。**合计那一格按整个区间算、不按某一天算**："
+                + "「本期产出蜡块数」与某一天的「当日产出蜡块数」不是同一个口径——"
+                + "区间内只有一天有产出时两数会逐字相等，那也不表示它是「今天的产量」。"
                 + " 「当日产出蜡块数」数的是这一天**产出**了几块蜡块；切片产出数那张表里另有一列"
                 + "「当日染色涉及蜡块数(去重)」，数的是这一天染出来的切片**来自**几块蜡块。"
                 + "**两列都是「蜡块数」，但一个逐块计数、一个按来源去重，归集时刻也不同**——"
                 + "同一天两行并排时两个数不相等是正常的（取材 2 块、只从其中 1 块切片，产出 2 / 涉及 1），"
                 + "不是对不上账。"
-                + " **「本期涉及标本数(去重)」必然小于按日各行「当日涉及标本数(去重)」之和，"
-                + "「本期蜡块/标本」也不等于按日表里的任何一行**：同一份标本的蜡块本来就分落在多天——"
-                + "脱水过夜跨日、补取材隔几天再给同一标本出块都是常规形态，"
-                + "那份标本在它出过块的每一天各被数一次，而本期合计对它只数一次。"
-                + "**这是去重口径使然，不是对不上账**；「本期产出蜡块数」倒是等于按日各行之和"
-                + "（它是逐块计数，没有去重）。"
+                // v65 车道 C（2576 复核）：这一段此前把两条**只在跨统计日时才成立**的关系写成「必然」，
+                // 而演示脚本造出来的库态只有当天一根柱、两数逐字相等——屏上宣告「必然不等」，库里给出的是相等。
+                // 通例改写成条件句，本次查询的**实际**关系由 summaryVsDailyNote 按库态现算、另起一行。
+                + " 「本期涉及标本数(去重)」与按日各行「当日涉及标本数(去重)」之和，"
+                + "**只在本区间内没有一份标本的蜡块落进两个以上统计日时才相等**：同一份标本的蜡块可以分落在多天"
+                + "——脱水过夜跨日、补取材隔几天再给同一标本出块都是常规形态——"
+                + "那份标本在它出过块的每一天各被数一次，而本期合计对它只数一次，此时合计就小于各行之和，"
+                + "**这是去重口径使然，不是对不上账**。"
+                + "「本期蜡块/标本」用的是整窗分母，因而它与按日表里某一行相等只是本次库态使然"
+                + "（区间内只有一天有产出时必然相等），**不要拿它当某一天的值读**。"
+                + "「本期产出蜡块数」是逐块计数、没有去重，它等于按日各行之和。"
+                + "**本次查询这三组数的实际关系另有一行如实写出**（屏上在合计格下面、导出的 CSV 在页脚），"
+                + "那是按本次库态现算的，不是通例。"
                 // v63（2576 复核）：这句结论与覆盖率段 coverage.blocks.note 同源，只在 BLOCK_DAY_CAVEAT 里写一遍
                 + " " + BLOCK_DAY_CAVEAT
                 + "「当日已确认包埋」是该行里已登记包埋时刻的块数，"
@@ -486,7 +544,7 @@ public class PathQcController {
 
         // v62（2576 复核）：blocks → blocks_stained、molecular → molecular_slides；并补写按日数事后会变。
         // 此前本指标的 caveat 只挂了通用 WORKLOAD_NOTE（讲的是「不折算工时」），对这两列零说明。
-        def("WORKLOAD_SLIDE", "切片产出数（按日、按染色类型）",
+        def("WORKLOAD_SLIDE", "切片产出数（按日、按染色类型）", BY_STAT_DAY,
                 "coalesce(path_slide.stained_at, created_at)",
                 "按切片**染色时刻**归集（未录染色时刻的回落建档时刻）", WORKLOAD_NOTE
                 + " 「当日染色涉及蜡块数(去重)」数的是这一天染出来的切片**来自**几块蜡块，"
@@ -504,7 +562,7 @@ public class PathQcController {
                 + "本平台**不为此补填染色时刻**（宁可少算，不可假算），"
                 + "发出去之前请连同导出时刻一起注明（与送检科室工作量那三列存量数同一体例）。");
 
-        def("WORKLOAD_REPORT", "报告签发量（首次报告 / 补充报告分列）",
+        def("WORKLOAD_REPORT", "报告签发量（首次报告 / 补充报告分列）", BY_STAT_DAY,
                 "path_specimen.report_issued_at 与 path_report.signed_at", ANCHOR_ISSUED,
                 ISSUE_VS_DIAGNOSE_NOTE
                 + " issued_reports（首次报告签发）与 supplement_reports（补充报告）**分列不合并**："
@@ -512,7 +570,7 @@ public class PathQcController {
                 + "两列相加当「报告总数」会把工作量算高。diagnosed 一列是当日写完诊断的标本数"
                 + "（按 diagnosed_at 落窗），与 issued_reports 不是同一批——两者的差就是卡在签名 / 签发环节的量。");
 
-        def("WORKLOAD_PATHOLOGIST", "各病理医师工作量（写诊断 / 初签 / 复签 / 补充报告 / 取材 / 特检开单）",
+        def("WORKLOAD_PATHOLOGIST", "各病理医师工作量（写诊断 / 初签 / 复签 / 补充报告 / 取材 / 特检开单）", BY_PATHOLOGIST,
                 "各活动各自的时刻列", "**每一列按自己的时刻列分别落窗**，见 caveat", WORKLOAD_NOTE
                 + " 各列的归集时刻各不相同：写诊断按 diagnosed_at、初签按 first_signed_at、"
                 + "复签按 second_signed_at、补充报告按 coalesce(signed_at, created_at)、"
@@ -521,7 +579,7 @@ public class PathQcController {
                 + "activities 是该人本期各类操作的次数合计，**不是「做了多少份报告」**，"
                 + "更不能直接拿来排绩效——不同操作的耗时与难度差一个数量级，而本仓没有权重表。");
 
-        def("WORKLOAD_TECH", "特检技术医嘱量（深切 / 重切 / 补取材 / 免疫组化 / 特殊染色 / 分子）",
+        def("WORKLOAD_TECH", "特检技术医嘱量（深切 / 重切 / 补取材 / 免疫组化 / 特殊染色 / 分子）", BY_TECH_TYPE,
                 "path_tech_order.ordered_at", "按技术医嘱**开单时刻**归集", WORKLOAD_NOTE
                 + " median_hours_to_done 是开单到完成的小时数中位数，只含 done_at 已录的行；"
                 + "pending（仍为 ORDERED）的行不进中位数——把未完成的按「至今耗时」算进去会让中位数随时间漂移。");
@@ -771,15 +829,155 @@ public class PathQcController {
                 "/api/path-qc/detail?indicator=" + d.code() + "&from=" + w.f() + "&to=" + w.t());
         List<Map<String, Object>> rows = rowsOf(d.code(), w);
         boolean cut = rows.size() > ROW_LIMIT;
-        m.put("rows", cut ? rows.subList(0, ROW_LIMIT) : rows);
+        // 下面所有「关于那张表」的话，一律拿**本次真正交出去的这批行**去生成与校验，不拿截断前的
+        List<Map<String, Object>> shown = cut ? rows.subList(0, ROW_LIMIT) : rows;
+        m.put("rows", shown);
         m.put("rowsTruncated", cut);
         if (cut) {
             m.put("rowsTruncatedNote",
                     "汇总行超过 " + ROW_LIMIT + " 行，本次只返回前 " + ROW_LIMIT + " 行，请缩小统计时间段");
         }
         Map<String, Object> summary = summaryOf(d.code(), w);
-        if (summary != null) m.put("summary", summary);
+        if (summary != null) {
+            m.put("summary", summary);
+            m.put("summaryTitle", summaryTitle(d, shown, w));
+            String vs = summaryVsDailyNote(d, shown, summary);
+            if (vs != null) m.put("summaryVsDailyNote", vs);
+        }
         return m;
+    }
+
+    // ===================== 合计格那两句话（由它们所断言的状态生成，不是写死一句套给所有指标） =====================
+
+    /**
+     * 合计格的标题（v65 车道 C，2576 复核第一条）。
+     *
+     * <p><b>修复前的反向事实</b>：这句话是前端一个<b>不带指标参数的全局 computed</b>，末句写死
+     * 「下面那张表才按日拆分」，被无条件绑在 v-for 里那一块 el-descriptions 上——按送检科室 / 技术类型 /
+     * 标本类别 / 染色类型分组的五条指标，表里连日期列都没有，屏上却每一块都在宣告自己是按日维度。
+     *
+     * <p>现在这句话的每个分句都由它所断言的那个状态生成：
+     * <ul>
+     *   <li>区间取<b>本次实际统计的窗口</b>（{@link Window}），不是前端的日期选择框——
+     *       用户改了日期还没点查询时，屏上的数仍是上一次的区间。</li>
+     *   <li>「不是某一天的数」只在 {@code days > 1} 时说：区间就一天的时候，这一格<b>正是</b>那一天。</li>
+     *   <li>分组维度取 {@link Def#rowGroup()}（后端本就知道自己 group by 什么），
+     *       而且在说出口之前拿<b>本次返回的那批行</b>验一遍（{@link #groupsOnePerRow}）；
+     *       验不过就一个字也不说下面那张表长什么样。</li>
+     *   <li>「不按日拆分」是否定断言，另查一遍行里确实没有按日分组列（{@link #hasDayColumn}）。</li>
+     *   <li>行数取<b>截断后真正交出去的行数</b>，屏上数得出来。</li>
+     * </ul>
+     */
+    private static String summaryTitle(Def d, List<Map<String, Object>> shown, Window w) {
+        var sb = new StringBuilder("本期合计　").append(w.f()).append(" 至 ").append(w.t())
+                .append("（共 ").append(w.days()).append(" 天）。");
+        sb.append(w.days() > 1
+                ? "这一格的每个数都按整个统计区间算，不是某一天的数；"
+                : "这一格按 " + w.f() + " 这一天算（本区间只有这一天）；");
+        if (shown.isEmpty()) {
+            return sb.append("本区间没有分组行，下面没有表。").toString();
+        }
+        RowGroup g = d.rowGroup();
+        if (g == null || !groupsOnePerRow(shown, g.column())) {
+            return sb.append("下面那张表共 ").append(shown.size())
+                    .append(" 行，分组维度未登记，请按表头自行判读。").toString();
+        }
+        if (g.byDay()) {
+            sb.append("下面那张表按日拆分，每行一个").append(g.label());
+        } else if (hasDayColumn(shown)) {
+            sb.append("下面那张表按").append(g.label()).append("分组，每行一个").append(g.label());
+        } else {
+            sb.append("下面那张表不按日拆分，按").append(g.label())
+                    .append("分组，每行一个").append(g.label());
+        }
+        return sb.append("，共 ").append(shown.size()).append(" 行。").toString();
+    }
+
+    /** 这一列在本次返回的行里<b>逐行取值互不相同</b>——「每行一个 X」只在它成立时才说得出口 */
+    private static boolean groupsOnePerRow(List<Map<String, Object>> rows, String column) {
+        var seen = new HashSet<String>();
+        for (Map<String, Object> r : rows) {
+            if (!r.containsKey(column) || !seen.add(String.valueOf(r.get(column)))) return false;
+        }
+        return true;
+    }
+
+    /** 行里有没有按日分组列（{@link #DAY_COLUMNS}）——「不按日拆分」说之前先查这一遍 */
+    private static boolean hasDayColumn(List<Map<String, Object>> rows) {
+        for (String k : rows.get(0).keySet()) {
+            if (DAY_COLUMNS.contains(k)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * 合计格与按日各行的<b>本次实际</b>对账关系（v65 车道 C，2576 复核第二条）。
+     *
+     * <p><b>修复前的反向事实</b>（复核者原话经主控实测坐实）：v64 把两条<b>与库内事实相反</b>的对账口径
+     * 当成「必然」加粗印在数字正上方、并随 CSV 页脚发出去——宣称「本期涉及标本数(去重)」<b>必然小于</b>
+     * 按日各行之和、且「本期蜡块/标本」不等于按日表里的任何一行。这两句<b>只在「同一份标本的蜡块落进两个
+     * 以上统计日」时才成立</b>；而平台自己的演示脚本造出来的库态只有当天一根柱，默认 30 天窗口下合计格与
+     * 按日唯一那一行<b>逐字相等</b>——屏上宣告「必然不等」，库里给出的是相等。
+     *
+     * <p>现在不再讲通例：三组数的关系<b>按本次查询的库态现算</b>。
+     * 通例那部分（为什么会小于、什么时候才相等）留在指标 caveat 里，且一律写成条件句。
+     */
+    private static String summaryVsDailyNote(Def d, List<Map<String, Object>> shown,
+                                             Map<String, Object> summary) {
+        if (!"WORKLOAD_BLOCK".equals(d.code())) return null;
+        String head = "本期合计与按日各行的实际对账（按本次查询的库态现算，不是通例）：";
+        if (shown.isEmpty()) {
+            return head + "本区间没有按日行（没有蜡块落进这个窗口），无从比较。";
+        }
+        long periodBlocks = lng(summary.get("blocks_produced_in_period"));
+        long dayBlocks = sumOf(shown, "blocks_produced");
+        long periodSpecimens = lng(summary.get("specimens_in_period"));
+        long daySpecimens = sumOf(shown, "specimens_of_day");
+        var sb = new StringBuilder(head);
+        sb.append("「本期产出蜡块数」").append(periodBlocks)
+                .append(periodBlocks == dayBlocks ? " 等于" : " 不等于")
+                .append("按日各行「当日产出蜡块数」之和 ").append(dayBlocks).append("；");
+        sb.append("「本期涉及标本数(去重)」").append(periodSpecimens);
+        if (periodSpecimens == daySpecimens) {
+            sb.append(" 等于按日各行「当日涉及标本数(去重)」之和 ").append(daySpecimens)
+                    .append("——本区间内没有一份标本的蜡块落进两个以上统计日，两数相等；");
+        } else if (periodSpecimens < daySpecimens) {
+            sb.append(" 小于按日各行「当日涉及标本数(去重)」之和 ").append(daySpecimens)
+                    .append("——有标本的蜡块分落在两个以上统计日，那份标本在它出过块的每一天各被数一次、"
+                            + "本期合计对它只数一次，这不是对不上账；");
+        } else {
+            sb.append(" 大于按日各行「当日涉及标本数(去重)」之和 ").append(daySpecimens)
+                    .append("——整窗去重数不该大于按日之和，出现即是缺陷，请报修；");
+        }
+        Object periodRatio = summary.get("blocks_per_specimen_in_period");
+        if (periodRatio == null) {
+            sb.append("「本期蜡块/标本」本区间算不出（涉及标本数为 0）。");
+        } else {
+            long same = 0;
+            for (Map<String, Object> r : shown) {
+                if (sameNumber(periodRatio, r.get("blocks_per_specimen_of_day"))) same++;
+            }
+            sb.append("「本期蜡块/标本」").append(periodRatio).append(same == 0
+                    ? " 与按日表里的每一行都不相同（它用的是整窗分母）。"
+                    : " 与按日表里 " + same + " 行的数值相同（它用的是整窗分母，相同是本次库态使然）。");
+        }
+        return sb.toString();
+    }
+
+    private static long lng(Object v) {
+        return v instanceof Number n ? n.longValue() : 0L;
+    }
+
+    private static long sumOf(List<Map<String, Object>> rows, String column) {
+        long sum = 0;
+        for (Map<String, Object> r : rows) sum += lng(r.get(column));
+        return sum;
+    }
+
+    /** 两个数值列的值是否相等（库端 {@code round(...)} 回的是 BigDecimal，标度可能不同，故按数值比） */
+    private static boolean sameNumber(Object a, Object b) {
+        if (!(a instanceof Number x) || !(b instanceof Number y)) return false;
+        return new BigDecimal(x.toString()).compareTo(new BigDecimal(y.toString())) == 0;
     }
 
     // ===================== 各指标汇总 SQL =====================
@@ -1214,13 +1412,15 @@ public class PathQcController {
                     {deptJoins}
                     where {wc}
                     """), w.args());
-            // v64（2576 复核）：**这一格落窗的是整个 {wb}（默认 30 天），不是任何一天**，四列一律 *_in_period。
+            // v64（2576 复核）：**这一格落窗的是整个 {wb}（默认 30 天）**，四列一律 *_in_period。
             // 修复前四列与按日行同名（blocks_produced / embedded / specimens / blocks_per_specimen），
             // 中文又都写着「当日…」，于是同一屏上「当日产出蜡块数 39」（区间合计）与「当日产出蜡块数 3」（某一天）并存，
             // 指标自己的 caveat 还逐字把这一列定义成「这一天产出了几块」，等于给合计数背书成单日数（复核者原话）。
             // 命名照 WORKLOAD_DEPT 的 issued_of_registered =「本期登记中已签发」的体例：窗口口径写进列名与中文。
-            // specimens_in_period 是**整窗去重**，必然小于按日各行之和；blocks_per_specimen_in_period
-            // 用的是整窗分母，因而不等于按日表里的任何一行——这两句已写进本指标 caveat。
+            // v65（2576 复核）：specimens_in_period 是**整窗去重**，blocks_per_specimen_in_period 用的是整窗分母。
+            // 此前这里与 caveat 都写着它们「必然小于按日各行之和」「不等于按日表里的任何一行」——**那是假的**：
+            // 两句只在同一份标本的蜡块跨统计日时成立，而演示库态只有当天一根柱、两数逐字相等。
+            // 通例已改成条件句，本次查询的实际关系由 summaryVsDailyNote 按库态现算。
             case "WORKLOAD_BLOCK" -> one(q("""
                     select count(*)                                                as blocks_produced_in_period,
                            count(*) filter (where b.embedded_at is not null)       as embedded_in_period,
@@ -1673,7 +1873,11 @@ public class PathQcController {
         if (!d.available()) return unavailableCsv(d, w.window());
         List<Map<String, Object>> rows = rowsOf(d.code(), w.window());
         boolean cut = rows.size() > ROW_LIMIT;
-        return toCsv(d, w.window(), "指标汇总", null, cut ? rows.subList(0, ROW_LIMIT) : rows, cut, ROW_LIMIT);
+        List<Map<String, Object>> shown = cut ? rows.subList(0, ROW_LIMIT) : rows;
+        // v65 车道 C：合计与按日各行的**实际**对账关系随文件走——这段字屏上在合计格下面，
+        // 而导出的表格一转手就脱离页面。与屏上同一个函数、同一批（截断后的）行算出来，两处逐字同源。
+        return toCsv(d, w.window(), "指标汇总", null,
+                summaryVsDailyNote(d, shown, summaryOf(d.code(), w.window())), shown, cut, ROW_LIMIT);
     }
 
     /** 穿透明细 CSV（与 {@link #detail} 同 SQL 同口径、同 200 条上限、同 dept 过滤；超限在页脚明写截断） */
@@ -1690,7 +1894,7 @@ public class PathQcController {
         String deptFilter = deptFilterFor(d.code(), dept);
         List<Map<String, Object>> rows = detailRows(d.code(), w.window(), deptFilter);
         boolean truncated = rows.size() > DETAIL_LIMIT;
-        return toCsv(d, w.window(), "取值明细", deptFilter == null ? null : "科室过滤：" + deptFilter,
+        return toCsv(d, w.window(), "取值明细", deptFilter == null ? null : "科室过滤：" + deptFilter, null,
                 truncated ? rows.subList(0, DETAIL_LIMIT) : rows, truncated, DETAIL_LIMIT);
     }
 
@@ -1711,9 +1915,12 @@ public class PathQcController {
         return sb.toString();
     }
 
-    /** @param filterNote 过滤条件说明（v60 科室过滤），紧跟表头行写出——过滤过的明细脱离页面后必须看得出它不是全量 */
-    private String toCsv(Def d, Window w, String kind, String filterNote, List<Map<String, Object>> rows,
-                         boolean truncated, int limit) {
+    /**
+     * @param filterNote  过滤条件说明（v60 科室过滤），紧跟表头行写出——过滤过的明细脱离页面后必须看得出它不是全量
+     * @param derivedNote 按本次库态现算的对账说明（v65，只有指标汇总有；明细导出传 null），随口径页脚一起写出
+     */
+    private String toCsv(Def d, Window w, String kind, String filterNote, String derivedNote,
+                         List<Map<String, Object>> rows, boolean truncated, int limit) {
         var sb = new StringBuilder("﻿指标编码,指标名称,报表,统计区间,归集时刻\n");
         sb.append("%s,%s,%s,%s,%s\n".formatted(csv(d.code()), csv(d.name()), csv(kind),
                 csv(w.f() + " 至 " + w.t()), csv(d.anchorField())));
@@ -1736,6 +1943,7 @@ public class PathQcController {
         // 口径页脚：导出的表格一转手就脱离页面，caveat 必须跟着文件走
         sb.append(csv("归集口径：" + d.anchor())).append('\n');
         if (d.caveat() != null) sb.append(csv("口径：" + d.caveat())).append('\n');
+        if (derivedNote != null) sb.append(csv(derivedNote)).append('\n');
         for (String c : caveats()) sb.append(csv("口径：" + c)).append('\n');
         sb.append(csv("阈值：常规报告 " + routineHours() + " 小时（path.report.routine_hours）／冰冻 "
                 + frozenMinutes() + " 分钟（path.report.frozen_minutes）")).append('\n');
