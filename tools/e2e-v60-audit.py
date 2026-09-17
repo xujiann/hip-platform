@@ -816,8 +816,17 @@ for _a, _b, _an, _bn in ((_blk_cols, _sld_cols, 'WORKLOAD_BLOCK', 'WORKLOAD_SLID
                          (_reg_cols, _sld_cols, 'WORKLOAD_REGISTER', 'WORKLOAD_SLIDE'),
                          (_reg_cols, _blk_cols, 'WORKLOAD_REGISTER', 'WORKLOAD_BLOCK')):
     assert _a & _b == {'stat_day'}, f'**{_an} 与 {_bn} 除日期外不得有同名列**（同名即同一个中文表头两个口径）：{sorted(_a & _b)}'
-assert (_blk['summary'] or {}).get('blocks_produced') is not None and (_sld['summary'] or {}).get('molecular_slides') is not None, \
+# v64（2576 复核）：**合计行不再与按日行同名**——合计一律 *_in_period、中文写「本期…」。
+# 修复前两者同名而中文都写「当日…」，于是同一屏上「当日产出蜡块数 39」（30 天区间合计）
+# 与「当日产出蜡块数 3」（某一天）并存，指标自己的 caveat 还把这一列定义成「这一天产出了几块」。
+assert (_blk['summary'] or {}).get('blocks_produced_in_period') is not None and (_sld['summary'] or {}).get('molecular_slides') is not None, \
     f'汇总行同步正名：{_blk.get("summary")} / {_sld.get("summary")}'
+assert (_blk['summary'] or {}).get('blocks_produced') is None, (
+    f'**合计行不得再出现按日列名 blocks_produced**（它的中文是「当日产出蜡块数」，会把区间合计说成单日）：{_blk.get("summary")}')
+for _sk, _szh in (('blocks_produced_in_period', '本期产出蜡块数'), ('specimens_in_period', '本期涉及标本数(去重)'),
+                  ('blocks_per_specimen_in_period', '本期蜡块/标本')):
+    assert backend_label(_sk) == _szh, f'合计列中文须写明本期口径：{_sk} → {backend_label(_sk)!r}'
+    assert '当日' not in (backend_label(_sk) or ''), f'合计列中文不得出现「当日」：{_sk}'
 for _k, _zh in (('blocks_produced', '当日产出蜡块数'), ('blocks_stained', '当日染色涉及蜡块数(去重)'),
                 ('molecular_slides', '分子病理切片数(染色类型)'), ('molecular_specimens', '分子病理标本数(标本类别)')):
     assert backend_label(_k) == _zh and zh_label(_k) == _zh, f'**{_k} 前后端中文逐字一致**：后端 {backend_label(_k)!r} 前端 {zh_label(_k)!r}'

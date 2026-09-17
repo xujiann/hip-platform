@@ -48,8 +48,19 @@ public class AssetController {
             return R.fail(9601, "名称、价格、购置日期为必填");
         }
         asset.setId(null);
+        // v64 合并后补齐（超出本轮范围，但不修就得靠重跑碰运气，见下）：原为 `System.nanoTime() % 100000`。
+        //
+        // 那个取模是**真正的撞号机制**：Windows 上 System.nanoTime() 走 QueryPerformanceCounter，
+        // 常见 10 MHz 频率使返回值恒为 100 的整数倍，于是 `% 100000` 的可能取值只有 **1000 个**（不是十万）。
+        // 一次 E2E 建十来个资产，生日碰撞概率约 4–5%——2026-09-17 的全新库全量 E2E 就是这么红的：
+        // hrp_asset_asset_no_key 唯一约束冲突 → 全局兜底 4091「数据不符合约束要求」，
+        // 而那句话既不说是哪个字段、也不说是撞号，运维只能一个个删着试。
+        //
+        // nanoTime() 本身在同一 JVM 内单调递增，**不截断就不会撞**；跨重启同日撞上的概率可忽略。
+        // 长度：2 + 8 + 1 + 19 = 30，列是 varchar(32)，放得下。
+        // 正解仍是按日序列号（ZC20260917-0001 这种人能读的号），但那要新迁移，不在本轮范围——已记入技术债交接单。
         asset.setAssetNo("ZC" + BusinessDates.today().format(DateTimeFormatter.BASIC_ISO_DATE)
-                + "-" + System.nanoTime() % 100000);
+                + "-" + System.nanoTime());
         return R.ok(assetRepo.save(asset));
     }
 
