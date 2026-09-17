@@ -38,3 +38,10 @@ c28eb573a704	FACT	frontend/shell/src/views/medtech/pathology/PathQcView.vue:58	-
 # 本轮前置只建到「棘轮 + 循环变量探测器」，对拍台还没建。
 # 这两行现在靠的是**人工判定写在备注里**，不是机器每次跑都验一遍。
 # 不把这件事写在这儿、只说「已建守卫」，就又是一次「声称已记而实际没记」——v64 我犯过一次。
+#
+# v65 车道 B（2563 三条）——③ 制片工位挂接下拉
+# 注：这两句在 .vue 的**普通文本节点**里（<span class="muted"> 的正文），不是带引号的字面量，
+#     claim-ratchet.py --since 的 diff 抽取只收字面量，抓不到它们（见簿首 limits (c)）。
+#     本轮是**照规矩手工补登**，不是闸门判它们不用登记——别把「闸门没报」读成「不用记」。
+877594f144c3	FACT	frontend/shell/src/views/medtech/pathology/ProcessingPanel.vue:272	v65 车道 B 新增。③ 制片工位「切片登记」弹窗挂接下拉的说明句，断言「括注里的块号与 ⑤ / ④ 的「蜡块」列取自同一列，三屏同一套答案」。**它在什么状态下是假的**：任一屏把取值表达式改回 block_code 优先（v64 前 ③ 就是这么写的，补取材回写 block_id 后 ?? 当场短路，③ 只列 1 个块号而 ⑤ / ④ 列 3 个）。**怎么保证它不假**：对拍用例 V62TechRemarkTest#threeScreensReadTheSameBlockColumnForOneTechOrder——一头实查库造出「已出块 3」的补取材医嘱（坐实回写发生、block_code 只有一块而并集列有三块），一头剥注释扫三处屏的源码、比归一化后的取值表达式必须逐字相同；活对照组是 v64 那一行的原文（block_code ?? blocks_derived）。**这句话与那条用例是一对**：用例里按原文断言它仍在屏上，措辞改了两边一起改。
+bcc0d677b7c3	默认	frontend/shell/src/views/medtech/pathology/ProcessingPanel.vue:271	v65 车道 B 改动（v60 既有句，本轮只在句末补了句号，断言本身一字未改）。断言「N=0 表示还没为这条补取材医嘱补出块」。**它在什么状态下是假的**：sampled_block_count 的口径若从「path_block.tech_order_id = 本医嘱」改成别的（例如把历史补取材块回填进来），N=0 就不再等于「没补出块」。**怎么保证它不假**：这个数由后端 TECH_DERIVED_COLUMNS 一处 SQL 算出、前端只印不算（num(t.sampled_block_count)）；口径变更会同时打翻 V62TechRemarkTest 的「已出块 N」系列断言与 V60ResampleProgressTest。
