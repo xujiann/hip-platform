@@ -271,7 +271,10 @@
           <span v-if="!resampleLoading && !resampleOrders.length" class="muted">
             该标本没有待执行的补取材医嘱：这里只列病理医师下达、尚未执行的「补取材」，深切 / 重切 / 免疫组化等不在此挂接</span>
           <span v-else-if="form.techOrderId" class="muted">
-            提交后本次新蜡块记到该医嘱名下，医嘱进度随之变为「已补取材、待切片」</span>
+            <!-- v64 合并后补齐：原写「已补取材、待切片」多一个顿号。全仓其余每一处（含唯一事实源
+                 PathologyReportController.TECH_PROGRESS_NAMES）都是「已补取材待切片」，屏上口径要逐字同源；
+                 这句恰是本轮新加的，守卫测试比的是键与入口、抓不到文案里多一个标点。 -->
+            提交后本次新蜡块记到该医嘱名下，医嘱进度随之变为「已补取材待切片」</span>
         </div>
       </el-form-item>
 

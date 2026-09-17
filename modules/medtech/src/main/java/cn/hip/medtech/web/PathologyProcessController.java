@@ -713,14 +713,20 @@ public class PathologyProcessController {
         }
         if (losesAll && "warn".equals(gate)) {
             warnings.add("本次修订后该标本不再有结构化字段（修订前 " + priorFieldRows
-                    + " 行、本次 0 行），大体所见退化为扁平文本（gate=warn 放行）");
+                    + " 行、本次 0 行），大体所见退化为扁平文本"
+                    // v64 合并后补齐：档名走 PathologyReportController.gateTierName（唯一来源），不把配置值打上屏
+                    + "（「" + PathologyReportController.gateTierName(gate) + "」档放行）");
         }
         // v63：**部分退化三档都不拦、只告警**——本轮据此判定不启用预分配的 5278（理由见端点注释）。
         // off 档连这一声也不喊（off 就是「不判」），warn 与 block 都喊。
         if (losesSome && !"off".equals(gate)) {
             warnings.add("本次修订使结构化字段由 " + priorLatest + " 项减至 " + plannedFieldCount
                     + " 项（少 " + (priorLatest - plannedFieldCount) + " 项）：少掉的那几项此后只留在大体所见文本里，"
-                    + "字段级查询与统计取不到（部分删字段有正当场景，gate=" + gate + " 三档均只告警不拦截）");
+                    // v64 合并后补齐：原写「gate=" + gate + " 三档均只告警不拦截」。
+                    // 去裸配置值是对的，但第一版把**档位本身**一并删了——而守卫要的正是「说清是哪一档放行的」，
+                    // 那是给技师的有效信息，该译不该删。档名走 gateTierName（与页首、完成提示同一来源）。
+                    + "字段级查询与统计取不到（部分删字段有正当场景，当前「"
+                    + PathologyReportController.gateTierName(gate) + "」档下三档均只告警不拦截）");
         }
 
         int written = jdbc.update("""

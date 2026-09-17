@@ -334,8 +334,16 @@ class V62TechRemarkTest {
                         ((List<?>) br.getData().get("warnings")).size(), gate + "：warn 一条、off 零条");
                 String bareRemark = remarkOf(a, "TECH_DONE", bare);
                 assertTrue(bareRemark.contains("已出块 0 / 挂接 0 片 / 已染色 0"), bareRemark);
-                assertEquals("warn".equals(gate), bareRemark.contains("（gate=warn 放行）"),
-                        gate + "：warn 放行的字样只在 warn 档出现（off 档写的是「（gate=off 放行）」）：" + bareRemark);
+                assertEquals("warn".equals(gate), bareRemark.contains("（「提示」档放行）"),
+                        gate + "：放行字样只在 warn 档出现（off 档写的是「「不判」档放行」）：" + bareRemark);
+                // v64 合并后补齐（v63 复核者点名的结构性漏洞）：DEV_FACING 此前只喂给 techDoneGateRule 一处，
+                // 而 v64 把 doneRemark 改成**前端原样印**之后，它也成了上屏文案——尾巴上的「gate=warn」
+                // 就这么跟着上了屏，同一个工作台页首写「提示」档、成功提示写 gate=warn。
+                // 清洗要跟着入口走：新开一个上屏路径，就得把它喂给同一把尺子。
+                var dev = DEV_FACING.matcher(bareRemark);
+                assertFalse(dev.find(),
+                        gate + "：doneRemark 现在前端原样印，不得含配置键 / 错误码 / 英文档位名，"
+                                + "实际命中 " + (dev.reset().find() ? dev.group() : "") + "：" + bareRemark);
             }
         }
     }
@@ -523,10 +531,12 @@ class V62TechRemarkTest {
         var bareBody = ok(report.doneTechOrder(bare, doc1));
         String bareRemark = String.valueOf(bareBody.get("doneRemark"));
         assertEquals(remarkOf(a, "TECH_DONE", bare), bareRemark,
-                "有缺口分支同样同源（备注里多一段「；<缺口>（gate=warn 放行）」）：" + bareRemark);
+                "有缺口分支同样同源（备注里多一段「；<缺口>（「提示」档放行）」）：" + bareRemark);
         assertTrue(bareRemark.contains(String.valueOf(bareBody.get("doneGap"))),
                 "缺口原文也随这句话上屏，技师看得见自己在没证据的情况下点了完成：" + bareRemark);
-        assertTrue(bareRemark.contains("（gate=warn 放行）"), bareRemark);
+        // v64：档名改中文——这句现在前端原样印，配置值不上屏
+        assertTrue(bareRemark.contains("（「提示」档放行）"), bareRemark);
+        assertFalse(DEV_FACING.matcher(bareRemark).find(), "上屏文案不得含开发者视角内容：" + bareRemark);
         assertNotEquals(doneRemark, bareRemark, "对照组：两条医嘱的那句话本就不同，不是同一个常量");
     }
 

@@ -40,6 +40,26 @@ PUT_RE = re.compile(r'\b\w+\.put\(\s*"([A-Za-z_][A-Za-z0-9_]*)"\s*,')
 # 首跑时 PENDING_SECTION 被报成「零消费」就是这么来的：不是缺陷，是扫描器认错了形态。
 ENUMLIKE_RE = re.compile(r'^[A-Z][A-Z0-9_]*$')
 
+# 注释要先剥掉再判「有没有人消费」。
+#
+# **为什么**：本脚本立起来就是为了防 v63 那种「后端加了键、前端没接」的事故，
+# 而它原本拿前端文件的**原文**做匹配——于是一句提到该键的注释就能骗过绿灯。
+# 现实里真有这么一行：GrossingPanel.vue 的修复说明注释逐字写着
+# 「textFieldForms / textFieldFormsBacked / fieldsCoverText 三个键在整个 frontend/shell/src 里零引用」，
+# 假如车道只写了这句注释、没写 reviseCoverNote，闸门照样放行。
+# 一个能被自己要防的那类注释骗过的闸门，比没有更坏——它给的是虚假的安心。
+# 仓库里的源码扫描类测试（V62GrossReviseGuardTest / V62TechRemarkTest）一律先 stripComments，这里照抄。
+BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.S)
+HTML_COMMENT = re.compile(r"<!--.*?-->", re.S)
+LINE_COMMENT = re.compile(r"(?<![:\w])//[^\n]*")
+
+
+def strip_comments(text: str) -> str:
+    text = HTML_COMMENT.sub(" ", text)
+    text = BLOCK_COMMENT.sub(" ", text)
+    return LINE_COMMENT.sub(" ", text)
+
+
 # 前端消费的形态：d.xxx / row.xxx / v.xxx / ['xxx'] / "xxx" / `xxx`
 def consumed_in_frontend(key: str, blob: str) -> bool:
     return (
@@ -97,7 +117,7 @@ def main():
     blob = []
     for p in FRONTEND.rglob("*"):
         if p.suffix in (".vue", ".ts", ".js") and p.is_file():
-            blob.append(p.read_text(encoding="utf-8", errors="replace"))
+            blob.append(strip_comments(p.read_text(encoding="utf-8", errors="replace")))
     blob = "\n".join(blob)
 
     allow = read_allow()

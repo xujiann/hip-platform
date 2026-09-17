@@ -709,8 +709,9 @@ public class PathologyReportController {
         }
         var warnings = new ArrayList<String>();
         if (!missing.isEmpty() && !"off".equals(gate)) {
+            // v64 合并后补齐：同 doneRemark——这条 warnings 也上屏，档名走 gateTierName
             warnings.add("未完成双签即签发：缺 " + String.join("、", missing)
-                    + "（gate=" + gate + " 已放行，本次签发已记入流转节点）");
+                    + "（「" + gateTierName(gate) + "」档已放行，本次签发已记入流转节点）");
         }
 
         Long uid = currentUserService.idOf(auth);
@@ -722,7 +723,7 @@ public class PathologyReportController {
         if (updated.isEmpty()) return R.fail(5261, "该标本状态已变化（并发签发或已拒收），本次签发未生效");
 
         logProcess(specimenId, "ISSUE", uid,
-                missing.isEmpty() ? "双签完整" : "缺" + String.join("、", missing) + "（gate=" + gate + " 放行）");
+                missing.isEmpty() ? "双签完整" : "缺" + String.join("、", missing) + "（「" + gateTierName(gate) + "」档放行）");
 
         // v59（2576-③）：「报告出了」= 正式签发——门诊申请在此置 EXECUTED（此前在 diagnose）；inp_order 不碰。
         // v60（2576 尾-①）：只有同一申请的全部未拒收部位都已签发才置——not exists 在同一条 update 里判，
@@ -1025,7 +1026,7 @@ public class PathologyReportController {
      * 在 warn 档留下「无挂接切片」的假账，而「已出块 2」就写在同一屏的隔壁列。
      * <ul>
      *   <li>block 且有缺口：返 5273，行仍 ORDERED，不写节点；</li>
-     *   <li>warn 且有缺口：照常置 DONE，返回体 {@code warnings} 回带，TECH_DONE 节点 remark 写明「gate=warn 放行」——
+     *   <li>warn 且有缺口：照常置 DONE，返回体 {@code warnings} 回带，TECH_DONE 节点 remark 写明「「提示」档放行」——
      *       放行不等于没发生过，事后得能查到是谁在没片子的情况下点的完成；</li>
      *   <li>off：不判，照常 DONE，返回体仍带两个事实、warnings 为空数组。</li>
      * </ul>
@@ -1072,7 +1073,8 @@ public class PathologyReportController {
         }
         var warnings = new ArrayList<String>();
         if (gap != null && !"off".equals(gate)) {
-            warnings.add("缺执行证据仍确认完成（gate=warn 放行）：" + label + "，" + gap
+            // v64 合并后补齐：档名走 gateTierName（唯一来源），不再把配置值 warn 打上屏
+            warnings.add("缺执行证据仍确认完成（「" + gateTierName(gate) + "」档放行）：" + label + "，" + gap
                     + "，本次完成已记入流转节点");
         }
 
@@ -1089,7 +1091,7 @@ public class PathologyReportController {
         // 把这条医嘱唯一的执行证据整个抹掉：同一个完成动作在库内与屏上是两套口径（复核者原话）。
         String doneRemark = "确认完成特检医嘱 " + label + "，已出块 " + sampledBlockCount
                 + " / 挂接 " + slideCount + " 片 / 已染色 " + stainedCount
-                + (gap == null ? "" : "；" + gap + "（gate=" + gate + " 放行）");
+                + (gap == null ? "" : "；" + gap + "（「" + gateTierName(gate) + "」档放行）");
         logProcess(asLong(f.get("specimen_id")), "TECH_DONE", uid, doneRemark);
 
         var body = new LinkedHashMap<String, Object>(updated.get(0));
@@ -1446,6 +1448,24 @@ public class PathologyReportController {
                 + "——「拦截」档不让完成、医嘱仍是待执行且不写流转节点，「提示」档照常完成但当场提示、"
                 + "缺口一并写进完成节点备注，「不判」档不判；"
                 + TECH_DONE_RULE_PASS_MARK + passPart + "。";
+    }
+
+    /**
+     * gate 三档的<b>中文档名</b>——唯一来源。
+     *
+     * <p><b>v64 合并后补齐</b>：{@link #techDoneGateRule} 早就把档位说成「拦截 / 提示 / 不判」，
+     * 理由写在它上面：「这句话印在评委看的页首，故只说人话」。但同一轮把 {@code doneRemark} 改成
+     * <b>前端原样印</b>之后，它尾巴上那句 {@code （gate=warn 放行）} 就跟着上了屏——
+     * 于是同一个工作台，页首写「提示」档、成功提示写 {@code gate=warn}。
+     * 新入口被打开、清洗没跟上，正是本轮要治的那个形态，只是方向反了。
+     * 档名从此只有这一处，两边都取它。
+     */
+    static String gateTierName(String gate) {
+        return switch (gate == null ? "" : gate) {
+            case "block" -> "拦截";
+            case "off" -> "不判";
+            default -> "提示";
+        };
     }
 
     /**

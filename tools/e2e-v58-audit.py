@@ -273,7 +273,9 @@ assert isinstance(d2.get('warnings'), list) and len(d2['warnings']) == 1, (
 # 而 v62 已把 SAMPLED（补取材已出块）改判为「有执行证据」，那句话从此与判定相反（屏上说拦、实际放行）。
 # v63 把判定与说明搬到同一张表（TECH_DONE_VERDICTS），告警前缀随之改为「缺执行证据仍确认完成」，
 # **缺口正文逐字用 doneGap**——所以这里连带钉「告警里必须逐字含 doneGap」，而不是只钉前缀。
-assert d2['warnings'][0].startswith('缺执行证据仍确认完成（gate=warn 放行）：'), f'告警文案：{d2["warnings"]}'
+# v64：档名改中文（「提示」档）——配置值 warn 不再上屏（同一工作台页首早就写「提示」档，两处从此同源）
+assert d2['warnings'][0].startswith('缺执行证据仍确认完成（「提示」档放行）：'), f'告警文案：{d2["warnings"]}'
+assert 'gate=' not in d2['warnings'][0], f'上屏告警不得含裸配置值：{d2["warnings"]}'
 assert d2['doneGap'] in d2['warnings'][0], (
     f'**告警的缺口正文必须逐字来自 doneGap**（两处各写一段散文正是 v62 栽的那条）：{d2}')
 assert '无已染色挂接切片' not in d2['warnings'][0], (
@@ -336,10 +338,12 @@ assert 'CK7' in o1n['remark'] and R1 in o1n['remark'], f'TECH_ORDER 备注带「
 done1, done2 = has('TECH_DONE', t1), has('TECH_DONE', t2)
 # v62（2563 复核第二条）：TECH_DONE 备注如实写**三个**事实「已出块 N / 挂接 M 片 / 已染色 K」——
 # 补取材医嘱的执行证据（已出块）此前在这条备注里根本查不到；缺口文案也不再逐字带库列名 slide_count
-assert done1 and '已出块 0 / 挂接 2 片 / 已染色 2' in done1['remark'] and 'gate=warn' not in done1['remark'], (
+# v64：档名改中文（「提示」档）——完成提示现在前端原样印，配置值不上屏
+assert done1 and '已出块 0 / 挂接 2 片 / 已染色 2' in done1['remark'] and '档放行' not in done1['remark'], (
     f'染完的 TECH_DONE 备注只带三个事实：{done1}')
-assert done2 and '已出块 0 / 挂接 0 片 / 已染色 0' in done2['remark'] and 'gate=warn 放行' in done2['remark'], (
+assert done2 and '已出块 0 / 挂接 0 片 / 已染色 0' in done2['remark'] and '「提示」档放行' in done2['remark'], (
     f'**warn 放行的 TECH_DONE 必须写明缺口与放行**（放行不等于没发生过）：{done2}')
+assert 'gate=' not in done2['remark'], f'上屏备注不得含裸配置值：{done2["remark"]}'
 assert '既无挂接切片、也无补取材已出块' in done2['remark'] and 'slide_count' not in done2['remark'], (
     f'**缺口文案用人话、不把库列名写进给评委看的正文**（修复前是「无挂接切片（slide_count=0）」）：{done2}')
 assert has('TECH_DONE', t3) is None, f'**5273 被拦不写 TECH_DONE 节点**：{by_node["TECH_DONE"]}'

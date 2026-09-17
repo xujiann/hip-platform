@@ -167,7 +167,7 @@ class V58TechProgressTest {
         assertEquals(userId(tag + "d2").longValue(), asLong(doneNode.get("operator_id")), "TECH_DONE 的操作人是确认人");
         String doneRemark = String.valueOf(doneNode.get("remark"));
         assertTrue(doneRemark.contains("#" + ihc + " ") && doneRemark.contains("CK7")
-                        && doneRemark.contains("挂接 0 片") && doneRemark.contains("gate=warn 放行"),
+                        && doneRemark.contains("挂接 0 片") && doneRemark.contains("「提示」档放行"),
                 "warn 档放行的 TECH_DONE 备注必须写明缺口与放行，实际：" + doneRemark);
         assertRecent(doneNode.get("occurred_at"), "TECH_DONE.occurred_at");
 
@@ -302,11 +302,12 @@ class V58TechProgressTest {
                     // 而屏上宣告的规则与实现相反正是 v62 被复核打回的那一条。
                     // 新口径：告警前缀改为「缺执行证据仍确认完成（gate=warn 放行）」，
                     // 缺口原文一律来自 PathologyReportController.techDoneGap（与判定表同源），本断言只钉这两件事。
-                    assertTrue(warnings.get(0).startsWith("缺执行证据仍确认完成（gate=warn 放行）"),
+                    // v64：档名改中文（「提示」档），配置值 warn 不再上屏
+                    assertTrue(warnings.get(0).startsWith("缺执行证据仍确认完成（「提示」档放行）"),
                             label + "：告警文案，实际 " + warnings.get(0));
                     assertTrue(warnings.get(0).contains("既无挂接切片、也无补取材已出块"),
                             label + "：告警须带缺口原文（与 techDoneGap 同源），实际 " + warnings.get(0));
-                    assertTrue(remark.contains("gate=warn 放行"), label + "：TECH_DONE 备注须写明放行，实际 " + remark);
+                    assertTrue(remark.contains("「提示」档放行"), label + "：TECH_DONE 备注须写明放行，实际 " + remark);
                 } else {
                     assertEquals(List.of(), warnings, label + "：不该有告警");
                     assertFalse(remark.contains("gate=warn"), label + "：备注不该提 warn 放行，实际 " + remark);

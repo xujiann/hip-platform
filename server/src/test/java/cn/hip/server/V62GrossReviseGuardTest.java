@@ -218,8 +218,10 @@ class V62GrossReviseGuardTest {
         assertEquals(1, ((Number) kept.get("grossFieldCount")).intValue());
         var partial = warningsOf(kept);
         assertEquals(1, partial.size(), "**修复前这里是空数组**：2 项变 1 项既不 block 也不 warn：" + partial);
-        assertTrue(partial.get(0).contains("由 2 项减至 1 项") && partial.get(0).contains("gate=block"),
-                "部分退化在 block 档也只告警不拦截，且要把两个数与档位说出来：" + partial.get(0));
+        // v64：档名改中文（配置值不上屏），但「说清是哪一档」这条要求不变
+        assertTrue(partial.get(0).contains("由 2 项减至 1 项") && partial.get(0).contains("「拦截」档"),
+                "部分退化在拦截档也只告警不拦截，且要把两个数与档位说出来：" + partial.get(0));
+        assertFalse(partial.get(0).contains("gate="), "上屏告警不得含裸配置值：" + partial.get(0));
 
         // 活的对照组：项数不减就是真的不退化，一声不吭——否则上面那条成了「只要带字段就告警」
         var same = new LinkedHashMap<String, String>();
@@ -235,7 +237,7 @@ class V62GrossReviseGuardTest {
         assertEquals(0, ((Number) warned.get("grossFieldCount")).intValue());
         var ws = warningsOf(warned);
         assertEquals(1, ws.size(), "warn 且退化应恰一条告警：" + ws);
-        assertTrue(ws.get(0).contains("不再有结构化字段") && ws.get(0).contains("gate=warn 放行"),
+        assertTrue(ws.get(0).contains("不再有结构化字段") && ws.get(0).contains("「提示」档放行"),
                 "告警要说清后果与放行原因：" + ws.get(0));
         assertEquals(warnText, grossFinding(specimenId), "warn 必须**真落库**，不是只喊一声");
         int warnSeq = ((Number) warned.get("revisionSeq")).intValue();
@@ -297,7 +299,8 @@ class V62GrossReviseGuardTest {
                 "**修复前的反向事实**：4 项变 2 项时 warnings 是空数组——5277 只认 plannedFieldCount == 0：" + ws);
         assertTrue(ws.get(0).contains("由 4 项减至 2 项") && ws.get(0).contains("少 2 项"),
                 "告警要把「修订前 N 项、本次 M 项」两个数说出来：" + ws.get(0));
-        assertTrue(ws.get(0).contains("gate=block"), "告警要说清是哪一档放行的：" + ws.get(0));
+        assertTrue(ws.get(0).contains("「拦截」档"), "告警要说清是哪一档放行的（v64 起用中文档名）：" + ws.get(0));
+        assertFalse(ws.get(0).contains("gate="), "上屏告警不得含裸配置值：" + ws.get(0));
         int seq2 = ((Number) body.get("revisionSeq")).intValue();
         assertEquals(2, fieldRowsOfRevision(specimenId, seq2), "warn 不是「只喊一声」：本版真落 2 行");
 
