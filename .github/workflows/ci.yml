@@ -62,6 +62,15 @@ jobs:
           echo "基线：$base"
           python3 tools/contract-wired-check.py --since "$base" --strict
 
+      # v65：屏上断言棘轮。治的是 v64 那种「接上了，但那句话在它依附的状态下是假的」。
+      # selftest 必须先过——一把抓不到已知假话的尺子不配当闸门（它自检时会拿 v64 那四条真假话当对照组）。
+      - name: 屏上断言棘轮（本轮动过的上屏文案必须登记 + 循环变量规则）
+        run: |
+          python3 tools/claim-ratchet.py --selftest
+          base=$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2>/dev/null || true)
+          if [ -z "$base" ]; then echo "取不到上一个发布 tag，基线无从谈起"; exit 1; fi
+          python3 tools/claim-ratchet.py --since "$base" --strict
+
   frontend-build:
     name: 前端构建（vue-tsc + vite）
     runs-on: ubuntu-latest
