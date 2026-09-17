@@ -86,10 +86,10 @@ public class PathQcController {
             + "两个口径下不是同一批，前者含尚未出报告的在途标本，后者含上期登记本期才发的标本。";
 
     static final String DATA_CAVEAT =
-            "数据覆盖面：v48 之前入库的病理标本，病理号 / 标本类别 / 取材部位 / 固定液 / 固定时刻 / "
-            + "拒收信息 / 初诊复诊双签 / 报告签发时刻全部为空，且**刻意不回填**（V144 零回填纪律："
-            + "当时确实没采集，拿 collected_at 去填 received_at 会让签收及时率恒等于 100%）。"
-            + "因此依赖这些字段的指标只覆盖 v48 之后真正录了相应字段的标本，不是全院全历史口径。"
+            "数据覆盖面：病理专业模块上线之前入库的标本，病理号 / 标本类别 / 取材部位 / 固定液 / 固定时刻 / "
+            + "拒收信息 / 初诊复诊双签 / 报告签发时刻全部为空，且**刻意不补填**（宁可少算，不可假算："
+            + "当时确实没采集，拿登记时刻去顶签收时刻会让签收及时率恒等于 100%）。"
+            + "因此依赖这些字段的指标只覆盖模块上线之后真正录了相应字段的标本，不是全院全历史口径。"
             + "**请先看 coverage 段的字段录入覆盖率，再看指标值**——「及时率 100%」很可能只是"
             + "「本时段仅 2 例录了时间」。";
 
@@ -129,8 +129,10 @@ public class PathQcController {
     /**
      * <b>「蜡块按日产出数」这一条事实的唯一口径结论</b>（v63，2576 复核第二条）。
      *
-     * <p>{@code WORKLOAD_BLOCK} 的 {@code blocks_produced} 与覆盖率段 {@code coverage.blocks.blocks}
-     * 是<b>同一个 {@code count(*) from path_block}、同一条落窗谓词 {@code W_BLOCK}</b>——同一个数只能有一个结论。
+     * <p>{@code WORKLOAD_BLOCK} 的合计列 {@code blocks_produced_in_period}、按日列 {@code blocks_produced}
+     * 与覆盖率段 {@code coverage.blocks.blocks} 是<b>同一个 {@code count(*) from path_block}、
+     * 同一条落窗谓词 {@code W_BLOCK}</b>（合计与覆盖率段落窗整个区间，按日列只是把它按 {@code stat_day} 拆开）——
+     * 同一个数只能有一个结论。
      *
      * <p>修复前的反向事实（v62 交付后复核，反驳者原话）：v62 只把「这个数事后会变、导出的历史报表不可复现」
      * 写进了 WORKLOAD_BLOCK 自己的 caveat，而同一块看板上<b>位置更靠前、且被 {@code DATA_CAVEAT} 点名
@@ -139,12 +141,12 @@ public class PathQcController {
      * 两处各写一段散文必然漂移，故结论只在这里写一遍，两边引用同一个常量。
      */
     public static final String BLOCK_DAY_CAVEAT =
-            "**按日数事后会变、导出的历史报表不可复现**：未包埋的蜡块（embedded_at 为空）"
+            "**按日数事后会变、导出的历史报表不可复现**：尚未登记包埋的蜡块"
             + "按**建档时刻**暂记，先算进取材那天的产出；等包埋登记落下去，同一块蜡块就从建档日消失、"
             + "移到包埋日——**同一个已关闭区间今天导与明天导的按日数不一样（某天会变小）**。"
             + "脱水过夜跨日是病理常规，不是边角情形。"
-            + "本平台**不为此回填包埋时刻**（V144 零回填纪律：宁可少算，不可假算），"
-            + "发出去之前请连同导出时刻一起注明（与 WORKLOAD_DEPT 存量三列同一体例）。";
+            + "本平台**不为此补填包埋时刻**（宁可少算，不可假算），"
+            + "发出去之前请连同导出时刻一起注明（与送检科室工作量那三列存量数同一体例）。";
 
     /** 统计时间窗最大跨度（天）：与 AnesQcController / StatsController.daily 同量级 */
     static final int MAX_SPAN_DAYS = 366;
@@ -333,7 +335,7 @@ public class PathQcController {
                 + "要出单一及时率须先新增配置键（如 path.receive.timely_minutes）并同时补迁移 seed 与配置手册。"
                 + "补录导致的「签收早于登记」单列 negative_interval，既不并进分档也不取绝对值——"
                 + "取绝对值会把一条数据质量问题伪装成一次极快的签收。"
-                + "分母 submitted 是送检总数、**含拒收**（V144 明写拒收不删记录）。");
+                + "分母 submitted 是送检总数、**含拒收**（拒收不删记录，原样留档）。");
 
         def("FIXATION", "标本固定信息完整率（**不是**国标口径的规范化固定率）",
                 "path_specimen.collected_at", ANCHOR_COLLECTED,
@@ -366,7 +368,7 @@ public class PathQcController {
 
         def("REPORT_DOUBLE_SIGN", "报告双签完成率（初诊—复诊两级签发）",
                 "path_specimen.report_issued_at", ANCHOR_ISSUED,
-                "双签 gate emr.gate.pathology.doublesign **默认 warn**（未双签也放行签发，见 V144 注释："
+                "双签 gate emr.gate.pathology.doublesign **默认 warn**（未双签也放行签发："
                 + "存量流程可能只有一名病理医师，直接 block 会让报告发不出去）。故 double_sign_rate_pct "
                 + "小于 100% 是配置使然而非程序缺陷；要卡死须把 gate 切 block。"
                 + "same_person_double_sign 一列是完整性哨兵：签发端点已禁止初诊人复诊，"
@@ -388,7 +390,7 @@ public class PathQcController {
 
         unavailable("CLINICAL_CONCORDANCE", "临床诊断与病理诊断符合率",
                 "缺数据源：无「病理诊断与临床诊断是否符合」的录入位。clinical_diagnosis 列虽然有"
-                + "（V144 新增，自由文本 500 字），但符合性是病理医师的**人工判定**，不是两段自由文本的"
+                + "（自由文本 500 字），但符合性是病理医师的**人工判定**，不是两段自由文本的"
                 + "字符串比对——「乳腺癌」与「浸润性导管癌」文本完全不同却是符合的，"
                 + "「良性病变」与「恶性肿瘤」只差几个字却是根本不符合。"
                 + "做文本相似度会得出一个精确到小数点后两位的假数字，比不给更坏。"
@@ -432,13 +434,12 @@ public class PathQcController {
         def("WORKLOAD_REGISTER", "登记总量（按日，含拒收与加急构成）",
                 "path_specimen.collected_at", ANCHOR_COLLECTED, WORKLOAD_NOTE
                 + " 分母口径：registered 是当日登记的**标本条数**，不是申请单数——"
-                + "多部位送检一份申请对应多条标本（V144 的 (来源, part_no) 唯一），"
+                + "多部位送检一份申请对应多条标本（同一份申请下按部位序号各自唯一），"
                 + "这正是病理科的真实工作量单位。rejected 一列是当日登记的标本里**后来**被拒收的条数"
                 + "（按登记日归集，不是按拒收日），要看「本期拒了多少」请走 PROCESS_TAT 的 REJECT 节点。"
                 + " molecular_specimens 数的是 specimen_type='MOLECULAR' 的**标本条数**，"
                 + "与 WORKLOAD_SLIDE 的 molecular_slides（stain_type='MOLECULAR' 的**切片张数**，锚染色时刻）"
-                + "**既不同分母也不同锚点**，两个数不相等是正常的，不是对不上账"
-                + "（v62 复核修补：此前两列都叫 molecular、中文都叫「分子病理」，并排显示在同一块看板上）。");
+                + "**既不同分母也不同锚点**，两个数不相等是正常的，不是对不上账。");
 
         // v60（2576-②）：科室维度——此前 dept_name 只在穿透明细里，六条 WORKLOAD_* 汇总行没有一条按送检科室分组
         def("WORKLOAD_DEPT", "送检科室工作量",
@@ -449,8 +450,7 @@ public class PathQcController {
                 + "issued_of_registered / rejected / in_progress 是这批标本**截至查询时刻**的状态（已签发 / 已拒收 / 两者皆非）。"
                 + "**这三列是存量不是流量**：按登记日归集，同一个已结束的历史区间今天查与下周查，"
                 + "issued_of_registered 会变大、in_progress 会变小——上月登记、本月才签发的标本会被追加进上月那一行，"
-                + "**据此做的科室工作量表不可复现**，发出去之前请连同查询时刻一起注明（v61 复核修补：此前这一列叫 issued，"
-                + "与 REPORT_* 系列锚 report_issued_at 的流量列同名同中文「签发份数」，两个口径混在一块看板上）。"
+                + "**据此做的科室工作量表不可复现**，发出去之前请连同查询时刻一起注明。"
                 + "**平台目前拿不出「本期签发量按科室分」**：REPORT_* 只按日分组、没有科室维度，本指标的 dept 过滤也只对自己生效——"
                 + "要这个口径须另开指标，本版不做（不写代码就不占码）。"
                 + "三列之和等于 registered：签发端点拒绝已拒收标本、拒收端点拒绝已诊断标本，两态互斥。");
@@ -461,44 +461,48 @@ public class PathQcController {
         // 一屏之内就是「蜡块数 6」与「蜡块数 3」两个数，页面上没有一行字能回答「到底做了几块」（复核者原话，主控实测坐实）。
         // 同时补写「按日数事后会变」：未包埋的蜡块拿 created_at 顶替 embedded_at 先算进取材日，包埋登记一落
         // 就从取材日消失、跳到包埋日——同一个已关闭区间今天导与明天导不一样，此前 caveat 一个字没提。
-        def("WORKLOAD_BLOCK", "蜡块产出数（按日）",
+        def("WORKLOAD_BLOCK", "蜡块产出数（本期合计 + 按日）",
                 "coalesce(path_block.embedded_at, created_at)",
                 "按蜡块**包埋时刻**归集（未录包埋时刻的回落建档时刻）", WORKLOAD_NOTE
-                + " blocks_produced（当日产出蜡块数）是 count(*) from path_block、锚"
-                + " coalesce(embedded_at, created_at)：这一天**产出**了几块蜡块。"
-                + "WORKLOAD_SLIDE 那张表里另有一列 blocks_stained（当日染色涉及蜡块数，去重），"
-                + "是 count(distinct block_id)、锚 coalesce(stained_at, created_at)：这一天染出来的切片**来自**几块蜡块。"
-                + "**两列都是「蜡块数」，但一个 count(*)、一个 count(distinct)，锚点也不同**——"
+                + " **本指标一屏两套口径，列名与中文都已分开**：最上面那一格是**本期合计**"
+                + "（整个统计区间只出一个数），四列一律以「本期」起头；下面那张表才是**按日拆分**，"
+                + "各列一律以「当日」起头。**合计那一格不是任何一天的数**，"
+                + "「本期产出蜡块数」与某一天的「当日产出蜡块数」不是同一个口径，别当成今天的产量看。"
+                + " 「当日产出蜡块数」数的是这一天**产出**了几块蜡块；切片产出数那张表里另有一列"
+                + "「当日染色涉及蜡块数(去重)」，数的是这一天染出来的切片**来自**几块蜡块。"
+                + "**两列都是「蜡块数」，但一个逐块计数、一个按来源去重，归集时刻也不同**——"
                 + "同一天两行并排时两个数不相等是正常的（取材 2 块、只从其中 1 块切片，产出 2 / 涉及 1），"
-                + "不是对不上账（v62 复核修补：此前两列都叫 blocks、中文都叫「蜡块数」）。"
-                + " blocks_per_specimen 是当日蜡块数 / 当日涉及标本数，"
-                + "**不是「每份标本平均取几块」**——同一标本的蜡块可能跨日建，两端分母不同。"
+                + "不是对不上账。"
+                + " **「本期涉及标本数(去重)」必然小于按日各行「当日涉及标本数(去重)」之和，"
+                + "「本期蜡块/标本」也不等于按日表里的任何一行**：同一份标本的蜡块本来就分落在多天——"
+                + "脱水过夜跨日、补取材隔几天再给同一标本出块都是常规形态，"
+                + "那份标本在它出过块的每一天各被数一次，而本期合计对它只数一次。"
+                + "**这是去重口径使然，不是对不上账**；「本期产出蜡块数」倒是等于按日各行之和"
+                + "（它是逐块计数，没有去重）。"
                 // v63（2576 复核）：这句结论与覆盖率段 coverage.blocks.note 同源，只在 BLOCK_DAY_CAVEAT 里写一遍
                 + " " + BLOCK_DAY_CAVEAT
-                + "embedded 一列是该行里已录包埋时刻的条数，"
-                + "它与 blocks_produced 差得越大，该行后面越可能还会变。");
+                + "「当日已确认包埋」是该行里已登记包埋时刻的块数，"
+                + "它与当日产出数差得越大，该行后面越可能还会变；「本期已确认包埋」是同一件事的区间合计。");
 
         // v62（2576 复核）：blocks → blocks_stained、molecular → molecular_slides；并补写按日数事后会变。
         // 此前本指标的 caveat 只挂了通用 WORKLOAD_NOTE（讲的是「不折算工时」），对这两列零说明。
         def("WORKLOAD_SLIDE", "切片产出数（按日、按染色类型）",
                 "coalesce(path_slide.stained_at, created_at)",
                 "按切片**染色时刻**归集（未录染色时刻的回落建档时刻）", WORKLOAD_NOTE
-                + " blocks_stained（当日染色涉及蜡块数，去重）是 count(distinct block_id)、锚"
-                + " coalesce(stained_at, created_at)：这一天染出来的切片**来自**几块蜡块，"
-                + "**不是当日蜡块产出量**——后者是 WORKLOAD_BLOCK 的 blocks_produced"
-                + "（count(*) from path_block、锚 coalesce(embedded_at, created_at)）。"
-                + "两列同在一块看板上、同一天两行并排，数不相等是正常的"
-                + "（v62 复核修补：此前两列都叫 blocks、中文都叫「蜡块数」）。"
-                + " molecular_slides 数的是 stain_type='MOLECULAR' 的**切片张数**，"
-                + "WORKLOAD_REGISTER 的 molecular_specimens 数的是 specimen_type='MOLECULAR' 的**标本条数**，"
-                + "**既不同分母也不同锚点**（v62 复核修补：此前两列都叫 molecular、中文都叫「分子病理」）。"
-                + " **按日数事后会变、导出的历史报表不可复现**：未染色的切片（stained_at 为空）"
+                + " 「当日染色涉及蜡块数(去重)」数的是这一天染出来的切片**来自**几块蜡块，"
+                + "**不是当日的蜡块产出量**——后者在蜡块产出数那张表里，按日叫「当日产出蜡块数」、"
+                + "区间合计叫「本期产出蜡块数」，按包埋时刻归集、逐块计数。"
+                + "两列同在一块看板上、同一天两行并排，数不相等是正常的。"
+                + " 「分子病理切片数(染色类型)」数的是染色类型为分子病理的**切片张数**，"
+                + "登记总量那张表里的「分子病理标本数(标本类别)」数的是标本类别为分子病理的**标本条数**，"
+                + "**既不同分母也不同锚点**。"
+                + " **按日数事后会变、导出的历史报表不可复现**：尚未登记染色的切片"
                 + "按**建档时刻**暂记，先算进制片那天；等染色登记落下去，同一张切片就从建档日消失、"
                 + "移到染色日——**同一个已关闭区间今天导与明天导的按日数不一样（某天会变小）**，"
                 + "blocks_stained 这一列同理（它按同一锚点去重数蜡块）。stained 一列是该行里已录染色时刻的条数，"
                 + "它与 slides 差得越大，该行后面越可能还会变。"
-                + "本平台**不为此回填染色时刻**（V144 零回填纪律：宁可少算，不可假算），"
-                + "发出去之前请连同导出时刻一起注明（与 WORKLOAD_DEPT 存量三列同一体例）。");
+                + "本平台**不为此补填染色时刻**（宁可少算，不可假算），"
+                + "发出去之前请连同导出时刻一起注明（与送检科室工作量那三列存量数同一体例）。");
 
         def("WORKLOAD_REPORT", "报告签发量（首次报告 / 补充报告分列）",
                 "path_specimen.report_issued_at 与 path_report.signed_at", ANCHOR_ISSUED,
@@ -696,15 +700,17 @@ public class PathQcController {
                 from path_block b
                 where {wb}
                 """), w.args()));
-        // v63（2576 复核）：这一段的 blocks 与 WORKLOAD_BLOCK 的 blocks_produced 是同一个 count(*)、
-        // 同一条落窗谓词 W_BLOCK，结论必须同源。修复前这里写的是「蜡块产出量仍可信（建档即产出）」，
+        // v63（2576 复核）：这一段的 blocks 与蜡块产出数指标的合计列是同一个 count(*)、同一条落窗谓词
+        // W_BLOCK，结论必须同源。修复前这里写的是「蜡块产出量仍可信（建档即产出）」，
         // 与同页 WORKLOAD_BLOCK 的 caveat「按日数事后会变、导出的历史报表不可复现」结论相反，
         // 而覆盖率段先于所有指标渲染——说反话的那一句先上屏（复核者原话）。
-        blocks.put("note", "按 coalesce(embedded_at, created_at) 落窗，与 WORKLOAD_BLOCK 的 blocks_produced "
-                + "是同一个 count(*)、同一条落窗谓词，故结论与该指标的 caveat 同源："
+        // v64（2576 复核）：本段那个数是**整个统计区间**的合计，中文跟着合计列一起正名成「本期产出蜡块数」，
+        // 三处呈现（本段 / 合计格 / 按日表）从此一眼分得出哪两处是同一个数（前端 COVERAGE_SECTIONS.labels 给中文）。
+        blocks.put("note", "本段按蜡块包埋时刻落窗（未录包埋时刻的回落建档时刻），数的是**整个统计区间**的合计，"
+                + "与蜡块产出数那条指标的「本期产出蜡块数」是同一个数、同一条落窗谓词，故结论与该指标的口径同源："
                 + BLOCK_DAY_CAVEAT
-                + "with_embedded_at 低说明包埋确认环节没在系统里打点：包埋耗时算不出来，"
-                + "且这一行的蜡块数后面还会变（它与本段 blocks 差得越大，越可能变）。");
+                + "已录包埋时刻的条数低，说明包埋确认环节没在系统里打点：包埋耗时算不出来，"
+                + "且这一行的蜡块数后面还会变（它与本段合计差得越大，越可能变）。");
         m.put("blocks", blocks);
 
         var slides = new LinkedHashMap<String, Object>(one(q("""
@@ -730,8 +736,8 @@ public class PathQcController {
                          where coalesce(r.signed_at, r.created_at) >= ?::date
                            and coalesce(r.signed_at, r.created_at) < ?::date + 1)               as supplement_reports
                 """, rep(w, 4)));
-        others.put("note", "流转节点值域共 15 档（RECEIVE…SUPPLEMENT + v58 的 TECH_ORDER/TECH_DONE/TECH_CANCEL）；distinct_nodes 远小于 15 "
-                + "说明多数环节没有打点，PROCESS_TAT 指标只覆盖打了点的那几档。");
+        others.put("note", "流转节点值域共 15 档（从签收一路到补充报告，含特检开单 / 完成 / 取消三档）；"
+                + "「出现过的环节数」远小于 15 说明多数环节没有打点，各流转环节耗时那条指标只覆盖打了点的那几档。");
         m.put("process", others);
 
         return m;
@@ -948,13 +954,16 @@ public class PathQcController {
             // args: from, to
             // v62（2576 复核）：blocks → blocks_produced（count(*)，当日产出）——与 WORKLOAD_SLIDE 的
             // blocks_stained（count(distinct block_id)，当日染色涉及）此前同名同中文「蜡块数」，并排两个数。
+            // v64（2576 复核）：**按日行与合计行不再共用列名**。这里每一行都是一个 stat_day，列名一律带 _of_day
+            // （或本来就只出现在按日行的 blocks_produced / embedded），中文一律「当日…」；
+            // 区间合计那一格改用 *_in_period / 「本期…」，见 summaryOf 的同名 case。
             case "WORKLOAD_BLOCK" -> query("""
                     select coalesce(b.embedded_at, b.created_at)::date                    as stat_day,
                            count(*)                                                       as blocks_produced,
                            count(*) filter (where b.embedded_at is not null)              as embedded,
-                           count(distinct b.specimen_id)                                  as specimens,
+                           count(distinct b.specimen_id)                                  as specimens_of_day,
                            round(count(*)::numeric
-                                 / nullif(count(distinct b.specimen_id), 0), 2)           as blocks_per_specimen,
+                                 / nullif(count(distinct b.specimen_id), 0), 2)           as blocks_per_specimen_of_day,
                            count(distinct b.dehydrate_batch)                              as dehydrate_batches
                     from path_block b
                     where {wb}
@@ -1198,12 +1207,19 @@ public class PathQcController {
                     {deptJoins}
                     where {wc}
                     """), w.args());
+            // v64（2576 复核）：**这一格落窗的是整个 {wb}（默认 30 天），不是任何一天**，四列一律 *_in_period。
+            // 修复前四列与按日行同名（blocks_produced / embedded / specimens / blocks_per_specimen），
+            // 中文又都写着「当日…」，于是同一屏上「当日产出蜡块数 39」（区间合计）与「当日产出蜡块数 3」（某一天）并存，
+            // 指标自己的 caveat 还逐字把这一列定义成「这一天产出了几块」，等于给合计数背书成单日数（复核者原话）。
+            // 命名照 WORKLOAD_DEPT 的 issued_of_registered =「本期登记中已签发」的体例：窗口口径写进列名与中文。
+            // specimens_in_period 是**整窗去重**，必然小于按日各行之和；blocks_per_specimen_in_period
+            // 用的是整窗分母，因而不等于按日表里的任何一行——这两句已写进本指标 caveat。
             case "WORKLOAD_BLOCK" -> one(q("""
-                    select count(*)                                                as blocks_produced,
-                           count(*) filter (where b.embedded_at is not null)       as embedded,
-                           count(distinct b.specimen_id)                           as specimens,
+                    select count(*)                                                as blocks_produced_in_period,
+                           count(*) filter (where b.embedded_at is not null)       as embedded_in_period,
+                           count(distinct b.specimen_id)                           as specimens_in_period,
                            round(count(*)::numeric
-                                 / nullif(count(distinct b.specimen_id), 0), 2)    as blocks_per_specimen
+                                 / nullif(count(distinct b.specimen_id), 0), 2)    as blocks_per_specimen_in_period
                     from path_block b
                     where {wb}
                     """), w.args());
@@ -1851,8 +1867,17 @@ public class PathQcController {
             // 「切片（按染色时刻落窗）」），不进 CSV、不经本方法——本方法只登记确实出现在 rowsOf / detailRows 别名里的键。
             case "blocks_produced" -> "当日产出蜡块数";
             case "blocks_stained" -> "当日染色涉及蜡块数(去重)";
-            case "embedded" -> "已确认包埋";
-            case "blocks_per_specimen" -> "蜡块/标本";
+            // v64（2576 复核）：合计行与按日行分成两套列名——合计落窗整个统计区间，按日行才是「这一天」。
+            // 此前两处共用一套键、中文又都写着「当日…」，同一屏上「当日产出蜡块数」既是 30 天合计又是单日数。
+            // 合计四列一律 *_in_period / 「本期…」（照 issued_of_registered =「本期登记中已签发」的体例）；
+            // 按日四列一律「当日…」。blocks_per_specimen 这个旧共用键已不是任何行的列名，故不再登记。
+            case "blocks_produced_in_period" -> "本期产出蜡块数";
+            case "embedded" -> "当日已确认包埋";
+            case "embedded_in_period" -> "本期已确认包埋";
+            case "blocks_per_specimen_of_day" -> "当日蜡块/标本";
+            case "blocks_per_specimen_in_period" -> "本期蜡块/标本";
+            case "specimens_of_day" -> "当日涉及标本数(去重)";
+            case "specimens_in_period" -> "本期涉及标本数(去重)";
             case "specimens" -> "涉及标本数";
             // 流转
             case "node" -> "环节编码";
