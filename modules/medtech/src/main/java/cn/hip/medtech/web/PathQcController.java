@@ -687,9 +687,13 @@ public class PathQcController {
                 from path_specimen s
                 where {wc}
                 """), w.args()));
-        spec.put("note", "分母 specimens 是该时段**登记**的全部标本（含历史无新字段的行、含拒收）；"
-                + "其余各列是真正录了该字段的行数。diagnosed_not_issued 是「写了诊断但没走签发」的条数——"
-                + "这批标本不在报告及时率的分母里，该列越大，及时率越不代表全院。");
+        // v64 合并后补齐：本段 note 原样写着库列名 specimens / diagnosed_not_issued，而它是**上屏**文案
+        //（PathQcView 的覆盖率段，评委看到的第一屏）。车道 C 按复核点名只重写了隔壁 blocks 那一段，
+        // 同一个函数里的兄弟段留着没动——正是本轮宣称治好的「只修了被点名的那一个入口」。
+        // 列名一律改用屏上那一格自己的中文标签，读的人才对得上。
+        spec.put("note", "「登记标本数」是该时段**登记**的全部标本（含历史无新字段的行、含拒收），本段各项占比都以它为分母；"
+                + "其余各格是真正录了该项的条数。「写了诊断未走签发」这一格是写了诊断但没走正式签发的条数——"
+                + "这批标本不在报告及时率的分母里，该格越大，及时率越不代表全院。");
         m.put("specimens", spec);
 
         var blocks = new LinkedHashMap<String, Object>(one(q("""
@@ -721,8 +725,11 @@ public class PathQcController {
                 from path_slide sl
                 where {ws}
                 """), w.args()));
-        slides.put("note", "按 coalesce(stained_at, created_at) 落窗。with_quality 是染色切片优良率的**真实分母**——"
-                + "它与 slides 差得越远，优良率越只代表被挑出来评价的那一小部分。");
+        // v64 合并后补齐：同上——本段 note 此前把 SQL 表达式 coalesce(stained_at, created_at) 与
+        // 库列名 with_quality / slides 直接打在屏上。改用屏上那几格自己的中文标签。
+        slides.put("note", "本段按切片染色时刻落窗（未录染色时刻的回落建档时刻）。"
+                + "「已评切片质量」这一格是染色切片优良率的**真实分母**——"
+                + "它与「切片数」差得越远，优良率越只代表被挑出来评价的那一小部分。");
         m.put("slides", slides);
 
         var others = new LinkedHashMap<String, Object>(one("""
