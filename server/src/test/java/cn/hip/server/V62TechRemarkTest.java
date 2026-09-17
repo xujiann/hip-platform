@@ -22,12 +22,16 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -84,6 +88,21 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *       {@link #successMessageIsTheSameStringAsTheTechDoneNodeRemark()} 钉住「返回体那句 = 落库那句」，
  *       且<b>实查库</b>，不看返回体自说自话。</li>
  * </ul>
+ *
+ * <h2>v64 追加（2563 复核三条：后端算对了，屏上没印）</h2>
+ * <p>v63 上面那两条<b>只修到后端为止</b>——{@code doneRemark} 与 {@code techDoneGateRule} 在
+ * {@code frontend/shell/src} 里零引用，{@code TechOrderPanel.vue} 整个 v63 一字未改。
+ * 端点自说自话「同源」而没有任何一处屏幕印它，于是本轮的两条守卫<b>各自把两端一起钉</b>：
+ * <ul>
+ *   <li>{@link #bothDoneEntriesPrintTheBackendRemarkVerbatim()}：一头实查 {@code path_process} 的
+ *       TECH_DONE 备注，一头扫两个完成入口的源码，确认它们印的就是 {@code doneRemark} 本身、
+ *       不再各自挑字段重拼（活的对照组：v63 那两句拼串必须被同一个检测器抓到）。</li>
+ *   <li>{@link #screenCarriesNoSecondHardcodedGateRule()}：剥注释后扫全部 {@code .vue}，
+ *       确认页面里没有第二份写死的完成规则文案、也没有写死的进度态清单，
+ *       且两屏真的消费了 {@code techDoneGateRule} / {@code progressStates}
+ *       （活的对照组：修复前页首那两句写死的文案必须被同一个匹配器抓到）。
+ *       顺带钉住「这句话既然要印在评委看的页首，就不带配置键 / 错误码 / 英文档位名」。</li>
+ * </ul>
  */
 @SpringBootTest
 @Transactional
@@ -103,6 +122,71 @@ class V62TechRemarkTest {
     /** 备注正文里的<b>库列名 / 内部标识</b>：snake_case 形态（slide_count / tech_order_id / sampled_block_count） */
     static final Pattern RAW_COLUMN = Pattern.compile(
             "(?<![A-Za-z0-9_])[a-z][a-z0-9]*(?:_[a-z0-9]+)+(?![A-Za-z0-9_])");
+
+    /**
+     * 两块屏在仓库里的相对路径。<b>源码扫描一律用仓库相对路径</b>——绝对路径在
+     * {@code .claude/worktrees/<x>/} 下会把整仓判成「排除」，扫描恒空、断言恒绿（v58 车道 D 的教训）。
+     */
+    static final String TECH_PANEL = "frontend/shell/src/views/medtech/pathology/TechOrderPanel.vue";
+    static final String DIAG_PANEL = "frontend/shell/src/views/medtech/pathology/DiagnosisPanel.vue";
+
+    /**
+     * 「完成提示又是自己拼的」检测器：成功提示的实参里只要还出现这几个事实键（或任何模板插值），
+     * 就是又在屏上重拼一句——同源那句话只有 {@code doneRemark} 一个来源，三个事实它都写了。
+     */
+    static final Pattern RESPLICED_SUCCESS = Pattern.compile(
+            "(?<![A-Za-z0-9_])(?:slideCount|stainedCount|sampledBlockCount"
+            + "|slide_count|stained_count|sampled_block_count)(?![A-Za-z0-9_])");
+
+    /**
+     * 「页面又写死了一份完成规则」检测器：规则文案独有的三个抓手——配置键、5273、v58 旧口径那半句。
+     * 刻意不写成「任意含『完成』的句子」：那样会把「点『完成』」这种正常用语一起咬掉。
+     */
+    static final Pattern HARDCODED_GATE_RULE = Pattern.compile(
+            "emr\\.gate\\.pathology\\.techdone|(?<![0-9])5273(?![0-9])|已染色挂接切片");
+
+    /**
+     * 「态的清单又被写死在页面里」检测器：两个进度中文名以「/」相连的枚举形态——
+     * 这正是两屏页首那句话的写法（「待切片 / 切片中 / 已染色待确认」）。
+     * 名字取自 {@link PathologyReportController#TECH_DONE_VERDICTS}：<b>检测器与被检测的事实同源</b>，
+     * 哪天加了第七态，它自己跟着变，不用记得来改。
+     */
+    static final Pattern HARDCODED_PROGRESS_LIST = hardcodedProgressList();
+
+    private static Pattern hardcodedProgressList() {
+        var alt = new StringBuilder();
+        for (String code : PathologyReportController.TECH_DONE_VERDICTS.keySet()) {
+            if (alt.length() > 0) alt.append('|');
+            alt.append(Pattern.quote(PathologyReportController.TECH_PROGRESS_NAMES.get(code)));
+        }
+        return Pattern.compile("(?:" + alt + ")\\s*/\\s*(?:" + alt + ")");
+    }
+
+    /** 给评委看的正屏上不该出现的开发者视角内容：配置键 / 错误码 / 英文档位名 */
+    static final Pattern DEV_FACING = Pattern.compile(
+            "emr\\.[a-z.]+|(?<![0-9])5[0-9]{3}(?![0-9])|(?<![A-Za-z])(?:block|warn|off)(?![A-Za-z])");
+
+    /** 活的对照组：v63 ⑤ 工作台那句成功提示的原文（TechOrderPanel.vue:259-260，自己挑字段拼的） */
+    static final String V63_TECH_SUCCESS =
+            "`已标记完成：${techName(row.tech_type)} ${String(row.tech_item ?? '')}`"
+            + " + `（挂接 ${num(d.slideCount)} 片 / 已染色 ${num(d.stainedCount)}）`";
+
+    /** 活的对照组：v63 ④ 诊断页那句成功提示的原文（DiagnosisPanel.vue:922） */
+    static final String V63_DIAG_SUCCESS =
+            "`已标记完成（挂接 ${num(d.slideCount)} 片 / 已染色 ${num(d.stainedCount)}）`";
+
+    /** 活的对照组：v63 ⑤ 页首写死的那条完成规则（TechOrderPanel.vue:4 静态 title 的后半句） */
+    static final String V63_HARDCODED_RULE =
+            "点「完成」时若无已染色挂接切片，按 gate emr.gate.pathology.techdone 提示（warn）或拦截（block，5273）。";
+
+    /** 活的对照组：v63 ④ 页首写死的那句三态清单（DiagnosisPanel.vue:254），而同屏标签会打出第四态 */
+    static final String V63_HARDCODED_STATES =
+            "「进度」由挂接切片派生（v58）：待切片 / 切片中 / 已染色待确认，不是手工标记";
+
+    /** 活的对照组：v63 那句真规则的开头（当时只印在表格下方的灰字里）——配置键 / 英文档位名 / 错误码三样全占 */
+    static final String V63_RULE_HEAD =
+            "点「完成」时按执行进度判有无执行证据（gate emr.gate.pathology.techdone，出厂 warn，坏配置回落 warn）："
+            + "……——block 档返 5273、行仍待执行且不写流转节点，warn 档放行但返回体回带提示，off 档不判；";
 
     @Autowired PathologyProcessController process;
     @Autowired PathologyReportController report;
@@ -335,9 +419,13 @@ class V62TechRemarkTest {
         String rule = String.valueOf(list.get("techDoneGateRule"));
         assertEquals(PathologyReportController.techDoneGateRule(), rule,
                 "清单端点下发的规则必须就是判定表生成的那一句（不另拼一份）");
-        assertTrue(String.valueOf(list.get("note")).contains(rule),
-                "页面渲染的 note（TechOrderPanel.vue:147 `<p v-if=\"note\">`）必须逐字含这句规则——"
-                        + "屏上宣告的规则只能有这一个来源：" + list.get("note"));
+        // v64：规则**只经 techDoneGateRule 这一个键下发**，note 里那份抄件删掉了。
+        // v63 写的是「页面渲染的 note 必须逐字含这句规则」——而页面把整段 note（带库列名、内部键名、
+        // 迁移号）印在表格下方的灰字里，页首那条写死的旧规则原封不动：同一屏两句规则互相打架。
+        // 现在页面在页首原样印 techDoneGateRule 且不再印 note，见 screenCarriesNoSecondHardcodedGateRule()。
+        assertFalse(String.valueOf(list.get("note")).contains(rule),
+                "note 里不得再抄一份规则（规则只能有一个来源，而 note 是给调用方看的接口说明）："
+                        + list.get("note"));
 
         // 修复前的反向事实：v58 的旧规则「若无已染色挂接切片就拦」已被 v62 的判定推翻，
         // 不得再出现在任何一处宣告里（它正是复核者点名「屏上宣告的判定规则与实现相反」的那句）
@@ -442,9 +530,215 @@ class V62TechRemarkTest {
         assertNotEquals(doneRemark, bareRemark, "对照组：两条医嘱的那句话本就不同，不是同一个常量");
     }
 
+    // =====================================================================================
+    // ⑦ v64（2563 复核第一条）：两个完成入口屏上那句 = doneRemark = TECH_DONE 落库备注，逐字同一句
+    //    端点自己说「同源」不算数：一头实查 path_process，一头扫前端源码，看它是不是真原样印。
+    // =====================================================================================
+
+    @Test
+    void bothDoneEntriesPrintTheBackendRemarkVerbatim() {
+        assertEquals(1, setGate("warn"), "techdone gate 行必须存在（V165 seed）");
+
+        // ---- 库这一端：回给屏幕的那句与落库那句逐字相同（实查 path_process）----
+        long rs = techOrder(a, null, "RESAMPLE", null);
+        ok(process.grossing(new GrossingReq(a, null, null, null, true, null,
+                List.of(new BlockReq("提示切缘一 " + tag), new BlockReq("提示切缘二 " + tag)), rs), doc1));
+        var body = ok(report.doneTechOrder(rs, doc1));
+        String screen = String.valueOf(body.get("doneRemark"));
+        assertEquals(remarkOf(a, "TECH_DONE", rs), screen,
+                "**回给屏幕的那句与写进 path_process 的那句必须逐字是同一句**（实查库）：" + screen);
+        assertTrue(screen.contains("已出块 2"),
+                "这条补取材医嘱唯一的执行证据不得被抹掉：" + screen);
+
+        // ---- 屏这一端：两个完成入口都原样印这一个字符串，不再各自挑字段重拼 ----
+        var entries = new LinkedHashMap<String, String>();
+        entries.put(TECH_PANEL, "async function done(row: Row) {");
+        entries.put(DIAG_PANEL, "async function techDone(row: Row) {");
+        for (var e : entries.entrySet()) {
+            String arg = doneSuccessArg(e.getKey(), e.getValue());
+            assertTrue(arg.contains("d.doneRemark"),
+                    "**" + e.getKey() + " 的完成入口必须印后端那一句 doneRemark**（v63 该键在全前端零引用），实际："
+                            + arg);
+            assertFalse(resplices(arg),
+                    "**" + e.getKey() + " 的完成入口不得再自己拼串**：" + arg);
+        }
+
+        // 活的对照组：v63 那两句各自拼的原样重建，同一个检测器必须抓到它们
+        for (String was : List.of(V63_TECH_SUCCESS, V63_DIAG_SUCCESS)) {
+            assertTrue(resplices(was), "对照组：v63 自己拼的那句必须被同一个检测器抓到：" + was);
+            assertFalse(was.contains("doneRemark"), "对照组：v63 那句确实一个字都没用 doneRemark：" + was);
+        }
+        // 反向对照：检测器不能宽到连修好的形态也咬
+        assertFalse(resplices("String(d.doneRemark ?? '')"), "检测器不得咬掉修好的形态");
+    }
+
+    // =====================================================================================
+    // ⑧ v64（2563 复核第二、三条）：屏上那条完成规则与那份态清单都只有一个来源（后端生成、页面原样印）
+    // =====================================================================================
+
+    @Test
+    void screenCarriesNoSecondHardcodedGateRule() {
+        var vues = vueSources();
+        assertTrue(vues.size() > 100,
+                "活的对照组：frontend/shell/src 下应扫到 >100 个 .vue，实得 " + vues.size()
+                        + "——为 0 即扫描把整仓排掉了（worktree 下按绝对路径判就是这样），下面几条会恒绿");
+
+        // ① 真规则与态清单确实被页面接上了（v63 这两个键在 frontend/shell/src 里零引用）
+        assertTrue(readRepoFile(TECH_PANEL).contains("techDoneGateRule"),
+                "**⑤ 特检工作台必须消费后端下发的 techDoneGateRule**（v63 全文件 0 次命中）");
+        for (String panel : List.of(TECH_PANEL, DIAG_PANEL)) {
+            assertTrue(readRepoFile(panel).contains("progressStates"),
+                    panel + " 必须消费后端下发的 progressStates——页首「进度分哪几档」照它列，不写死");
+        }
+
+        // ② 剥注释后，全前端没有第二份写死的完成规则文案，也没有写死的进度态清单
+        for (var f : vues) {
+            String clean = stripComments(f.text());
+            String rule = firstMatch(HARDCODED_GATE_RULE, clean);
+            assertNull(rule, "**屏上不得再有第二份写死的完成规则文案**："
+                    + f.rel() + " 命中「" + rule + "」");
+            String states = firstMatch(HARDCODED_PROGRESS_LIST, clean);
+            assertNull(states, "**屏上不得再有写死的进度态清单**（六态派生是唯一事实源）："
+                    + f.rel() + " 命中「" + states + "」");
+        }
+
+        // ③ 活的对照组：修复前页首那两句写死的文案，必须被同一个匹配器抓到
+        assertNotNull(firstMatch(HARDCODED_GATE_RULE, V63_HARDCODED_RULE),
+                "对照组：修复前 ⑤ 页首那条写死的规则必须被同一个匹配器抓到：" + V63_HARDCODED_RULE);
+        assertNotNull(firstMatch(HARDCODED_PROGRESS_LIST, V63_HARDCODED_STATES),
+                "对照组：修复前 ④ 页首那句三态清单必须被同一个匹配器抓到：" + V63_HARDCODED_STATES);
+
+        // ④ 反向：后端生成的那句真规则不是「写死的第二份」，两个匹配器都不该咬它
+        String rule = PathologyReportController.techDoneGateRule();
+        assertNull(firstMatch(HARDCODED_GATE_RULE, rule), "真规则本身不该被咬：" + rule);
+        assertNull(firstMatch(HARDCODED_PROGRESS_LIST, rule), "真规则本身不该被咬：" + rule);
+
+        // ⑤ 这句话既然要印在评委看的页首，就不带开发者视角的内容
+        assertFalse(RAW_ENUM.matcher(rule).find(), "页首那句不得含裸英文枚举：" + rule);
+        assertFalse(RAW_COLUMN.matcher(rule).find(), "页首那句不得含库列名 / 内部标识：" + rule);
+        String dev = firstMatch(DEV_FACING, rule);
+        assertNull(dev, "页首那句不得含配置键 / 错误码 / 英文档位名，命中「" + dev + "」：" + rule);
+        // 活的对照组：v63 那句（当时只印在表格下方的灰字里）三样全占
+        assertNotNull(firstMatch(DEV_FACING, V63_RULE_HEAD),
+                "对照组：v63 那句必须被同一个匹配器抓到：" + V63_RULE_HEAD);
+    }
+
+    // =====================================================================================
+    // ⑨ v64（2563 复核第三条）：下发的态清单与六态派生同集合，「未完成的那几档」与判定表同源
+    // =====================================================================================
+
+    @Test
+    void announcedProgressStatesAreTheSixDerivedOnes() {
+        var states = rows(ok(report.techDict()), "progressStates");
+        var codes = new ArrayList<String>();
+        var inProgress = new ArrayList<String>();
+        for (var st : states) {
+            String code = String.valueOf(st.get("code"));
+            codes.add(code);
+            assertEquals(PathologyReportController.TECH_PROGRESS_NAMES.get(code), st.get("name"),
+                    "态名只能有一份（与 TECH_PROGRESS_NAMES 同源）：" + st);
+            if (Boolean.TRUE.equals(st.get("inProgress"))) inProgress.add(code);
+        }
+        assertEquals(PathologyReportController.TECH_PROGRESS_NAMES.keySet(), new HashSet<>(codes),
+                "**下发的态清单必须就是六态派生那六个**（修复前页首写死宣告三态）：" + codes);
+        assertEquals(PathologyReportController.TECH_DONE_VERDICTS.keySet(), new HashSet<>(inProgress),
+                "「还没完成」的那几档 = 完成判定表管得到的那几档（同一张表）：" + inProgress);
+        assertEquals(PathologyReportController.TECH_PROGRESS_ORDER, codes, "顺序照 TECH_PROGRESS_ORDER 下发");
+        // 活的对照组：④ 页首修复前宣告的三态，确实少了「已补取材待切片」这一档
+        assertTrue(inProgress.contains("SAMPLED"),
+                "对照组：第四态必须在清单里——修复前 ④ 页首那句话里没有它，而同屏标签会打出它：" + inProgress);
+        assertFalse(V63_HARDCODED_STATES.contains(
+                        PathologyReportController.TECH_PROGRESS_NAMES.get("SAMPLED")),
+                "对照组：v63 ④ 页首那句写死的清单确实漏了这一档：" + V63_HARDCODED_STATES);
+    }
+
     // ==================================================================================
     // 助手
     // ==================================================================================
+
+    // ---------------- 源码扫描工具（v64）：一律走仓库相对路径 ----------------
+
+    private record SrcFile(String rel, String text) {}
+
+    /** 从测试工作目录（server 模块）向上找仓库根 */
+    private static Path repoRoot() {
+        Path p = Path.of(System.getProperty("user.dir")).toAbsolutePath();
+        for (int i = 0; i < 6 && p != null; i++, p = p.getParent()) {
+            if (Files.isDirectory(p.resolve("modules")) && Files.isDirectory(p.resolve("platform"))) return p;
+        }
+        throw new AssertionError("定位不到仓库根（从 " + System.getProperty("user.dir")
+                + " 向上找 modules/ 与 platform/）");
+    }
+
+    /**
+     * {@code rel} 为相对仓库根、'/' 分隔的路径。<b>只看相对路径</b>——仓库自身所在的目录名不参与判断：
+     * 并行车道就把仓库 checkout 在 {@code .claude/worktrees/<x>/} 下，按绝对路径判会把每个源文件
+     * 都判成排除、扫描恒空，依赖它的断言在 worktree 里恒绿（v58 车道 D 的教训）。
+     */
+    static boolean excluded(String rel) {
+        return rel.startsWith(".claude/") || rel.startsWith("worktrees/") || rel.contains("/worktrees/")
+                || rel.contains("/target/") || rel.contains("/node_modules/") || rel.contains("/dist/");
+    }
+
+    private static List<SrcFile> vueSources() {
+        Path root = repoRoot();
+        Path base = root.resolve("frontend/shell/src");
+        var out = new ArrayList<SrcFile>();
+        try (var walk = Files.walk(base)) {
+            for (Path f : walk.filter(Files::isRegularFile).toList()) {
+                String rel = root.relativize(f).toString().replace('\\', '/');
+                if (excluded(rel) || !rel.endsWith(".vue")) continue;
+                out.add(new SrcFile(rel, Files.readString(f, StandardCharsets.UTF_8)));
+            }
+        } catch (Exception e) {
+            throw new IllegalStateException("扫描 " + base + " 失败", e);
+        }
+        return out;
+    }
+
+    private static String readRepoFile(String rel) {
+        try {
+            return Files.readString(repoRoot().resolve(rel), StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            throw new IllegalStateException("读不到 " + rel, e);
+        }
+    }
+
+    /**
+     * 剥注释：先 {@code <!-- -->}，再块注释，最后整行的 {@code //}。
+     * 注释里写「修复前那句话长这样」是<b>说明</b>、不是屏上的字；不剥就会把说明当成缺陷抓，
+     * 而后人为了让测试变绿会去删说明——把可见的边界改成不可见的。
+     */
+    private static String stripComments(String src) {
+        String s = src.replaceAll("(?s)<!--.*?-->", "");
+        s = s.replaceAll("(?s)/\\*.*?\\*/", "");
+        return s.lines().filter(l -> !l.strip().startsWith("//")).collect(Collectors.joining("\n"));
+    }
+
+    private static String firstMatch(Pattern p, String text) {
+        var m = p.matcher(text);
+        return m.find() ? m.group() : null;
+    }
+
+    /** 成功提示的实参里只要还有事实键或模板插值，就是又在屏上自己拼一句 */
+    private static boolean resplices(String successArg) {
+        return successArg.contains("${") || RESPLICED_SUCCESS.matcher(successArg).find();
+    }
+
+    /** 完成入口那句 {@code ElMessage.success(...)} 的实参原文（剥注释后取；函数体到第一列的 } 为止） */
+    private static String doneSuccessArg(String rel, String fnHeader) {
+        String src = stripComments(readRepoFile(rel));
+        int i = src.indexOf(fnHeader);
+        assertTrue(i >= 0, rel + " 里找不到完成入口「" + fnHeader + "」——先修扫描再看结论");
+        int end = src.indexOf("\n}", i);
+        assertTrue(end > i, rel + "：找不到完成入口的函数结束");
+        String fn = src.substring(i, end);
+        var m = Pattern.compile("ElMessage\\.success\\((.*)\\)[ \\t]*$", Pattern.MULTILINE).matcher(fn);
+        assertTrue(m.find(), rel + "：完成入口里没有成功提示：" + fn);
+        String arg = m.group(1).trim();
+        assertFalse(m.find(), rel + "：完成入口里有不止一句成功提示：" + fn);
+        return arg;
+    }
 
     /**
      * 从端点自己下发的那句规则说明里，机械抽出「它承诺哪几个进度算有缺口」。

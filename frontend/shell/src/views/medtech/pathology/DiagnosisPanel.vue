@@ -35,7 +35,6 @@
     </el-form-item>
   </el-form>
 
-  <el-alert v-if="note" type="info" :closable="false" class="cav" :title="note" />
   <el-alert v-if="truncated" type="warning" show-icon :closable="false" class="cav"
             :title="`命中超过 ${limit} 条，仅显示前 ${limit} 条（不做翻页）；请收窄条件`" />
 
@@ -128,10 +127,12 @@
 
       <!-- ---- 双签状态：先给判据与提示，不等提交被拒 ---- -->
       <el-alert :type="signAlertType" show-icon :closable="false" class="cav" :title="signAlertTitle">
+        <!-- v64：屏上不印配置键，也不印 off / warn / block 三个英文档位名——
+             那是写给运维的，评委这一屏只该看到「本院现在怎么管双签」。档位取值照旧从后端读。 -->
         <div>
-          双签 gate（emr.gate.pathology.doublesign）= <b>{{ fmt(doubleSignGate) }}</b>：
-          off 不校验 / warn 未双签也放行签发（默认）/ block 未双签不得签发。
-          复诊人不得与初诊人为同一人这一条<b>与 gate 无关、永远生效</b>——一个人签两次不叫双签。
+          本院当前的双签要求：<b>{{ gateName(doubleSignGate) }}</b>——
+          「拦截」未完成双签不得签发 / 「提示」未双签也放行签发（出厂设置）/ 「不判」不校验。
+          复诊人不得与初诊人为同一人这一条<b>与该设置无关、永远生效</b>——一个人签两次不叫双签。
         </div>
       </el-alert>
 
@@ -170,7 +171,7 @@
         <!-- ---------------- 报告 ---------------- -->
         <el-tab-pane name="report" label="报告">
           <el-alert type="warning" show-icon :closable="false" class="cav"
-                    title="补充报告是「追加」不是「修改」：下方原报告存于 path_specimen，本页出补充报告一条 update 都不会对它执行。覆盖原报告会让「当时医生看到的是什么」永久不可考。" />
+                    title="补充报告是「追加」不是「修改」：本页出补充报告，对下方那份原报告一个字都不会改。覆盖原报告会让「当时医生看到的是什么」永久不可考。" />
 
           <el-card shadow="never" class="primary-card">
             <template #header>
@@ -250,8 +251,10 @@
 
         <!-- ---------------- 特检技术医嘱 ---------------- -->
         <el-tab-pane name="tech" :label="`特检技术医嘱（${techRows.length}）`">
-          <el-alert type="info" :closable="false" class="cav"
-                    title="取消特检医嘱须填写取消原因（v57 起留痕：取消人 / 取消时刻 / 取消原因）。取消原因与下达原因分列，不覆盖 reason——「当初为什么要做这个免疫组化」与「后来为什么不做了」都留着；V163 之前取消的历史行三列为空。「进度」由挂接切片派生（v58）：待切片 / 切片中 / 已染色待确认，不是手工标记；下达 / 完成 / 取消都进「流转节点」页签。" />
+          <!-- v64（2563 复核第三条）：态的清单不再写死在这里——照字典端点下发的 progressStates 列。
+               修复前这句话宣告三态（待切片 / 切片中 / 已染色待确认），而它正下方的标签会打出第四态
+               「已补取材待切片」，且该标签所依据的「已出块」数在本面板上一列都没有。 -->
+          <el-alert type="info" :closable="false" class="cav" :title="techHeadNote" />
           <el-table :data="techRows" size="small" border max-height="380">
             <el-table-column label="医嘱号" width="80">
               <!-- v61（2563 复核）：流转节点备注里的「#12」此前在清单上无从对应，补这一列对回来 -->
@@ -281,9 +284,14 @@
             </el-table-column>
             <el-table-column label="进度" width="170">
               <template #default="{ row }">
-                <el-tag size="small" :type="progressTag(row.progress)">{{ fmt(row.progress_name ?? row.progress) }}</el-tag>
+                <el-tag size="small" :type="progressTag(row.progress)">{{ progressLabel(row) }}</el-tag>
                 <span class="muted">　已染 {{ num(row.stained_count) }} / 挂接 {{ num(row.slide_count) }}</span>
               </template>
+            </el-table-column>
+            <!-- v64（2563 复核第三条）：「已补取材待切片」这一档就是按这个数派生的——
+                 修复前 ④ 屏上打着这个态，而支撑它的数在整个面板上一列都没有（只有 ⑤ 工作台有）。 -->
+            <el-table-column label="已出块" width="80">
+              <template #default="{ row }">{{ num(row.sampled_block_count) }}</template>
             </el-table-column>
             <el-table-column label="开单" width="200">
               <template #default="{ row }">
@@ -452,7 +460,7 @@
   <!-- ============ 首次报告书写 ============ -->
   <el-dialog v-model="diagnoseDialog" title="书写首次病理报告" width="680px" top="6vh">
     <el-alert type="warning" show-icon :closable="false" class="cav"
-              title="本操作走既有 PUT /api/pathology/specimens/{barcode}/diagnose，写入大体所见 / 镜下所见 / 诊断三列。取材时已写入的大体所见已预填在下方——空白即保留取材时写入的大体所见；要改请在此基础上编辑。保存后标本状态变为「已诊断」，本版无修订入口，更正请出补充报告。" />
+              title="本操作写入大体所见 / 镜下所见 / 诊断三项。取材时已写入的大体所见已预填在下方——空白即保留取材时写入的大体所见；要改请在此基础上编辑。保存后标本状态变为「已诊断」，本版无修订入口，更正请出补充报告。" />
     <div class="bar">
       <el-button link type="primary" size="small" :disabled="!priorRows.length" @click="openCompare()">
         查看既往（{{ priorRows.length }} 条，同屏对照）</el-button>
@@ -562,7 +570,6 @@ const rows = ref<Row[]>([])
 const loading = ref(false)
 const truncated = ref(false)
 const limit = ref(100)
-const note = ref('')
 const openById = ref('')
 const query = reactive({ scope: 'stained', specimenType: '', urgentOnly: false, keyword: '' })
 /**
@@ -590,7 +597,6 @@ async function load() {
     rows.value = (d.items ?? []) as Row[]
     truncated.value = d.truncated === true
     limit.value = num(d.limit) || 100
-    note.value = String(d.note ?? '')
   } finally {
     loading.value = false
   }
@@ -753,8 +759,8 @@ async function secondSign() {
 async function issue() {
   if (missingSigns.value.length) {
     const ok = await ElMessageBox.confirm(
-      `本次签发缺 ${missingSigns.value.join('、')}（gate=${doubleSignGate.value}）。`
-      + '放行不等于没发生过：缺签情况会写进 ISSUE 流转节点，事后可追。确认签发？',
+      `本次签发缺 ${missingSigns.value.join('、')}（本院当前的双签要求：${gateName(doubleSignGate.value)}）。`
+      + '放行不等于没发生过：缺签情况会写进「流转节点」页签里签发那一条，事后可追。确认签发？',
       '未完成双签即签发', { type: 'warning' },
     ).catch(() => null)
     if (!ok) return
@@ -855,21 +861,61 @@ function techStatusName(v: string) {
   return ({ ORDERED: '待执行', DONE: '已完成', CANCELLED: '已取消' } as Record<string, string>)[v] ?? v
 }
 
+/**
+ * gate 档位的中文名（v64）：屏上不印 off / warn / block 这三个英文码，也不印配置键本身。
+ * 与后端 techDoneGateRule() 那句话里的说法对齐——两块屏对同一类开关说同一套词。
+ */
+function gateName(v: unknown): string {
+  return ({ block: '拦截', warn: '提示', off: '不判' } as Record<string, string>)[String(v ?? '')] ?? fmt(v)
+}
+
 function techStatusTag(v: string): 'warning' | 'success' | 'info' {
   return v === 'ORDERED' ? 'warning' : v === 'DONE' ? 'success' : 'info'
 }
 
+/** 执行进度分哪几档（后端 progressStates：code / name / inProgress）——页首照它列，页面不写死态名 */
+const techProgressStates = ref<Row[]>([])
+
+/** 「还没完成」的那几档的中文名（后端 inProgress 标好，前端不自己挑） */
+const techInProgressNames = computed(() => techProgressStates.value
+  .filter((s) => s.inProgress === true).map((s) => String(s.name)))
+
 /**
- * 执行进度五态的标签色（v58）：进度由后端按挂接切片派生（PathologyReportController.techProgress），
- * 前端只画不算——待切片灰、切片中黄、已染色待确认蓝（可以点完成了）、已完成绿、已取消灰。
+ * ④ 特检页签页首那句话。「进度分哪几档」照后端下发的 progressStates 列——
+ * v64 之前这里写死宣告三态，而 v60 起同屏标签会打出第四态「已补取材待切片」：
+ * 态的清单写死在模板里，派生改了没人改它。屏上只印中文态名，派生用的编码不上屏。
+ */
+const techHeadNote = computed(() => '取消特检医嘱须填写取消原因（留痕：取消人 / 取消时刻 / 取消原因）。'
+  + '取消原因与下达原因分列、不覆盖下达原因——「当初为什么要做这个免疫组化」与「后来为什么不做了」都留着；'
+  + '早年取消的历史行没有采集这三项，显示为空。'
+  + (techInProgressNames.value.length
+    ? `「进度」由挂接切片与补取材已出块派生，不是手工标记，未完成的分 ${techInProgressNames.value.length} 档：`
+      + `${techInProgressNames.value.join(' / ')}；「已出块」一列就是其中「已补取材待切片」所依据的那个数。`
+    : '')
+  + '下达 / 完成 / 取消都进「流转节点」页签。')
+
+/**
+ * 执行进度六态的标签色：进度由后端按挂接切片 / 挂接蜡块派生，前端只画不算——
+ * 待切片灰、已补取材待切片黄、切片中黄、已染色待确认蓝（可以点完成了）、已完成绿、已取消灰。
+ * v64：补上第六态（此前 SAMPLED 在本屏画成灰的「其它」，与 ⑤ 工作台同一条医嘱两种颜色）。
  */
 function progressTag(v: unknown): 'primary' | 'success' | 'warning' | 'info' {
-  return v === 'SECTIONING' ? 'warning' : v === 'STAINED' ? 'primary' : v === 'DONE' ? 'success' : 'info'
+  return v === 'SAMPLED' || v === 'SECTIONING' ? 'warning' : v === 'STAINED' ? 'primary' : v === 'DONE' ? 'success' : 'info'
+}
+
+/** 进度中文：后端 progress_name 为准；没有该键时按编码回落到字典端点下发的那份态名（不在这里写死一份） */
+function progressLabel(row: Row): string {
+  const name = row.progress_name
+  if (name) return String(name)
+  const code = String(row.progress ?? '')
+  const hit = techProgressStates.value.find((s) => String(s.code) === code)
+  return hit ? String(hit.name) : fmt(code)
 }
 
 async function loadTechDict() {
   const d = (await client.get('/pathology/report/tech-orders/dict')).data.data as Row
   techTypes.value = (d.techTypes ?? []) as Row[]
+  techProgressStates.value = (d.progressStates ?? []) as Row[]
   if (!techForm.techType && techTypes.value.length) techForm.techType = String(techTypes.value[0].value)
 }
 
@@ -919,8 +965,11 @@ async function submitTech() {
 
 async function techDone(row: Row) {
   const d = (await client.put(`/pathology/report/tech-orders/${Number(row.id)}/done`, null)).data.data as Row
-  ElMessage.success(`已标记完成（挂接 ${num(d.slideCount)} 片 / 已染色 ${num(d.stainedCount)}）`)
-  // v58：warn 档放行时后端回带 warnings（无已染色挂接切片即确认完成），逐条提示；block 档 5273 走 client 统一报错
+  // v64（2563 复核第一条）：原样印后端给的那一句（doneRemark）——它与写进 TECH_DONE 流转节点的备注
+  // 是同一个字符串。修复前这里自己挑 slideCount / stainedCount 重拼一句，把补取材医嘱唯一的执行证据
+  // 「已出块 N」整句抹掉；而本页「流转节点」页签就在隔壁，同一次完成两套口径。
+  ElMessage.success(String(d.doneRemark ?? ''))
+  // 有缺口仍放行时后端回带 warnings，逐条提示；被拦下时由 client 统一报错
   for (const w of (d.warnings ?? []) as string[]) ElMessage.warning(w)
   await loadTech()
   await loadReport()   // 完成进了流转节点页签，一并刷新
