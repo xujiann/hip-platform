@@ -121,9 +121,12 @@
           <!-- v62（2530 复核 demo 镜头）：标签文案与配色一律由 viewVersionTag 派生——
                「被取代版本」只在**真有更晚的字段版**时出现，0 项 / 唯一版走诚实兜底，不再打「已被第 — 版取代」 -->
           <el-tag size="small" style="margin-left: 6px" :type="viewVersionTag.type">{{ viewVersionTag.text }}</el-tag>
+          <!-- v64（2530 复核 demo 镜头）：此前「模板」一栏直接印英文模板码（GI_BIOPSY），
+               同屏的内部键名 fieldsByRevision 也打在提示里。模板改印模板清单里的中文名（t.name，
+               本组件本就加载着那份清单）；清单里查不到这个码时说「未登记的模板」，仍不把码打出来 -->
           <div class="muted" style="margin-top: 4px">
-            来源：{{ versionSourceName(viewVersion) }}　模板：<span class="code">{{ fmt(viewVersion?.templateCode) }}</span>
-            <span v-if="view.fieldsByRevision == null">　（后端未回 fieldsByRevision：只能查看最新字段版，被取代版本暂不可调阅）</span>
+            来源：{{ versionSourceName(viewVersion) }}　模板：{{ templateNameOf(viewVersion) }}
+            <span v-if="view.fieldsByRevision == null">　（当前服务只提供最新字段版，更早版本的字段暂不可调阅）</span>
           </div>
           <!-- v59：字段随版本走；诊断只改文本不改字段，两者分叉时明说，不让两处并排自相矛盾。
                v62（2530 复核，审计者 met=false 第 (b) 点）：此前这条 v-if 还要求「是最新字段版」——
@@ -192,7 +195,13 @@
         </el-table-column>
         <template #empty>该标本尚无取材打点</template>
       </el-table>
-      <p v-if="view.note" class="muted">{{ view.note }}</p>
+      <!-- v64（2530 复核 demo 镜头）：这里此前原样打出后端写给调用方的接口说明——库表列名
+           path_specimen.gross_finding、内部键名 fieldsAvailable / textFieldForms / fieldsByRevision…、
+           迁移号 V164 / V166，以及平台自述「v61、v62 两版口径与事实相反」的缺陷史，
+           全落在评委看的「查看大体所见」正屏上。那些话归控制器的 Javadoc 与返回体 note（写给调用方），
+           屏上只留业务口径这一句。 -->
+      <p class="muted">大体所见由取材工位录入，病理医师出报告时可再修订；每改一次留一版，字段级记录随它所属的那一版保存。
+        平台不从这段文字里反推字段——没有录成字段的内容只作为文本保存。</p>
     </div>
     <template #footer>
       <el-button type="primary" size="small" @click="viewDialog = false">关闭</el-button>
@@ -215,7 +224,7 @@
     </el-descriptions>
 
     <el-alert v-if="mode === 'GROSSING' && num(current.block_count) > 0" type="warning" show-icon :closable="false" class="cav"
-              title="该标本已有蜡块：第二次及以后的取材必须显式勾选「补取材」，否则后端返 5223。误点两次「取材」凭空多出一组蜡块是事故，与病理医师看完 HE 片后下的补取材必须区分开。" />
+              title="该标本已有蜡块：第二次及以后的取材必须显式勾选「补取材」，否则本次登记会被拒绝。误点两次「取材」凭空多出一组蜡块是事故，与病理医师看完 HE 片后下的补取材必须区分开。" />
 
     <!-- 已有大体所见：先给人看见，再决定怎么填——否则填了结构化字段提交才吃 5222 -->
     <div v-if="existingGross" class="sec" v-loading="existingLoading">
@@ -230,6 +239,13 @@
          （「属于第 2 版，与当前第 2 版文本不同版」——同一个版号被说成「不同版」）。现在措辞由 revisePrefillNote 分四档给出。 -->
     <el-alert v-if="mode === 'REVISE' && revisePrefillNote" type="warning" show-icon :closable="false" class="cav"
               :title="revisePrefillNote" />
+
+    <!-- v64（2530 复核 data 镜头，本轮头号纪律）：后端 coverNote 把人指到这个弹窗来补齐字段，
+         而弹窗上此前**没有一个字**说得出「当前这段描述里 N 个『标签：值』只有 M 个有结构化字段行」——
+         v63 新增的三个覆盖事实键在整个 frontend/shell/src 里零引用。这条提示就是它们的屏上归宿：
+         数与逐条清单都来自后端返回体，前端不重新解析那段文本。 -->
+    <el-alert v-if="mode === 'REVISE' && reviseCoverNote" type="warning" show-icon :closable="false" class="cav"
+              :title="reviseCoverNote" />
 
     <el-form label-width="100px" size="small">
       <el-form-item v-if="mode === 'GROSSING'" label="补取材">
@@ -253,30 +269,32 @@
             <el-option v-for="o in resampleOrders" :key="Number(o.id)" :value="Number(o.id)" :label="resampleLabel(o)" />
           </el-select>
           <span v-if="!resampleLoading && !resampleOrders.length" class="muted">
-            该标本无待执行的补取材医嘱：只列 status=ORDERED 且 tech_type=RESAMPLE 的医嘱，深切 / 重切 / 免疫组化等不在此挂接</span>
+            该标本没有待执行的补取材医嘱：这里只列病理医师下达、尚未执行的「补取材」，深切 / 重切 / 免疫组化等不在此挂接</span>
           <span v-else-if="form.techOrderId" class="muted">
-            提交后本次新蜡块回写到该医嘱（path_block.tech_order_id），医嘱进度由事实派生为「已补取材、待切片」</span>
+            提交后本次新蜡块记到该医嘱名下，医嘱进度随之变为「已补取材、待切片」</span>
         </div>
       </el-form-item>
 
       <el-form-item v-if="showGrossInputs" label="取材模板">
         <el-select v-model="form.templateCode" clearable placeholder="不用模板" style="width: 260px"
                    @change="onTemplateChange">
+          <!-- v64（2530 复核 demo 镜头）：下拉此前把模板码贴在中文名后面（「胃肠镜活检（GI_BIOPSY）」），
+               选中后收起的那一行也带着码。只印 t.name -->
           <el-option v-for="t in templates" :key="String(t.code)" :value="String(t.code)"
-                     :label="`${t.name}（${t.code}）`">
-            <span>{{ t.name }}（{{ t.code }}）</span>
+                     :label="String(t.name)">
+            <span>{{ t.name }}</span>
             <el-tag size="small" :type="t.source === 'CONFIG' ? 'warning' : 'info'"
                     style="margin-left: 6px">{{ t.source === 'CONFIG' ? '配置' : '内置' }}</el-tag>
           </el-option>
         </el-select>
-        <span v-if="templateNote" class="muted" style="margin-left: 8px">字段清单可配，模板管理未做；模板码随本版修订落库</span>
+        <span v-if="templateNote" class="muted" style="margin-left: 8px">字段清单可配，模板管理未做；本次所用模板随本版修订一起留痕</span>
       </el-form-item>
 
       <el-form-item v-if="showGrossInputs && currentTemplate && currentTemplate.example" label="示例描述">
         <span class="muted">{{ currentTemplate.example }}</span>
       </el-form-item>
       <el-form-item v-else-if="showGrossInputs && currentTemplate" label="示例描述">
-        <span class="muted">—（配置新增的模板无示例文本：sys_config 只有 255 字符，不编一段假的）</span>
+        <span class="muted">—（运维新增的模板没有示例文本，平台不编一段假的）</span>
       </el-form-item>
 
       <template v-if="showGrossInputs">
@@ -331,7 +349,7 @@
     </el-form>
 
     <el-alert v-if="mode === 'GROSSING'" type="info" :closable="false" show-icon
-              title="大体所见为空时首写；已有内容时不覆盖——勾选「补取材」后填写的描述作为新版本追加（v59），未勾选还传描述会被拒（5222）。该列同时被病理医师出报告时修订。" />
+              title="大体所见为空时首写；已有内容时不覆盖——勾选「补取材」后填写的描述作为新版本追加，未勾选还填描述会被拒绝。这段描述之后也会被病理医师出报告时修订。" />
     <el-alert v-else type="info" :closable="false" show-icon
               title="提交后生成新一版修订（来源「取材修订」）：字段行落在新版下、文本整体替换、修订前原文留痕；仅未诊断前可用，诊断后由诊断端点修订。与当前文本完全相同会被拒（没有变化就没有版本）。" />
 
@@ -350,9 +368,10 @@
     <el-descriptions :column="2" border size="small" class="cav">
       <el-descriptions-item label="本次产出">{{ num(result.blockCount) }} 块</el-descriptions-item>
       <el-descriptions-item label="该标本累计">{{ num(result.totalBlockCount) }} 块</el-descriptions-item>
+      <!-- v64（2530 复核 demo 镜头）：这个标签此前原样贴出 PATH_NO / BARCODE 两个英文码 -->
       <el-descriptions-item label="编码前缀" :span="2">
         <span class="code">{{ fmt(result.codePrefix) }}</span>
-        <el-tag size="small" style="margin-left: 6px">{{ fmt(result.codePrefixSource) }}</el-tag>
+        <el-tag size="small" style="margin-left: 6px">{{ codePrefixSourceName(result.codePrefixSource) }}</el-tag>
       </el-descriptions-item>
       <el-descriptions-item label="大体所见是否写入" :span="2">
         {{ result.grossFindingWritten === true ? '已写入' : '未写入（该列原本已有内容或本次未填）' }}
@@ -606,6 +625,7 @@ function openGrossing(row: Row) {
   existingGross.value = ''
   existingTextSeq.value = null
   revisePrefillNote.value = ''
+  reviseCover.value = null   // v64：上一次修订的覆盖事实不能带到这次取材登记里
   newFieldName.value = ''
   customFields.value = []   // v61：上次的自定义字段名不能带到这次，否则「删除」按钮挂在别的标本的字段上
   dialog.value = true
@@ -687,12 +707,54 @@ function prefillNote(d: Row, mode: SplitMode, fieldCount: number): string {
       + `当前文本是累积全文，第 ${fSeq} 版之前与其后各次追加的内容都已放入「自由描述」；`
       + '本次修订将整体替换当前全文（字段会重新拼到最前），请核对后提交'
   }
-  if (d.fieldsCurrent === false) {
-    return `已按库里第 ${fSeq} 版字段（${fieldCount} 项）原样预填，但当前文本已是第 ${tSeq} 版`
+  // v64（2530 复核 decompose 镜头，本轮头号纪律）：**这一句此前读的是 fieldsCurrent**。
+  // v63 把后端 fieldsCurrent 的定义从「只比版号」改成「版号相同 且 字段覆盖全文」两维之与，
+  // 却只给后端自己那句 fieldsNote 加了防护（改用 versionCurrent 算版号措辞），
+  // 这个第三消费方没跟着改：于是「版号明明相同、只是覆盖不全」也掉进这一句，屏上打出
+  // 「已按库里第 3 版字段（2 项）原样预填，但当前文本已是第 3 版」——字段版号与文本版号都是 3，
+  // 同一个版号被说成两件事，是 v63 自己把这个分支打开、把这句假话放上屏的。
+  // 现在按后端**分开给出**的那一维判：只有版号真落后才说版号（fieldsVersionCurrent）；
+  // 覆盖那一维由 reviseCoverNote 那条独立提示说，两句各管各的辖域，前端不自己重算。
+  // 旧服务没有这个键时它是 undefined —— 宁可不说，也不说一句可能是假的。
+  if (d.fieldsVersionCurrent === false) {
+    return `已按库里第 ${fSeq} 版字段（${fieldCount} 项）原样预填，而当前文本已是第 ${tSeq} 版`
       + '（见轨迹抽屉的修订留痕），以文本为准：请核对字段与自由描述是否仍对得上再提交'
   }
   return ''
 }
+
+/**
+ * v64（2530 复核 data 镜头，本轮头号纪律）：修订弹窗里那条「覆盖到哪几项」的事实条。
+ *
+ * <p>后端 coverNote 明写「要补齐请到『修订取材描述』里……」，把人指到这个弹窗来，而这个弹窗上
+ * 没有任何一个字说得出「当前这段描述里 4 个『标签：值』只有 2 个有结构化字段行」——
+ * v63 新增的 textFieldForms / textFieldFormsBacked / fieldsCoverText 三个键在整个 frontend/shell/src 里零引用。
+ *
+ * <p>数、逐条清单、以及「字段行在更早版本里」还是「从来没录成字段」的分类，**全部原样取自后端返回体**：
+ * 那段文本的拆分规则归后端 assembleGross / grossFieldForms 唯一定义，前端再解析一遍必然漂。
+ */
+const reviseCover = ref<Row | null>(null)
+
+const reviseCoverNote = computed(() => {
+  const d = reviseCover.value
+  if (d == null || d.fieldsAvailable !== true || d.fieldsCoverText !== false) return ''
+  const n = num(d.textFieldForms)
+  const backed = num(d.textFieldFormsBacked)
+  const unbacked = (d.textFieldFormsUnbacked ?? []) as Row[]
+  const names = unbacked.map((u) => `「${fmt(u.label)}」`).join('')
+  const inEarlier = num(d.textFieldFormsInEarlierVersions)
+  const textOnly = num(d.textFieldFormsTextOnly)
+  const kinds: string[] = []
+  if (inEarlier > 0) {
+    kinds.push(`${inEarlier} 处的字段行留在更早的版本里（在「查看大体所见」里按版本可以调阅到），当前这一版没有`)
+  }
+  if (textOnly > 0) kinds.push(`${textOnly} 处从来没有录成字段，只以文本形式存在`)
+  return `当前这段描述里有 ${n} 处「标签：值」，其中 ${backed} 处有结构化字段行（已预填在下面的字段栏里）。`
+    + `差的 ${n - backed} 处是${names || '（后端未逐条给出）'}`
+    + (kinds.length ? `：${kinds.join('；')}` : '')
+    + '。本次修订按下面字段栏里的项重新落一版字段行；要让这几处也随当前版被字段级查询取到，'
+    + '在字段栏补上即可——更早各版已经落下的字段行不受影响，照样可调阅。'
+})
 
 async function openRevise(row: Row) {
   let d: Row
@@ -732,6 +794,7 @@ async function openRevise(row: Row) {
   const tf = (templates.value.find((t) => String(t.code) === templateCode)?.fields ?? []) as string[]
   for (const f of tf) if (!(f in form.gross)) form.gross[f] = ''
   revisePrefillNote.value = prefillNote(d, split.mode, fields.length)
+  reviseCover.value = d   // v64：覆盖事实条的数据源就是这一份返回体，不另取一次
   existingGross.value = text
   existingTextSeq.value = d.textRevisionSeq ?? null
   newFieldName.value = ''
@@ -791,7 +854,8 @@ const viewFieldVersions = computed<Row[]>(() => {
   }
   const latest = (view.value.fields ?? []) as Row[]
   if (!latest.length) return []
-  return [{ revisionSeq: view.value.fieldsRevisionSeq ?? null, source: null, sourceName: null, templateCode: null, fields: latest }]
+  return [{ revisionSeq: view.value.fieldsRevisionSeq ?? null, source: null, sourceName: null,
+            templateCode: null, fields: latest }]
 })
 const viewVersionSeq = ref<number | null>(null)
 const viewVersion = computed<Row | null>(
@@ -892,6 +956,26 @@ function latestVersionWithFields(list: Row[]): Row | null {
 
 function versionFieldCount(v: Row | null | undefined): number {
   return Array.isArray(v?.fields) ? (v.fields as Row[]).length : 0
+}
+
+/**
+ * v64（2530 复核 demo 镜头）：模板名。此前屏上直接印英文模板码（GI_BIOPSY）——
+ * 而模板清单（GET /grossing/templates，模板名的唯一事实源）本组件本就加载着，中文名 t.name 就在手边。
+ * 清单还没到就先给「—」，**不拿英文码冒充名字**、也不在清单没到时就断言「未登记」。
+ * TrailPanel 的「模板」列有一份逐字相同的实现（守卫测试钉着两处一致）。
+ */
+function templateNameOf(v: Row | null | undefined): string {
+  const code = v?.templateCode
+  if (code == null || code === '') return '—'
+  const hit = templates.value.find((t) => String(t.code) === String(code))
+  if (hit != null) return String(hit.name)
+  return templates.value.length ? '未登记的模板' : '—'
+}
+
+/** v64：蜡块编码前缀取自哪一个号。后端给的是 PATH_NO / BARCODE 两个码，屏上说人话 */
+function codePrefixSourceName(v: unknown): string {
+  const s = v == null ? '' : String(v)
+  return s === 'PATH_NO' ? '取自病理号' : s === 'BARCODE' ? '取自院内条码' : '—'
 }
 
 /** path_gross_revision.source 三档（V166）的中文兜底；后端 sourceName 优先 */

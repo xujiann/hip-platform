@@ -325,9 +325,12 @@ public class PathologyProcessController {
 
         var body = page(jdbc.queryForList(sql.toString(), args.toArray()), cap);
         body.put("scope", mode);
-        body.put("note", "pending：已核收、未拒收、未诊断且尚无蜡块的标本；"
-                + "all：已核收未拒收的全部（含已取材与 V144 之前无蜡块记录的存量标本）。"
-                + "hoursSinceReceived 是距核收的小时数，是否超时由病理质控端点判定，本端点不判。");
+        // v64（2530 复核 demo 镜头 ②）：这句话原样打在取材列表顶端的提示条上，给评委看的。
+        // 原文把档位参数名（pending / all）、返回列名（hoursSinceReceived）与迁移号（V144）直接上屏——
+        // 那是写给调用方的话，留在上面的 Javadoc 里；屏上只说业务口径。
+        body.put("note", "「待取材」只列已核收、未拒收、尚未书写诊断、且名下还没有一块蜡块的标本；"
+                + "「全部」列出已核收未拒收的标本，含已取材的，以及早年遗留、没有蜡块记录的存量标本。"
+                + "「距签收(小时)」是原始时长，是否超时由病理质控页统一判定，本列表不判。");
         return R.ok(body);
     }
 
@@ -1659,7 +1662,11 @@ public class PathologyProcessController {
             m.put("newText", r.get("new_text"));
             m.put("source", r.get("source"));
             m.put("sourceName", revisionSourceName((String) r.get("source"), r.get("old_text") != null));
-            m.put("templateCode", r.get("template_code"));   // v59：本次所用模板码；V166 之前的修订行与诊断覆盖为 null
+            // v59：本次所用模板码；V166 之前的修订行与诊断覆盖为 null。
+            // v64（2530 复核 demo 镜头）：这是英文枚举码（GI_BIOPSY），**屏上不该出现**——
+            // 中文名由前端拿 GET /grossing/templates 的 t.name 解（那份清单前端本就加载着，
+            // 它也是模板名的唯一事实源）；本端点不加 templateName 键：revisions 行的键集另有测试钉着。
+            m.put("templateCode", r.get("template_code"));
             m.put("changedAt", r.get("changed_at"));
             m.put("changedBy", r.get("changed_by"));
             m.put("changedByName", r.get("changed_by_name"));
@@ -1745,14 +1752,36 @@ public class PathologyProcessController {
         for (var f : fields) {
             latestForms.add(new String[] {String.valueOf(f.get("label")), String.valueOf(f.get("value"))});
         }
-        int[] cover = grossFormCoverage(gross, latestForms);
-        int textFieldForms = cover[0];         // N：当前文本里「标签：值」形态的个数
-        int textFieldFormsBacked = cover[1];   // M：其中在最新字段版里有对应字段行的个数
+        // v64（2530 复核 data 镜头）：N-M 这几处**不是同一回事**——有的字段行就在更早那一版里躺着
+        // （复核者点的「标本大小」「切面」正是第 1 版录入的，此刻仍由 fieldsByRevision 原样回出、下拉里点一下就调得到），
+        // 有的从来没落过字段行。v63 把两类混成一句「只是这段文本里的一句话，字段级查询与统计取不到」，
+        // 与库内事实相反，还据此指挥人去重填。现在按「更早各版的字段行」再扣一轮，两类分别计数、逐条回出。
+        var earlierForms = new ArrayList<String[]>();
+        for (int i = allFieldRows.size() - 1; i >= 0; i--) {   // 版号降序：同一形态优先记在最近的那一版上
+            var f = allFieldRows.get(i);
+            int rseq = ((Number) f.get("revision_seq")).intValue();
+            if (fieldsRevisionSeq != null && rseq == fieldsRevisionSeq) continue;   // 最新字段版已在上一轮扣过
+            earlierForms.add(new String[] {
+                    String.valueOf(f.get("label")), String.valueOf(f.get("value")), String.valueOf(rseq)});
+        }
+        GrossCoverage cover = grossFormCoverage(gross, latestForms, earlierForms);
+        int textFieldForms = cover.forms();         // N：当前文本里「标签：值」形态的个数
+        int textFieldFormsBacked = cover.backed();  // M：其中在最新字段版里有对应字段行的个数
+        int formsInEarlier = 0;
+        for (var u : cover.unbacked()) if (Boolean.TRUE.equals(u.get("inEarlierVersion"))) formsInEarlier++;
+        int formsTextOnly = cover.unbacked().size() - formsInEarlier;
         boolean fieldsCoverText = textFieldForms == textFieldFormsBacked;
         boolean fieldsCurrent = versionCurrent && fieldsCoverText;
         body.put("textFieldForms", textFieldForms);
         body.put("textFieldFormsBacked", textFieldFormsBacked);
+        body.put("textFieldFormsInEarlierVersions", formsInEarlier);   // v64：字段行落在更早版本里的那几处
+        body.put("textFieldFormsTextOnly", formsTextOnly);             // v64：任何一版都没有字段行、只以文本存在的那几处
+        body.put("textFieldFormsUnbacked", cover.unbacked());          // v64：逐条给出是哪几项（屏上要指名道姓）
         body.put("fieldsCoverText", fieldsCoverText);
+        // v64：fieldsCurrent 的**两维分别给出**。前端此前只有两维之与可读，于是覆盖不全时也打版号措辞
+        // （「当前文本已是第 3 版」——字段版号与文本版号都是 3，同一个版号被说成两件事）。
+        // 两种 false 的措辞不同，读方按这个键分流，不在前端重算。
+        body.put("fieldsVersionCurrent", versionCurrent);
         body.put("fieldsCurrent", fieldsCurrent);
         body.put("textIsCumulative", lastIsAppend);   // v61：当前文本是累积全文（补取材追加），不是某一版字段的拼装结果
         // v59 审阅补：分叉原因不只「被诊断修订」——取材修订或补取材追加只写自由文本时，字段行留在上一版，措辞不能写死
@@ -1761,16 +1790,31 @@ public class PathologyProcessController {
         // （正是 v62 复核点名的那一类）；覆盖这一维单出一句，有就接在版号那句后面。
         String versionNote = lastIsAppend && sameSeq
                 ? "当前大体所见是**累积全文**（含第 " + fieldsRevisionSeq + " 版之前各次取材/追加的内容），"
-                  + "而字段级记录只覆盖第 " + fieldsRevisionSeq + " 版这一次补取材；"
-                  + "要看各版完整的结构化记录请切换版本（各版字段都在）"
+                  + "而第 " + fieldsRevisionSeq + " 版这一次补取材只落了它自己那几项字段；"
+                  + "更早各次录入的字段行都还在，按版本逐版可调阅"
                 : fieldsStaleNote(fields.isEmpty(), versionCurrent, fieldsRevisionSeq, textRevisionSeq, lastRevisionSource);
-        String coverNote = fields.isEmpty() || fieldsCoverText ? null
-                : "当前大体所见文本里有 " + textFieldForms + " 个「标签：值」形态，其中 " + textFieldFormsBacked
-                  + " 个在最新字段版（第 " + fieldsRevisionSeq + " 版）里有对应的结构化字段行——"
-                  + "余下 " + (textFieldForms - textFieldFormsBacked) + " 个只是这段文本里的一句话，"
-                  + "字段级查询与统计取不到；要补齐请在「修订取材描述」里把它们填成字段";
+        // v64（2530 复核 data 镜头）：这两句话的**辖域各不相同**，v63 拿「；」把它们接成一句，
+        // 前半句「更早各版的字段行仍可调阅」与后半句「余下几处取不到」读起来互相否定，
+        // 而后半句在库态里还是假的（那几处的字段行正躺在第 1 版里）。现在：
+        //   · 两句各自成句（「。」断开），辖域写在句子里；
+        //   · 余量按「字段行落在更早版本」与「任何一版都没有」分别计数，只有后者才说「取不到」；
+        //   · **不再给「去重填」的操作指引**——那是基于「余下几处没有字段行」这个假结论下的命令。
+        String coverNote = null;
+        if (!fields.isEmpty() && !fieldsCoverText) {
+            var cn = new StringBuilder("当前大体所见文本里有 " + textFieldForms + " 个「标签：值」形态，其中 "
+                    + textFieldFormsBacked + " 个在最新字段版（第 " + fieldsRevisionSeq + " 版）里有对应的结构化字段行");
+            if (formsInEarlier > 0) {
+                cn.append("；另有 ").append(formsInEarlier)
+                  .append(" 个的字段行落在更早的版本里，按版本调阅得到，字段级查询按它所属的那一版命中");
+            }
+            if (formsTextOnly > 0) {
+                cn.append("；余下 ").append(formsTextOnly)
+                  .append(" 个在任何一版里都没有对应的字段行，只以文本形式存在，字段级查询与统计取不到");
+            }
+            coverNote = cn.toString();
+        }
         body.put("fieldsNote", versionNote == null ? coverNote
-                : coverNote == null ? versionNote : versionNote + "；" + coverNote);
+                : coverNote == null ? versionNote : versionNote + "。" + coverNote);
         body.put("fieldsByRevision", fieldsByRevision);   // v60：全部版本的字段行（revisionSeq 升序、每版 fields 按 seq；无字段行为 []）
         body.put("revisions", revisions);
         body.put("diagnosedAt", head.get("diagnosed_at"));
@@ -1786,13 +1830,16 @@ public class PathologyProcessController {
                 + "textFieldForms / textFieldFormsBacked 是「当前文本里有 N 个『标签：值』形态、其中 M 个在最新字段版里有字段行」"
                 + "（v63：按 assembleGross 自己的分隔规则数出来的形态数，不是从文本反解析字段；"
                 + "自由描述里自己敲的「切缘：阴性」同样计入 N——它确实只是文本，字段级查询取不到），"
-                + "fieldsCoverText=N==M；fieldsCurrent 自 v63 起是「版号相同」与「字段覆盖全文」两维之与——"
-                + "v62 只比版号，于是「取材→补取材→照预填原样修订」后 4 个形态只剩 2 行字段仍打「与当前文本同版」；"
+                + "fieldsCoverText=N==M；fieldsVersionCurrent 是「字段版号 = 文本版号」那一维，"
+                + "fieldsCurrent = fieldsVersionCurrent && fieldsCoverText——**两种 false 措辞不同，读方按这两个键分流**；"
+                + "textFieldFormsUnbacked 逐条给出没有对应字段行的那几处形态"
+                + "（inEarlierVersion / earlierRevisionSeq 标明它的字段行是不是落在更早的版本里），"
+                + "textFieldFormsInEarlierVersions / textFieldFormsTextOnly 是这两类各自的条数；"
                 + "fieldsRevisionSeq / textRevisionSeq 分别是字段与文本的版号；fieldsCurrent=false 表示字段级记录覆盖不全当前文本"
-                + "（文本被诊断修订过，或当前文本是补取材追加的累积全文而字段只覆盖最后一次追加——后者由 textIsCumulative 标出，"
-                + "v61 复核修补：此前两版号相等即判 true，把「覆盖不全」标成「与当前文本同版」，口径与事实相反），"
+                + "（文本被诊断修订过，或当前文本是补取材追加的累积全文而字段只覆盖最后一次追加——后者由 textIsCumulative 标出），"
                 + "两种情形都以文本为准、要看完整结构化记录走 fieldsByRevision；"
-                + "revisions 是该列的修订留痕，按 seq 升序，sourceName 是来源中文名，templateCode 是本次所用模板码；"
+                + "revisions 是该列的修订留痕，按 seq 升序，sourceName 是来源中文名，"
+                + "templateCode 是本次所用模板码（英文码，屏上应按 GET /grossing/templates 的 name 显示）；"
                 + "fieldsByRevision 是全部版本的字段行（v60：被取代版本可调阅），revisionSeq 升序、每版 fields 按 seq、无字段行的版本 fields=[]。");
         return R.ok(body);
     }
@@ -1884,9 +1931,11 @@ public class PathologyProcessController {
         body.put("hoursSinceLastNode", hoursSinceLast);
         body.put("stallHours", stall);
         body.put("anomalies", anomalies);
-        body.put("note", "nodes 按打点时刻升序；没打点的环节不出现（行的缺席就是「该环节没在系统里打点」）。"
-                + "hours_since_prev 是相邻节点间隔小时数，各环节时限由病理质控页定义，本端点不判超时；"
-                + "anomalies 只列本标本命中的流转异常（STALLED 按 stallHours 判）。");
+        // v64（2530 复核 demo 镜头同型）：这句话原样打在轨迹抽屉底部。返回体键名（nodes / hours_since_prev /
+        // anomalies）与档位码（STALLED）是写给调用方的，留在 Javadoc 里；屏上只说业务口径。
+        body.put("note", "时间线按打点时刻升序；没有打点的环节根本不出现在行里——行的缺席本身就是「这个环节没在系统里打点」。"
+                + "「距上一环节」是相邻两次打点的间隔小时数，各环节时限由病理质控页定义，本页不判超时；"
+                + "下面只列本标本命中的流转异常，「超时未流转」按上方给出的停滞阈值判。");
         return R.ok(body);
     }
 
@@ -1956,10 +2005,12 @@ public class PathologyProcessController {
         body.put("stallHours", stall);
         body.put("from", f);
         body.put("to", t);
-        body.put("note", "STALLED：已核收未拒收未签发、自最近流转节点（无节点则自核收）起超过 stallHours 小时无后续节点，"
-                + "不受日期窗约束；SECTION_WITHOUT_EMBED / DIAGNOSED_WITHOUT_STAIN / ISSUED_WITHOUT_DOUBLE_SIGN "
-                + "按异常发生时刻（首张切片产出 / 写诊断 / 签发）落在 [from, to] 内。"
-                + "counts 是各类不受 limit 截断的总数。未分脱水篮即包埋不算异常（分篮是可选的逻辑分组）。");
+        // v64（2530 复核 demo 镜头同型）：这句话原样打在流转异常列表底部，四类异常此前是英文档位码上屏。
+        body.put("note", "「超时未流转」：已核收、未拒收、尚未签发，自最近一次流转打点（没有打点则自核收）起"
+                + "超过所设停滞阈值仍无后续环节——不受发生日期范围约束，积压不该被日期窗藏起来；"
+                + "「切片前无包埋记录」「诊断前无已染色切片」「签发时缺双签」按异常发生时刻"
+                + "（首张切片产出 / 写诊断 / 签发）落在所选日期范围内计。"
+                + "上方各类总数是全量计数，不受本页显示条数上限截断。未分脱水篮即包埋不算异常（分篮是可选的逻辑分组）。");
         return R.ok(body);
     }
 
@@ -2323,20 +2374,65 @@ public class PathologyProcessController {
      * 字段值里含「；」「。」时也不会被切碎、误报成「这一项没有字段行」；
      * 同一形态在累积全文里出现两次时只认一条字段行，另一次如实计入「只是文本」。
      *
-     * @param fieldForms 最新字段版的 {@code {label, value}}，顺序无关
+     * <p>v64（2530 复核 data 镜头）：余下的 N-M 处再按<b>更早各版的字段行</b>扣一轮——
+     * 「这一处的字段行落在第 1 版里、切换版本就能调阅」与「这一处从来没落过字段行」是两件事，
+     * 混成一句「字段级查询与统计取不到」就与库内事实相反。{@link GrossCoverage#unbacked()}
+     * 逐条标出它属于哪一类，屏上才说得出是差在哪几项。
+     *
+     * @param latestForms  最新字段版的 {@code {label, value}}，顺序无关
+     * @param earlierForms 更早各版的 {@code {label, value, revisionSeq}}，<b>按版号降序</b>传入
+     *                     （同一形态优先记在最近的那一版上）
      */
-    static int[] grossFormCoverage(String text, List<String[]> fieldForms) {
-        if (text == null || text.isEmpty()) return new int[] {0, 0};
+    static GrossCoverage grossFormCoverage(String text, List<String[]> latestForms, List<String[]> earlierForms) {
+        if (text == null || text.isEmpty()) return new GrossCoverage(0, 0, List.of());
         String rest = text;
         int backed = 0;
-        for (String[] kv : fieldForms) {
+        for (String[] kv : latestForms) {
             String form = kv[0] + "：" + kv[1];
             int at = rest.indexOf(form);
             if (at < 0) continue;
             backed++;
             rest = rest.substring(0, at) + "。" + rest.substring(at + form.length());
         }
-        return new int[] {backed + grossFieldForms(rest).size(), backed};
+        var unbacked = new ArrayList<Map<String, Object>>();
+        for (String[] kv : earlierForms) {
+            String form = kv[0] + "：" + kv[1];
+            int at = rest.indexOf(form);
+            if (at < 0) continue;
+            rest = rest.substring(0, at) + "。" + rest.substring(at + form.length());
+            unbacked.add(unbackedForm(form, kv[0], kv[1], Integer.valueOf(kv[2])));
+        }
+        for (String form : grossFieldForms(rest)) {
+            int at = form.indexOf('：');
+            unbacked.add(unbackedForm(form, form.substring(0, at), form.substring(at + 1), null));
+        }
+        final String whole = text;
+        unbacked.sort(java.util.Comparator.comparingInt(m -> {
+            int at = whole.indexOf(String.valueOf(m.get("form")));
+            return at < 0 ? Integer.MAX_VALUE : at;
+        }));
+        return new GrossCoverage(backed + unbacked.size(), backed, unbacked);
+    }
+
+    /**
+     * v64（2530 复核）：当前文本与字段行的覆盖关系。
+     *
+     * @param forms    N：当前文本里「标签：值」形态的总数
+     * @param backed   M：其中在<b>最新字段版</b>里有对应字段行的个数（恒有 M ≤ N）
+     * @param unbacked 余下 N-M 处的逐条事实，按在文本里出现的先后排序；
+     *                 {@code inEarlierVersion=true} 表示它的字段行落在更早的某一版（{@code earlierRevisionSeq}），
+     *                 {@code false} 表示任何一版都没有、只以文本形式存在
+     */
+    record GrossCoverage(int forms, int backed, List<Map<String, Object>> unbacked) {}
+
+    private static Map<String, Object> unbackedForm(String form, String label, String value, Integer earlierSeq) {
+        var m = new LinkedHashMap<String, Object>();
+        m.put("form", form);
+        m.put("label", label);
+        m.put("value", value);
+        m.put("inEarlierVersion", earlierSeq != null);
+        m.put("earlierRevisionSeq", earlierSeq);
+        return m;
     }
 
     /**

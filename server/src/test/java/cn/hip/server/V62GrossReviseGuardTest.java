@@ -409,6 +409,198 @@ class V62GrossReviseGuardTest {
     }
 
     // =====================================================================================
+    // ②d v64（2530 复核 data 镜头）：N-M 那几处**不是同一回事**；两句话辖域各自说清、不再互相否定
+    // =====================================================================================
+
+    @Test
+    void unbackedFormsAreSplitByWhetherAnEarlierVersionStillHoldsTheirFieldRows() {
+        // 复核者站的那一格：取材登记（标本大小 / 切面）→ 补取材（补取块数 / 最大径）→ 照预填原样修订
+        var first = new LinkedHashMap<String, String>();
+        first.put("标本大小", "5×4×3cm");
+        first.put("切面", "灰白");
+        ok(process.grossing(new GrossingReq(specimenId, null, first, "首次 " + tag, false, null,
+                List.of(new BlockReq("首块 " + tag))), doc));
+        var second = new LinkedHashMap<String, String>();
+        second.put("补取块数", "2 块");
+        second.put("最大径", "0.8cm");
+        ok(process.grossing(new GrossingReq(specimenId, null, second, "补取材 " + tag, true, null,
+                List.of(new BlockReq("补块 " + tag))), doc));
+        var v0 = ok(process.grossingView(specimenId));
+        var fixed = prefill(String.valueOf(v0.get("grossFinding")), rows(v0, "fields"));
+        ok(process.reviseGrossFields(specimenId,
+                new GrossReviseReq(null, new LinkedHashMap<>(fixed.gross()), fixed.free()), doc));
+
+        var v = ok(process.grossingView(specimenId));
+        assertEquals(4, ((Number) v.get("textFieldForms")).intValue(),
+                "当前这段描述里 4 个「标签：值」：" + v.get("grossFinding"));
+        assertEquals(2, ((Number) v.get("textFieldFormsBacked")).intValue(), "最新字段版只覆盖其中 2 个");
+
+        // **修复前的反向事实**（复核者原话）：v63 把余下这 2 个一律说成「只是这段文本里的一句话，
+        // 字段级查询与统计取不到」，而它们（第 1 版录入的「标本大小」「切面」）此刻正以 path_gross_field 行
+        // 躺在库里、由同一个返回体的 fieldsByRevision 原样回出、在同屏那个版本下拉里点一下就能调阅。
+        assertEquals(2, ((Number) v.get("textFieldFormsInEarlierVersions")).intValue(),
+                "这 2 个的字段行落在更早的版本里，不是「从来没录成字段」");
+        assertEquals(0, ((Number) v.get("textFieldFormsTextOnly")).intValue(),
+                "这条路径上没有一处是「任何一版都没有字段行」的");
+        var unbacked = rows(v, "textFieldFormsUnbacked");
+        assertEquals(List.of("标本大小", "切面"),
+                unbacked.stream().map(u -> String.valueOf(u.get("label"))).toList(),
+                "逐条给出差在哪几项——屏上要指名道姓，这是修订弹窗那条提示的数据源");
+        for (var u : unbacked) {
+            assertEquals(Boolean.TRUE, u.get("inEarlierVersion"), u.toString());
+            assertEquals(1, ((Number) u.get("earlierRevisionSeq")).intValue(), "它们是第 1 版录入的：" + u);
+        }
+        // 库内对照组：这两条字段行真的还在（断言钉的是库内事实，不是「后端换了个说法」）
+        assertEquals(2L, (long) jdbc.queryForObject("""
+                select count(*) from path_gross_field
+                where specimen_id = ? and revision_seq = 1 and label in ('标本大小', '切面')
+                """, Long.class, specimenId));
+
+        // ---- 屏上那条唯一的口径提示（查看弹窗 / 轨迹抽屉同一句）----
+        String note = String.valueOf(v.get("fieldsNote"));
+        assertTrue(note.contains("4 个「标签：值」形态") && note.contains("其中 2 个"),
+                "N / M 两个数照旧说得出：" + note);
+        assertTrue(note.contains("另有 2 个的字段行落在更早的版本里"),
+                "**修复前的反向事实**：这 2 个被说成「只是这段文本里的一句话」：" + note);
+        assertFalse(note.contains("字段级查询与统计取不到"),
+                "**修复前的反向事实**：这半句与库内事实相反——那 2 条正躺在第 1 版里：" + note);
+        assertFalse(note.contains("要补齐请在"),
+                "不许再给基于假结论的操作指引（那几条本来就有字段行）：" + note);
+
+        // ---- 版号这一维：两个版号相等，**旧前端那句「但当前文本已是第 N 版」就是在这里成为假话的** ----
+        assertEquals(v.get("fieldsRevisionSeq"), v.get("textRevisionSeq"),
+                "字段版号与文本版号是同一个数——把它说成「文本已是第 N 版」就是同一个版号说两件事");
+        assertEquals(Boolean.TRUE, v.get("fieldsVersionCurrent"), "版号这一维为真");
+        assertEquals(Boolean.FALSE, v.get("fieldsCoverText"), "覆盖那一维为假");
+        assertEquals(Boolean.FALSE, v.get("fieldsCurrent"), "两维之与——false 的**原因在覆盖，不在版号**");
+
+        // ---- 活的对照组：把 4 项都填成字段 → 三个余量键归零、fieldsNote 一句不编 ----
+        var all4 = new LinkedHashMap<String, String>();
+        all4.put("补取块数", "2 块");
+        all4.put("最大径", "0.8cm");
+        all4.put("标本大小", "5×4×3cm");
+        all4.put("切面", "灰白");
+        ok(process.reviseGrossFields(specimenId, new GrossReviseReq(null, all4, "首次 " + tag), doc));
+        var v3 = ok(process.grossingView(specimenId));
+        assertEquals(0, ((Number) v3.get("textFieldFormsInEarlierVersions")).intValue());
+        assertEquals(0, ((Number) v3.get("textFieldFormsTextOnly")).intValue());
+        assertEquals(List.of(), rows(v3, "textFieldFormsUnbacked"), "活对照组：覆盖全了就一条余量都没有");
+        assertNull(v3.get("fieldsNote"), "活对照组：没有分叉就不编一句——上面那几条断言才不是恒真");
+    }
+
+    // =====================================================================================
+    // ②e v64（2530 复核 demo 镜头）：屏上不许出现开发者视角的内容
+    // =====================================================================================
+
+    @Test
+    void screensDropDeveloperFacingText() throws IOException {
+        // ---- ① 取材列表顶端那条提示条（后端 note 原样上屏）----
+        String wlNote = String.valueOf(ok(process.grossingWorklist(null, null, null, null, null)).get("note"));
+        for (String bad : List.of("pending", "all：", "hoursSinceReceived", "V144")) {
+            assertFalse(wlNote.contains(bad),
+                    "**修复前的反向事实**：取材列表顶端把「" + bad + "」打在屏上：" + wlNote);
+        }
+        assertTrue(wlNote.contains("「待取材」") && wlNote.contains("「距签收(小时)」"),
+                "活对照组：这句话还在，只是改成了屏上看得懂的业务语言：" + wlNote);
+
+        // ---- ② 轨迹抽屉底部那条（同型）----
+        ok(process.grossing(new GrossingReq(specimenId, null, null, "自由文本 " + tag, false, null,
+                List.of(new BlockReq("块 " + tag))), doc));
+        String trailNote = String.valueOf(ok(process.trail(specimenId, null)).get("note"));
+        for (String bad : List.of("nodes ", "hours_since_prev", "anomalies ", "STALLED", "stallHours")) {
+            assertFalse(trailNote.contains(bad), "轨迹抽屉屏上不得出现「" + bad + "」：" + trailNote);
+        }
+        String anomalyNote = String.valueOf(ok(process.anomalies(null, null, null, null, null, null)).get("note"));
+        for (String bad : List.of("STALLED", "SECTION_WITHOUT_EMBED", "DIAGNOSED_WITHOUT_STAIN",
+                "ISSUED_WITHOUT_DOUBLE_SIGN", "counts ", "[from, to]")) {
+            assertFalse(anomalyNote.contains(bad), "流转异常列表屏上不得出现「" + bad + "」：" + anomalyNote);
+        }
+        assertTrue(anomalyNote.contains("「超时未流转」") && anomalyNote.contains("「签发时缺双签」"),
+                "活对照组：四类异常改用屏上已有的中文名：" + anomalyNote);
+
+        // ---- ③ 查看弹窗那条唯一的口径提示不得夹带库列名 / 内部键名 / 迁移号 ----
+        var v = ok(process.grossingView(specimenId));
+        String apiNote = String.valueOf(v.get("note"));
+        assertTrue(apiNote.contains("fieldsByRevision"), "活对照组：给调用方的接口说明照旧详尽（它只是不再上屏）");
+        assertFalse(apiNote.contains("口径与事实相反"),
+                "**修复前的反向事实**：平台自述的缺陷史写在返回体里，被前端原样打到演示正屏上：" + apiNote);
+        assertFalse(apiNote.contains("v62 只比版号"), "同上：" + apiNote);
+
+        // ---- ④ 源码：那条 <p> 不再原样打接口说明；模板码换中文名；覆盖事实真上屏 ----
+        String raw = read(PANEL);
+        String panel = stripComments(raw);
+        String trail = stripComments(read(TRAIL));
+        String gTpl = templateOf(raw);
+        String tTpl = templateOf(read(TRAIL));
+        assertTrue(panel.contains("splitGross") && trail.contains("revisionFields"),
+                "活对照组：扫描器确实读到了这两份文件的真代码");
+
+        assertFalse(gTpl.contains("view.note"),
+                "**修复前的反向事实**：<p v-if=\"view.note\">{{ view.note }}</p> 把给调用方的接口说明原样打在「查看大体所见」上");
+        assertFalse(gTpl.contains("fmt(viewVersion?.templateCode)"),
+                "**修复前的反向事实**：「模板」一栏直接显示英文码 GI_BIOPSY");
+        assertFalse(tTpl.contains("fmt(row.templateCode)"), "轨迹抽屉的「模板」列同型");
+        assertFalse(gTpl.contains("fmt(result.codePrefixSource)"),
+                "**修复前的反向事实**：取材完成页把 PATH_NO / BARCODE 当标签贴出");
+        assertFalse(gTpl.contains("${t.code}"), "**修复前的反向事实**：模板下拉把码贴在中文名后面");
+        for (String bad : List.of("后端未回 fieldsByRevision", "path_block.tech_order_id",
+                "status=ORDERED 且 tech_type=RESAMPLE", "sys_config 只有 255 字符", "后端返 5223", "被拒（5222）")) {
+            assertFalse(gTpl.contains(bad) || tTpl.contains(bad), "屏上不得出现「" + bad + "」");
+        }
+        assertFalse(tTpl.contains("scope=any"), "轨迹查询那条提示里的内部档位参数同型");
+
+        // 探针：把修复前那一行塞回模板段，同一个扫描器必须抓到（证明它在咬）
+        assertTrue(templateOf(raw.replace("<template>",
+                        "<template>\r\n<p>{{ fmt(viewVersion?.templateCode) }}</p>"))
+                        .contains("fmt(viewVersion?.templateCode)"),
+                "探针：templateOf 剥注释后仍看得见模板段里的真表达式");
+
+        // ---- ⑤ 模板名两处逐字同源（同一事实两个入口一套措辞）----
+        assertTrue(panel.contains("templateNameOf(viewVersion)") && trail.contains("templateNameOf(row)"),
+                "两个入口都按中文名显示模板");
+        assertEquals(bodyOf(panel, "function templateNameOf"), bodyOf(trail, "function templateNameOf"),
+                "两处实现必须逐字相同——v63 栽的就是「同一事实两个入口两套说法」");
+    }
+
+    // =====================================================================================
+    // ②f v64（2530 复核 decompose 镜头）：三个覆盖事实键的屏上归宿就是「修订取材描述」弹窗
+    // =====================================================================================
+
+    @Test
+    void reviseDialogConsumesTheCoverageFacts() throws IOException {
+        String panel = stripComments(read(PANEL));
+        assertTrue(panel.contains("splitGross") && panel.contains("openRevise"),
+                "活对照组：扫描器确实读到了修订表单的真代码");
+
+        // --- 止血：那一句不再按老含义读两维之与 ---
+        assertFalse(panel.contains("if (d.fieldsCurrent === false) {"),
+                "**修复前的反向事实**：修订弹窗顶上那条提示按老含义读 fieldsCurrent——v63 起它是"
+                        + "「版号相同 且 字段覆盖全文」两维之与，于是「版号明明相同、只是覆盖不全」也打版号措辞，"
+                        + "屏上「已按库里第 3 版字段原样预填，但当前文本已是第 3 版」把同一个版号说成两件事");
+        assertTrue(panel.contains("if (d.fieldsVersionCurrent === false) {"),
+                "版号那一维照后端**分开给出**的键判，不在前端重算");
+        assertTrue(panel.contains("fieldsCurrent"),
+                "活对照组：fieldsCurrent 仍被别处消费，不是整片删掉才变绿的");
+
+        // --- 三个覆盖事实键真被消费，且归宿就是修订弹窗 ---
+        for (String k : List.of("textFieldForms", "textFieldFormsBacked", "fieldsCoverText",
+                "textFieldFormsUnbacked", "textFieldFormsInEarlierVersions", "textFieldFormsTextOnly")) {
+            assertTrue(panel.contains(k),
+                    "**修复前的反向事实**：v63 新增的这些键在 frontend/shell/src 里**零引用**，"
+                            + "后端 javadoc 却写着「前端原样印这一个字符串」：" + k);
+        }
+        assertTrue(panel.contains("reviseCover.value = d"),
+                "覆盖事实的数据源就是修订弹窗自己那次 GET /grossing/{id}，不另取一次、不自己解析文本");
+        int compute = panel.indexOf("const reviseCoverNote = computed(");
+        int bind = panel.indexOf(":title=\"reviseCoverNote\"");
+        assertTrue(compute > 0, "必须有一处把三个键算成一句人话");
+        assertTrue(bind > 0 && bind < compute,
+                "**算了还得显示**：这句话必须绑在模板上（v63 的教训是「只在后端存在」）：bind=" + bind);
+        assertTrue(panel.contains("mode === 'REVISE' && reviseCoverNote"),
+                "它必须挂在「修订取材描述」弹窗上——后端正是把人指到这个入口来的");
+    }
+
+    // =====================================================================================
     // ③ V168 种子：键登记进 sys_config、出厂 warn、remark ≤255、on conflict do nothing、零 update
     // =====================================================================================
 
@@ -656,6 +848,22 @@ class V62GrossReviseGuardTest {
         s = s.replaceAll("(?s)/\\*.*?\\*/", "");
         s = s.replaceAll("(?m)^\\s*//[^\\n]*", "");
         return s;
+    }
+
+    /** v64：只取 &lt;template&gt; 段并剥掉注释——**屏上真会渲染出来的那一部分**，注释里的形态不算数 */
+    private static String templateOf(String vue) {
+        int end = vue.indexOf("</template>");
+        String tpl = end < 0 ? vue : vue.substring(0, end);
+        return tpl.replaceAll("(?s)<!--.*?-->", "");
+    }
+
+    /** v64：取一个 TS 函数从签名到闭合大括号的整段（用于「两个入口一套实现」的逐字比对，忽略换行形态） */
+    private static String bodyOf(String src, String header) {
+        int at = src.indexOf(header);
+        assertTrue(at > 0, "找不到：" + header);
+        int end = src.indexOf("\n}", at);
+        assertTrue(end > at, "函数体没闭合：" + header);
+        return src.substring(at, end).replace("\r", "");
     }
 
     /** 剥 SQL 行注释与块注释 */
