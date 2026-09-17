@@ -18,12 +18,14 @@ import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -60,6 +62,23 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@code assertEquals(Boolean.TRUE, v2.get("fieldsCurrent"))} <b>正是钉死这个缺陷的断言，已翻过来</b>；
  * 另加第 ②b（部分退化三档）与第 ②c（N/M 事实的正反用例）。
  *
+ * <h2>v65（2530 复核三条）</h2>
+ * <ul>
+ *   <li><b>写端点那两条告警此前在说假话</b>：部分退化告警逐字写着「少掉的那几项此后只留在大体所见文本里，
+ *       字段级查询与统计取不到」、block 档的 5277 写「结构化记录全部丢失」——而 {@code path_gross_field}
+ *       全仓只有 insert（本类第 ⑥ 条扫描坐实），那几行仍以旧 {@code revision_seq} 躺在库里、
+ *       由同一批读端点的 {@code fieldsByRevision} 原样回出。仓库自己判过这句话是假的，
+ *       但那条 {@code assertFalse} 只钉读端点的 {@code fieldsNote}，写端点这条同义告警原样留着
+ *       （v62「只修被点名的那一个入口」重演）——本轮把同一条禁令扩到写端点。</li>
+ *   <li><b>同一段两条兄弟告警两套基准</b>：全丢那档打全部版本累计行数、部分退化那档打最新一版行数，
+ *       同一标本这两个数会是 6 与 2。现在整段只有一个基准（修订前最新一版），并点名是哪几项。</li>
+ *   <li><b>英文模板码上屏的第四个入口</b>：取材端点把 {@code trimUpper} 后的模板码拼进
+ *       {@code path_process.remark}，在「取材打点」表与⑥流转时间线上各印一次（v64 清了另外三处）。</li>
+ *   <li><b>UNPARSED 档下覆盖提示与预填结果互相否定</b>：v64 把「已预填在下面的字段栏里」写死在
+ *       {@code reviseCoverNote} 里，而 UNPARSED 档返回 <code>gross: {}</code> 一项都不预填。
+ *       第 ②g 条在真库态下走出这一格，并拿修复前的形态当活对照组。</li>
+ * </ul>
+ *
  * <p><b>本类钉住</b>：(a) 追加后读端点仍给出最新一版字段行、按前端同一套规则能原样预填且不丢更早各版内容
  * （并把「按 fieldsCurrent 取字段」的旧写法当场算成空，钉住反向事实）；(b) 5277 三档 gate 行为与坏配置回落；
  * (c) 源码扫描（剥注释、带活对照组）：预填不再读 fieldsCurrent、前端真消费 textIsCumulative、
@@ -77,6 +96,15 @@ class V62GrossReviseGuardTest {
     private static final String PANEL = "frontend/shell/src/views/medtech/pathology/GrossingPanel.vue";
     private static final String TRAIL = "frontend/shell/src/views/medtech/pathology/TrailPanel.vue";
     private static final String V168 = "server/src/main/resources/db/migration/V168__grossfield_gate_seed.sql";
+
+    /** v64 写死在 reviseCoverNote 里的那半句——UNPARSED 档下它逐字为假 */
+    private static final String V64_PREFILL_CLAIM = "已预填在下面的字段栏里";
+    /** 修订弹窗「这次提交会发生什么」0 项那一档的开头，与 GrossingPanel 逐字相同（②f 钉着） */
+    private static final String SUBMIT_NOTE_ZERO_HEAD =
+            "下面的字段栏此刻一项都没有填：本次提交不带任何字段，落库后这一版不会有字段级记录，";
+    /** path_gross_field 上的改写形态：只该有 insert，有 update / delete 就说明「旧版仍可调阅」不再成立 */
+    private static final Pattern FIELD_ROW_WRITE = Pattern.compile(
+            "(?is)(?:\\bupdate\\s+path_gross_field\\b|\\bdelete\\s+from\\s+path_gross_field\\b)");
 
     private String tag;
     private Authentication doc;
@@ -202,8 +230,14 @@ class V62GrossReviseGuardTest {
                 new GrossReviseReq(null, null, "只写自由描述 block " + tag), doc);
         assertEquals(5277, blocked.getCode(), "block 档应返 5277，实际 " + blocked.getMessage());
         assertTrue(blocked.getMessage().contains("=block")
-                        && blocked.getMessage().contains("结构化记录全部丢失"),
+                        && blocked.getMessage().contains("结构化记录停在第 1 版"),
                 "5277 消息要说清是哪个 gate 拦的、拦的是什么：" + blocked.getMessage());
+        // v65（2530 复核）：**修复前这里写的是「结构化记录全部丢失」**——与库内事实相反。
+        // path_gross_field 只有 insert（第 ⑥ 条扫描坐实），第 1 版那两行一条不删，按版本照样调阅得到。
+        assertFalse(blocked.getMessage().contains("结构化记录全部丢失"),
+                "**修复前的反向事实**：拦得住的是「这一版没有结构化记录」，不是「记录没了」：" + blocked.getMessage());
+        assertTrue(blocked.getMessage().contains("按版本仍调阅得到"),
+                "5277 要把「旧版字段行还在」一并说清（否则技师以为一提交就毁数据）：" + blocked.getMessage());
         assertEquals(snap, snapshot(specimenId), "block 档一个字都不许写（R.fail 不是异常，@Transactional 不回滚）");
 
         // v63（2530 复核）：**这里原来是 assertEquals(List.of(), warningsOf(kept), "不退化就没有告警")。**
@@ -222,6 +256,25 @@ class V62GrossReviseGuardTest {
         assertTrue(partial.get(0).contains("由 2 项减至 1 项") && partial.get(0).contains("「拦截」档"),
                 "部分退化在拦截档也只告警不拦截，且要把两个数与档位说出来：" + partial.get(0));
         assertFalse(partial.get(0).contains("gate="), "上屏告警不得含裸配置值：" + partial.get(0));
+        // v65（2530 复核）：**这条同义告警此前原样留着那句假话**（v62 的 assertFalse 只钉读端点的 fieldsNote）
+        assertNoDeadFieldClaim(partial.get(0));
+        assertTrue(partial.get(0).contains("不再写入的是「切面」"),
+                "少掉的是**哪一项**要点名——读的人正要拿这个名字去版本下拉里调阅它：" + partial.get(0));
+        assertTrue(partial.get(0).contains("在第 1 版的字段行仍在库里"),
+                "要说清它还在哪一版（这是「调阅得到」的落点）：" + partial.get(0));
+        // 库内对照组：「仍在库里」不是换了个说法，是真的还在
+        assertEquals(1L, (long) jdbc.queryForObject("""
+                select count(*) from path_gross_field
+                where specimen_id = ? and revision_seq = 1 and label = '切面'
+                """, Long.class, specimenId), "被删的那一项仍以第 1 版的字段行躺在库里");
+        // 读端点对照组：**「按版本调阅得到」得真调得到**，不是只在库里躺着
+        var afterPartial = ok(process.grossingView(specimenId));
+        var v1Fields = rows(afterPartial, "fieldsByRevision").stream()
+                .filter(r -> ((Number) r.get("revisionSeq")).intValue() == 1)
+                .flatMap(r -> rows(r, "fields").stream())
+                .map(f -> String.valueOf(f.get("label"))).toList();
+        assertEquals(List.of("大小", "切面"), v1Fields,
+                "第 1 版两项由同一个读端点原样回出——屏上那句「按版本调阅得到」指的就是这里：" + afterPartial.get("fieldsByRevision"));
 
         // 活的对照组：项数不减就是真的不退化，一声不吭——否则上面那条成了「只要带字段就告警」
         var same = new LinkedHashMap<String, String>();
@@ -237,8 +290,13 @@ class V62GrossReviseGuardTest {
         assertEquals(0, ((Number) warned.get("grossFieldCount")).intValue());
         var ws = warningsOf(warned);
         assertEquals(1, ws.size(), "warn 且退化应恰一条告警：" + ws);
-        assertTrue(ws.get(0).contains("不再有结构化字段") && ws.get(0).contains("「提示」档放行"),
+        assertTrue(ws.get(0).contains("不再写入任何结构化字段") && ws.get(0).contains("「提示」档放行"),
                 "告警要说清后果与放行原因：" + ws.get(0));
+        // v65：基准统一成「修订前最新一版」——**修复前这一档打的是全部版本累计行数**（此刻是 3 行：2 + 1），
+        // 而隔壁部分退化那档打的是最新一版行数，同一段守卫两套基准，读的人没法把两句话对起来
+        assertTrue(ws.get(0).contains("修订前最新一版是第 3 版、1 项，本次 0 项"),
+                "**修复前的反向事实**：这里打的是全部版本累计行数（此刻 3 行），不是最新一版的 1 项：" + ws.get(0));
+        assertNoDeadFieldClaim(ws.get(0));
         assertEquals(warnText, grossFinding(specimenId), "warn 必须**真落库**，不是只喊一声");
         int warnSeq = ((Number) warned.get("revisionSeq")).intValue();
         assertEquals(0, fieldRowsOfRevision(specimenId, warnSeq), "本版 0 行字段行");
@@ -314,6 +372,11 @@ class V62GrossReviseGuardTest {
         assertTrue(w.get(0).contains("由 2 项减至 1 项"),
                 "基准是修订前最新一版的 2 行，不是全部版本累计的 6 行（拿累计当基准会把「仍填满」误判成退化）："
                         + w.get(0));
+        // v65：整段只剩这一个基准——全丢那档此前打的是累计行数（此刻 6），两条兄弟告警一段话里两套基准
+        assertFalse(w.get(0).contains("6 项") || w.get(0).contains("6 行"),
+                "**修复前的反向事实**：同一标本累计 6 行与最新一版 2 行两个数混在同一段守卫里：" + w.get(0));
+        assertTrue(w.get(0).contains("不再写入的是「切面」"), "点名少掉的那一项：" + w.get(0));
+        assertNoDeadFieldClaim(w.get(0));
 
         // ---- off 档：不判 ----
         assertEquals(1, setGate("off"));
@@ -601,6 +664,158 @@ class V62GrossReviseGuardTest {
                 "**算了还得显示**：这句话必须绑在模板上（v63 的教训是「只在后端存在」）：bind=" + bind);
         assertTrue(panel.contains("mode === 'REVISE' && reviseCoverNote"),
                 "它必须挂在「修订取材描述」弹窗上——后端正是把人指到这个入口来的");
+
+        // --- v65：那句「已预填」不再写死，改由表单此刻真有哪几项字段生成 ---
+        assertFalse(panel.contains(V64_PREFILL_CLAIM),
+                "**修复前的反向事实**：v64 把「" + V64_PREFILL_CLAIM + "」直接写进模板串，"
+                        + "与 splitGross 的档位、与字段栏里到底有没有东西都无关；UNPARSED 档一项都不预填");
+        assertTrue(panel.contains("const reviseFormFields = computed"),
+                "「表单此刻真会提交哪几项」要有一处显式定义（提交与这句话共用它）");
+        assertTrue(bodyOf(panel, "const reviseSubmitNote = computed(").contains("reviseFormFields.value"),
+                "「这次提交会发生什么」必须**由那个状态生成**，不是人手写一句");
+        assertTrue(bodyOf(panel, "const reviseCoverNote = computed(").contains("reviseSubmitNote.value"),
+                "覆盖提示的后半句就是那句生成出来的话");
+        assertTrue(bodyOf(panel, "async function submitRevise(").contains("reviseFormFields.value"),
+                "提交带哪几项与屏上那句话同源——两边各写一遍过滤规则，规则一改就必然漂");
+        // 逐字钉住两档措辞：下面 ②g 的 Java 同构版照着它们写，措辞一改那边就得跟着改
+        assertTrue(panel.contains(SUBMIT_NOTE_ZERO_HEAD), "0 项那档的措辞：" + SUBMIT_NOTE_ZERO_HEAD);
+        assertTrue(panel.contains("下面的字段栏此刻填了 ${k} 项：本次提交带的就是这 ${k} 项，"
+                        + "落库后它们构成这一版的字段级记录；"),
+                "有字段那档的措辞");
+        // 「按版本调阅得到」在屏上的落点：版本下拉逐版列 fieldsByRevision（后端把各版都回出来了）
+        assertTrue(bodyOf(panel, "const viewFieldVersions = computed").contains("view.value.fieldsByRevision"),
+                "告警里那句「在「查看大体所见」里按版本调阅得到」指的就是这个下拉，它必须真按 fieldsByRevision 逐版列");
+    }
+
+    // =====================================================================================
+    // ②g v65（2530 复核 decompose 镜头，本轮头号纪律）：
+    //     UNPARSED 档下「覆盖提示」与「实际预填」必须说同一件事
+    // =====================================================================================
+
+    @Test
+    void theCoverNoteAgreesWithWhatWasActuallyPrefilled() {
+        // 复核者站的那一格：取材(填字段) → 补取材(填字段) → 补取材(**只写自由描述**)
+        var first = new LinkedHashMap<String, String>();
+        first.put("标本大小", "5×4×3cm");
+        first.put("切面", "灰白");
+        ok(process.grossing(new GrossingReq(specimenId, null, first, "首次 " + tag, false, null,
+                List.of(new BlockReq("首块 " + tag))), doc));
+        var second = new LinkedHashMap<String, String>();
+        second.put("补取块数", "2 块");
+        second.put("最大径", "0.8cm");
+        ok(process.grossing(new GrossingReq(specimenId, null, second, "补取材 " + tag, true, null,
+                List.of(new BlockReq("补块 " + tag))), doc));
+        ok(process.grossing(new GrossingReq(specimenId, null, null, "第三次只写描述 " + tag, true, null,
+                List.of(new BlockReq("三块 " + tag))), doc));
+
+        var v = ok(process.grossingView(specimenId));
+        var fields = rows(v, "fields");
+        var split = prefill(String.valueOf(v.get("grossFinding")), fields);
+        assertEquals("UNPARSED", split.mode(),
+                "最后一次补取材只写自由描述 → 当前文本不是由最新字段版直接拼出的形态：" + v.get("grossFinding"));
+        assertTrue(split.gross().isEmpty(),
+                "**这一格的事实**：UNPARSED 档返回 gross: {}，字段栏一项都不预填");
+        // 同一格里那条覆盖提示确实会上屏（v-if 的两个条件都成立），两条黄条就是这么贴在一起的
+        assertEquals(Boolean.TRUE, v.get("fieldsAvailable"));
+        assertEquals(Boolean.FALSE, v.get("fieldsCoverText"));
+        assertEquals(2, ((Number) v.get("textFieldFormsBacked")).intValue());
+
+        // ---- 活的对照组：**修复前的形态**在这一格里逐字为假 ----
+        String v64Tail = coverNoteTailV64(((Number) v.get("textFieldFormsBacked")).intValue());
+        assertTrue(v64Tail.contains(V64_PREFILL_CLAIM),
+                "活对照组：修复前那句把「已预填」写死，与预填结果无关：" + v64Tail);
+        assertTrue(split.gross().isEmpty() && v64Tail.contains("2 处有结构化字段行"),
+                "**修复前的反向事实**：屏上宣告 2 处已预填，而字段栏里是 0 项——两条黄条同屏互相否定");
+
+        // ---- 修复后：这句话由「表单此刻真有哪几项」生成 ----
+        String saidNow = submitNote(split.gross().size());
+        assertFalse(saidNow.contains("已预填"), "不得再出现与预填结果无关的断言：" + saidNow);
+        assertTrue(saidNow.contains("一项都没有填"), "UNPARSED 档下说的是「一项都没有填」：" + saidNow);
+        assertTrue(saidNow.contains("结构化记录停在修订前那一版"),
+                "技师真正要知道的是「这次提交会发生什么」：" + saidNow);
+
+        // ---- 活的对照组：同一条规则在拆得开的那一档说的是另一句（不是恒说「没填」）----
+        var cumulative = prefill(
+                "标本大小：5cm。首次。补取材：补取块数：2 块。补描述",
+                List.of(Map.<String, Object>of("label", "补取块数", "value", "2 块")));
+        assertEquals("CUMULATIVE", cumulative.mode(), "累积全文按「。补取材：」切得开");
+        assertEquals(1, cumulative.gross().size());
+        assertTrue(submitNote(cumulative.gross().size()).contains("填了 1 项"),
+                "活对照组：预填带出字段时这句话跟着变——它不是一句写死的话");
+    }
+
+    // =====================================================================================
+    // ②h v65（2530 复核 demo 镜头）：英文模板码上屏的**第四个入口**——落库备注
+    // =====================================================================================
+
+    @Test
+    void theGrossingNodeRemarkNamesTheTemplateInChinese() {
+        var catalog = ok(process.grossingTemplates(null));
+        var codeToName = new LinkedHashMap<String, String>();
+        for (var t : rows(catalog, "items")) {
+            codeToName.put(String.valueOf(t.get("code")), String.valueOf(t.get("name")));
+        }
+        assertTrue(codeToName.size() >= 9, "活对照组：模板清单真读到了：" + codeToName.keySet());
+        assertEquals("胃肠镜活检", codeToName.get("GI_BIOPSY"), "中文名的唯一事实源就是这份清单");
+
+        // ---- 带下划线的码（GI_BIOPSY）----
+        ok(process.grossing(new GrossingReq(specimenId, "GI_BIOPSY", null, "取材描述 " + tag, false, null,
+                List.of(new BlockReq("块 " + tag))), doc));
+        String remark = latestGrossingRemark(specimenId);
+        assertTrue(remark.contains("取材产出 1 块"), "本次产出块数照旧如实写：" + remark);
+        assertTrue(remark.contains("（模板 胃肠镜活检）"), "模板印中文名：" + remark);
+        assertEquals(List.of(), codesIn(remark, codeToName.keySet()),
+                "**修复前的反向事实**：备注正文写的是「（模板 GI_BIOPSY）」，"
+                        + "「取材打点」表的备注列与⑥流转时间线各印一次：" + remark);
+
+        // ---- 不带下划线的码（LUNG）：**按形态猜的正则会漏掉它**，所以这条用例必须在 ----
+        ok(process.grossing(new GrossingReq(freeTextId, "lung", null, "取材描述 " + tag, false, null,
+                List.of(new BlockReq("块F " + tag))), doc));
+        String lungRemark = latestGrossingRemark(freeTextId);
+        assertTrue(lungRemark.contains("（模板 肺）"), "小写入参也规范化到同一份清单上：" + lungRemark);
+        assertEquals(List.of(), codesIn(lungRemark, codeToName.keySet()), lungRemark);
+
+        // ---- 活的对照组：同一个检查器抓得到修复前的两种形态（否则上面两条是恒真的）----
+        assertEquals(List.of("GI_BIOPSY"), codesIn("取材产出 2 块（模板 GI_BIOPSY）", codeToName.keySet()),
+                "活对照组：带下划线的码必须被抓到");
+        assertEquals(List.of("LUNG"), codesIn("取材产出 2 块（模板 LUNG）", codeToName.keySet()),
+                "活对照组：不带下划线的码同样要被抓到——这正是裸码正则（要求下划线）漏掉的那一类");
+    }
+
+    // =====================================================================================
+    // ⑥ v65：「旧版字段行仍在、按版本调阅得到」凭什么成立——全仓零 update / delete
+    // =====================================================================================
+
+    @Test
+    void fieldRowsAreNeverUpdatedOrDeletedAnywhere() throws IOException {
+        var scanned = new ArrayList<String>();
+        var offenders = new ArrayList<String>();
+        for (String dir : List.of("modules", "server/src/main")) {
+            try (var walk = Files.walk(repoRoot().resolve(dir))) {
+                for (Path p : walk.filter(Files::isRegularFile).toList()) {
+                    String name = p.getFileName().toString();
+                    if (!name.endsWith(".java") && !name.endsWith(".sql")) continue;
+                    String body = stripSqlComments(stripComments(
+                            new String(Files.readAllBytes(p), StandardCharsets.UTF_8)));
+                    if (!body.contains("path_gross_field")) continue;
+                    scanned.add(name);
+                    if (FIELD_ROW_WRITE.matcher(body).find()) offenders.add(name);
+                }
+            }
+        }
+        assertTrue(scanned.size() >= 3,
+                "活对照组：扫描器必须真的读到提到 path_gross_field 的那几份文件，实得 " + scanned);
+        assertEquals(List.of(), offenders,
+                "写端点那两条告警说「旧版字段行仍在、按版本调阅得到」，凭的就是这张表只 insert 不改不删；"
+                        + "这里一旦有人加了 update / delete，那句话当场变成假话：" + offenders);
+        // 活的对照组：同一个匹配器抓得到这两种形态，也不咬 insert
+        assertTrue(FIELD_ROW_WRITE.matcher("update path_gross_field set value = 'x' where id = 1").find(),
+                "活对照组：update 形态必须被抓到");
+        assertTrue(FIELD_ROW_WRITE.matcher("delete from path_gross_field where specimen_id = ?").find(),
+                "活对照组：delete 形态必须被抓到");
+        assertFalse(FIELD_ROW_WRITE.matcher(
+                        "insert into path_gross_field(specimen_id, revision_seq) values (?, ?)").find(),
+                "活对照组：insert 不该被咬——正则不能宽到把唯一合法写法也算进去");
     }
 
     // =====================================================================================
@@ -752,6 +967,48 @@ class V62GrossReviseGuardTest {
         return new Prefill(new LinkedHashMap<>(), text, "UNPARSED");
     }
 
+    /**
+     * GrossingPanel 的 {@code reviseSubmitNote} 同构版：由**表单此刻真有哪几项字段**生成。
+     * 措辞与那边逐字相同（②f 用源码扫描钉着），那边改一个字，这里跟着红。
+     */
+    private static String submitNote(int formFieldCount) {
+        if (formFieldCount == 0) {
+            return SUBMIT_NOTE_ZERO_HEAD + "结构化记录停在修订前那一版（那几行不会被删，仍按版本调阅得到）。";
+        }
+        return "下面的字段栏此刻填了 " + formFieldCount + " 项：本次提交带的就是这 " + formFieldCount
+                + " 项，落库后它们构成这一版的字段级记录；"
+                + "没进字段栏的内容只作为文本保存（更早各版已经落下的字段行不会被删，仍按版本调阅得到）。";
+    }
+
+    /** **修复前的形态**：v64 把「已预填」写死在模板串里，与 splitGross 的档位、与字段栏里有没有东西都无关 */
+    private static String coverNoteTailV64(int backed) {
+        return "其中 " + backed + " 处有结构化字段行（" + V64_PREFILL_CLAIM + "）。";
+    }
+
+    /** 正文里出现的模板代码（按清单逐个找，不按形态猜——LUNG / SKIN 这类没有下划线，形态正则抓不到） */
+    private static List<String> codesIn(String text, java.util.Collection<String> codes) {
+        var hit = new ArrayList<String>();
+        for (String c : codes) if (text.contains(c)) hit.add(c);
+        return hit;
+    }
+
+    /** v65：写端点那两条告警不得再说那句与库内事实相反的话（v62 的同一条禁令此前只钉读端点） */
+    private static void assertNoDeadFieldClaim(String warning) {
+        assertFalse(warning.contains("字段级查询与统计取不到"),
+                "**修复前的反向事实**：那几行仍以旧 revision_seq 躺在库里、按版本调阅得到：" + warning);
+        assertFalse(warning.contains("只留在大体所见文本里"),
+                "**修复前的反向事实**：新文本里有没有它们取决于修订者写没写进自由描述，端点不替它断言：" + warning);
+    }
+
+    private String latestGrossingRemark(long specimenId) {
+        String r = jdbc.queryForObject("""
+                select remark from path_process
+                where specimen_id = ? and node = 'GROSSING' order by id desc limit 1
+                """, String.class, specimenId);
+        assertNotNull(r, "GROSSING 节点必须落了备注");
+        return r;
+    }
+
     private long newSpecimen(Long orderId, int partNo) {
         Long id = jdbc.queryForObject("""
                 insert into path_specimen(order_id, part_no, barcode, path_no, specimen_type, specimen_desc,
@@ -837,12 +1094,16 @@ class V62GrossReviseGuardTest {
 
     /** 仓库相对路径（绝对路径在 worktree 下扫空恒绿，是本仓写进 CLAUDE.md 的教训） */
     private static String read(String rel) throws IOException {
+        return Files.readString(repoRoot().resolve(rel));
+    }
+
+    private static Path repoRoot() {
         Path root = Path.of(System.getProperty("user.dir")).toAbsolutePath();
         while (root != null && !(Files.isDirectory(root.resolve("frontend")) && Files.isDirectory(root.resolve("modules")))) {
             root = root.getParent();
         }
         assertNotNull(root, "找不到仓库根");
-        return Files.readString(root.resolve(rel));
+        return root;
     }
 
     /** 剥 HTML / 块 / 行注释——注释里的形态不算数（本仓多次源码扫描误判的教训） */

@@ -163,6 +163,7 @@ public class PathologyProcessController {
     private static final int GROSS_VALUE_MAX = 300;
     private static final int GROSS_FIELD_MAX = 20;
     private static final int REMARK_MAX = 255;         // path_process.remark
+    private static final int NAME_LIST_MAX = 5;        // v65：告警里最多点名几项（余下说「等 N 项」）
     private static final int BATCH_NO_MAX = 32;        // path_block.dehydrate_batch
     private static final int STAIN_ITEM_MAX = 64;      // path_slide.stain_item
 
@@ -413,9 +414,18 @@ public class PathologyProcessController {
             return R.fail(5222, "备注超长（上限 " + REMARK_MAX + " 字）");
         }
 
+        // v65（2530 复核 demo 镜头）：模板名在这里一并取出——下面那条落库的 GROSSING 备注要印中文名。
+        // v64 逐处清理了「英文模板码上屏」（查看弹窗的模板栏、轨迹抽屉的模板列、模板下拉三处），
+        // 唯独漏了同一个屏幕上的**第四个入口**：备注正文由本端点自己拼，裸模板码写进 path_process.remark，
+        // 之后在「取材打点」表的备注列与⑥流转与异常的时间线上各印一次。
+        // 名字取自 templateCatalog()——与 GET /grossing/templates 的 name 同一份事实源（前端那两处中文名也取自它），
+        // 不另起一套字典；运维新增的模板代码没有中文名，catalog 里 name 就是代码本身，如实照印、不编一个。
         String templateCode = trimUpper(req.templateCode());
-        if (templateCode != null && !templateCatalog().containsKey(templateCode)) {
-            return R.fail(5225, "取材模板不存在：" + req.templateCode());
+        String templateName = null;
+        if (templateCode != null) {
+            var tpl = templateCatalog().get(templateCode);
+            if (tpl == null) return R.fail(5225, "取材模板不存在：" + req.templateCode());
+            templateName = String.valueOf(tpl.get("name"));
         }
 
         String grossAssembled;
@@ -570,7 +580,7 @@ public class PathologyProcessController {
         // 与上面各蜡块的 created_at 逐位相等——Java 侧不产生任何时间字面量
         logProcess(req.specimenId(), "GROSSING", uid,
                 "取材产出 " + created.size() + " 块"
-                        + (templateCode == null ? "" : "（模板 " + templateCode + "）")
+                        + (templateName == null ? "" : "（模板 " + templateName + "）")
                         // v62：此前逐字写死裸枚举 RESAMPLE；techLabel 同时把医嘱项目带出来
                         + (techOrder == null ? "" : "，补取材医嘱"
                                 + PathologyReportController.techLabel(
@@ -617,7 +627,7 @@ public class PathologyProcessController {
      *       update 带原值做乐观比对，并发下 0 行即 5222，不落半截。</li>
      *   <li><b>v62（2530 复核）：结构化退化守卫</b>——修订前该标本任意版已有字段行、而本次修订落 0 行字段时，
      *       受 {@link #GROSS_FIELD_GATE_KEY} 三态管辖：block 返 <b>5277</b> 且<b>零写入</b>（判定在第一条 update 之前），
-     *       warn 照常落库、返回体 {@code warnings} 说明「本次修订后该标本不再有结构化字段」，off 不判。
+     *       warn 照常落库、返回体 {@code warnings} 说明「本次修订不再写入任何结构化字段」，off 不判。
      *       {@code warnings} 恒在（off / 无退化时为空数组），调用方不必判键在不在。</li>
      *   <li><b>v63（2530 复核）：部分退化也纳入守卫</b>——v62 的判定是 {@code plannedFieldCount == 0}，
      *       于是「修订前最新一版 4 项、本次只落 2 项」<b>既不 block 也不 warn</b>，提交后读端点还判
@@ -688,44 +698,66 @@ public class PathologyProcessController {
         // 「本次落几行字段」与 storeGrossFields 同源（effectiveGrossFields），不各算一遍免得口径漂。
         // v63（2530 复核）：守卫从「本次落 0 行」扩到「本次落的行数 < 修订前最新一版的行数」——
         // v62 只认全丢（plannedFieldCount == 0），于是「本来 4 项、修订后只剩 2 项」既不 block 也不 warn。
-        Integer priorFieldRows = jdbc.queryForObject(
-                "select count(*) from path_gross_field where specimen_id = ?", Integer.class, specimenId);
-        // v63：部分退化的比较基准是**修订前最新一版**的行数，不是全部版本的累计行数——
-        // 累计行数随版本数单调增长，拿它当基准会把「第 3 次修订仍填满 4 项」误判成退化（4 < 8）。
-        Integer priorLatestRows = jdbc.queryForObject("""
-                select count(*) from path_gross_field f
-                where f.specimen_id = ?
-                  and f.revision_seq = (select max(f2.revision_seq) from path_gross_field f2
-                                         where f2.specimen_id = ?)
-                """, Integer.class, specimenId, specimenId);
-        int priorLatest = priorLatestRows == null ? 0 : priorLatestRows;
-        boolean hadFields = priorFieldRows != null && priorFieldRows > 0;
-        int plannedFieldCount = effectiveGrossFields(req.gross()).size();
+        // v65（2530 复核）：**整段只留一个基准——修订前最新一版**（priorSeq / priorLabels）。
+        // 此前全丢那档打的是全部版本累计行数 priorFieldRows、部分退化那档打的是最新一版行数 priorLatest，
+        // 同一标本这两个数会是 6 与 2（本仓测试自己注明过），同一段话里两套基准，读的人没法把两句对起来。
+        // 选最新一版：读端点的 fields、屏上「字段级记录」默认显示的那一版、修订表单的预填，三处口径都是
+        // max(revision_seq)；累计行数随修订次数单调增长，从来不是任何一屏显示的数，也不是标本此刻的结构化记录。
+        // hadFields 的判据不因此变宽变窄：最新一版取的就是「最后一个有字段行的版本」，
+        // 它有行 ⟺ 该标本有行，两个数同为 0、同为正。
+        Integer priorSeq = jdbc.queryForObject(
+                "select max(revision_seq) from path_gross_field where specimen_id = ?", Integer.class, specimenId);
+        List<String> priorLabels = priorSeq == null ? List.of() : jdbc.queryForList(
+                "select label from path_gross_field where specimen_id = ? and revision_seq = ? order by seq asc",
+                String.class, specimenId, priorSeq);
+        int priorLatest = priorLabels.size();
+        boolean hadFields = priorLatest > 0;
+        var planned = effectiveGrossFields(req.gross());
+        int plannedFieldCount = planned.size();
+        // v65：少掉的是**哪几项**，按 label 做差集算出来，不拿两个数相减去猜——
+        // 「3 项减至 2 项」可能是删掉 3 项又新加 2 项（净少 1 项、实际掉了 3 个字段名），
+        // 而这几个名字正是要拿去更早版本里调阅的那几个，说「少掉的那几项」却不点名等于没说。
+        var plannedLabels = new LinkedHashSet<String>();
+        for (var kv : planned) plannedLabels.add(kv[0]);
+        var dropped = new ArrayList<String>();
+        for (String label : priorLabels) if (!plannedLabels.contains(label)) dropped.add(label);
         boolean losesAll = hadFields && plannedFieldCount == 0;
         boolean losesSome = hadFields && plannedFieldCount > 0 && plannedFieldCount < priorLatest;
         String gate = gate(GROSS_FIELD_GATE_KEY);
         var warnings = new ArrayList<String>();
         if (losesAll && "block".equals(gate)) {
-            return R.fail(5277, "本次修订不含任何结构化字段，而该标本已有 " + priorFieldRows
-                    + " 行字段级记录：提交后大体所见将退化成一段扁平文本，结构化记录全部丢失"
+            // v65（2530 复核）：原文「结构化记录全部丢失」与库内事实相反——path_gross_field 全仓只有 insert，
+            // 第 priorSeq 版那几行一条不删，读端点 fieldsByRevision 原样回出、版本下拉里点一下就调得到。
+            // 拦得住的是「当前这一版没有结构化记录」，不是「记录没了」。
+            return R.fail(5277, "本次修订不含任何结构化字段，而修订前最新一版（第 " + priorSeq + " 版）有 "
+                    + priorLatest + " 项字段级记录：提交后这一版的大体所见只剩一段扁平文本，"
+                    + "结构化记录停在第 " + priorSeq + " 版——那几行不会被删、按版本仍调阅得到，只是不再对应当前描述"
                     + "（gate " + GROSS_FIELD_GATE_KEY + "=block）。"
                     + "若确要去结构化，请先把 gate 调到 warn；若是预填没带出字段，请刷新修订表单后再改。");
         }
         if (losesAll && "warn".equals(gate)) {
-            warnings.add("本次修订后该标本不再有结构化字段（修订前 " + priorFieldRows
-                    + " 行、本次 0 行），大体所见退化为扁平文本"
+            warnings.add("本次修订不再写入任何结构化字段（修订前最新一版是第 " + priorSeq + " 版、" + priorLatest
+                    + " 项，本次 0 项）：这一版的大体所见只剩一段扁平文本；"
+                    + "第 " + priorSeq + " 版那 " + priorLatest + " 项字段行仍在库里，"
+                    + "在「查看大体所见」里按版本调阅得到，只是不再对应当前描述"
                     // v64 合并后补齐：档名走 PathologyReportController.gateTierName（唯一来源），不把配置值打上屏
                     + "（「" + PathologyReportController.gateTierName(gate) + "」档放行）");
         }
         // v63：**部分退化三档都不拦、只告警**——本轮据此判定不启用预分配的 5278（理由见端点注释）。
         // off 档连这一声也不喊（off 就是「不判」），warn 与 block 都喊。
         if (losesSome && !"off".equals(gate)) {
+            // v65（2530 复核）：原文「少掉的那几项此后只留在大体所见文本里，字段级查询与统计取不到」——
+            // **两个半句都与库内事实相反**：那几项的字段行一条没删，按版本调阅得到；
+            // 而新文本里有没有它们，取决于修订者写没写进自由描述，本端点不替它断言。
+            // 现在只说两件由本次写入直接决定、且句句可验的事：不进入本版的字段级记录、旧版那几行仍在。
             warnings.add("本次修订使结构化字段由 " + priorLatest + " 项减至 " + plannedFieldCount
-                    + " 项（少 " + (priorLatest - plannedFieldCount) + " 项）：少掉的那几项此后只留在大体所见文本里，"
+                    + " 项（少 " + (priorLatest - plannedFieldCount) + " 项）：不再写入的是" + nameList(dropped)
+                    + "，这几项不进入本次这一版的字段级记录；它们在第 " + priorSeq + " 版的字段行仍在库里，"
+                    + "在「查看大体所见」里按版本调阅得到"
                     // v64 合并后补齐：原写「gate=" + gate + " 三档均只告警不拦截」。
                     // 去裸配置值是对的，但第一版把**档位本身**一并删了——而守卫要的正是「说清是哪一档放行的」，
                     // 那是给技师的有效信息，该译不该删。档名走 gateTierName（与页首、完成提示同一来源）。
-                    + "字段级查询与统计取不到（部分删字段有正当场景，当前「"
+                    + "（部分删字段有正当场景，当前「"
                     + PathologyReportController.gateTierName(gate) + "」档下三档均只告警不拦截）");
         }
 
@@ -2460,6 +2492,20 @@ public class PathologyProcessController {
                     """, specimenId, revisionSeq, n, kv[0], kv[1], uid);
         }
         return n;
+    }
+
+    /**
+     * v65（2530 复核）：上屏点名单——逐项加「」，超过 {@link #NAME_LIST_MAX} 项只列前几项、余下如实说「等 N 项」。
+     *
+     * <p>不省略成「若干项」：读这句话的人正要拿这几个字段名去「查看大体所见」的版本下拉里调阅它们，
+     * 名字本身就是这条告警的有效载荷。
+     */
+    private static String nameList(List<String> labels) {
+        var sb = new StringBuilder();
+        int show = Math.min(labels.size(), NAME_LIST_MAX);
+        for (int i = 0; i < show; i++) sb.append('「').append(labels.get(i)).append('」');
+        if (labels.size() > show) sb.append("等 ").append(labels.size()).append(" 项");
+        return sb.toString();
     }
 
     /**

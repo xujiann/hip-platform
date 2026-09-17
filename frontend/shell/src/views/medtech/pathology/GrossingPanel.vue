@@ -738,6 +738,42 @@ function prefillNote(d: Row, mode: SplitMode, fieldCount: number): string {
  */
 const reviseCover = ref<Row | null>(null)
 
+/**
+ * 表单里此刻**真会被提交**的字段项（键 = 字段名，值 = trim 后的内容）。
+ *
+ * <p>提交时的过滤规则就在这一处：{@code submitRevise} 直接拿它拼请求体，
+ * 下面那句「这次提交会发生什么」也由它生成——两边各写一遍 skip 规则，规则一改就必然漂
+ * （后端 effectiveGrossFields 同理，一处定义两处用）。
+ */
+const reviseFormFields = computed<Record<string, string>>(() => {
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(form.gross)) if (v && v.trim()) out[k] = v.trim()
+  return out
+})
+
+/**
+ * v65（2530 复核，本轮头号纪律）：「**这次提交会发生什么**」——由 {@link reviseFormFields}（表单此刻
+ * 真有哪几项字段）生成，随输入实时变，不是写死的一句。
+ *
+ * <p><b>修复前的反向事实</b>：v64 把「（已预填在下面的字段栏里）」直接写进 reviseCoverNote 的模板串，
+ * 与 splitGross 的档位、与字段栏里到底有没有东西都无关。而 UNPARSED 档（当前文本不是由最新字段版
+ * 直接拼出的形态）返回的是 <code>gross: {}</code>，一项都不预填：上一条 alert 刚说完「字段留空」，
+ * 紧挨着的这一条就宣告「已预填」，两条黄条同屏互相否定，而技师照它原样提交，新版落 0 行 path_gross_field。
+ *
+ * <p>措辞只说两类事：<b>本次提交带什么</b>（表单状态，此刻可验）与<b>旧版字段行仍在</b>
+ * （path_gross_field 只有 insert，全仓零 update / delete，守卫测试钉着）。
+ * 不说「新版会怎样」——gate=block 档下这一次根本不落库，任何「提交后新版如何」的断言在那一档上都是假的。
+ */
+const reviseSubmitNote = computed(() => {
+  const k = Object.keys(reviseFormFields.value).length
+  if (k === 0) {
+    return '下面的字段栏此刻一项都没有填：本次提交不带任何字段，落库后这一版不会有字段级记录，'
+      + '结构化记录停在修订前那一版（那几行不会被删，仍按版本调阅得到）。'
+  }
+  return `下面的字段栏此刻填了 ${k} 项：本次提交带的就是这 ${k} 项，落库后它们构成这一版的字段级记录；`
+    + '没进字段栏的内容只作为文本保存（更早各版已经落下的字段行不会被删，仍按版本调阅得到）。'
+})
+
 const reviseCoverNote = computed(() => {
   const d = reviseCover.value
   if (d == null || d.fieldsAvailable !== true || d.fieldsCoverText !== false) return ''
@@ -752,11 +788,13 @@ const reviseCoverNote = computed(() => {
     kinds.push(`${inEarlier} 处的字段行留在更早的版本里（在「查看大体所见」里按版本可以调阅到），当前这一版没有`)
   }
   if (textOnly > 0) kinds.push(`${textOnly} 处从来没有录成字段，只以文本形式存在`)
-  return `当前这段描述里有 ${n} 处「标签：值」，其中 ${backed} 处有结构化字段行（已预填在下面的字段栏里）。`
+  // 前半句是后端返回体里的事实（当前文本 vs 库里的字段行），与表单无关；
+  // 后半句是「这次提交会发生什么」，只能由表单此刻的状态生成——两半各有各的事实源，不混着写死。
+  return `当前这段描述里有 ${n} 处「标签：值」，其中 ${backed} 处在最新字段版里有结构化字段行。`
     + `差的 ${n - backed} 处是${names || '（后端未逐条给出）'}`
     + (kinds.length ? `：${kinds.join('；')}` : '')
-    + '。本次修订按下面字段栏里的项重新落一版字段行；要让这几处也随当前版被字段级查询取到，'
-    + '在字段栏补上即可——更早各版已经落下的字段行不受影响，照样可调阅。'
+    + '。要让它们随本次这一版一起被记录，把它们填进下面的字段栏再提交。'
+    + reviseSubmitNote.value
 })
 
 async function openRevise(row: Row) {
@@ -810,8 +848,8 @@ async function openRevise(row: Row) {
 async function submitRevise() {
   saving.value = true
   try {
-    const gross: Record<string, string> = {}
-    for (const [k, v] of Object.entries(form.gross)) if (v && v.trim()) gross[k] = v.trim()
+    // v65：提交带哪几项字段与屏上那句「这次提交会发生什么」同源（reviseFormFields），不各算一遍
+    const gross = reviseFormFields.value
     if (!Object.keys(gross).length && !form.grossText.trim()) {
       ElMessage.warning('字段与自由描述至少填一项')
       return
