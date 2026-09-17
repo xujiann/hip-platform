@@ -149,6 +149,21 @@ import java.util.Set;
  *       再挂着这个定义就会把「一张片子都没有」报成「染色完整」。</li>
  * </ul>
  *
+ * <p><b>v64（2563 复核三条：后端算对了，屏上没印）</b>：
+ * <ul>
+ *   <li><b>{@code doneRemark} 零消费</b>——v63 专门下发的同源字符串没有任何前端印它，两个完成入口
+ *       （⑤ {@code TechOrderPanel.done}、④ {@code DiagnosisPanel.techDone}）仍各自拼「挂接 N 片 / 已染色 M」，
+ *       把补取材医嘱唯一的执行证据「已出块 2」整句抹掉：同一次完成，屏上弹「什么都没做就点了完成」，
+ *       而同一个工作台的流转节点里 TECH_DONE 备注写着「已出块 2」。本轮两个入口<b>原样印 doneRemark</b>，
+ *       不再各自挑字段重拼。</li>
+ *   <li><b>一屏两句规则打架</b>——见 {@link #techDoneGateRule()}：本轮规则只经 {@code techDoneGateRule}
+ *       一个键下发，⑤ 页面把它印在页首、删掉模板里写死的那条旧规则与表格下方那行 note 灰字。</li>
+ *   <li><b>{@code progressStates}</b>（新键，{@code GET /tech-orders/dict}）——进度分哪几档由
+ *       {@link #TECH_PROGRESS_ORDER} 与 {@link #TECH_DONE_VERDICTS} 生成下发，两屏页首照它列；
+ *       修复前 ④ 诊断页页首写死宣告三态，而同屏正下方的标签会打出第四态「已补取材待切片」。
+ *       ④ 同时补「已出块」一列——此前屏上打着这个态、而支撑它的那个数一列都没有。</li>
+ * </ul>
+ *
  * <p><b>错误码 5260–5275</b>（v48 诊断与报告段 5260–5279；5271–5272 v57、5273 v58、5274 v59、5275 v60 已用，5276–5279 空置）：
  * <ul>
  *   <li>5260 标本不存在（全部端点的「查无此标本」同码）</li>
@@ -204,6 +219,35 @@ public class PathologyReportController {
     public static final Map<String, String> TECH_PROGRESS_NAMES = Map.of(
             "PENDING_SECTION", "待切片", "SAMPLED", "已补取材待切片", "SECTIONING", "切片中", "STAINED", "已染色待确认",
             "DONE", "已完成", "CANCELLED", "已取消");
+
+    /**
+     * <b>执行进度六态的宣告顺序</b>（v64，2563 复核第三条）——两屏页首「进度分哪几档」那句话照它列，
+     * 不再在模板里各写死一份。顺序按一条医嘱走下来的先后：待切片 → 已补取材待切片 → 切片中 →
+     * 已染色待确认 → 已完成 / 已取消（{@link #TECH_PROGRESS_NAMES} 是 {@code Map.of}，本身不带顺序）。
+     *
+     * <p><b>修复前的反向事实</b>（v63 交付后复核，复核者原话）：④ 诊断页页首宣告「「进度」由挂接切片派生：
+     * 待切片 / 切片中 / 已染色待确认」<b>三态</b>，而它正下方的进度标签会打出第四态「已补取材待切片」——
+     * 态的清单写死在模板里，v60 加第六态时没人改它，屏上宣告的态数与同屏打出的标签对不上。
+     */
+    public static final List<String> TECH_PROGRESS_ORDER = List.of(
+            "PENDING_SECTION", "SAMPLED", "SECTIONING", "STAINED", "DONE", "CANCELLED");
+
+    /**
+     * <b>屏上宣告的执行进度清单</b>（v64）——随 {@code GET /tech-orders/dict} 的 {@code progressStates} 下发，
+     * ⑤ 特检工作台与 ④ 诊断页页首都照它列，页面不再自己写死一份态名。
+     *
+     * <p>每项三个键：{@code code}（派生用的编码，<b>不上屏</b>，只供前端配色与旧后端回落）、
+     * {@code name}（中文，上屏的就是它）、{@code inProgress}（是不是「还没完成」的那几档，
+     * 即 {@link #TECH_DONE_VERDICTS} 管得到的四档——两屏页首宣告的正是这四档）。
+     */
+    public static List<Map<String, Object>> techProgressStates() {
+        return TECH_PROGRESS_ORDER.stream()
+                .map(c -> Map.<String, Object>of(
+                        "code", c,
+                        "name", TECH_PROGRESS_NAMES.getOrDefault(c, c),
+                        "inProgress", TECH_DONE_VERDICTS.containsKey(c)))
+                .toList();
+    }
 
     /**
      * 完成 gate 对某个执行进度的判定：{@code gap=true} 即「无执行证据」（warn 提示 / block 拦 5273），
@@ -895,7 +939,11 @@ public class PathologyReportController {
                 .map(c -> Map.of("value", c, "label", TECH_TYPE_NAMES.getOrDefault(c, c),
                         "itemRequired", TECH_ITEM_REQUIRED.contains(c)))
                 .toList();
-        return R.ok(Map.of("techTypes", types, "statuses", TECH_STATUSES));
+        // v64（2563 复核第三条）：进度分哪几档也从这里下发（progressStates），两屏页首照它列。
+        // 修复前 ④ 诊断页把态的清单写死在模板里，v60 加第六态时没人改它：页首宣告三态，
+        // 而同屏正下方的标签会打出第四态「已补取材待切片」。
+        return R.ok(Map.of("techTypes", types, "statuses", TECH_STATUSES,
+                "progressStates", techProgressStates()));
     }
 
     /**
@@ -1299,10 +1347,12 @@ public class PathologyReportController {
                 + "（ORDERED 全为下达时指定 / DERIVED 全为派生 / MIXED 两者都有；并集为空为 null）——「派生」标读这一列，"
                 + "别再按 block_code 是否为空二次推断（补取材会把 block_id 回写为首块，那样判恒为 false）；"
                 + "V167 之前的历史补取材块永远挂不上（零回填）。"
-                // v63：完成 gate 的规则由后端下发（techDoneGateRule()，与 techDoneGap 同一张判定表），
-                // 页面原样印这一句，不再自己写一段说明——v62 的病正是判定改了而页首那段散文没跟，
-                // 屏上「若无已染色挂接切片就拦」与实现「补取材已出块即放行」当场对着干。
-                + techDoneGateRule());
+                // v64（2563 复核第二条）：完成 gate 的那句规则**只经 techDoneGateRule 这一个键下发**，
+                // 不再往这段 note 里抄第二份。note 是给调用方看的接口说明（带库列名、键名与迁移号），
+                // v63 把规则塞进它之后，⑤ 工作台把整段 note 原样印在表格下方的灰字里——
+                // 评委那一屏顶上是写死的旧规则、底下是这段接口说明，两句还互相打架。
+                // 页面现在改印 techDoneGateRule 且不再印 note（见 TechOrderPanel.vue）。
+                + "完成 gate 的规则见同一返回体的 techDoneGateRule。");
         body.put("techDoneGateRule", techDoneGateRule());
         return R.ok(body);
     }
@@ -1367,9 +1417,15 @@ public class PathologyReportController {
      * <b>屏上宣告的完成 gate 规则</b>（v63，2563 复核第六条）——由 {@link #TECH_DONE_VERDICTS} 逐条生成，
      * 与 {@link #techDoneGap} 的判定<b>同一张表、同一处定义</b>。
      *
-     * <p>随 {@code GET /tech-orders} 的 {@code note} 与 {@code techDoneGateRule} 两处下发：
-     * ⑤ 特检工作台把这句话原样印在页首，不再自己另写一段——v62 的病正是判定改了而页首那段散文没跟，
-     * 页上「若无已染色挂接切片就拦」与实现「补取材已出块即放行」当场对着干。
+     * <p><b>v64：只经 {@code techDoneGateRule} 这一个键下发</b>（{@code GET /tech-orders} 与完成端点各带一份
+     * 同一函数的输出），⑤ 特检工作台把它原样印在<b>页首</b>。v63 写作「随 note 与 techDoneGateRule 两处下发、
+     * 页面原样印在页首」，而页面一个字都没改：真规则只进了 note、被印在表格下方的灰字里，
+     * 页首那条写死的旧规则（「若无已染色挂接切片就拦」）原封不动——<b>同一屏上两句规则互相打架</b>，
+     * 顶上说「没染色就拦」、底下说「『已补取材待切片』三档都放行」。规则只能有一个来源，故 note 里那份删掉。
+     *
+     * <p><b>v64：这句话要上评委看的正屏，就不带开发者视角的内容</b>——不写配置键、不写错误码、
+     * 不写 {@code block/warn/off} 三个英文档位名（改说「拦截 / 提示 / 不判」档）。
+     * 判定本身一个字节没改：哪几档有缺口仍只由 {@link #TECH_DONE_VERDICTS} 定义。
      *
      * <p>句子被 {@link #TECH_DONE_RULE_GAP_MARK} / {@link #TECH_DONE_RULE_PASS_MARK} 切成两半，
      * 守卫测试据此机械核对「说明承诺的条件」与「真实行为」。
@@ -1383,11 +1439,13 @@ public class PathologyReportController {
             sb.append("「").append(TECH_PROGRESS_NAMES.getOrDefault(e.getKey(), e.getKey()))
                     .append("」（").append(e.getValue().why()).append("）");
         }
-        return "点「完成」时按执行进度判有无执行证据（gate " + TECH_DONE_GATE_KEY + "，出厂 warn，坏配置回落 warn）："
+        // v64：这句话印在评委看的页首，故只说人话——档位名用中文（拦截 / 提示 / 不判），
+        // 不写配置键、不写错误码、不写 block/warn/off。判定仍只出自 TECH_DONE_VERDICTS 这一张表。
+        return "点「完成」时按执行进度判有无执行证据（完成校验出厂为「提示」档，配置写错也按「提示」档处理）："
                 + TECH_DONE_RULE_GAP_MARK + gapPart
-                + "——block 档返 5273、行仍待执行且不写流转节点，warn 档放行但返回体回带提示、缺口一并写进完成节点备注，off 档不判；"
-                + TECH_DONE_RULE_PASS_MARK + passPart + "。"
-                + "这句说明与判定由同一张判定表生成，不是另写一遍的散文。";
+                + "——「拦截」档不让完成、医嘱仍是待执行且不写流转节点，「提示」档照常完成但当场提示、"
+                + "缺口一并写进完成节点备注，「不判」档不判；"
+                + TECH_DONE_RULE_PASS_MARK + passPart + "。";
     }
 
     /**

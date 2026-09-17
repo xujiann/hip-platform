@@ -1,7 +1,12 @@
 <template>
   <!-- ============ 工位五：特检技术医嘱全院工作台（技师侧：按状态 / 类型 / 时间集中处理） ============ -->
-  <el-alert type="info" show-icon :closable="false" class="cav"
-            title="全院视角：不分标本列出深切 / 重切 / 补取材 / 免疫组化 / 特殊染色 / 分子病理的技术医嘱。默认只看「待执行」——这是技师今天要做的活；历史请显式切到「全部状态」。距开单小时数是原始事实，本页不判超时。取消须填写取消原因（取消人 / 取消时刻 / 取消原因留痕，与下达原因分列）。「进度」由挂接切片 / 挂接蜡块派生（待切片 / 已补取材待切片 / 切片中 / 已染色待确认），不是手工标记；点「完成」时若无已染色挂接切片，按 gate emr.gate.pathology.techdone 提示（warn）或拦截（block，5273）。「挂接切片染色」是挂接切片的实际染色类型 / 项目汇总——挂接时后端已按医嘱类型 / 项目校验（5274），这一列用于核对 v59 之前挂上去的片子。「蜡块」列在医嘱未指定蜡块时按挂接蜡块（补取材已出块）与挂接切片所在块派生并标「派生」；V167 之前的历史补取材块永远挂不上（零回填），历史补取材医嘱仍显示「—」与「待切片」。" />
+  <!-- v64（2563 复核第二条）：页首这两条的正文都来自后端，模板里不再写死任何一句「完成规则」。
+       修复前这里写死着 v58 的旧规则「点『完成』时若无已染色挂接切片就提示或拦截」，而实现自 v62 起
+       对「已补取材待切片」三档全部放行；v63 生成的真规则只随 note 印在表格下方那行灰字里——
+       于是同一屏上顶上说「没染色就拦」、底下说「三档都放行」。规则只能有一个来源：
+       写死的那条删掉，真规则（gateRule = 后端 techDoneGateRule）搬到页首最显眼处。 -->
+  <el-alert type="info" show-icon :closable="false" class="cav" :title="headNote" />
+  <el-alert v-if="gateRule" type="warning" show-icon :closable="false" class="cav" :title="gateRule" />
 
   <el-form inline size="small">
     <el-form-item label="状态">
@@ -144,7 +149,6 @@
     </el-table-column>
     <template #empty>该条件下无特检技术医嘱</template>
   </el-table>
-  <p v-if="note" class="muted">{{ note }}</p>
 </template>
 
 <script setup lang="ts">
@@ -173,10 +177,17 @@
  * 「挂接切片染色」列改读中文版 attached_stain_name（如「免疫组化 CK7 ×2」，v59 是后端 SQL 直接拼的英文枚举）、
  * 进度增第六态 SAMPLED（已补取材待切片：补取材医嘱经取材 append 挂接出了蜡块、尚未切片，V167 path_block.tech_order_id）。
  *
+ * <p>v64（2563 复核，本屏两条）：①「完成」的成功提示<b>原样印后端的 doneRemark</b>，不再自己挑字段重拼
+ * （修复前把补取材医嘱唯一的执行证据「已出块 N」整句抹掉，与同一工作台流转节点里的备注两套口径）；
+ * ②页首那条写死的完成规则删掉，改印后端下发的 {@code techDoneGateRule}，并<b>搬到页首</b>——
+ * 修复前写死的旧规则在页首最显眼处、真规则被印在表格下方的灰字里，同一屏两句互相打架。
+ * 同时「进度分哪几档」改照后端 {@code progressStates} 列，表格下方那整段后端 note 不再上屏
+ * （它是给调用方看的接口说明，带库列名、内部键名与迁移号）。
+ *
  * <p>「打开报告」把标本 id 交给工作台切到诊断工位并直接打开抽屉：技师做完免疫组化后，
  * 病理医师要出补充报告的入口就在那里。
  */
-import { reactive, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../../api/client'
 import { fmtDateTime } from '../../../utils/date'
@@ -188,8 +199,11 @@ const rows = ref<Row[]>([])
 const loading = ref(false)
 const truncated = ref(false)
 const limit = ref(100)
-const note = ref('')
 const range = ref<[string, string] | null>(null)
+/** 完成 gate 的规则原文（后端 techDoneGateRule，与它的判定同一张表生成）——页首原样印这一句 */
+const gateRule = ref('')
+/** 执行进度分哪几档（后端 progressStates：code / name / inProgress）——页首照它列，页面不写死态名 */
+const progressStates = ref<Row[]>([])
 const query = reactive({ status: 'ORDERED', techType: '', urgentOnly: false, dateField: 'ORDERED', keyword: '' })
 
 const techTypes = ref<Row[]>([])
@@ -197,7 +211,29 @@ const techTypes = ref<Row[]>([])
 async function loadDict() {
   const d = (await client.get('/pathology/report/tech-orders/dict')).data.data as Row
   techTypes.value = (d.techTypes ?? []) as Row[]
+  progressStates.value = (d.progressStates ?? []) as Row[]
 }
+
+/** 「还没完成」的那几档的中文名（后端 inProgress 标好，前端不自己挑） */
+const inProgressNames = computed(() => progressStates.value
+  .filter((s) => s.inProgress === true).map((s) => String(s.name)))
+
+/**
+ * 页首第一句：本屏是干什么的。
+ * 「进度分哪几档」照后端下发的 progressStates 列（六态派生是唯一事实源），模板里不写死一份；
+ * 完成规则一个字都不在这里说——它由后端 techDoneGateRule 下发，单独印在下面那条里。
+ * 屏上只印中文态名，派生用的编码不上屏。
+ */
+const headNote = computed(() => '全院视角：不分标本列出深切 / 重切 / 补取材 / 免疫组化 / 特殊染色 / 分子病理的技术医嘱。'
+  + '默认只看「待执行」——这是技师今天要做的活；历史请显式切到「全部状态」。'
+  + '距开单小时数是原始事实，本页不判超时。取消须填写取消原因（取消人 / 取消时刻 / 取消原因留痕，与下达原因分列）。'
+  + (inProgressNames.value.length
+    ? `「进度」由挂接切片与补取材已出块派生，不是手工标记，未完成的分 ${inProgressNames.value.length} 档：`
+      + `${inProgressNames.value.join(' / ')}。`
+    : '')
+  + '「挂接切片染色」是挂接切片的实际染色类型 / 项目汇总——挂接时已按医嘱的类型 / 项目校验过。'
+  + '「蜡块」列在医嘱未指定蜡块时，按补取材已出块与挂接切片所在块派生并标「派生」；'
+  + '早年补取材的蜡块没有采集归属医嘱，那些历史医嘱仍显示「—」与「待切片」。')
 
 function techName(v: unknown): string {
   const hit = techTypes.value.find((t) => String(t.value) === String(v))
@@ -217,17 +253,17 @@ function progressTag(v: unknown): 'primary' | 'success' | 'warning' | 'info' {
   return v === 'SAMPLED' || v === 'SECTIONING' ? 'warning' : v === 'STAINED' ? 'primary' : v === 'DONE' ? 'success' : 'info'
 }
 
-/** 进度中文：后端 progress_name 为准；旧后端没有该键时按编码回落（SAMPLED 是 v60 新态，旧后端派不出来） */
-const PROGRESS_FALLBACK: Record<string, string> = {
-  PENDING_SECTION: '待切片', SAMPLED: '已补取材待切片', SECTIONING: '切片中', STAINED: '已染色待确认',
-  DONE: '已完成', CANCELLED: '已取消',
-}
-
+/**
+ * 进度中文：后端 progress_name 为准；没有该键时按编码回落到字典端点下发的那份态名。
+ * v64：回落表不再在这里写死一份——写死的第二份态名正是「宣告三态、屏上打出第四态」的病根
+ * （④ 诊断页页首那句话）。两处态名从此只有 progressStates 一个来源。
+ */
 function progressLabel(row: Row): string {
   const name = row.progress_name
   if (name) return String(name)
   const code = String(row.progress ?? '')
-  return PROGRESS_FALLBACK[code] ?? fmt(code)
+  const hit = progressStates.value.find((s) => String(s.code) === code)
+  return hit ? String(hit.name) : fmt(code)
 }
 
 async function load() {
@@ -248,7 +284,8 @@ async function load() {
     rows.value = (d.items ?? []) as Row[]
     truncated.value = d.truncated === true
     limit.value = Number(d.limit ?? 100) || 100
-    note.value = String(d.note ?? '')
+    // v64：页首那条完成规则原样印后端下发的这一句；整段 note 是给调用方看的接口说明，不上屏
+    gateRule.value = String(d.techDoneGateRule ?? '')
   } finally {
     loading.value = false
   }
@@ -256,9 +293,12 @@ async function load() {
 
 async function done(row: Row) {
   const d = (await client.put(`/pathology/report/tech-orders/${Number(row.id)}/done`, null)).data.data as Row
-  ElMessage.success(`已标记完成：${techName(row.tech_type)} ${String(row.tech_item ?? '')}`
-    + `（挂接 ${num(d.slideCount)} 片 / 已染色 ${num(d.stainedCount)}）`)
-  // v58：warn 档放行时后端回带 warnings（无已染色挂接切片即确认完成），逐条提示；block 档 5273 走 client 统一报错
+  // v64（2563 复核第一条）：原样印后端给的那一句（doneRemark）——它与写进 TECH_DONE 流转节点的备注
+  // 是同一个字符串（同一个变量拼一次）。修复前这里自己挑 slideCount / stainedCount 重拼一句，
+  // 把补取材医嘱唯一的执行证据「已出块 2」整句抹掉：屏上读作「什么都没做就点了完成」，
+  // 而同一个工作台切到流转节点看同一条，备注却写着「已出块 2」——同一次状态变更两套口径。
+  ElMessage.success(String(d.doneRemark ?? ''))
+  // 有缺口仍放行时后端回带 warnings，逐条提示；被拦下时由 client 统一报错
   for (const w of (d.warnings ?? []) as string[]) ElMessage.warning(w)
   await load()
   emit('changed')
