@@ -171,7 +171,9 @@ def detect_loop_invariant_claims(paths):
                         sent = max((l for l in lits if SENTENCE.search(l) and len(l) > 12),
                                    key=len, default='')
                         hits.append({
-                            'file': p.relative_to(ROOT).as_posix(),
+                            # 夹具文件在 ROOT 之外（自检用的合成标本），relative_to 会抛——原样给绝对路径
+                            'file': (p.relative_to(ROOT).as_posix()
+                                     if ROOT in p.resolve().parents else p.as_posix()),
                             'vfor_line': lineno,
                             'expr': expr.strip(),
                             'ident': n,
@@ -191,11 +193,11 @@ _Q = '"' + "'" + '`'
 LIT = re.compile('|'.join('%s((?:[^%s\\\\]|\\\\.)*)%s' % (q, q, q) for q in _Q))
 
 
-def touched_claims(base):
+def touched_claims(base, head='HEAD'):
     """<base>..HEAD 新增行里的带句读文案。diff 只看 + 行——改过的那一句才进棘轮。"""
     paths = ['frontend/shell/src', 'modules']
     try:
-        diff = subprocess.run(['git', '-C', str(ROOT), 'diff', f'{base}..HEAD', '--', *paths],
+        diff = subprocess.run(['git', '-C', str(ROOT), 'diff', f'{base}..{head}', '--', *paths],
                               capture_output=True, text=True, encoding='utf-8',
                               errors='replace', check=True).stdout
     except subprocess.CalledProcessError as e:
@@ -260,24 +262,54 @@ def selftest():
             ok = False
         print(f'  {mark} {name}（期望 {want}，实得 {got}）')
 
-    print('【对照组一：循环变量规则必须抓到 v64 的 summaryTitle】')
+    # ============================================================================
+    # 对照组一律用**不随修复变化的标本**：合成夹具，或钉死的历史区间。
+    #
+    # 第一版不是这么写的，v65 车道 C 当场把它打红并说清了为什么——**它红得是对的**：
+    #   · 原对照组一要求「在真实的 PathQcView.vue 里找得到 summaryTitle」，
+    #     而本轮任务书恰恰要求车道 C 把 summaryTitle 修掉。两者不可能同时为真，
+    #     缺陷一修好，这个活标本就消失、尺子自己变红。
+    #   · 原对照组三跑 touched_claims('v1.6.3')，而 git diff 是**两点树比较**、不是各次提交补丁的并集：
+    #     本轮把那两句从 HEAD 的树里删掉之后，它们不再作为 + 行出现，探针必假。
+    # 也就是说：那版自检会**随本轮修复逐条塌掉**——尺子越有用，它自己越早失效。
+    #
+    # 本仓早有这条纪律，是我建工具时没照做：V62TechRemarkTest 明写
+    # 「对照组是历史形态的字面量，不随修复变化，两边各自成立」。
+    # 反面教材也在同一处：绝不能把 want 从 True 改成 False、或把这两条删掉——
+    # 那等于让尺子不再证明自己抓得住已知的假话，而一把不证明自己有效的尺子就是摆设。
+    # ============================================================================
+
+    print('【对照组一：循环变量规则必须抓到 v64 summaryTitle 那个形状（合成夹具，不扫活文件）】')
+    FIXTURE_BAD = """<template>
+      <div v-for="ind in list" :key="ind.code">
+        <el-descriptions v-if="ind.summary" :title="summaryTitle">
+          <el-descriptions-item :label="ind.name">x</el-descriptions-item>
+        </el-descriptions>
+      </div>
+    </template>
+    <script setup lang="ts">
+    const summaryTitle = computed(() =>
+      '本期合计　——整个统计区间一个数，不是某一天；下面那张表才按日拆分')
+    </script>"""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        f = pathlib.Path(td) / 'Fixture.vue'
+        f.write_text(FIXTURE_BAD, encoding='utf-8')
+        fx = detect_loop_invariant_claims([f])
+    check('v64 那个形状被判红', any(h['ident'] == 'summaryTitle' for h in fx), True)
+    check('同子树里引用循环变量的兄弟绑定不被咬',
+          any('ind.' in h['expr'] for h in fx), False)
+
+    print('【对照组二：活树上的判红条数（只报告，不当断言——它会随修复变化）】')
     hits = detect_loop_invariant_claims(sorted(ROOT.glob(VUE_GLOB)))
-    got = any(h['file'].endswith('PathQcView.vue') and h['ident'] == 'summaryTitle' for h in hits)
-    check('PathQcView.summaryTitle 被判红', got, True)
-    print(f'  （全仓共判红 {len(hits)} 条：'
-          + '、'.join(sorted({h["file"].split("/")[-1] + ":" + h["ident"] for h in hits})) + '）')
+    print(f'  当前主树判红 {len(hits)} 条：'
+          + '、'.join(sorted({h["file"].split("/")[-1] + ":" + h["ident"] for h in hits})))
 
-    print('【对照组二：同子树里引用了循环变量的兄弟绑定不得被咬】')
-    pq = ROOT / 'frontend/shell/src/views/medtech/pathology/PathQcView.vue'
-    if pq.is_file():
-        bitten = any(h['file'].endswith('PathQcView.vue') and 'ind.' in h['expr'] for h in hits)
-        check('引用 ind 的绑定未被判红', not bitten, True)
-
-    print('【对照组三：棘轮必须认出 v64 那四条假话是「本轮动过的」】')
-    claims = touched_claims('v1.6.3')
-    texts = ' '.join(c['text'] for c in claims.values())
+    print('【对照组三：棘轮必须认出 v64 那四条假话——基线钉死在 v1.6.3..v1.6.4 这个不可移动的历史区间】')
+    hist = touched_claims('v1.6.3', head='v1.6.4')
+    texts = ' '.join(c['text'] for c in hist.values())
     for probe in ('已预填在下面的字段栏里', '下面那张表才按日拆分', '必然小于', '取不到'):
-        check(f'{probe!r} 在 v1.6.3..HEAD 的改动里', probe in texts, True)
+        check(f'{probe!r} 在 v1.6.3..v1.6.4 的改动里', probe in texts, True)
 
     print('【对照组四：指纹必须对措辞敏感、对插值与空白不敏感】')
     check('插值不同但措辞相同 → 同指纹',
