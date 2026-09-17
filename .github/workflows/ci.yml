@@ -41,6 +41,27 @@ jobs:
       - name: 运行测试
         run: mvn -B --no-transfer-progress test
 
+      # v65：契约对账闸门挂进 CI。
+      # 它 v64 就建好了，却只写进 docs/开发流程.md 的定版检查单、**没进 CI**——
+      # 于是只在「有人记得手动跑」时才生效，而 v64 照样发了四条假话。
+      # 这是一次现成的对照实验：闸门进检查单等于没进。
+      # 从此立规矩：机械闸门一律进 CI 或 mvn test，检查单只放需要人做判断的事。
+      #
+      # 放在本 job 而不是 e2e job：本 job 是唯一 fetch-depth: 0 的（有 tag 与全量历史），
+      # 而基线必须是「上一个发布 tag」。**基线取不到就响亮地失败**——
+      # 退到根提交等于全量扫（实测 --strict 当场红、会对所有人炸），
+      # 静默跳过则又变回「有人记得才生效」，两条都不行。
+      - name: 契约对账（本轮新增的返回体键必须有前端消费方）
+        run: |
+          base=$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2>/dev/null || true)
+          if [ -z "$base" ]; then
+            echo "取不到上一个发布 tag：本闸门的基线是「上一版 tag 之后新增的键」，没有基线就无从判断。"
+            echo "（不退到根提交——那等于全量扫存量键，会把历史债当成本轮新债；也不静默跳过。）"
+            exit 1
+          fi
+          echo "基线：$base"
+          python3 tools/contract-wired-check.py --since "$base" --strict
+
   frontend-build:
     name: 前端构建（vue-tsc + vite）
     runs-on: ubuntu-latest
