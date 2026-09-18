@@ -374,8 +374,16 @@ assert rv['grossFieldCount'] == 2 and rv['warnings'] == [], f'不退化就放行
 set_grossfield_gate('warn')
 FLAT = '只剩自由描述 ' + uniq('W')
 rv = ok(api('PUT', f'/pathology/process/grossing/{s2}/fields', {'grossText': FLAT}), 'warn 档去结构化修订')
-assert rv['grossFieldCount'] == 0 and len(rv['warnings']) == 1 and '不再有结构化字段' in rv['warnings'][0], (
+assert rv['grossFieldCount'] == 0 and len(rv['warnings']) == 1 and '不再写入任何结构化字段' in rv['warnings'][0], (
     f'**warn：照常落库且 warnings 说清后果**（修复前返回体根本没有这个键）：{rv}')
+# v65（2530 复核）：这条告警本轮重写过，探针跟着改，且**顺带钉硬两件事**（车道 A 的建议，采纳）：
+# ① 整段只剩一个基准「修订前最新一版」——v64 时全丢那档打全版本累计、部分退化那档打最新一版，
+#    同一标本会是 6 与 2 两个数，同一段话两套口径；
+# ② 那句「字段级查询与统计取不到」是假话：path_gross_field 只有 INSERT，被删那几项仍以旧版号
+#    躺在库里、按版本调阅得到。这是 v64 复核 2530 打回的三条之一，钉住它不许回来。
+assert '修订前最新一版' in rv['warnings'][0], f'基准必须统一到「修订前最新一版」：{rv["warnings"]}'
+assert '字段级查询与统计取不到' not in rv['warnings'][0], (
+    f'**那几行仍在库里、按版本调阅得到，不许再说取不到**（v64 复核打回）：{rv["warnings"]}')
 assert grossing_view(s2)['grossFinding'] == FLAT, 'warn 必须真落库，不是只喊一声'
 
 # off：不判；warnings 仍是空数组而不是缺键

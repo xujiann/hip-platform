@@ -371,7 +371,15 @@ assert proc.returncode == 0, (
 summary = next((ln for ln in proc.stdout.splitlines() if ln.startswith('demo-pathology OK')), None)
 assert summary, f'--quiet 须只打印一行成功摘要：{proc.stdout!r}'
 m = re.search(r'specimens=(\d+)', summary)
-assert m and int(m.group(1)) == 4, f'--count 3 = 3 个阶梯标本 + 固定 1 个拒收 = 4：{summary}'
+# v65（2563 复核）：+1 —— 车道 B 固定再造一个标本，在它上面留下**四条停在待执行的特检医嘱**
+# （四个未完成档各一条）。起因是复核者实测：演示脚本原先把两条特检医嘱当场一条完成、一条取消，
+# 库里剩不下任何待执行，评委点进 ⑤ 特检工作台第一屏是空表，而页首宣告的四个未完成档
+# 与「已出块」「派生」蜡块标记在演示数据里一个实例都没有——2563 最吃劲的两项没东西可看。
+assert m and int(m.group(1)) == 5, (
+    f'--count 3 = 3 个阶梯标本 + 固定 1 个拒收 + 固定 1 个待执行积压标本 = 5：{summary}')
+# 顺带把「四档各有实例」也钉在端到端层：演示脚本自己会 verify_tech_backlog 回读 ⑤ 默认视图逐档核对，
+# 这里只确认它真跑过（它没造就会以非 0 退出，上面那条 returncode 断言已挡住）。
+assert 'tech_backlog=4' in summary, f'⑤ 默认视图须留下四条待执行医嘱（四个未完成档各一条）：{summary}'
 qc = ok(api('GET', '/path-qc/indicators'), '质控概览（默认时间窗）')
 by = {i.get('code'): i for i in (qc.get('indicators') or [])}
 three = {}
