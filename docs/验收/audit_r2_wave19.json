@@ -1,0 +1,112 @@
+[
+ {
+  "no": 719,
+  "verdict": "部分符合",
+  "source": "v67-signoff-triage"
+ },
+ {
+  "no": 1072,
+  "verdict": "部分符合",
+  "source": "v67-signoff-triage"
+ },
+ {
+  "no": 707,
+  "verdict": "部分符合",
+  "source": "v67-signoff-triage"
+ },
+ {
+  "no": 1076,
+  "verdict": "部分符合",
+  "source": "v67-signoff-triage"
+ },
+ {
+  "no": 2467,
+  "verdict": "部分符合",
+  "source": "v67-signoff-triage"
+ },
+ {
+  "no": 229,
+  "verdict": "部分符合",
+  "source": "v67-signoff-triage"
+ },
+ {
+  "no": 1004,
+  "verdict": "部分符合",
+  "source": "v67-signoff-triage"
+ },
+ {
+  "no": 1005,
+  "verdict": "部分符合",
+  "source": "v67-signoff-triage"
+ },
+ {
+  "no": 1402,
+  "verdict": "部分符合",
+  "source": "v67-signoff-triage"
+ },
+ {
+  "no": 2535,
+  "verdict": "部分符合",
+  "source": "v67-signoff-triage"
+ },
+ {
+  "no": 3120,
+  "verdict": "部分符合",
+  "source": "v67-signoff-triage"
+ },
+ {
+  "no": 4293,
+  "verdict": "属外部边界/配套产品",
+  "source": "v67-signoff-triage"
+ },
+ {
+  "no": 4295,
+  "verdict": "属外部边界/配套产品",
+  "source": "v67-signoff-triage"
+ },
+ {
+  "no": 54,
+  "verdict": "部分符合",
+  "source": "v67-signoff-triage"
+ },
+ {
+  "no": 1003,
+  "verdict": "部分符合",
+  "source": "v67-signoff-triage"
+ },
+ {
+  "no": 180,
+  "verdict": "属外部边界/配套产品",
+  "source": "v67-signoff-triage"
+ },
+ {
+  "no": 181,
+  "verdict": "属外部边界/配套产品",
+  "source": "v67-signoff-triage"
+ },
+ {
+  "no": 219,
+  "verdict": "属外部边界/配套产品",
+  "source": "v67-signoff-triage"
+ },
+ {
+  "no": 242,
+  "verdict": "属外部边界/配套产品",
+  "source": "v67-signoff-triage"
+ },
+ {
+  "no": 243,
+  "verdict": "属外部边界/配套产品",
+  "source": "v67-signoff-triage"
+ },
+ {
+  "no": 246,
+  "verdict": "属外部边界/配套产品",
+  "source": "v67-signoff-triage"
+ },
+ {
+  "no": 1093,
+  "verdict": "属外部边界/配套产品",
+  "source": "v67-signoff-triage"
+ }
+]
