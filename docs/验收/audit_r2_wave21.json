@@ -1,0 +1,42 @@
+[
+ {
+  "no": 664,
+  "verdict": "部分符合",
+  "source": "v67-signoff-pass3"
+ },
+ {
+  "no": 671,
+  "verdict": "部分符合",
+  "source": "v67-signoff-pass3"
+ },
+ {
+  "no": 1088,
+  "verdict": "部分符合",
+  "source": "v67-signoff-pass3"
+ },
+ {
+  "no": 2464,
+  "verdict": "部分符合",
+  "source": "v67-signoff-pass3"
+ },
+ {
+  "no": 2032,
+  "verdict": "部分符合",
+  "source": "v67-signoff-pass3"
+ },
+ {
+  "no": 1035,
+  "verdict": "部分符合",
+  "source": "v67-signoff-pass3"
+ },
+ {
+  "no": 1417,
+  "verdict": "部分符合",
+  "source": "v67-signoff-pass3"
+ },
+ {
+  "no": 1419,
+  "verdict": "部分符合",
+  "source": "v67-signoff-pass3"
+ }
+]
