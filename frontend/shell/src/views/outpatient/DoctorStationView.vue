@@ -91,6 +91,10 @@
               <el-option v-for="s in EMR_SECTIONS" :key="s.key" :label="s.label" :value="s.key" />
             </el-select>
             <el-button size="small" @click="refVisible = true">引用资料</el-button>
+            <!-- v69 包 A（1079★/2455）：按既往病历新建。端点此前齐备而界面无入口，医生进不去。
+                 **只取正文**：挑一份 → 拿到正文 → 插进选定的正文段 → 仍走既有「保存病历」写入，
+                 本轮不新增任何写病历路径（端点 javadoc 里的硬约束）。 -->
+            <el-button size="small" :disabled="emrSigned" @click="openPriorRecords">按既往病历新建</el-button>
             <!-- 档位常驻可见：医生该知道院里此刻是"需确认"还是"禁止"，而不是粘贴时才被弹一脸 -->
             <el-tag v-if="copyMode !== 'off'" size="small" :type="copyMode === 'block' ? 'danger' : 'warning'">
               跨患者粘贴：{{ copyMode === 'block' ? '禁止' : '需确认' }}
@@ -216,6 +220,9 @@
                  ——功能在、医生进不去。workspace 与保存返回体本就带 id，这里只是把它接到按钮上。
                  新标签打开：不丢医生手上尚未保存的正文；病历未保存（无 id）或本人不持有该菜单时不出现，不摆死按钮。 -->
             <el-button v-if="currentEmrId && canOpenEmrVersion" plain @click="openEmrVersions">版本留痕</el-button>
+            <!-- v69 包 A（1095★）：一键存为模板。同样是端点齐备而界面无入口。
+                 需要已保存的病历才有 id 可存，故与「版本留痕」同条件出现，不摆死按钮。 -->
+            <el-button v-if="currentEmrId" plain :loading="savingTpl" @click="saveAsTemplate">存为模板</el-button>
             <span v-if="!emrSigned" class="sign-tip">签名后原文冻结，如需更正只能追加补正记录</span>
           </el-form>
           </div>
@@ -510,7 +517,32 @@
     </el-dialog>
 
     <!-- v45 车道J：临床资料引用抽屉（992★ 基本资料/检验/检查/历史病历，点条目插入正文） -->
-    <EmrRefDrawer v-model="refVisible" :registration-id="(current?.registrationId as number) ?? null"
+    <!-- v69 包 A：既往病历清单。只读挑选，选中即取正文插入当前病历的选定段。 -->
+  <el-dialog v-model="priorVisible" title="按既往病历新建（取正文插入当前病历）" width="720px">
+    <el-alert type="info" :closable="false" show-icon style="margin-bottom: 8px"
+              :title="`选中一条即把它的正文插入「${sectionLabel}」；原病历只读不改，改完仍点「保存病历」写入本次就诊。`" />
+    <el-table :data="priorRecords" height="360" v-loading="priorLoading">
+      <el-table-column label="来源" width="80">
+        <template #default="{ row }">{{ row.source === 'INP' ? '住院' : '门诊' }}</template>
+      </el-table-column>
+      <el-table-column prop="title" label="文书" min-width="150" show-overflow-tooltip />
+      <el-table-column prop="dept_name" label="科室" width="110" show-overflow-tooltip />
+      <el-table-column prop="doctor_name" label="医师" width="90" />
+      <el-table-column label="时间" width="150">
+        <template #default="{ row }">{{ fmtDateTime(row.created_at) }}</template>
+      </el-table-column>
+      <el-table-column prop="content_length" label="字数" width="70" />
+      <el-table-column label="操作" width="90">
+        <template #default="{ row }">
+          <el-button link type="primary" size="small" :disabled="emrSigned"
+                     @click="usePriorRecord(row)">取正文</el-button>
+        </template>
+      </el-table-column>
+    </el-table>
+    <el-empty v-if="!priorLoading && !priorRecords.length" description="该患者暂无既往病历" />
+  </el-dialog>
+
+  <EmrRefDrawer v-model="refVisible" :registration-id="(current?.registrationId as number) ?? null"
                   :disabled="emrSigned" @insert="insertText" />
   </div>
 </template>
@@ -666,6 +698,67 @@ const canOpenEmrVersion = computed(() => {
   const menus = auth.user?.menus ?? []
   return menus.length === 0 || menus.some((m) => m.path === '/emr-version')
 })
+/* ===================== v69 包 A：按既往病历新建 / 存为模板 =====================
+ * 两块都是「端点齐备、界面无入口」的接线，**零后端改动**。
+ * 既往病历一侧只读：取正文 → 插入当前正文段 → 仍走既有「保存病历」写入。
+ */
+const priorVisible = ref(false)
+const priorLoading = ref(false)
+const priorRecords = ref<Record<string, unknown>[]>([])
+const savingTpl = ref(false)
+const sectionLabel = computed(
+  () => EMR_SECTIONS.find((x) => x.key === insertTarget.value)?.label ?? '现病史')
+
+async function openPriorRecords() {
+  const pid = current.value?.patientId as number | undefined
+  if (!pid) { ElMessage.warning('请先选中患者'); return }
+  priorVisible.value = true
+  priorLoading.value = true
+  try {
+    priorRecords.value = (await client.get('/emr-templates/prior-records',
+      { params: { patientId: pid } })).data.data ?? []
+  } finally {
+    priorLoading.value = false
+  }
+}
+
+async function usePriorRecord(row: Record<string, unknown>) {
+  const pid = current.value?.patientId as number | undefined
+  if (!pid) return
+  // patientId 是归属校验参数不是过滤条件：不属于该患者后端一律 4068，这里照端点契约原样带上
+  const body = (await client.get('/emr-templates/prior-records/content', {
+    params: { patientId: pid, source: row.source, recordId: row.record_id },
+  })).data.data
+  const text = String(body?.content ?? '')
+  if (!text.trim()) { ElMessage.warning('这份既往病历没有正文可取'); return }
+  insertText(text)          // 已签名冻结时由 insertText 自己挡住并提示
+  priorVisible.value = false
+}
+
+async function saveAsTemplate() {
+  if (!currentEmrId.value) return
+  const pid = current.value?.patientId as number | undefined
+  if (!pid) { ElMessage.warning('请先选中患者'); return }
+  const name = await ElMessageBox.prompt('模板名称', '把当前病历存为个人模板', {
+    inputValue: `${String(current.value?.patientName ?? '')}门诊病历模板`.trim(),
+    inputValidator: (v: string) => (v && v.trim().length > 0) || '请填写模板名称',
+  }).then((r) => (r as { value: string }).value).catch(() => null)
+  if (name == null) return
+  savingTpl.value = true
+  try {
+    const out = (await client.post('/emr-templates/from-record', {
+      source: 'OUTP', recordId: currentEmrId.value, patientId: pid,
+      name: name.trim(), scope: 'PERSONAL',
+    })).data.data
+    // 后端对超长正文**显式回 truncated 而不是无声截断**，这里如实转达，不替它把话说圆
+    ElMessage.success(out?.truncated
+      ? `已存为个人模板，但来源正文 ${out.sourceLength} 字超过模板上限 ${out.maxContent} 字，已截断保存前 ${out.contentLength} 字`
+      : '已存为个人模板（仅本人与被授权人可用）')
+  } finally {
+    savingTpl.value = false
+  }
+}
+
 function openEmrVersions() {
   if (!currentEmrId.value) return
   const q = new URLSearchParams({ emrType: 'OUTP', emrId: String(currentEmrId.value), from: 'doctor' })
