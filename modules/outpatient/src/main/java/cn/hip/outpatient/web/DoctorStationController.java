@@ -33,6 +33,9 @@ public class DoctorStationController {
     private final PatientRepository patientRepository;
     private final CurrentUserService currentUserService;
     private final cn.hip.platform.core.repository.SysUserRepository userRepository;
+
+    /** 接诊队列日期区间跨度上限（天）。跨度不设限等于放任全表扫描——与住院侧「不给条件就拒」同口径。 */
+    static final int MAX_RANGE_DAYS = 92;
     private final cn.hip.platform.integration.signature.SignatureAdapter signatureAdapter;
 
     /**
@@ -43,8 +46,48 @@ public class DoctorStationController {
      */
     @GetMapping("/worklist")
     public R<List<Map<String, Object>>> worklist(
-            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
-        var regs = registrationRepository.findByVisitDateOrderByIdDesc(date).stream()
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
+            @RequestParam(required = false) Long doctorId,
+            @RequestParam(required = false) Boolean mine,
+            Authentication auth) {
+        // ★ 零条件 = 旧行为：一个新参数都不传时，走原来那条查询，连 SQL 都不换。
+        //   （照抄住院侧多维检索立下的纪律；V70WorklistSearchTest 三条用例在改本方法前已把旧行为钉死）
+        boolean filtered = from != null || to != null || doctorId != null || Boolean.TRUE.equals(mine);
+
+        List<cn.hip.outpatient.entity.OutpRegistration> raw;
+        if (!filtered) {
+            if (date == null) return R.fail(4080, "检索条件非法：须指定日期，或给出 from/to 日期区间");
+            raw = registrationRepository.findByVisitDateOrderByIdDesc(date);
+        } else {
+            // 区间缺省回落到 date（只按医生过滤当天时不必再传一遍区间）
+            LocalDate lo = from != null ? from : date;
+            LocalDate hi = to != null ? to : (from != null ? from : date);
+            if (lo == null || hi == null) {
+                return R.fail(4080, "检索条件非法：须指定日期，或给出 from/to 日期区间");
+            }
+            if (lo.isAfter(hi)) return R.fail(4080, "检索条件非法：日期区间起止倒置");
+            if (java.time.temporal.ChronoUnit.DAYS.between(lo, hi) + 1 > MAX_RANGE_DAYS) {
+                return R.fail(4080, "检索条件非法：日期区间跨度超过 " + MAX_RANGE_DAYS + " 天");
+            }
+            if (doctorId != null && doctorId <= 0) return R.fail(4080, "检索条件非法：医生条件非法");
+
+            Long effectiveDoctorId = doctorId;
+            if (Boolean.TRUE.equals(mine)) {
+                Long meId = auth == null ? null : currentUserService.idOf(auth);
+                if (meId == null) return R.fail(4080, "检索条件非法：无法识别当前登录用户，不能按「我的患者」检索");
+                if (doctorId != null && !doctorId.equals(meId)) {
+                    return R.fail(4080, "检索条件非法：mine=true 与 doctorId 冲突，请只传其一");
+                }
+                effectiveDoctorId = meId;
+            }
+            raw = effectiveDoctorId == null
+                    ? registrationRepository.findByVisitDateBetweenOrderByIdDesc(lo, hi)
+                    : registrationRepository.findByVisitDateBetweenAndDoctorIdOrderByIdDesc(lo, hi, effectiveDoctorId);
+        }
+
+        var regs = raw.stream()
                 .filter(r -> !"CANCELLED".equals(r.getStatus()))
                 .toList();
         Map<Long, OutpEmr> emrByReg = regs.isEmpty() ? Map.of()

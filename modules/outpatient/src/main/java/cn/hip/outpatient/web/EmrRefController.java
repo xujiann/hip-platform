@@ -148,6 +148,14 @@ public class EmrRefController {
     public R<Map<String, Object>> ref(@RequestParam(required = false) Long registrationId,
                                       @RequestParam(required = false) Long admissionId,
                                       @RequestParam String kind,
+                                      @RequestParam(required = false)
+                                      @org.springframework.format.annotation.DateTimeFormat(
+                                              iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE)
+                                      java.time.LocalDate from,
+                                      @RequestParam(required = false)
+                                      @org.springframework.format.annotation.DateTimeFormat(
+                                              iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE)
+                                      java.time.LocalDate to,
                                       Authentication auth) {
         String k = kind == null ? "" : kind.trim().toUpperCase(Locale.ROOT);
         if (!KINDS.contains(k)) {
@@ -163,12 +171,79 @@ public class EmrRefController {
         if (!canRead(enc, auth)) {
             return R.fail(4036, "无权查阅该患者的临床引用资料（非本人接诊/主管的就诊）");
         }
+        // 1019★ 时间段筛选。**BASIC 段不吃日期**：基本资料没有时间维度，加了也无意义（范围外已声明）。
+        if (from != null && to != null && from.isAfter(to)) {
+            return R.fail(4000, "请求参数不正确：日期区间起止倒置");
+        }
+        Window w = new Window(from, to);
         return R.ok(switch (k) {
             case "BASIC" -> basic(enc);
-            case "LAB" -> lab(enc);
-            case "EXAM" -> exam(enc);
-            default -> history(enc);
+            case "LAB" -> lab(enc, w);
+            case "EXAM" -> exam(enc, w);
+            default -> history(enc, w);
         });
+    }
+
+    /**
+     * 1019★ 引用资料的时间窗。<b>两端都为 null 时一个字都不往 SQL 里加</b>——
+     * 零条件必须与本版之前逐字同一条查询（与队列端点同一条纪律）。
+     */
+    record Window(java.time.LocalDate from, java.time.LocalDate to) {
+        boolean active() { return from != null || to != null; }
+    }
+
+    /** 返回可直接拼进 where 后面的固定字面量子句；取值一律走占位符，不参与字符串拼接。 */
+    private static String dateClause(String col, Window w) {
+        if (!w.active()) return "";
+        if (w.from() != null && w.to() != null) return " and " + col + " between ? and ?";
+        return w.from() != null ? " and " + col + " >= ?" : " and " + col + " <= ?";
+    }
+
+    /** 检验/检查段实参：patientId → 日期窗 → limit。顺序须与 SQL 里占位符出现顺序一致。 */
+    private static Object[] labArgs(Encounter enc, Window w) {
+        List<Object> a = new ArrayList<>();
+        a.add(enc.patientId());
+        dateArgs(a, w);
+        a.add(ROW_LIMIT + 1);
+        return a.toArray();
+    }
+
+    /** 住院历史段实参：时间戳列，上界取次日零点（半开区间）。 */
+    private static Object[] histTsArgs(Encounter enc, Window w) {
+        List<Object> a = new ArrayList<>();
+        a.add(enc.patientId());
+        if (w.from() != null) a.add(java.sql.Timestamp.valueOf(w.from().atStartOfDay()));
+        if (w.to() != null) a.add(java.sql.Timestamp.valueOf(w.to().plusDays(1).atStartOfDay()));
+        a.add(HISTORY_LIMIT + 2);
+        return a.toArray();
+    }
+
+    /** 历史病历段实参：同上，limit 换 HISTORY_LIMIT。 */
+    private static Object[] histArgs(Encounter enc, Window w) {
+        List<Object> a = new ArrayList<>();
+        a.add(enc.patientId());
+        dateArgs(a, w);
+        a.add(HISTORY_LIMIT + 2);   // 原文取 +2（"刚好第 21 条"要能判出 truncated），不得改成 +1
+        return a.toArray();
+    }
+
+    /**
+     * 时间戳列的时间窗子句。**不用 {@code ::date}**——1.1.3 已把全仓 27 处 `::date` 谓词
+     * 改成半开区间（`::date` 不可 sarg，实测由 Bitmap Index Scan 退化成 Seq Scan），此处不开倒车。
+     * 上界用半开：{@code < 次日零点}，把当天整天含进来。
+     */
+    private static String tsClause(String col, Window w) {
+        if (!w.active()) return "";
+        StringBuilder sb = new StringBuilder();
+        if (w.from() != null) sb.append(" and ").append(col).append(" >= ?");
+        if (w.to() != null) sb.append(" and ").append(col).append(" < ?");
+        return sb.toString();
+    }
+
+    /** 按 dateClause 的形状把参数依序塞进实参表。 */
+    private static void dateArgs(List<Object> args, Window w) {
+        if (w.from() != null) args.add(w.from());
+        if (w.to() != null) args.add(w.to());
     }
 
     // ---------- 就诊定位与归属校验 ----------
@@ -280,7 +355,7 @@ public class EmrRefController {
 
     // ---------- LAB：检验结果（含异常标记） ----------
 
-    private Map<String, Object> lab(Encounter enc) {
+    private Map<String, Object> lab(Encounter enc, Window w) {
         List<Entry> entries = new ArrayList<>();
 
         // ① 结构化检验结果（唯一带 abnormal_flag 的来源）
@@ -291,10 +366,10 @@ public class EmrRefController {
                 from outp_lab_result lr
                 join outp_order o on o.id = lr.order_id
                 join outp_registration reg on reg.id = o.registration_id
-                where reg.patient_id = ?
+                where reg.patient_id = ?""" + dateClause("reg.visit_date", w) + "\n" + """
                 order by lr.created_at desc, lr.id desc
                 limit ?
-                """, enc.patientId(), ROW_LIMIT + 1)) {
+                """, labArgs(enc, w))) {
             // "N" 是平台自己判定的「正常」：ReferenceRangeService 对落在参考区间内的值返回 N，
             // LabResultListener 在检验方未给 flag 时把它落库。它非空但**不是异常**——
             // 只判非空会把正常结果标红，并把「［异常 N］」逐字写进病历正文。
@@ -320,10 +395,10 @@ public class EmrRefController {
                 from outp_order_report rep
                 join outp_order o on o.id = rep.order_id
                 join outp_registration reg on reg.id = o.registration_id
-                where reg.patient_id = ? and o.order_type = 'LAB' and rep.result_text is not null
+                where reg.patient_id = ? and o.order_type = 'LAB' and rep.result_text is not null""" + dateClause("reg.visit_date", w) + "\n" + """
                 order by rep.executed_at desc, rep.id desc
                 limit ?
-                """, enc.patientId(), ROW_LIMIT + 1)) {
+                """, labArgs(enc, w))) {
             var it = item("LAB-REPORT-" + str(r.get("id")),
                     str(r.get("order_name")) + " · " + dateText(r.get("visit_date"), r.get("executed_at")),
                     str(r.get("order_name")) + "：" + str(r.get("result_text")), r);
@@ -336,7 +411,7 @@ public class EmrRefController {
 
     // ---------- EXAM：检查报告 ----------
 
-    private Map<String, Object> exam(Encounter enc) {
+    private Map<String, Object> exam(Encounter enc, Window w) {
         List<Entry> entries = new ArrayList<>();
 
         for (var r : jdbc.queryForList("""
@@ -346,10 +421,10 @@ public class EmrRefController {
                 from ris_exam e
                 join outp_order o on o.id = e.order_id
                 join outp_registration reg on reg.id = o.registration_id
-                where reg.patient_id = ?
+                where reg.patient_id = ?""" + dateClause("reg.visit_date", w) + "\n" + """
                 order by coalesce(e.reported_at, e.created_at) desc, e.id desc
                 limit ?
-                """, enc.patientId(), ROW_LIMIT + 1)) {
+                """, labArgs(enc, w))) {
             StringBuilder sb = new StringBuilder(str(r.get("order_name")));
             if (!blank(str(r.get("findings")))) sb.append("　所见：").append(str(r.get("findings")));
             if (!blank(str(r.get("impression")))) sb.append("　印象：").append(str(r.get("impression")));
@@ -371,10 +446,10 @@ public class EmrRefController {
                 from outp_order_report rep
                 join outp_order o on o.id = rep.order_id
                 join outp_registration reg on reg.id = o.registration_id
-                where reg.patient_id = ? and o.order_type = 'EXAM' and rep.result_text is not null
+                where reg.patient_id = ? and o.order_type = 'EXAM' and rep.result_text is not null""" + dateClause("reg.visit_date", w) + "\n" + """
                 order by rep.executed_at desc, rep.id desc
                 limit ?
-                """, enc.patientId(), ROW_LIMIT + 1)) {
+                """, labArgs(enc, w))) {
             var it = item("EXAM-REPORT-" + str(r.get("id")),
                     str(r.get("order_name")) + " · " + dateText(r.get("visit_date"), r.get("executed_at")),
                     str(r.get("order_name")) + "：" + str(r.get("result_text")), r);
@@ -395,7 +470,7 @@ public class EmrRefController {
      * 两条 SQL 各多取 2 行（{@code HISTORY_LIMIT + 2}）而非 +1：本次就诊自身会被剔掉一条，
      * 只多取 1 行会让"刚好第 21 条"的场景漏报 truncated。
      */
-    private Map<String, Object> history(Encounter enc) {
+    private Map<String, Object> history(Encounter enc, Window w) {
         List<Entry> entries = new ArrayList<>();
 
         for (var r : jdbc.queryForList("""
@@ -404,10 +479,10 @@ public class EmrRefController {
                        (e.signature is not null) as signed, e.updated_at
                 from outp_emr e
                 join outp_registration reg on reg.id = e.registration_id
-                where reg.patient_id = ? and reg.status <> 'CANCELLED'
+                where reg.patient_id = ? and reg.status <> 'CANCELLED'""" + dateClause("reg.visit_date", w) + "\n" + """
                 order by reg.visit_date desc, reg.id desc
                 limit ?
-                """, enc.patientId(), HISTORY_LIMIT + 2)) {
+                """, histArgs(enc, w))) {
             if (sameRegistration(enc, r.get("registration_id"))) continue;
             String text = joinSections(List.of(
                     section("主诉", str(r.get("chief_complaint"))),
@@ -429,10 +504,10 @@ public class EmrRefController {
                        (m.signature is not null) as signed, m.created_at, a.admission_no
                 from inp_medical_record m
                 join inp_admission a on a.id = m.admission_id
-                where a.patient_id = ?
+                where a.patient_id = ?""" + tsClause("m.created_at", w) + "\n" + """
                 order by m.created_at desc, m.id desc
                 limit ?
-                """, enc.patientId(), HISTORY_LIMIT + 2)) {
+                """, histTsArgs(enc, w))) {
             if (sameAdmission(enc, r.get("admission_id"))) continue;
             if (blank(str(r.get("content")))) continue;
             var it = item("HIST-INP-" + str(r.get("record_id")),

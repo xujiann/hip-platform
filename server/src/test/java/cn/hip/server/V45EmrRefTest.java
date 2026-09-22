@@ -170,7 +170,7 @@ class V45EmrRefTest {
     }
 
     private Map<String, Object> ref(Long registrationId, String kind, Authentication auth) {
-        var r = emrRefController.ref(registrationId, null, kind, auth);
+        var r = emrRefController.ref(registrationId, null, kind, null, null, auth);
         assertEquals(0, r.getCode(), r.getMessage());
         return r.getData();
     }
@@ -369,13 +369,13 @@ class V45EmrRefTest {
         inpRecord(admId, "PROGRESS", "病程记录", "体温渐降");
         em.flush();
 
-        var basic = emrRefController.ref(null, admId, "BASIC", doc).getData();
+        var basic = emrRefController.ref(null, admId, "BASIC", null, null, doc).getData();
         assertEnvelope(basic, "BASIC");
         assertEquals(admId, basic.get("admissionId"));
         assertNull(basic.get("registrationId"));
         assertTrue(texts(basic).contains("住院号："), "住院侧 BASIC 应带住院号：" + texts(basic));
 
-        var hist = emrRefController.ref(null, admId, "HISTORY", doc).getData();
+        var hist = emrRefController.ref(null, admId, "HISTORY", null, null, doc).getData();
         assertEnvelope(hist, "HISTORY");
         assertTrue(texts(hist).contains("住院前门诊主诉"), "住院侧应引用得到门诊既往病历");
         assertFalse(texts(hist).contains("体温渐降"), "本次住院自身的记录不得出现在引用结果里");
@@ -387,10 +387,10 @@ class V45EmrRefTest {
         Authentication doc = doctorAuth("v45doc_param");
         Long pid = newPatient();
         Long rid = visitFor(pid, userId("v45doc_param"));
-        assertEquals(4000, emrRefController.ref(rid, null, "MULTIMEDIA", doc).getCode());
-        assertEquals(4000, emrRefController.ref(null, null, "BASIC", doc).getCode());
-        assertEquals(4000, emrRefController.ref(rid, 1L, "BASIC", doc).getCode());
-        assertEquals(4000, emrRefController.ref(-1L, null, "BASIC", doc).getCode(), "挂号不存在");
+        assertEquals(4000, emrRefController.ref(rid, null, "MULTIMEDIA", null, null, doc).getCode());
+        assertEquals(4000, emrRefController.ref(null, null, "BASIC", null, null, doc).getCode());
+        assertEquals(4000, emrRefController.ref(rid, 1L, "BASIC", null, null, doc).getCode());
+        assertEquals(4000, emrRefController.ref(-1L, null, "BASIC", null, null, doc).getCode(), "挂号不存在");
     }
 
     // ==================== ② 限条数与 truncated ====================
@@ -466,8 +466,8 @@ class V45EmrRefTest {
         long inpRowsBefore = count("select count(*) from inp_medical_record");
 
         for (String kind : List.of("BASIC", "LAB", "EXAM", "HISTORY")) {
-            assertEquals(0, emrRefController.ref(rid, null, kind, doc).getCode());
-            assertEquals(0, emrRefController.ref(null, admId, kind, doc).getCode());
+            assertEquals(0, emrRefController.ref(rid, null, kind, null, null, doc).getCode());
+            assertEquals(0, emrRefController.ref(null, admId, kind, null, null, doc).getCode());
         }
         emrRefController.copyPolicy();
         em.flush();
@@ -568,10 +568,10 @@ class V45EmrRefTest {
         em.flush();
 
         for (String kind : List.of("BASIC", "LAB", "EXAM", "HISTORY")) {
-            var denied = emrRefController.ref(rid, null, kind, other);
+            var denied = emrRefController.ref(rid, null, kind, null, null, other);
             assertEquals(4036, denied.getCode(), kind + " 段未拦住越权读取");
             assertNull(denied.getData(), "被拒时不得回带任何患者数据");
-            assertEquals(0, emrRefController.ref(rid, null, kind, owner).getCode(),
+            assertEquals(0, emrRefController.ref(rid, null, kind, null, null, owner).getCode(),
                     kind + " 段把本人也拦住了");
         }
     }
@@ -586,8 +586,8 @@ class V45EmrRefTest {
         inpRecord(admId, "ADMISSION", "入院记录", "越权用例·住院");
         em.flush();
 
-        assertEquals(4036, emrRefController.ref(null, admId, "BASIC", other).getCode());
-        assertEquals(0, emrRefController.ref(null, admId, "BASIC", owner).getCode());
+        assertEquals(4036, emrRefController.ref(null, admId, "BASIC", null, null, other).getCode());
+        assertEquals(0, emrRefController.ref(null, admId, "BASIC", null, null, owner).getCode());
     }
 
     /**
@@ -601,6 +601,62 @@ class V45EmrRefTest {
         Long rid = visitFor(pid, null);
         assertNull(jdbc.queryForObject("select doctor_id from outp_registration where id = ?",
                 Long.class, rid), "夹具前提：本次挂号未采集归属医生");
-        assertEquals(0, emrRefController.ref(rid, null, "BASIC", anyone).getCode());
+        assertEquals(0, emrRefController.ref(rid, null, "BASIC", null, null, anyone).getCode());
+    }
+
+    // ============ v70 包 B（1019★）：引用资料按时间段筛选 ============
+
+    /**
+     * 时间窗把别的日期的检验挡在外面；<b>两端都不传时与本版之前逐字同一批</b>。
+     *
+     * <p>零条件不得走新分支——这是本版对既有查询路径的唯一护栏（与接诊队列同一条纪律）。
+     */
+    @Test
+    void referenceDateWindowFiltersByVisitDate() {
+        Authentication doc = doctorAuth("v70doc_win");
+        Long pid = newPatient();
+        Long oldRid = visitFor(pid, userId("v70doc_win"));
+        Long oldOrder = order(oldRid, "LAB", "陈年血常规");
+        labResult(oldOrder, "白细胞", "9.9", null);
+
+        Long curRid = visitFor(pid, userId("v70doc_win"));
+        Long curOrder = order(curRid, "LAB", "本次血常规");
+        labResult(curOrder, "血红蛋白", "140", null);
+
+        // JPA ↔ JdbcTemplate 混用的既定顺序（测试方法论）：**先 flush 让 JPA 的改动落库**，
+        // 再直改库，最后 clear 让 JPA 重新读——顺序反了 flush 会把 visit_date 写回今天。
+        em.flush();
+        jdbc.update("update outp_registration set visit_date = current_date - 30 where id = ?", oldRid);
+        em.clear();
+
+        // ① 零条件：两条都在（旧行为）
+        String all = texts(ref(curRid, "LAB", doc));
+        assertTrue(all.contains("白细胞") && all.contains("血红蛋白"), "零条件应两条都回：" + all);
+
+        // ② 只看最近 7 天：陈年那条被挡在外面
+        var recent = emrRefController.ref(curRid, null, "LAB",
+                java.time.LocalDate.now().minusDays(7), java.time.LocalDate.now(), doc);
+        assertEquals(0, recent.getCode(), recent.getMessage());
+        String recentText = texts(recent.getData());
+        assertTrue(recentText.contains("血红蛋白"), "窗内的要在：" + recentText);
+        assertFalse(recentText.contains("白细胞"), "窗外的不得混进来：" + recentText);
+
+        // ③ 只给上界：同样生效（单边窗）
+        var before = emrRefController.ref(curRid, null, "LAB",
+                null, java.time.LocalDate.now().minusDays(15), doc);
+        assertEquals(0, before.getCode());
+        String beforeText = texts(before.getData());
+        assertTrue(beforeText.contains("白细胞"), "上界之前的要在：" + beforeText);
+        assertFalse(beforeText.contains("血红蛋白"), "上界之后的不得在：" + beforeText);
+    }
+
+    /** 起止倒置按本端点既定口径返通用 4000（类注释：参数校验一律复用 4000，不另占码）。 */
+    @Test
+    void invertedReferenceDateWindowIsRejected() {
+        Authentication doc = doctorAuth("v70doc_bad");
+        Long pid = newPatient();
+        Long rid = visitFor(pid, userId("v70doc_bad"));
+        assertEquals(4000, emrRefController.ref(rid, null, "LAB",
+                java.time.LocalDate.now(), java.time.LocalDate.now().minusDays(3), doc).getCode());
     }
 }

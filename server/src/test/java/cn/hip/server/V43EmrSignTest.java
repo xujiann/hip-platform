@@ -168,7 +168,7 @@ class V43EmrSignTest {
         doctorStationController.saveEmr(rid, new SaveEmrRequest(emrOf("腹痛半日"), List.of()), doc);
         entityManager.flush();
 
-        var mine = doctorStationController.worklist(BusinessDates.today()).getData().stream()
+        var mine = doctorStationController.worklist(BusinessDates.today(), null, null, null, null, null).getData().stream()
                 .filter(m -> rid.equals(m.get("registrationId"))).findFirst().orElseThrow();
         assertEquals(true, mine.get("emrWritten"));
         assertEquals(false, mine.get("emrSigned"), "写了没签必须标未签");
