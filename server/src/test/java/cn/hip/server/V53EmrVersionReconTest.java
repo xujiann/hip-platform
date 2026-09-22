@@ -888,6 +888,15 @@ class V53EmrVersionReconTest {
         Long admId = admit();
         Long recId = inpRecord(admId, "ADMISSION", "入院当日记录。", author);
 
+        // v73 起，经控制器保存的住院病历**会**落版本行——先把这条正向事实钉住。
+        assertEquals("VERSION_TABLE", countersignService.resolveVersion(recId).source(),
+                "v73 接上写入方后，正常保存的住院病历应能绑定版本行");
+
+        // NO_VERSION_ROW 仍是一种真实状态：v73 之前写的存量病历本就没有版本行
+        // （零回填纪律：不为它们伪造版本）。删掉版本行还原那个场景，三态语义照样要说得准。
+        jdbc.update("delete from emr_version where emr_type = 'INP' and emr_id = ?", recId);
+        flushClear();
+
         var ref = countersignService.resolveVersion(recId);
         assertEquals("NO_VERSION_ROW", ref.source(), """
                 emr_version 表已经建好（V157 已落盘），这份病历只是还没有版本行，
@@ -948,11 +957,10 @@ class V53EmrVersionReconTest {
         String content = "入院记录正文，用于验证审签绑定版本。";
         Long recId = inpRecord(admId, "ADMISSION", content, author);
 
+        // v73：住院病历保存时真实写入方已经落了第 1 版，这里**不再手工插 INP 行**
+        // （再插会撞 uk_emr_version_no）。本条的断言因此更强了：绑上的是真实写入方产生的版本，
+        // 不是用例自己摆进去的道具。
         // 同一个 id 上故意造出「门诊版本」干扰项：多态表只按 id 找就会绑错
-        jdbc.update("""
-                insert into emr_version(emr_type, emr_id, version_no, source, content, content_len, saved_on)
-                values ('INP', ?, 1, 'MANUAL', ?, ?, ?)
-                """, recId, content, content.length(), java.sql.Date.valueOf(BusinessDates.today()));
         jdbc.update("""
                 insert into emr_version(emr_type, emr_id, version_no, source, content, content_len, saved_on)
                 values ('OUTP', ?, 99, 'MANUAL', '这是门诊病历的版本，绝不能被住院审签绑走', 24, ?)

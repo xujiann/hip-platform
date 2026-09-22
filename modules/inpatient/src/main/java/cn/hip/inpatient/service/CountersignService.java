@@ -510,8 +510,11 @@ public class CountersignService {
                      + "order by %s desc limit 1").formatted(no, table, fk, no), recordId);
             if (rows.isEmpty()) {
                 return new VersionRef(null, null, "NO_VERSION_ROW",
-                        List.of("该病历在版本表中没有版本记录（版本留痕上线之前书写的病历本就没有），"
-                                + "本次审签只绑定正文摘要"));
+                        // v73：写入方接上之前，这里写死的原因是「版本留痕上线之前书写的病历本就没有」。
+                        // 那句话在两种可达状态下为假：留痕档位关闭时写的病历、以及留痕写入失败的病历，
+                        // 都是「上线之后写的、但没有版本行」。**不断言原因，只陈述事实**
+                        // （与 v68 复核在 994 查出的「空版本提示把原因说死」同一处置）。
+                        List.of("该病历在版本表中没有版本记录，本次审签只绑定正文摘要"));
             }
             var row = rows.get(0);
             Integer vno = row.get("vno") == null ? null : ((Number) row.get("vno")).intValue();
@@ -524,7 +527,14 @@ public class CountersignService {
                 String vContent = jdbc.query(
                         "select content from " + table + " where id = ?",
                         rs -> rs.next() ? rs.getString(1) : null, vid);
-                if (!java.util.Objects.equals(vContent, currentContent)) {
+                // v73：版本行的 content 列存的是**字段集的规范 JSON**，不是病历正文原文
+                // （见 EmrVersionService.canonicalJson）。直接拿它与正文比必然不等，
+                // 于是本校验会把每一次审签都推进 DIGEST_ONLY——写入方接上后这一点才暴露出来。
+                // 取快照里的 content 字段再比：这才是「签的是不是这一版正文」这个问题本身。
+                // 解析不出（历史脏数据或非 JSON 快照）时回落到原样比对，不改老行为。
+                var snap = cn.hip.outpatient.service.EmrVersionService.parseFields(vContent);
+                String snapText = snap.isEmpty() ? vContent : snap.get("content");
+                if (!java.util.Objects.equals(snapText, currentContent)) {
                     return new VersionRef(null, null, "DIGEST_ONLY",
                             List.of("版本表最新一版的正文与本次审签的正文不一致"
                                     + "（多为审签与保存并发），不绑定版本号以免指错版本；"

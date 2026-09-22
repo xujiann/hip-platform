@@ -34,5 +34,14 @@
             <groupId>cn.hip</groupId>
             <artifactId>hip-insurance</artifactId>
         </dependency>
+        <!-- v73：住院病历版本留痕。EmrVersionService 住在门诊模块但本就支持住院侧
+             （INP 常量 / INP_FIELDS / 独占锁命名空间 / 按值传参入口俱全，类注释明写
+             「住院接缝由主控在 InpEmrController 侧调用」），此前缺的只是这条依赖与调用。
+             方向已查：hip-outpatient 不依赖 hip-inpatient，不成环。 -->
+        <dependency>
+            <groupId>cn.hip</groupId>
+            <artifactId>hip-outpatient</artifactId>
+            <version>${project.version}</version>
+        </dependency>
     </dependencies>
 </project>

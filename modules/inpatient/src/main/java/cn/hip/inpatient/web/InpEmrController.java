@@ -23,6 +23,8 @@ public class InpEmrController {
     private final MedicalRecordRepo recordRepo;
     private final VitalSignRepo vitalRepo;
     private final CurrentUserService currentUserService;
+    /** v73：住院病历版本留痕。该服务本就支持住院侧，此前缺的只是这里的调用。 */
+    private final cn.hip.outpatient.service.EmrVersionService emrVersionService;
     private final cn.hip.inpatient.service.VitalValidator vitalValidator;
     private final cn.hip.platform.integration.signature.SignatureAdapter signatureAdapter;
     private final org.springframework.jdbc.core.JdbcTemplate jdbc;
@@ -99,7 +101,9 @@ public class InpEmrController {
         r.setContentJson(contentJson);
         r.setTemplateId(req.fields() == null ? null : req.templateId());
         r.setDoctorId(currentUserService.idOf(auth));
-        return R.ok(recordRepo.save(r));
+        InpMedicalRecord saved = recordRepo.save(r);
+        recordInpVersion(saved, cn.hip.outpatient.service.EmrVersionService.MANUAL, r.getDoctorId());
+        return R.ok(saved);
     }
 
     public record RoundRequest(String roundLevel, String roundOpinion, String superiorCorrection, String title) {}
@@ -134,7 +138,9 @@ public class InpEmrController {
         r.setRoundDoctorId(me);
         r.setRoundOpinion(req.roundOpinion());
         r.setSuperiorCorrection(req.superiorCorrection());
-        return R.ok(recordRepo.save(r));
+        InpMedicalRecord saved = recordRepo.save(r);
+        recordInpVersion(saved, cn.hip.outpatient.service.EmrVersionService.MANUAL, me);
+        return R.ok(saved);
     }
 
     /** 查房记录列表（可按级别过滤），含查房医师姓名与是否已签名冻结 */
@@ -162,6 +168,7 @@ public class InpEmrController {
         r.setSignature(result.signature());
         r.setSignedAt(java.time.Instant.now());
         recordRepo.save(r);
+        recordInpVersion(r, cn.hip.outpatient.service.EmrVersionService.SUBMIT, currentUserService.idOf(auth));
         return R.ok(java.util.Map.of("signature", r.getSignature(), "signedAt", r.getSignedAt()));
     }
 
@@ -741,5 +748,19 @@ public class InpEmrController {
             }
             return kept == null || kept.isBlank() ? block : kept + "\n" + block;
         }
+    }
+
+    /**
+     * v73 住院病历留痕接缝。<b>留痕失败不连累病历保存</b>——走服务的宽松档，
+     * 按 gate 降级、不抛异常（与门诊侧 saveEmr/signEmr 同口径）。
+     *
+     * <p>此前这条接缝从没被接上：服务支持住院侧（INP/INP_FIELDS/独占锁俱全），
+     * 审签也已在读 emr_type='INP' 的行，中间就是缺这一步。
+     */
+    private void recordInpVersion(InpMedicalRecord r, String source, Long userId) {
+        emrVersionService.recordVersion(cn.hip.outpatient.service.EmrVersionService.INP, r.getId(),
+                cn.hip.outpatient.service.EmrVersionService.inpFields(r.getTitle(), r.getContent(), r.getRoundLevel(),
+                        r.getRoundOpinion(), r.getSuperiorCorrection()),
+                source, userId);
     }
 }
