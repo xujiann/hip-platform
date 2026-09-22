@@ -136,6 +136,10 @@ class V43InpSearchTest {
             m.put("patientNo", p.getPatientNo());
             m.put("patientName", p.getName());
             m.put("sex", p.getSex());
+            // v71 包 C（2011★）：一览表要显示年龄，toDto 自觉扩展了这一个键，黄金副本随之同步。
+            // **这一行是有意改的**——本用例本来就是为了让「改了 toDto」这件事被看见；
+            // 改它必须是一次自觉动作并写明理由，而不是把断言放宽绕过去。
+            m.put("age", cn.hip.platform.empi.service.PatientService.ageOf(p.getBirthDate()));
         });
         m.put("deptName", deptRepository.findById(a.getDeptId()).map(d -> d.getName()).orElse(""));
         m.put("wardName", deptRepository.findById(a.getWardId()).map(d -> d.getName()).orElse(""));
@@ -536,5 +540,37 @@ class V43InpSearchTest {
         assertEquals("阳性", r.get("result_text"));
         assertEquals(Boolean.TRUE, r.get("positive"));
         assertEquals("头孢类", r.get("category"));
+    }
+
+    // ---------- v71 包 C（2011★）：一览表要显示的两项 ----------
+
+    /**
+     * 一览表返回体带 age 与 doctorName——这两项是表上要显示的列。
+     *
+     * <p><b>doctorName 本就已返回</b>（批量取 real_name，无 N+1），本版只补 age；
+     * 两项一并钉住，免得以后谁改 DTO 时把已有的那个顺手带走。
+     */
+    @Test
+    void listCarriesAgeAndAttendingDoctorNameForTheTable() {
+        Long deptId = 1L;
+        Long bedId = bedId(freeBeds(1).get(0));
+        userAuth("v71attending");
+        Long docId = userId("v71attending");
+        Long admId = admit("V71一览", deptId, bedId, docId);
+        // 给患者一个确定的出生日期，年龄才有可断言的值
+        jdbc.update("update empi_patient set birth_date = ? where id = "
+                + "(select patient_id from inp_admission where id = ?)",
+                java.sql.Date.valueOf(java.time.LocalDate.now().minusYears(37).minusDays(3)), admId);
+        entityManager.flush();
+        entityManager.clear();
+
+        var row = search(null, null, null, null, null, null, null, admin).stream()
+                .filter(m -> admId.equals(((Number) m.get("id")).longValue()))
+                .findFirst().orElseThrow();
+
+        assertTrue(row.containsKey("age"), "一览表返回体须带 age：" + row.keySet());
+        assertEquals(37, ((Number) row.get("age")).intValue(), "按出生日期推算的年龄");
+        assertEquals(docId, ((Number) row.get("doctorId")).longValue());
+        assertNotNull(row.get("doctorName"), "主治医生姓名应随一览表返回（本就已有，不得丢）");
     }
 }

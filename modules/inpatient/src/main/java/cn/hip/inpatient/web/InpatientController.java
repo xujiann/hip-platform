@@ -771,6 +771,9 @@ public class InpatientController {
             m.put("patientNo", p.getPatientNo());
             m.put("patientName", p.getName());
             m.put("sex", p.getSex());
+            // v71 包 C（2011★）：年龄。数据本就在患者档案里，取值走既有的 ageOf，
+            // 不新增查询——本方法已经在查这条患者记录了。
+            m.put("age", cn.hip.platform.empi.service.PatientService.ageOf(p.getBirthDate()));
         });
         m.put("deptName", deptRepository.findById(a.getDeptId()).map(d -> d.getName()).orElse(""));
         m.put("wardName", deptRepository.findById(a.getWardId()).map(d -> d.getName()).orElse(""));

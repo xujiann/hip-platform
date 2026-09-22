@@ -7,10 +7,18 @@
     <el-table :data="admissions" v-loading="loading" border stripe>
       <el-table-column prop="admissionNo" label="住院号" width="170" />
       <el-table-column prop="patientName" label="姓名" width="90" />
+      <!-- v71 包 C（2011★）：年龄与主治医生。两项数据后端本就随一览表返回
+           （doctorName 批量取、无 N+1），此前表上没有这两列。 -->
+      <el-table-column label="年龄" width="64">
+        <template #default="{ row }">{{ row.age ?? '—' }}</template>
+      </el-table-column>
       <el-table-column prop="deptName" label="科室" width="110" />
       <el-table-column prop="wardName" label="病区" width="110" />
       <el-table-column prop="bedNo" label="床号" width="70" />
       <el-table-column prop="admitDiagName" label="入院诊断" />
+      <el-table-column label="主治医生" width="96">
+        <template #default="{ row }">{{ row.doctorName ?? '未指定' }}</template>
+      </el-table-column>
       <el-table-column label="入院时间" width="110">
         <template #default="{ row }">{{ fmtDate(row.admitAt) }}</template>
       </el-table-column>

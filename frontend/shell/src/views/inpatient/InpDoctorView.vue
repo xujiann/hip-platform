@@ -117,6 +117,15 @@
         </el-tab-pane>
 
         <el-tab-pane label="病历" name="records">
+          <!-- v71 包 C（1089★/2465★）：书写过程中展示病历完整性结果。
+               该预检端点此前只在出院办理页被消费一次，医生写的时候看不到还缺什么。
+               **只读、不拦**：出院与归档处的既有判定一个字节没动；
+               档位值不上屏（v64 已把「gate 档位以配置值上屏」清掉一次，不开倒车）。 -->
+          <el-alert v-if="integrity" :closable="false" show-icon style="margin-bottom: 8px"
+                    :type="integrity.complete ? 'success' : 'warning'"
+                    :title="integrity.complete
+                      ? '病历完整性预检：当前无缺项'
+                      : `病历完整性预检：还缺 ${(integrity.missing || []).length} 项 —— ${(integrity.missing || []).join('、')}`" />
           <el-form inline>
             <el-form-item>
               <el-select v-model="recordType" style="width: 130px">
@@ -365,6 +374,18 @@ function printTempSheet() {
 
 const admissions = ref<Record<string, unknown>[]>([])
 const current = ref<Record<string, unknown> | null>(null)
+/** v71 包 C：病历完整性预检结果（只读展示，不参与任何拦截）。 */
+const integrity = ref<{ complete: boolean; missing: string[] } | null>(null)
+
+async function loadIntegrity(admissionId: number) {
+  try {
+    integrity.value = (await client.get(
+      `/inpatient/admissions/${admissionId}/emr-integrity`)).data.data
+  } catch {
+    // 预检取不到不影响书写——宁可不显示，也不摆一条误导的「无缺项」
+    integrity.value = null
+  }
+}
 const orders = ref<Record<string, unknown>[]>([])
 const totalAmount = ref(0)
 const depositAmount = ref(0)
@@ -606,6 +627,7 @@ async function open(row: Record<string, unknown> | null) {
     client.get(`/inpatient/admissions/${row.id}/workspace`),
     client.get(`/inpatient/admissions/${row.id}/records`),
     client.get(`/inpatient/admissions/${row.id}/vitals`),
+    loadIntegrity(row.id as number),
     loadAccount(row.id),
     loadEmrTemplates(),
   ])
