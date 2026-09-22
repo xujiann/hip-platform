@@ -33,6 +33,8 @@ public class DoctorStationService {
     // v53：病历修订留痕。接缝走**宽松档**（recordOutp → recordVersion），
     // 留痕失败按 gate 降级、**不抛异常**——留痕是为了举证，不该反过来打断医生看病。
     private final EmrVersionService emrVersionService;
+    /** v74：诊断修改留痕。与病历版本共用开关与序列化口径，但落在独立表上。 */
+    private final DiagnosisVersionService diagnosisVersionService;
     // v51：四条 CDSS 新规则。四个车道各自建了引擎，但都按纪律没动这个既有文件——
     // 主控在此一次性接入，避免四人各改一次必然冲突。
     private final AllergyRuleService allergyRuleService;
@@ -153,6 +155,11 @@ public class DoctorStationService {
             d.setPrimaryDiag(i == 0);
             diagnosisRepository.save(d);
         }
+        // v74：诊断修改留痕。**接在诊断落库之后**——快照的是保存后的新状态，
+        // 旧诊断因此留在更早的版本行里（此前它被物理删除后三处皆无痕）。
+        // 留痕失败不阻断保存（与病历版本接缝同口径），同内容不落新版。
+        diagnosisVersionService.record(registrationId, diagnoses, doctorId);
+
         // v44 车道E（979/1084）：常用诊断使用次数累加。**追加在既有落库逻辑之后，一行未改**，
         // 写的是新表 outp_diagnosis_favorite，对所有既有下游（CDR/打印/病案/DRG）完全不可见。
         // doctorId 为 null（服务层直调、无登录上下文的既有单测与 E2E）时整段跳过。
