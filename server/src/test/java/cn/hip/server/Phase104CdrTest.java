@@ -153,4 +153,88 @@ class Phase104CdrTest {
         assertEquals("J18.9", jdbc.queryForObject(
                 "select discharge_diag_icd from inp_admission where id = ?", String.class, adm.getId()));
     }
+
+    // ============ v69 包 A 前置：全文检索的契约锁定 ============
+    // 前端要把这个端点接到检索框上，接线前先把它的行为钉住。
+    // 此前该端点只有 e2e-phase1821 走过一次（断言「命中数 > 0」），无 JUnit。
+
+    /** 直插一份 CDR 文档（不走同步链路，检索断言要的是可控的标题与正文）。 */
+    private Long cdrDoc(Long patientId, String docType, long refId, String title,
+                        String content, String docTime) {
+        return jdbc.queryForObject("""
+                insert into cdr_document(patient_id, doc_type, ref_id, title, doc_time, content)
+                values (?, ?, ?, ?, ?::timestamptz, ?) returning id
+                """, Long.class, patientId, docType, refId, title, docTime, content);
+    }
+
+    private Long newPatientId(String name) {
+        Patient p = new Patient();
+        p.setName(name);
+        p.setSex("U");
+        return patientService.register(p).getId();
+    }
+
+    /** 检索命中标题与正文两侧，且按文档时间倒序。 */
+    @Test
+    void fullTextSearchMatchesTitleAndContentNewestFirst() throws Exception {
+        Long pid = newPatientId("V69检索甲");
+        cdrDoc(pid, "OUTP_ENCOUNTER", 990001L, "V69标题含关键词肺炎",
+                "正文无关", "2026-01-01T10:00:00+08:00");
+        cdrDoc(pid, "OUTP_ENCOUNTER", 990002L, "V69标题无关",
+                "正文含关键词肺炎的描述", "2026-02-01T10:00:00+08:00");
+        cdrDoc(pid, "OUTP_ENCOUNTER", 990003L, "V69都不含",
+                "也不含", "2026-03-01T10:00:00+08:00");
+        entityManager.flush();
+
+        mockMvc.perform(get("/api/cdr/search").param("keyword", "关键词肺炎"))
+                .andExpect(jsonPath("$.data.length()").value(2))
+                .andExpect(jsonPath("$.data[0].refId").value(990002))   // 2 月，更晚
+                .andExpect(jsonPath("$.data[1].refId").value(990001))   // 1 月
+                .andExpect(jsonPath("$.data[0].title").value("V69标题无关"))
+                .andExpect(jsonPath("$.data[0].patientId").value(pid))
+                .andExpect(jsonPath("$.data[0].docType").value("OUTP_ENCOUNTER"));
+    }
+
+    /**
+     * <b>接线前必须知道的两条行为</b>（本用例不是在主张它们正确，是把现状钉住）：
+     *
+     * <p>① <b>空关键字匹配全部</b>——{@code like '%%'} 恒真。前端检索框清空后点检索，
+     * 会拿回最近 50 份文档而不是空结果。前端必须自己挡住空串，不能依赖后端。
+     *
+     * <p>② <b>关键字里的 % 与 _ 是通配符，未转义</b>——用户输入单个 {@code %} 等于匹配全部。
+     * 这不是注入（走的是绑定参数），但会让检索结果与用户预期不符。
+     */
+    @Test
+    void blankKeywordAndWildcardCharsMatchEverything_frontendMustGuard() throws Exception {
+        Long pid = newPatientId("V69检索乙");
+        cdrDoc(pid, "OUTP_ENCOUNTER", 990011L, "V69甲文档", "甲正文", "2026-01-01T10:00:00+08:00");
+        cdrDoc(pid, "OUTP_ENCOUNTER", 990012L, "V69乙文档", "乙正文", "2026-01-02T10:00:00+08:00");
+        entityManager.flush();
+
+        int blankHits = hits("");
+        int pctHits = hits("%");
+        int realHits = hits("V69甲文档");
+
+        assertTrue(blankHits >= 2, "空关键字匹配全部（现状，前端须自行挡住空串）：" + blankHits);
+        assertTrue(pctHits >= 2, "% 是未转义的通配符，匹配全部（现状）：" + pctHits);
+        assertEquals(1, realHits, "真实关键字只命中一份");
+    }
+
+    /** 单次返回上限 50（端点内硬编码的分页大小），前端不得假定拿到的是全集。 */
+    @Test
+    void searchReturnsAtMostFiftyRowsPerCall() throws Exception {
+        Long pid = newPatientId("V69检索丙");
+        for (int i = 0; i < 55; i++) {
+            cdrDoc(pid, "OUTP_ENCOUNTER", 991000L + i, "V69分页上限样本" + i,
+                    "同一批", String.format("2026-01-%02dT10:00:00+08:00", (i % 28) + 1));
+        }
+        entityManager.flush();
+        assertEquals(50, hits("V69分页上限样本"), "端点单次最多回 50 条，超出部分取不到");
+    }
+
+    private int hits(String keyword) throws Exception {
+        String json = mockMvc.perform(get("/api/cdr/search").param("keyword", keyword))
+                .andReturn().getResponse().getContentAsString();
+        return com.jayway.jsonpath.JsonPath.read(json, "$.data.length()");
+    }
 }
