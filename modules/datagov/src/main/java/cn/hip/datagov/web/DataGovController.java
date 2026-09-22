@@ -20,37 +20,8 @@ public class DataGovController {
 
     private final JdbcTemplate jdbc;
     private final CurrentUserService currentUserService;
+    private final cn.hip.datagov.service.MetricSnapshotService metricSnapshotService;
 
-    /** 内置指标计算：builtin_key → SQL */
-    private static final Map<String, String> BUILTIN = Map.of(
-            "outp_reg_today", "select count(*) from outp_registration where visit_date = current_date and status <> 'CANCELLED'",
-            "drug_ratio", """
-                    select case when sum(amount) = 0 then 0 else
-                        round(sum(amount) filter (where order_type = 'DRUG') / sum(amount) * 100, 2) end
-                    from outp_order where status in ('CHARGED','DISPENSED','EXECUTED')
-                    """,
-            "bed_occupancy", "select round(count(*) filter (where status = 'OCCUPIED')::numeric / nullif(count(*), 0) * 100, 2) from inp_bed",
-            "avg_outp_cost", "select coalesce(round(sum(total_amount) / nullif(count(distinct registration_id), 0), 2), 0) from outp_charge where status = 'PAID'",
-            "in_hospital", "select count(*) from inp_admission where status = 'IN_HOSPITAL'",
-            // 二十五期：公立医院评审指标集扩充
-            "avg_los", """
-                    select coalesce(round((avg(extract(epoch from (discharged_at - admit_at)) / 86400))::numeric, 1), 0)
-                    from inp_admission where status = 'DISCHARGED'
-                    """,
-            "abx_rx_ratio", """
-                    select coalesce(round(count(distinct o.group_no) filter (where d.abx_level >= 1)::numeric
-                        / nullif(count(distinct o.group_no), 0) * 100, 2), 0)
-                    from outp_order o join md_drug d on d.id = o.item_id
-                    where o.order_type = 'DRUG' and o.status <> 'CANCELLED'
-                    """,
-            "emr_sign_ratio", """
-                    select coalesce(round(count(*) filter (where signature is not null)::numeric
-                        / nullif(count(*), 0) * 100, 2), 0) from outp_emr
-                    """,
-            "ris_verified_ratio", """
-                    select coalesce(round(count(*) filter (where status = 'VERIFIED')::numeric
-                        / nullif(count(*), 0) * 100, 2), 0) from ris_exam
-                    """);
 
     /** 指标定义 + 最新快照 */
     @GetMapping("/api/datagov/metrics")
@@ -67,21 +38,10 @@ public class DataGovController {
 
     /** 生成今日指标快照（幂等覆盖） */
     @PostMapping("/api/datagov/metrics/snapshot")
-    @Transactional
     public R<Map<String, Object>> snapshot() {
-        var defs = jdbc.queryForList("select code, builtin_key from dg_metric_def");
-        int n = 0;
-        for (var d : defs) {
-            String sql = BUILTIN.get((String) d.get("builtin_key"));
-            if (sql == null) continue;
-            Double value = jdbc.queryForObject(sql, Double.class);
-            jdbc.update("""
-                    insert into dg_metric_snapshot(code, value, snap_date) values (?, ?, current_date)
-                    on conflict (code, snap_date) do update set value = excluded.value, created_at = now()
-                    """, d.get("code"), value == null ? 0 : value);
-            n++;
-        }
-        return R.ok(Map.of("snapshotted", n));
+        // v72 包 D：计算逻辑迁入 MetricSnapshotService（定时任务不该调控制器）。
+        // **返回体的 snapshotted 键不变**——两套 E2E 正在断言它。
+        return R.ok(Map.of("snapshotted", metricSnapshotService.snapshotToday()));
     }
 
     // ---- 数据填报 ----
