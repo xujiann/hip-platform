@@ -295,11 +295,16 @@ public class EmrRefController {
                 order by lr.created_at desc, lr.id desc
                 limit ?
                 """, enc.patientId(), ROW_LIMIT + 1)) {
-            boolean abnormal = !blank(str(r.get("abnormal_flag")));
+            // "N" 是平台自己判定的「正常」：ReferenceRangeService 对落在参考区间内的值返回 N，
+            // LabResultListener 在检验方未给 flag 时把它落库。它非空但**不是异常**——
+            // 只判非空会把正常结果标红，并把「［异常 N］」逐字写进病历正文。
+            // 口径对齐患者端（PortalController 只认 HH/LL 为危急）：N 不算异常。
+            String flag = str(r.get("abnormal_flag"));
+            boolean abnormal = !blank(flag) && !"N".equalsIgnoreCase(flag);
             String text = str(r.get("item_name")) + " " + str(r.get("result_value"))
                     + suffix(" ", str(r.get("unit")))
                     + (blank(str(r.get("ref_range"))) ? "" : "（参考 " + str(r.get("ref_range")) + "）")
-                    + (abnormal ? "［异常 " + str(r.get("abnormal_flag")) + "］" : "");
+                    + (abnormal ? "［异常 " + flag + "］" : "");
             var it = item("LAB-RESULT-" + str(r.get("id")),
                     str(r.get("order_name")) + " · " + dateText(r.get("visit_date"), r.get("created_at")),
                     text, r);

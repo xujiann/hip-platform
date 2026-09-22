@@ -272,6 +272,36 @@ class V45EmrRefTest {
 
         var abnormal = items(seg).stream().filter(i -> Boolean.TRUE.equals(i.get("abnormal"))).toList();
         assertEquals(1, abnormal.size(), "只有白细胞这一条带 abnormal_flag");
+    }
+
+    /**
+     * v68 审阅修补：参考区间判定为「正常」的 N，不得被当成异常。
+     *
+     * <p><b>修复前的反向事实</b>：判据是 {@code !blank(abnormal_flag)}，而真实链路里
+     * LabResultListener 在检验方未给 flag 时会用 ReferenceRangeService 的判定结果落库，
+     * 区间内的值落的是 "N"（非空）。于是正常结果在「引用资料」里被标红「异常」，
+     * 且「［异常 N］」会随「插入正文」逐字写进病历。
+     *
+     * <p>原用例只喂过 {@code null}（血红蛋白那条），从没喂过 "N"——真实链路产生的恰恰是 "N"，
+     * 这就是缺陷能活下来的原因。本用例把 N 与 null 两种「正常」都钉住。
+     */
+    @Test
+    void referenceRangeNormalFlagIsNotTreatedAsAbnormal() {
+        Authentication doc = doctorAuth("v68doc_lab");
+        Long pid = newPatient();
+        Long rid = visitFor(pid, userId("v68doc_lab"));
+        Long labOrder = order(rid, "LAB", "生化");
+        labResult(labOrder, "血钾", "4.0", "N");       // 区间内，平台判定为正常
+        labResult(labOrder, "血钠", "140", null);      // 检验方未给 flag 且未判定
+        labResult(labOrder, "血糖", "12.0", "H");      // 真异常，作对照
+
+        var seg = ref(rid, "LAB", doc);
+        String all = texts(seg);
+        assertFalse(all.contains("［异常 N］"), "N 是正常判定，不得写成异常：" + all);
+        assertTrue(all.contains("［异常 H］"), "真异常仍须标出：" + all);
+
+        var abnormal = items(seg).stream().filter(i -> Boolean.TRUE.equals(i.get("abnormal"))).toList();
+        assertEquals(1, abnormal.size(), "三条里只有血糖 H 是异常，N 与 null 都不是：" + all);
         assertTrue(items(seg).stream().allMatch(i -> Boolean.TRUE.equals(i.get("currentVisit"))),
                 "本次就诊开的单，currentVisit 应为 true");
     }
