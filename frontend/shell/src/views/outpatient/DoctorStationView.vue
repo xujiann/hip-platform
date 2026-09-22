@@ -2,8 +2,20 @@
   <div class="doctor-page">
     <el-card class="worklist">
       <template #header>
-        接诊队列（{{ today }}）
+        接诊队列
         <el-button link type="primary" style="float: right" @click="loadWorklist">刷新</el-button>
+        <!-- v70 包 B（965★ 跨日期检索 / 2033★「我的患者」）。
+             不勾「跨日期」时只发 date 一个参数——后端「零条件 = 旧行为」那条路径原样保留。 -->
+        <div class="queue-filter no-print">
+          <el-date-picker v-if="!rangeMode" v-model="today" type="date" size="small"
+                          value-format="YYYY-MM-DD" :clearable="false" style="width: 132px"
+                          @change="loadWorklist" />
+          <el-date-picker v-else v-model="dateRange" type="daterange" size="small" unlink-panels
+                          value-format="YYYY-MM-DD" start-placeholder="起" end-placeholder="止"
+                          style="width: 212px" @change="loadWorklist" />
+          <el-checkbox v-model="rangeMode" size="small" @change="onRangeModeChange">跨日期</el-checkbox>
+          <el-checkbox v-model="mineOnly" size="small" @change="loadWorklist">我的患者</el-checkbox>
+        </div>
       </template>
       <el-table :data="worklist" highlight-current-row height="calc(100vh - 220px)" @current-change="openPatient">
         <el-table-column prop="regNo" label="号" width="50" />
@@ -899,9 +911,32 @@ const labLines = ref<Record<string, unknown>[]>([])
 
 const orders = ref<Record<string, unknown>[]>([])
 
+/* v70 包 B：队列检索条件。**默认形态与本版之前逐字一致**——不跨日期、不勾「我的患者」时
+ * 仍然只发 `date` 一个参数，后端据此走「零条件 = 旧行为」那条不换 SQL 的路径。 */
+const rangeMode = ref(false)
+const dateRange = ref<[string, string] | null>(null)
+const mineOnly = ref(false)
+
+function onRangeModeChange(on: boolean) {
+  // 切进区间模式时默认给近 7 天，省得用户面对两个空框
+  if (on && !dateRange.value) {
+    const d = new Date(); d.setDate(d.getDate() - 6)
+    const from = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    dateRange.value = [from, todayLocal()]
+  }
+  loadWorklist()
+}
+
 async function loadWorklist() {
-  today.value = todayLocal()
-  const resp = await client.get('/outpatient/doctor/worklist', { params: { date: today.value } })
+  const params: Record<string, string | boolean> = {}
+  if (rangeMode.value && dateRange.value) {
+    params.from = dateRange.value[0]
+    params.to = dateRange.value[1]
+  } else {
+    params.date = today.value
+  }
+  if (mineOnly.value) params.mine = true
+  const resp = await client.get('/outpatient/doctor/worklist', { params })
   worklist.value = resp.data.data
 }
 
@@ -1345,6 +1380,7 @@ onMounted(async () => {
   grid-template-columns: 360px 1fr;
   gap: 12px;
 }
+.queue-filter { display: flex; align-items: center; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
 .dim { color: var(--el-text-color-placeholder); }
 .sign-tip {
   margin-left: 10px;

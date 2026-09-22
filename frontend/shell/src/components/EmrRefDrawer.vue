@@ -6,6 +6,14 @@
       <div class="ref-head">
         <b>临床资料引用</b>
         <span class="ref-sub">点条目「插入正文」把资料抄进病历；已签名病历不可再插入</span>
+        <!-- v70 包 B（1019★）：按时间段筛选。不选时不发 from/to，后端走零条件原路径。
+             基本资料没有时间维度，故该页签下不显示本筛选。 -->
+        <div v-if="tab !== 'BASIC'" class="ref-filter">
+          <el-date-picker v-model="range" type="daterange" size="small" unlink-panels
+                          value-format="YYYY-MM-DD" start-placeholder="起" end-placeholder="止"
+                          style="width: 218px" @change="load" />
+          <el-button v-if="range" link size="small" @click="range = null; load()">清除</el-button>
+        </div>
       </div>
     </template>
 
@@ -220,6 +228,8 @@ const emit = defineEmits<{
 }>()
 
 const tab = ref('BASIC')
+/** v70 包 B：引用资料的时间窗（1019★）。null = 不筛，与本版之前行为一致。 */
+const range = ref<[string, string] | null>(null)
 const loading = ref(false)
 const error = ref('')
 const seg = ref<Record<string, unknown> | null>(null)
@@ -244,6 +254,9 @@ async function load() {
         registrationId: props.registrationId ?? undefined,
         admissionId: props.admissionId ?? undefined,
         kind: tab.value,
+        // BASIC 不吃日期；未选区间时一个参数都不发，后端据此走零条件原路径
+        from: tab.value !== 'BASIC' && range.value ? range.value[0] : undefined,
+        to: tab.value !== 'BASIC' && range.value ? range.value[1] : undefined,
       },
     })
     seg.value = resp.data.data
@@ -275,6 +288,7 @@ watch(() => [props.registrationId, props.admissionId], () => {
 
 <style scoped>
 .ref-head { display: flex; flex-direction: column; gap: 2px; }
+.ref-filter { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
 .ref-sub { color: var(--el-text-color-placeholder); font-size: 12px; font-weight: 400; }
 .ref-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .ref-count { color: var(--el-text-color-secondary); font-size: 12px; flex: 1; }
