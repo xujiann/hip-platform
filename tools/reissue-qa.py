@@ -26,7 +26,10 @@ INTERNAL = re.compile(
     r'|\bV\d{1,3}__|\bV\d{1,3}:\d+'
     r'|grep|零命中|file:line|全仓(?:库)?(?:无|零|仅|只)|代码(?:里|中)(?:无|不存在|查不到)'
     r'|\b[a-z]+_[a-z]+_[a-z]+\b'
-    r'|审计判定|判定为(?:不符合|部分符合|符合)|本条判定)', re.I)
+    r'|审计判定|判定为(?:不符合|部分符合|符合)|本条判定|二级证据|待项目组签字|评审建议)', re.I)
+# v74 补上面三个词：F 桶签认时查出 7 条 ★（全表 120 条）把
+# 「二级证据评审建议，待项目组签字」直接写进了对外的「响应说明」列——
+# 客户会读到我方内部待签字的字样。原正则只认代码符号与判定词，认不出**流程语**。
 COMMIT = re.compile(
     r'((?:\d+\s*(?:个)?(?:工作日|天|周|月)|下一?版本|近期|年底|季度)\s*(?:内|前)?\s*'
     r'(?:完成|交付|上线|发布)'
@@ -88,3 +91,34 @@ if not fail: print('  四维机械校验：零问题')
 for k, rows in bad_rows.items():
     print('\n[%s] 样例（最多 8 条）:' % k)
     for no, s in rows[:8]: print('   %d  %s' % (no, str(s)[:90]))
+
+# ==================== --final：直接扫**最终表**（v74 新增） ====================
+# 为什么要单开这个模式：上面那套只扫 rewrite_wave*.json 里「被改写过的行」，
+# 而最终表 4062 行里有大量行从未进过任何改写波次——**它们一次质检都没过**。
+# F 桶签认时就是在这片盲区里查出 120 行把「二级证据评审建议，待项目组签字」
+# 写进了对外的「响应说明」列。改写侧再严也拦不住它，因为它压根没被改写过。
+# 另：SCR 指向一个旧会话的 Temp 目录，那目录一旦被清，上面的统计会从 3581 悄悄掉到
+# 只剩仓内证据的条数，**而且照样打印结果**——所以对外发布前以本模式为准。
+def scan_final():
+    import csv as _csv
+    path = os.path.join("docs", "验收", "技术偏离表-v3.csv")
+    rows = list(_csv.DictReader(io.open(path, encoding="utf-8-sig", newline="")))
+    bad = collections.defaultdict(list)
+    for r in rows:
+        no, note, st = r["序号"].strip(), r["响应说明"], r["实质性★"].strip()
+        m = INTERNAL.search(note)
+        if m: bad["A内部词"].append((no, st, m.group(0)))
+        m = COMMIT.search(note)
+        if m: bad["B越权承诺"].append((no, st, m.group(0)))
+        if len(note.strip()) < 18: bad["E说明过短"].append((no, st, note.strip()))
+    print("最终表 %d 行，逐行扫描（不依赖改写波次证据）" % len(rows))
+    if not bad: print("  零问题"); return 0
+    for k, v in sorted(bad.items()):
+        stars = sum(1 for x in v if x[1])
+        print("  %-12s %5d 条（★ %d）" % (k, len(v), stars))
+        for no, st, hit in v[:6]:
+            print("     %-6s%s %s" % (no, "★" if st else " ", str(hit)[:70]))
+    return 1
+
+if "--final" in sys.argv:
+    sys.exit(scan_final())
