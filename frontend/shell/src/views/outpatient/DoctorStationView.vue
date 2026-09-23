@@ -688,7 +688,10 @@ async function loadStructFields() {
   try {
     const resp = await client.get(`/emr/templates/${structTemplateId.value}/fields`)
     structFields.value = (resp.data.data ?? []) as EmrTemplateField[]
-    if (!structFields.value.length) structHint.value = '该模板尚未定义结构化元素（在「病历模板」维护）'
+    // v74 复核改：原文案写「在「病历模板」维护」，而那个页面（EmrTemplateView）管的是模板本体
+    // （作用范围/授权/启停/默认），对字段定义端点零调用——照这句话走过去什么也做不了。
+    // 结构化元素定义当前只有后端端点、没有维护界面，须由管理员在实施期配置。不指假路。
+    if (!structFields.value.length) structHint.value = '该模板尚未配置结构化元素，本次按自由文本书写即可（元素定义须由管理员配置）'
   } catch {
     structHint.value = '结构化元素定义暂不可读，本次仍可按自由文本书写病历'
   }
