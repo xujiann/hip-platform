@@ -146,6 +146,34 @@ class V43PrintDocsTest {
                 "指定了不存在的处方号应按单据不存在处理");
     }
 
+    /**
+     * v74（1026★ 三方复核反驳者三）：<b>缴费前作废的那一味药不得印上处方笺</b>。
+     *
+     * <p>此前五种单据的取数不过滤 status，而处方笺/检验申请单版式又没有状态列——
+     * 作废行与有效行印得一模一样。处方笺是法定文书，这是"印出错误数据"，不是版式瑕疵。
+     * 同时钉住"开单医生"口径：行上必须带 order_doctor_name（纸面署名用它，不用挂号排班医生）。
+     */
+    @Test
+    void cancelledOrderLineIsExcludedFromPrescription() {
+        Long rid = visitWithAllOrderTypes();
+        Long doctorId = jdbc.queryForObject("select id from sys_user where username = 'admin'", Long.class);
+        Long drug2 = seeds.drug("单据测试药二").getId();
+        doctorStationService.createOrders(rid, List.of(
+                new OrderLine("DRUG", drug2, 1, "口服", "每日一次", "1粒", 2)), doctorId);
+        em.flush();
+        Long toCancel = jdbc.queryForObject(
+                "select id from outp_order where registration_id = ? and item_id = ? and order_type = 'DRUG'",
+                Long.class, rid, drug2);
+        doctorStationService.cancelOrder(toCancel);
+        em.flush();
+        em.clear();
+
+        var rows = rowsOf(printController.clinicalDoc("prescription", rid, null).getData());
+        assertEquals(1, rows.size(), "作废的那一味药不得出现在处方笺上：" + rows);
+        assertNotEquals("CANCELLED", rows.get(0).get("status"));
+        assertNotNull(rows.get(0).get("order_doctor_name"), "纸面署名要用开单医生，行上必须带它");
+    }
+
     @Test
     void labRequestCarriesRequestNoAndSpecimenColumns() {
         Long rid = visitWithAllOrderTypes();

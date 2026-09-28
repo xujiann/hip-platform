@@ -1,0 +1,116 @@
+[
+ {
+  "no": "1237",
+  "bucket": "T",
+  "param_verbatim": "支持临床危急值、住院病历等综合查询。",
+  "claimed_missing": "已处理危急值的历史查询入口；跨危急值/病历/医嘱/费用的统一综合查询",
+  "verdict": "部分低报",
+  "evidence": [
+   "frontend/shell/src/views/integration/MonitorView.vue:3-28 集成监控页\"危急值告警\"面板，:15-21 状态列区分待处理/已处理",
+   "frontend/shell/src/views/integration/MonitorView.vue:85 GET /outpatient/critical-alerts?status=ALL",
+   "modules/outpatient/src/main/java/cn/hip/outpatient/web/LabResultController.java:41-45 status=ALL → findTop50ByOrderByIdDesc 含 HANDLED 记录",
+   "sys_menu 24 集成监控 /integration/monitor（server/src/main/resources/db/migration/V10__integration.sql:46）"
+  ],
+  "fact": "集成监控页已列出含已处理状态的最近 50 条全院危急值，\"已处理危急值历史查询入口尚未提供\"失实；但无条件检索、无处置详情，统一综合查询仍缺",
+  "note_other_error": ""
+ },
+ {
+  "no": "1316",
+  "bucket": "O",
+  "param_verbatim": "临时存储与提交：兼容临时存储和提交两种存储方法，临时存储表示病历尚未书写完成，提交表示病历已书写完成，提交后再修改病历会保留编辑痕迹。",
+  "claimed_missing": "临时存储（草稿）与提交两种状态区分；以提交而非签名作为留痕触发点（当前保存即正式落库、无留痕）",
+  "verdict": "部分低报",
+  "evidence": [
+   "server/src/main/resources/db/migration/V157__emr_version.sql:62-80 emr_version 表 emr_type OUTP/INP，source MANUAL/AUTO/SUBMIT",
+   "modules/outpatient/src/main/java/cn/hip/outpatient/service/DoctorStationService.java:148 每次保存 recordOutp(MANUAL)，:1081 签名定稿 recordOutp(SUBMIT)",
+   "modules/inpatient/src/main/java/cn/hip/inpatient/web/InpEmrController.java:761 recordInpVersion 住院病历保存接入版本留痕",
+   "modules/outpatient/src/main/java/cn/hip/outpatient/web/EmrVersionController.java:77/93/107/127 版本列表/单版/两版对比/与当前对比",
+   "frontend/shell/src/views/outpatient/emr-version/EmrVersionView.vue:7-9 支持 OUTP/INP；frontend/shell/src/views/outpatient/DoctorStationView.vue:234「版本留痕」按钮；frontend/shell/src/router/index.ts:121",
+   "modules/outpatient/.../entity/OutpEmr.java:64 仅 signature 字段，无 DRAFT/SUBMITTED 状态"
+  ],
+  "fact": "缺项②已失实：v53 起每次保存（签名前）都落 emr_version 版本并可在前端回看/对比，留痕触发点不再只是签名；缺项①草稿/提交两态区分仍无。",
+  "note_other_error": ""
+ },
+ {
+  "no": "1326",
+  "bucket": "R",
+  "param_verbatim": "在线质控：支持保存病历后实时获取质控结果，方便医生整改病历。",
+  "claimed_missing": "保存病历后在书写页面实时返回质控结果供医生即时整改",
+  "verdict": "低报",
+  "evidence": [
+   "frontend/shell/src/views/inpatient/InpDoctorView.vue:120-128 病历页签内 el-alert 展示\"病历完整性预检：还缺 N 项 —— …\"（v71 包 C）",
+   "frontend/shell/src/views/inpatient/InpDoctorView.vue:380-388 loadIntegrity 调 GET /inpatient/admissions/{id}/emr-integrity",
+   "frontend/shell/src/views/inpatient/InpDoctorView.vue:700-710 saveRecord 成功后 await open(current.value) → :630 loadIntegrity 重新拉取，即保存后书写页即时刷新质控结果",
+   "modules/inpatient/src/main/java/cn/hip/inpatient/web/InpatientController.java:99 端点定义"
+  ],
+  "fact": "住院医生站病历页签已在保存后实时刷新并展示完整性质控缺项（只读不拦），说明的\"尚未提供\"已失实；时限类质控仍不在书写页返回",
+  "note_other_error": ""
+ },
+ {
+  "no": "2405",
+  "bucket": "L",
+  "param_verbatim": "系统内置多种医疗评分，如MEWS、GCS、ISS、疼痛评分、AIS、VTE评分等供医护人员快速评分。",
+  "claimed_missing": "MEWS、GCS、ISS、疼痛评分、AIS、VTE 等量表",
+  "verdict": "部分低报",
+  "evidence": [
+   "modules/inpatient/src/main/java/cn/hip/inpatient/web/IcuRecordController.java:25,34 ICU 记录 gcs 字段与 3-15 范围校验",
+   "server/src/main/resources/db/migration/V21__phase24_specialty.sql:53/59 inp_icu_record.gcs；V91__er_rescue_record.sql:23 急诊抢救记录 gcs",
+   "frontend/shell/src/views/medtech/SpecialtyView.vue:135（ICU GCS 输入）/156（列）/176（抢救记录 GCS 输入）",
+   "grep -E \"MEWS|ISS|AIS|VTE|疼痛\" 无命中"
+  ],
+  "fact": "GCS 总分录入在 ICU 记录与急诊抢救记录中已有前后端（本表 2331 行说明亦承认），本行把 GCS 列为「尚未提供」失实；MEWS/ISS/疼痛/AIS/VTE 确无。",
+  "note_other_error": ""
+ },
+ {
+  "no": "2598",
+  "bucket": "V",
+  "param_verbatim": "能够通过住院号检索，．能够浏览住院患者基本数据资料与费用数据资料，包括患者姓名、医保状态、年龄、性别、入院时间、患者类型、审批人、审批时间、总预交金、能够用金额、担保金额、主管医生、主管护士等数据资料。",
+  "claimed_missing": "审批人、审批时间、担保金额、患者类型、主管医生、主管护士字段展示",
+  "verdict": "部分低报",
+  "evidence": [
+   "frontend/shell/src/views/inpatient/AdmissionView.vue:19-21 在院患者列表有「主治医生」列显示 row.doctorName",
+   "frontend/shell/src/views/inpatient/InpDoctorView.vue:23,47 主管医生筛选下拉 + 「主管医生：{{ current.doctorName }}」展示",
+   "modules/inpatient/src/main/java/cn/hip/inpatient/web/InpatientController.java:316,343,401-416,432 doctorId 在代码内即称「主管医生」，列表行追加 doctorId/doctorName，PUT /admissions/{id}/attending-doctor 设置",
+   "审批人/审批时间/担保金额/患者类型/主管护士：inp_admission 与端点均无对应字段（InpatientController.java:48-755）"
+  ],
+  "fact": "主管医生字段已在住院登记在院列表（主治医生列）与住院医生站展示，后端 attending-doctor 端点 v43 起存在，说明仍将其列为尚未提供；审批人/审批时间/担保金额/患者类型/主管护士五字段确无",
+  "note_other_error": ""
+ },
+ {
+  "no": "4186",
+  "bucket": "N",
+  "param_verbatim": "预约挂号：支持按照院区、日期、科室（科室、诊室）、出诊医生进行挂号，也可通过历史预约功能快速找到预约过的医生。选择医生后，可以切换家庭成员，选择班次，选择就诊时间段。同时支持在挂号时填写婚姻状况、职业、民族家庭住址等基本信息。填写完基础信息后，选择支付方式，完成支付。所有的业务数据实时同步到HIS，患者凭有效证件或者成功支付的订单信息即可前往医院完成就诊流程；结合智慧医院的建设标准，支持分时段挂号",
+  "claimed_missing": "按院区筛选、按出诊医生选择、历史预约快速复约、切换家庭成员、挂号时补填婚姻/职业/民族/住址、挂号费在线支付",
+  "verdict": "部分低报",
+  "evidence": [
+   "modules/outpatient/src/main/java/cn/hip/outpatient/service/RegistrationService.java:67-79（register() 挂号费落为 REG 订单行）",
+   "modules/outpatient/src/main/java/cn/hip/outpatient/entity/OutpOrder.java:77（status 默认 CREATED）",
+   "modules/portal/src/main/java/cn/hip/portal/web/PortalController.java:224-235（/my/pending-bill 汇总 status=CREATED 全部订单行，不排除 REG）",
+   "modules/portal/src/main/java/cn/hip/portal/web/PortalController.java:240-253（/my/pay 出码）；modules/outpatient/src/main/java/cn/hip/outpatient/service/PayService.java:36-38（总额=全部 CREATED 订单行）",
+   "frontend/shell/src/views/portal/PortalHomeView.vue:102-123（缴费页签微信/支付宝出码 + 模拟回调确认）",
+   "modules/outpatient/src/main/java/cn/hip/outpatient/service/RegistrationService.java:35-51（分时段预约的挂号费只在签到 registerFromAppointment 时才生成，预约阶段无费用可付）",
+   "modules/portal/src/main/java/cn/hip/portal/web/PortalController.java:302-381（患者端 /schedules 仅 date 参数、无医生列；slots/appointments/my appointments/cancel）（schedules 无 doctor 列、无院区/科室过滤）",
+   "grep 全仓 'campus|院区' 仅注释命中，无院区维度数据模型"
+  ],
+  "fact": "其余缺项属实；但「挂号费在线支付」对直接挂号路径已有：挂号即落 REG 订单行(CREATED)→患者端缴费页签汇总并可出码支付（模拟通道）；分时段预约路径挂号费在签到时才生成，预约阶段无法支付。",
+  "note_other_error": "说明「挂号费在线支付 尚未提供」与同表 4281 行「缴费页签覆盖预约挂号产生的挂号费」自相矛盾；应改为「直接挂号的挂号费可在缴费页签支付（演示模拟通道），分时段预约的挂号费须签到后支付」"
+ },
+ {
+  "no": "4247",
+  "bucket": "N",
+  "param_verbatim": "支持按照院区、日期、科室（科室、诊室）、出诊医生进行挂号，也可通过历史预约功能快速找到预约过的医生。选择医生后，可以切换家庭成员，选择班次，选择就诊时间段。同时支持在挂号时填写婚姻状况、职业、民族家庭住址等基本信息。填写完基础信息后，选择支付方式（目前支持微信），完成支付。所有的业务数据实时同步到HIS，患者凭有效证件或者成功支付的订单信息即可前往医院完成就诊流程；结合智慧医院的建设标准，支持分时",
+  "claimed_missing": "院区/诊室筛选、出诊医生选择、历史预约复约、婚姻/职业/民族/住址填写、挂号费本身在线支付、家庭成员切换",
+  "verdict": "部分低报",
+  "evidence": [
+   "modules/outpatient/src/main/java/cn/hip/outpatient/service/RegistrationService.java:67-79（register() 挂号费落为 REG 订单行）",
+   "modules/outpatient/src/main/java/cn/hip/outpatient/entity/OutpOrder.java:77（status 默认 CREATED）",
+   "modules/portal/src/main/java/cn/hip/portal/web/PortalController.java:224-235（/my/pending-bill 汇总 status=CREATED 全部订单行，不排除 REG）",
+   "modules/portal/src/main/java/cn/hip/portal/web/PortalController.java:240-253（/my/pay 出码）；modules/outpatient/src/main/java/cn/hip/outpatient/service/PayService.java:36-38（总额=全部 CREATED 订单行）",
+   "frontend/shell/src/views/portal/PortalHomeView.vue:102-123（缴费页签微信/支付宝出码 + 模拟回调确认）",
+   "modules/outpatient/src/main/java/cn/hip/outpatient/service/RegistrationService.java:35-51（分时段预约的挂号费只在签到 registerFromAppointment 时才生成，预约阶段无费用可付）",
+   "modules/portal/src/main/java/cn/hip/portal/web/PortalController.java:302-381（患者端 /schedules 仅 date 参数、无医生列；slots/appointments/my appointments/cancel）（schedules 无 doctor 列、无院区/科室过滤）"
+  ],
+  "fact": "其余缺项属实；但「挂号费本身的在线支付」对直接挂号路径已有：REG 订单行(CREATED)进入患者端缴费页签可出码支付（模拟通道）；分时段预约的挂号费签到后才生成。",
+  "note_other_error": "说明「挂号费本身的在线支付 尚未提供」与同表 4281 行自相矛盾；应改为「直接挂号的挂号费可在缴费页签支付（演示模拟通道），分时段预约的挂号费须签到后支付」"
+ }
+]

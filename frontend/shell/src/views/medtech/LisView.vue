@@ -117,8 +117,18 @@ async function publish() {
     await client.post(`/lis/samples/${current.value.barcode}/publish`, { results: results.value })
     ElMessage.success('已发布，医嘱自动执行')
     dialogVisible.value = false
+    // v74 复核补入口：检验报告单打印页（/print?type=lab-report）此前全前端无任何页面打开它，
+    // 偏离表 47 行却写着「已提供检验报告单打印」——后端做了、用户够不着。发布即出报告是最自然的入口；
+    // 标本列表本身不含已发布行（后端 where status <> 'PUBLISHED'），所以不能放行内按钮。
+    printReport(current.value.order_id)
     await load()
   } finally { publishLoading.value = false }
+}
+
+/** 检验报告单打印：走既有 PrintView 契约 `?type=lab-report&id=<orderId>`（后端 /api/print/lab-report/{orderId}） */
+function printReport(orderId: unknown) {
+  if (orderId == null || orderId === '') return
+  window.open(`/print?type=lab-report&id=${orderId}`, '_blank')
 }
 
 onMounted(load)

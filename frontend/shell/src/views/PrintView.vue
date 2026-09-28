@@ -184,7 +184,7 @@
             <p class="rx-end">—— 以下空白 ——</p>
             <div class="doc-line">药品金额：¥{{ g.total }}</div>
             <div class="sign-bar">
-              <span>医师：{{ data.doctor_name || '' }}</span>
+              <span>医师：{{ docDoctor(g) || '' }}</span>
               <span>药师（审核）：</span>
               <span>调配核对：</span>
               <span>发药：</span>
@@ -195,23 +195,29 @@
           <!-- 检验申请单：申请科室/医师 + 病史摘要 + 标本状态 + 标本要求手填栏 -->
           <template v-else-if="type === 'lab-request'">
             <div class="doc-line">
-              申请科室：{{ data.dept_name }}　申请医师：{{ data.doctor_name || '—' }}{{ docTitleSuffix }}
+              申请科室：{{ data.dept_name }}　申请医师：{{ docDoctor(g) || '—' }}{{ docDoctorSuffix(g) }}
               　申请日期：{{ fmtDate(data.visit_date) }}
             </div>
             <div class="doc-line">病史摘要：{{ briefHistory }}</div>
+            <!-- v74 复核修：v44 七个医嘱字段后端一直在返回（临床摘要/标本类型/采样部位/注意事项/加急/备注），
+                 打印页此前一个都没印——CHANGELOG 写的「有值印值」并不成立，医生填了等于白填。
+                 口径照 CHANGELOG 原意：有值印值，无值仍保留手填栏（历史单据必然为空）。 -->
+            <div v-if="firstOf(g, 'clinical_summary')" class="doc-line">临床摘要：{{ firstOf(g, 'clinical_summary') }}</div>
             <table class="items">
-              <tr><th>检验项目</th><th>数量</th><th>执行科室</th><th>标本条码</th><th>标本状态</th></tr>
+              <tr><th>检验项目</th><th>数量</th><th>标本类型 / 采样部位</th><th>执行科室</th><th>标本条码</th><th>标本状态</th></tr>
               <tr v-for="(r, i) in g.rows" :key="i">
-                <td>{{ r.item_name }}</td>
+                <td>{{ r.item_name }}<span v-if="r.urgent" class="urgent">【加急】</span><span v-if="r.remark" class="remark">（{{ r.remark }}）</span></td>
                 <td>{{ r.qty }} {{ r.unit }}</td>
+                <td>{{ [r.specimen_type, r.sampling_site].filter(Boolean).join(' / ') || '—' }}</td>
                 <td>{{ r.exec_dept_name || '—' }}</td>
                 <td>{{ r.sample_barcode || '（未采样）' }}</td>
                 <td>{{ sampleStatusNames[String(r.sample_status)] ?? '待采集' }}</td>
               </tr>
             </table>
+            <div v-if="firstOf(g, 'notice')" class="doc-line">注意事项：{{ firstOf(g, 'notice') }}</div>
             <div class="fill-line">标本要求（采集容器 / 采集时间 / 送检要求）：</div>
             <div class="sign-bar">
-              <span>申请医师：{{ data.doctor_name || '' }}</span>
+              <span>申请医师：{{ docDoctor(g) || '' }}</span>
               <span>采样人 / 时间：</span>
               <span>接收人 / 时间：</span>
               <span>检验者：</span>
@@ -221,24 +227,29 @@
           <!-- 检查申请单：项目名本身即含部位，另留「部位补充」「检查目的」两条手填栏 -->
           <template v-else-if="type === 'exam-request'">
             <div class="doc-line">
-              申请科室：{{ data.dept_name }}　申请医师：{{ data.doctor_name || '—' }}{{ docTitleSuffix }}
+              申请科室：{{ data.dept_name }}　申请医师：{{ docDoctor(g) || '—' }}{{ docDoctorSuffix(g) }}
               　申请日期：{{ fmtDate(data.visit_date) }}
             </div>
             <table class="items">
               <tr><th>检查项目（含部位）</th><th>数量</th><th>执行科室</th><th>状态</th></tr>
               <tr v-for="(r, i) in g.rows" :key="i">
-                <td>{{ r.item_name }}</td>
+                <td>{{ r.item_name }}<span v-if="r.urgent" class="urgent">【加急】</span><span v-if="r.remark" class="remark">（{{ r.remark }}）</span></td>
                 <td>{{ r.qty }} {{ r.unit }}</td>
                 <td>{{ r.exec_dept_name || '—' }}</td>
                 <td>{{ orderStatusNames[String(r.status)] ?? r.status }}</td>
               </tr>
             </table>
-            <div class="fill-line">检查部位（补充说明）：</div>
-            <div class="fill-line">检查目的 / 临床要求：</div>
+            <!-- v74 复核修：同检验申请单——v44 字段有值印值，无值仍保留手填栏 -->
+            <div v-if="firstOf(g, 'sampling_site')" class="doc-line">检查部位（补充说明）：{{ firstOf(g, 'sampling_site') }}</div>
+            <div v-else class="fill-line">检查部位（补充说明）：</div>
+            <div v-if="firstOf(g, 'exam_purpose')" class="doc-line">检查目的 / 临床要求：{{ firstOf(g, 'exam_purpose') }}</div>
+            <div v-else class="fill-line">检查目的 / 临床要求：</div>
+            <div v-if="firstOf(g, 'clinical_summary')" class="doc-line">临床摘要：{{ firstOf(g, 'clinical_summary') }}</div>
+            <div v-if="firstOf(g, 'notice')" class="doc-line">注意事项：{{ firstOf(g, 'notice') }}</div>
             <div class="doc-line">病史摘要：{{ briefHistory }}</div>
             <div class="doc-line">体格检查：{{ emrInfo.physical_exam || '—' }}</div>
             <div class="sign-bar">
-              <span>申请医师：{{ data.doctor_name || '' }}</span>
+              <span>申请医师：{{ docDoctor(g) || '' }}</span>
               <span>登记：</span>
               <span>检查技师：</span>
               <span>报告医师：</span>
@@ -248,13 +259,14 @@
           <!-- 治疗单：执行科室 + 执行记录手填栏（执行时间/患者反应由执行护士现场填） -->
           <template v-else-if="type === 'treat-sheet'">
             <div class="doc-line">
-              开单科室：{{ data.dept_name }}　开单医师：{{ data.doctor_name || '—' }}{{ docTitleSuffix }}
+              开单科室：{{ data.dept_name }}　开单医师：{{ docDoctor(g) || '—' }}{{ docDoctorSuffix(g) }}
               　开单日期：{{ fmtDate(data.visit_date) }}
             </div>
             <table class="items">
               <tr><th>治疗项目</th><th>数量</th><th>单位</th><th>执行科室</th><th>状态</th></tr>
               <tr v-for="(r, i) in g.rows" :key="i">
-                <td>{{ r.item_name }}</td>
+                <!-- v74：治疗单同样印 v44 的加急与备注（复核指出此前只接了两张申请单） -->
+                <td>{{ r.item_name }}<span v-if="r.urgent" class="urgent">【加急】</span><span v-if="r.remark" class="remark">（{{ r.remark }}）</span></td>
                 <td>{{ r.qty }}</td>
                 <td>{{ r.unit }}</td>
                 <td>{{ r.exec_dept_name || '—' }}</td>
@@ -264,7 +276,7 @@
             <div class="fill-line">医嘱要求（部位 / 剂量 / 疗程）：</div>
             <div class="fill-line">执行记录（执行时间 / 患者反应 / 备注）：</div>
             <div class="sign-bar">
-              <span>开单医师：{{ data.doctor_name || '' }}</span>
+              <span>开单医师：{{ docDoctor(g) || '' }}</span>
               <span>核对：</span>
               <span>执行人：</span>
               <span>执行时间：</span>
@@ -369,6 +381,15 @@ const docSheets = computed<DocSheet[]>(() => {
   }
   return (data.value.groups as DocSheet[]) ?? []
 })
+
+/** v74 复核修：单头级字段从组内各行取第一个非空值（v44 字段挂在行上，纸面上只印一次） */
+function firstOf(g: { rows?: Array<Record<string, unknown>> }, key: string): string {
+  for (const r of g.rows ?? []) {
+    const v = r[key]
+    if (v != null && String(v).trim() !== '') return String(v)
+  }
+  return ''
+}
 const diagText = computed(() => ((data.value?.diagnoses as Record<string, unknown>[]) ?? [])
   .map((d) => `${d.icd_name}${d.icd_code ? '(' + d.icd_code + ')' : ''}`).join('；'))
 const emrInfo = computed(() => (data.value?.emr as Record<string, unknown>) ?? {})
@@ -378,6 +399,19 @@ const briefHistory = computed(() => {
   return [cc, pi].filter(Boolean).join('；') || '—'
 })
 const docTitleSuffix = computed(() => (data.value?.doctor_title ? `（${data.value.doctor_title}）` : ''))
+/**
+ * v74 复核修（1026★ 三方复核反驳者三）：四种临床单据的"申请/开单医师"此前印的是**挂号排班医生**
+ * （页眉 doctor_name 来自挂号记录），而接诊队列不校验接诊人须等于排班医生——代班/转接时纸上署错人。
+ * 行上的 order_doctor_name 才是"这行医嘱是谁开的"，后端一直在返回、此前从未使用。
+ * 取不到（历史行无开单人）时回落接诊医生；职称后缀只在两者是同一人时才印，别把排班医生的职称安到开单人头上。
+ */
+function docDoctor(g: { rows?: Array<Record<string, unknown>> }): string {
+  return firstOf(g, 'order_doctor_name') || String(data.value?.doctor_name ?? '')
+}
+function docDoctorSuffix(g: { rows?: Array<Record<string, unknown>> }): string {
+  const od = firstOf(g, 'order_doctor_name')
+  return !od || od === String(data.value?.doctor_name ?? '') ? docTitleSuffix.value : ''
+}
 /** 出生日期缺失时纸面留「—」而不是「—岁」——建档时可以不填生日，单据不能因此印出病句 */
 const ageText = computed(() => (data.value?.age == null ? '—' : `${data.value.age} 岁`))
 /** 导诊单状态列：药品未缴费=待缴费、已缴费=待取药；医技项目已缴费=待执行 */
@@ -524,6 +558,9 @@ h2, h3 { text-align: center; margin: 4px 0; }
 .tag-abx { margin-left: 8px; font-size: 11px; color: #d03050; border: 1px solid #d03050; padding: 0 3px; }
 .rx-usage { color: #444; }
 .rx-end { text-align: center; color: #aaa; font-size: 11px; margin: 8px 0; }
+/* v74：加急与行备注——黑白打印也要看得出来，靠字重不靠颜色 */
+.urgent { font-weight: 700; margin-left: 4px; }
+.remark { color: #444; margin-left: 4px; }
 /* 手填栏：纸面留白 + 下划线，供医生/护士/技师现场书写 */
 .fill-line { border-bottom: 1px solid #999; padding: 14px 0 2px; margin: 8px 0 4px; }
 .sign-bar { display: flex; flex-wrap: wrap; gap: 10px 12px; margin-top: 14px; }

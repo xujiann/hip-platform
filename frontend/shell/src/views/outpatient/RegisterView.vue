@@ -62,8 +62,11 @@
             <el-tag :type="statusTag[row.status as string]" size="small">{{ statusNames[row.status as string] }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="80">
+        <el-table-column label="操作" width="120">
           <template #default="{ row }">
+            <!-- v74 复核补入口：挂号凭条打印页（/print?type=registration）此前全前端零入口，
+                 偏离表多行却写着「已提供挂号凭条打印」——后端做了、用户够不着。退号后的不再出凭条。 -->
+            <el-button v-if="row.status !== 'CANCELLED'" link type="primary" @click="printSlip(row)">凭条</el-button>
             <el-button v-if="row.status === 'REGISTERED'" link type="danger" @click="doCancel(row)">退号</el-button>
           </template>
         </el-table-column>
@@ -129,6 +132,11 @@ async function doRegister(schedule: Schedule) {
   const reg = resp.data.data
   ElMessage.success(`挂号成功：${reg.deptName} 第 ${reg.regNo} 号，费用 ${reg.fee} 元`)
   await Promise.all([loadSchedules(), loadRegistrations()])
+}
+
+/** v74 复核补入口：挂号凭条（既有 PrintView 契约 ?type=registration&id=<registrationId>） */
+function printSlip(row: Registration) {
+  window.open(`/print?type=registration&id=${row.id}`, '_blank')
 }
 
 async function doCancel(row: Registration) {

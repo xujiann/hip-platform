@@ -399,6 +399,9 @@
             <el-table-column label="" width="70">
               <template #default="{ row }">
                 <el-button v-if="row.status === 'CREATED'" link type="danger" @click="cancelOrder(row)">作废</el-button>
+                <!-- v74 复核补入口：检验发布后医嘱置 EXECUTED，此时报告可打。此前 lab-report 打印页全前端零入口。 -->
+                <el-button v-if="row.orderType === 'LAB' && row.status === 'EXECUTED'" link type="primary"
+                           @click="printLabReport(row)">报告</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -998,6 +1001,11 @@ async function openPatient(row: Record<string, unknown> | null) {
   structValues.value = {}
   structHint.value = ''
   await loadBasicRef(!ws.emr)   // 1092★：带出放在正文赋值之后，才知道既往史是不是空的
+}
+
+/** v74 复核补入口：检验报告单（既有 PrintView 契约 ?type=lab-report&id=<orderId>，后端 /api/print/lab-report/{orderId}） */
+function printLabReport(row: Record<string, unknown>) {
+  window.open(`/print?type=lab-report&id=${row.id}`, '_blank')
 }
 
 /** v43：五种日常单据打印（车道B 端点 /api/print/doc/{docType}/{registrationId}） */

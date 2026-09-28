@@ -258,7 +258,10 @@ public class PrintReportController {
         }
 
         var args = new ArrayList<Object>(List.of(registrationId, DOC_ORDER_TYPE.get(docType)));
-        var sql = new StringBuilder(DOC_ORDER_SQL).append(" and o.order_type = ? ");
+        // v74 复核（1026★ 三方复核反驳者三）：此前不过滤已作废行，而处方笺与检验申请单版式又没有状态列——
+        // 缴费前作废的那一味药会和有效行印得一模一样。处方笺是法定文书，作废行不得上纸；
+        // 四种单据一律排除 CANCELLED（导诊单走自己的"未完成"分支，本就不含作废行）。
+        var sql = new StringBuilder(DOC_ORDER_SQL).append(" and o.order_type = ? and o.status <> 'CANCELLED' ");
         if (groupNo != null && !groupNo.isBlank()) {
             sql.append(" and o.group_no = ? ");
             args.add(groupNo.trim());

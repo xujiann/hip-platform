@@ -3,6 +3,9 @@
     <div class="toolbar">
       <h3>RIS 检查报告</h3>
       <el-button link type="primary" @click="load">刷新</el-button>
+      <!-- v74 复核补入口：PACS 调阅地址端点此前前端零调用，偏离表 7 行却写着「已提供阅片地址跳转」。
+           它是全局配置（影像浏览器地址），不是按检查定位，所以放工具栏而不是行内；未配置时不显示。 -->
+      <el-button v-if="pacs.configured" link type="success" @click="openPacs">影像浏览器</el-button>
     </div>
     <el-table :data="records" size="small" border>
       <el-table-column prop="group_no" label="申请单号" width="150" />
@@ -123,7 +126,21 @@ async function verify(row: Record<string, unknown>) {
   } finally { busyId.value = null }
 }
 
-onMounted(load)
+/** v74：PACS 调阅入口。后端 /api/ris/pacs-info 回 {configured, viewerUrl}；读不到就当未配置，不打断报告页。 */
+const pacs = ref<{ configured: boolean; viewerUrl: string }>({ configured: false, viewerUrl: '' })
+async function loadPacs() {
+  try {
+    const d = (await client.get('/ris/pacs-info')).data.data ?? {}
+    pacs.value = { configured: Boolean(d.configured) && Boolean(d.viewerUrl), viewerUrl: String(d.viewerUrl ?? '') }
+  } catch {
+    pacs.value = { configured: false, viewerUrl: '' }
+  }
+}
+function openPacs() {
+  if (pacs.value.viewerUrl) window.open(pacs.value.viewerUrl, '_blank')
+}
+
+onMounted(() => { load(); loadPacs() })
 </script>
 
 <style scoped>
