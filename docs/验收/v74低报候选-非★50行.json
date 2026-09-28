@@ -1,0 +1,766 @@
+[
+ {
+  "no": "657",
+  "bucket": "D",
+  "param_verbatim": "首支持麻醉、重症、急诊、检验、病理、院感、临床用血、呼吸内科、产科、神经专业、系统性疾病、肾病、护理、药事等各专科质控指标展示。",
+  "claimed_missing": "麻醉/重症/急诊/检验/病理/院感/临床用血/呼吸/产科/神经/系统性疾病/肾病/护理/药事各专科质控指标口径定义与集中展示",
+  "verdict": "部分低报",
+  "evidence": [
+   "modules/medtech/src/main/java/cn/hip/medtech/web/AnesQcController.java:396-426 麻醉专业 23 条质控指标目录（1424★–1450★，含 3 条明示缺数据源）",
+   "frontend/shell/src/views/medtech/AnesQcView.vue:4-5 页面「麻醉与手术质控指标」标注《麻醉专业医疗质量控制指标（2022 年版）》；:52-85 逐指标展示；:91-104 穿透明细",
+   "server/src/main/resources/db/migration/V142__v46_menus.sql:9-17 菜单 111 术中记录 /inpatient/surgery-intraop、112 麻醉质控 /anes-qc；frontend/shell/src/router/index.ts:54-56 路由",
+   "modules/medtech/src/main/java/cn/hip/medtech/web/PathQcController.java:378-419 病理专业 14 条质控指标（v48–v62）",
+   "a25e777 2026-09-06 1.4.9 v49 麻醉质控口径修正"
+  ],
+  "fact": "麻醉专科（23 条，2022 国标口径）与病理专科（14 条）的质控指标已有口径定义与集中展示页；重症/急诊/院感/用血/护理/药事等其余专科仍为单点业务能力，无集中指标页。",
+  "note_other_error": ""
+ },
+ {
+  "no": "928",
+  "bucket": "A",
+  "param_verbatim": "病人到医院就诊后，各个业务系统打印指引单（门诊药品、处置、检查、检验、体检等）给病人，指引单上显示本次就诊对应的支付二维码。病人打开手机上安装的支付宝APP或微信APP，对准二维码一扫，显示本次就诊记录的费用明细及要支付的总金额。用户无需注册，核对信息后，点击\"去缴费\"输入支付密码即可完成缴费，后续直接到对应的业务系统完成诊疗流程即可。",
+  "claimed_missing": "①各业务系统指引单打印及二维码印制；②支付码二维码图形生成；③微信/支付宝正式商户通道",
+  "verdict": "部分低报",
+  "evidence": [
+   "server/src/main/java/cn/hip/server/web/PrintReportController.java:223-296 GET /api/print/doc/{docType}/{registrationId}（门诊 outp_registration 取数）",
+   "frontend/shell/src/views/PrintView.vue:274-300 导诊单版式（项目/环节/前往科室/状态，无二维码、无检查时间、无注意事项）",
+   "frontend/shell/src/views/outpatient/DoctorStationView.vue:362-374 「打印单据」下拉五项（处方笺/检验申请单/检查申请单/治疗单/导诊单）；:1004-1006 printDoc 打开 /print?type=&id=registrationId",
+   "frontend/shell/src/views/outpatient/ChargeView.vue:30-40 与 :81-90 「打印单据」下拉；:161-174 CLINICAL_DOCS 五项 + printDoc",
+   "frontend/shell/package.json 无 qrcode/jsbarcode 依赖；grep 全前端无 二维码/qrcode 命中"
+  ],
+  "fact": "v43 已有门诊「导诊单」（本次就诊待缴费/待执行项目 + 前往科室），医生站与收费台均有入口——「指引单打印」这半句已不成立；但导诊单上无支付二维码，②③仍缺。仅 ① 的前半部分低报",
+  "note_other_error": ""
+ },
+ {
+  "no": "1050",
+  "bucket": "A",
+  "param_verbatim": "皮试结果能够一致化到诊室，便于医生浏览。",
+  "claimed_missing": "皮试结果同步至诊室、门诊医生在工作站直接浏览",
+  "verdict": "低报",
+  "evidence": [
+   "modules/outpatient/src/main/java/cn/hip/outpatient/web/OutpNurseStationController.java:76-94 「1050 皮试结果回诊室：医生可读的皮试结果查询」端点 skinTestsForDoctor(registrationId)",
+   "frontend/shell/src/views/outpatient/DoctorStationView.vue:375 <el-button @click=\"loadSkinTests\">皮试结果</el-button>",
+   "frontend/shell/src/views/outpatient/DoctorStationView.vue:1009-1016 loadSkinTests 拉取当前就诊皮试记录并以标签展示",
+   "git c8f4238 (2026-09-03 v43) 「1050 皮试回诊室：只放开读，写权限仍挡住医生」"
+  ],
+  "fact": "v43 已在门诊医生站已开医嘱页签加「皮试结果」按钮，按当前就诊号拉取护士站登记的皮试项目/结果/时间，医生只读。属拉取式查看，非自动推送。",
+  "note_other_error": ""
+ },
+ {
+  "no": "1186",
+  "bucket": "C",
+  "param_verbatim": "集成电子病历组件，完成病史、主诉、现病史、体格检查等结构化书写。",
+  "claimed_missing": "住院病历主诉/现病史/既往史/体格检查等结构化分字段存储（当前为整篇正文录入）",
+  "verdict": "部分低报",
+  "evidence": [
+   "server/src/main/resources/db/migration/V139__emr_structured.sql:77-78 inp_medical_record.content_json/template_id",
+   "modules/inpatient/src/main/java/cn/hip/inpatient/web/InpEmrController.java:80-84 fields→StructuredEmr 渲染正文+content_json 侧车",
+   "modules/medtech/src/main/java/cn/hip/medtech/web/EmrFieldController.java:352 INP_SQL 检索住院 content_json",
+   "frontend/shell/src/views/inpatient/InpDoctorView.vue:152-156 仅整篇模板套用，无 StructuredFieldForm"
+  ],
+  "fact": "后端住院病历保存已接受按模板字段的结构化输入并落 content_json 侧车，但住院医生站前端没有结构化录入控件（StructuredFieldForm 只挂在门诊），医生实际仍整篇录入——后端有前端无。",
+  "note_other_error": ""
+ },
+ {
+  "no": "1198",
+  "bucket": "B",
+  "param_verbatim": "支持协定处方开具，支持多方式快速录入药品和诊疗项目。",
+  "claimed_missing": "协定处方开具；编码/拼音/自定义码多方式快速录入",
+  "verdict": "部分低报",
+  "evidence": [
+   "server/src/main/resources/db/migration/V136__rx_template.sql:46 category AGREED",
+   "modules/outpatient/src/main/java/cn/hip/outpatient/web/RxTemplateController.java:48-57 按 category 列出",
+   "frontend/shell/src/views/outpatient/RxTemplateView.vue:82 协定处方新建,:104,172 明细锁定",
+   "frontend/shell/src/views/outpatient/DoctorStationView.vue:288-315 套用协定处方（整组带入、不可单行删）"
+  ],
+  "fact": "章节为住院医嘱（1197-1202 长期/临时医嘱）；协定处方开具已在门诊医生站交付（v44），住院医生站无；多方式录入仍只关键字（药品 pinyin 列未用于检索，仅 ICD 用拼音）。",
+  "note_other_error": ""
+ },
+ {
+  "no": "1199",
+  "bucket": "B",
+  "param_verbatim": "可预设药品默认剂量、频次、用法。",
+  "claimed_missing": "药品默认剂量、频次、用法预设及开单自动带出",
+  "verdict": "部分低报",
+  "evidence": [
+   "server/src/main/resources/db/migration/V136__rx_template.sql:61-64 rx_template_line.usage_route/frequency/dose_per_time/days",
+   "frontend/shell/src/views/outpatient/RxTemplateView.vue:130-140 模板明细预设用法/频次/单次量",
+   "frontend/shell/src/views/outpatient/DoctorStationView.vue:292-307 套用模板带出单次量/频次/途径"
+  ],
+  "fact": "通过处方模板/协定处方可为药品预设用法、频次、单次量并在门诊开单时自动带出；但不是药品字典级默认值（md_drug 无默认列），且章节为住院医嘱，故只部分。",
+  "note_other_error": ""
+ },
+ {
+  "no": "1203",
+  "bucket": "A",
+  "param_verbatim": "支持按条件检索过滤医嘱，自动生成皮试医嘱，皮试阴性方可开药。",
+  "claimed_missing": "①医嘱列表按条件检索过滤；②开需皮试药品时自动生成皮试医嘱；③开药前皮试阴性校验及住院医嘱皮试校验",
+  "verdict": "部分低报",
+  "evidence": [
+   "modules/inpatient/src/main/java/cn/hip/inpatient/web/InpatientController.java:481-490 GET /inpatient/orders/search 按床号/姓名/医嘱内容/病区/科室/状态(CREATED/EXECUTED/CANCELLED)检索医嘱",
+   "frontend/shell/src/views/inpatient/InpDoctorView.vue:6 「医嘱检索」按钮；:232-247 检索弹窗条件输入；:545-567 doOrderSearch",
+   "modules/outpatient/src/main/java/cn/hip/outpatient/service/DoctorStationService.java 无 outp_skin_test 引用（开药前无皮试阴性校验）；全仓无自动生成皮试医嘱代码",
+   "git c8f4238 (2026-09-03 v43) 2028★ 跨患者医嘱检索"
+  ],
+  "fact": "①住院医生站 v43 起有按条件（床号/姓名/内容/病区/科室/状态）的医嘱检索弹窗，说明称①尚未提供已不成立；②自动生成皮试医嘱与③开药前/住院皮试校验仍无。",
+  "note_other_error": ""
+ },
+ {
+  "no": "1238",
+  "bucket": "A",
+  "param_verbatim": "支持医嘱和申请单打印，符合医疗文件格式要求。",
+  "claimed_missing": "医嘱单及检验、检查、会诊、手术申请单的打印",
+  "verdict": "部分低报",
+  "evidence": [
+   "server/src/main/java/cn/hip/server/web/PrintReportController.java:223-296 GET /api/print/doc/{docType}/{registrationId}（门诊 outp_registration 取数）",
+   "frontend/shell/src/views/PrintView.vue:196-221 检验申请单版式；:222-246 检查申请单版式（申请医师/登记/检查技师/报告医师 签名栏）",
+   "frontend/shell/src/views/outpatient/DoctorStationView.vue:362-374 「打印单据」下拉五项（处方笺/检验申请单/检查申请单/治疗单/导诊单）；:1004-1006 printDoc 打开 /print?type=&id=registrationId",
+   "frontend/shell/src/views/outpatient/ChargeView.vue:30-40 与 :81-90 「打印单据」下拉；:161-174 CLINICAL_DOCS 五项 + printDoc",
+   "grep 全仓无 consult/surgery 申请单打印端点；modules/inpatient 打印端点仅 daily-fee/discharge-summary/temp-sheet/nursing-record"
+  ],
+  "fact": "门诊检验申请单、检查申请单已可打印（医生站/收费台入口），说明写「检验、检查申请单打印尚未提供」已不成立；住院医嘱单、会诊申请单、手术申请单确无",
+  "note_other_error": "说明把「检验报告(单)打印」列为已提供能力，但检验报告单打印仅有数据集（PrintReportController.java:111-127）与版式（PrintView.vue:24-36）；grep 全前端无任何页面打开 type=lab-report（仅 portal 调 /my/lab-reports 查看），须手输 URL 才能到打印页"
+ },
+ {
+  "no": "1239",
+  "bucket": "A",
+  "param_verbatim": "打印单据含医生、操作员签字栏，处方医师签字生效。",
+  "claimed_missing": "①挂号凭条/收费票据/检验报告单/一日清单/出院小结的医生或操作员签字栏；②处方单据打印及处方医师签字生效",
+  "verdict": "部分低报",
+  "evidence": [
+   "server/src/main/java/cn/hip/server/web/PrintReportController.java:223-296 GET /api/print/doc/{docType}/{registrationId}（门诊 outp_registration 取数）",
+   "frontend/shell/src/views/PrintView.vue:167-193 处方笺版式含 医师/药师（审核）/调配核对/发药 四签名栏",
+   "frontend/shell/src/views/outpatient/DoctorStationView.vue:362-374 「打印单据」下拉五项（处方笺/检验申请单/检查申请单/治疗单/导诊单）；:1004-1006 printDoc 打开 /print?type=&id=registrationId",
+   "frontend/shell/src/views/outpatient/ChargeView.vue:30-40 与 :81-90 「打印单据」下拉；:161-174 CLINICAL_DOCS 五项 + printDoc",
+   "frontend/shell/src/views/PrintView.vue:8-85 挂号凭条/收费票据/检验报告/日清单/出院小结版式无 签字/操作员/收费员 字样（grep 零命中）"
+  ],
+  "fact": "处方笺已可打印且带医师/药师/调配核对/发药签名栏，说明②的「处方单据打印尚未提供」已不成立；处方医师电子签字生效与①各票据签字栏确无",
+  "note_other_error": "说明把「检验报告(单)打印」列为已提供能力，但检验报告单打印仅有数据集（PrintReportController.java:111-127）与版式（PrintView.vue:24-36）；grep 全前端无任何页面打开 type=lab-report（仅 portal 调 /my/lab-reports 查看），须手输 URL 才能到打印页"
+ },
+ {
+  "no": "1246",
+  "bucket": "H",
+  "param_verbatim": "使用病区床位使用情况一览表对患者进行管控，拥有床位管控功能，全面展示患者的基本信息，包括个人资料、住院号、床号、诊断、过敏史等。 提供患者信息的检索和筛选功能，方便快速查找特定患者。",
+  "claimed_missing": "一览表展示诊断；患者信息检索与筛选",
+  "verdict": "部分低报",
+  "evidence": [
+   "frontend/shell/src/views/inpatient/NursingBoardView.vue:7-28 检索区：姓名/住院号关键词（:11）、科室、病区、护理级别、是否转科、只看我主管的（:22-27）；:108-115 以 keyword/deptId/wardId/careLevel/transferred/mine 参数请求 /inpatient/admissions",
+   "NursingBoardView.vue:33-65 列为病区/床号/姓名/护理级别/过敏/科室/待执行医嘱/护理文书/住院号——无诊断列",
+   "git c8f4238 2026-09-03 1.4.3 v43 ★快赢第一批（…住院检索…）"
+  ],
+  "fact": "②患者检索与筛选已在护理白板提供（关键词+科室+病区+护理级别+转科筛选，v43 2012★ 同款检索区）；①诊断列仍无。",
+  "note_other_error": "交付日 09-03 与偏离表重出同日，需核对重出时点。"
+ },
+ {
+  "no": "1265",
+  "bucket": "A",
+  "param_verbatim": "支持查询患者住院期间全量医嘱信息，可展示字段包含：住院号、姓名、床号、医嘱状态、执行模式、医嘱类别、医嘱内容、备注信息、、医嘱提交人、提交科室、医嘱签名人、签名科室、医嘱停止人、医嘱停止时间。",
+  "claimed_missing": "①备注、医嘱签名人、签名科室、提交科室字段；②列表内直接展示患者姓名与床号；③跨患者的全院医嘱综合查询",
+  "verdict": "部分低报",
+  "evidence": [
+   "modules/inpatient/src/main/java/cn/hip/inpatient/web/InpatientController.java:470-480 「2028★：按床号/患者姓名/医嘱内容检索医嘱——跨患者的病区级检索」",
+   "modules/inpatient/src/main/java/cn/hip/inpatient/web/InpatientController.java:507-517 返回列含 p.name as patient_name, b.bed_no, ward_name, dept_name, order_doctor_name, executor_name, stop_at, status",
+   "frontend/shell/src/views/inpatient/InpDoctorView.vue:6 「医嘱检索」入口；:230-285 检索弹窗（床号/姓名/医嘱内容/病区/科室/状态，含出院患者开关，上限 200 条）",
+   "server/src/main/resources/db/migration/V8__inpatient.sql:36-57 inp_order 无 remark/签名人/提交科室列"
+  ],
+  "fact": "v43 起住院医生站有跨患者医嘱检索，列表直接显示患者姓名、床号、病区、科室、开单医生、状态、停嘱时间——说明中②③「尚未提供」已不成立；①备注/医嘱签名人/签名科室/提交科室仍无数据列。",
+  "note_other_error": "检索结果不含停止医生姓名（SQL 未 join stop_doctor_id），说明中「已提供停止医生」仅对单患者医嘱列表成立。"
+ },
+ {
+  "no": "1305",
+  "bucket": "C",
+  "param_verbatim": "能够依据权限的不同检索到不同的模板，依据应用范围模板分为全局模板、全院模板、科室模板、个人模板。",
+  "claimed_missing": "全局模板与个人模板两个层级；按登录人权限动态计算可见模板",
+  "verdict": "低报",
+  "evidence": [
+   "server/src/main/resources/db/migration/V138__emr_template_scope.sql:45-46 scope in (GLOBAL,HOSPITAL,DEPT,PERSONAL)",
+   "modules/medtech/src/main/java/cn/hip/medtech/service/EmrTemplateService.java:78,258-330 SCOPES 四级 + listVisible/visibleWhere 按登录人可见性",
+   "modules/medtech/src/main/java/cn/hip/medtech/web/MedTechController.java:525 GET /api/emr-templates/visible",
+   "frontend/shell/src/views/quality/EmrTemplateView.vue:7-10,102-104,193-196 四级作用范围选择与说明,:301 调 /visible"
+  ],
+  "fact": "v45 已交付全局/全院/科室/个人四级作用范围，维护页按登录人权限动态列出可见模板；注意门诊/住院医生站的模板下拉（DoctorStationView.vue:676、InpDoctorView.vue:601）仍走旧的按科室端点 /emr-templates，未接 /visible。",
+  "note_other_error": ""
+ },
+ {
+  "no": "1307",
+  "bucket": "C",
+  "param_verbatim": "模板兼容具备最小结构化元素，符合文本、数值、复选、单选、多选、日期等结构化录入要求。",
+  "claimed_missing": "模板最小结构化元素：文本、数值、复选、单选、多选、日期等结构化录入控件",
+  "verdict": "部分低报",
+  "evidence": [
+   "server/src/main/resources/db/migration/V139__emr_structured.sql:39,64 emr_template_field 六型 TEXT/NUMBER/CHECKBOX/RADIO/MULTI/DATE",
+   "modules/medtech/src/main/java/cn/hip/medtech/web/EmrFieldController.java:68,109,147,177 字段定义 CRUD API",
+   "frontend/shell/src/views/outpatient/DoctorStationView.vue:118-128 结构化模板选择 + StructuredFieldForm",
+   "frontend/shell/src/views/components/StructuredFieldForm.vue 六型控件渲染"
+  ],
+  "fact": "门诊病历已按模板字段定义渲染六型结构化控件并落 content_json；但字段定义无维护界面（只有 API），住院前端未接，故为部分。",
+  "note_other_error": ""
+ },
+ {
+  "no": "1312",
+  "bucket": "C",
+  "param_verbatim": "拥有模板授权能力，使用范围为科室或个人的模板，需要授权到科室或个人后才能使用，需要授权的模板在新建的时候自动完成授权给构建科室或构建人，其他科室或个人如想使用该模板，需要将模板授权给对应的科室或个人。",
+  "claimed_missing": "模板授权（新建自动授权给构建科室/构建人；向其他科室或个人授权后方可使用）",
+  "verdict": "低报",
+  "evidence": [
+   "server/src/main/resources/db/migration/V138__emr_template_scope.sql:79-82 emr_template_grant(DEPT/USER)",
+   "modules/medtech/src/main/java/cn/hip/medtech/service/EmrTemplateService.java:373-402 create 自动写 (DEPT,dept_id)/(USER,owner_id) 授权行,:473-497 grants/grant",
+   "modules/medtech/src/main/java/cn/hip/medtech/web/MedTechController.java:581-606 grants 增删查与候选",
+   "frontend/shell/src/views/quality/EmrTemplateView.vue:59-61 授权计数列,:132-165 授权维护对话框（授权科室/个人、撤销）"
+  ],
+  "fact": "v45 已交付模板授权：新建科室/个人模板自动授权给所属科室/创建人，维护页可向其他科室或个人授权、撤销，被授权方才可见可套用。",
+  "note_other_error": ""
+ },
+ {
+  "no": "1319",
+  "bucket": "B",
+  "param_verbatim": "兼容中西医诊断录入，西医使用icd规范诊断，诊断能够增加前后缀；兼容存储常用诊断，从常用诊断中挑选诊断等功能。",
+  "claimed_missing": "①中医诊断录入；②诊断前后缀；③常用诊断存储与挑选；④住院出院诊断 ICD 联想",
+  "verdict": "低报",
+  "evidence": [
+   "server/src/main/resources/db/migration/V135__outp_diagnosis_ext.sql:48-52 prefix/suffix/certainty/diag_system/custom_name,:60-74 outp_diagnosis_favorite(use_count)",
+   "frontend/shell/src/views/outpatient/DoctorStationView.vue:139-161 中西医切换与中医名称录入,:182-195 前缀/后缀列,:444-446 常用诊断页签（保存病历自动累积）",
+   "frontend/shell/src/views/inpatient/DischargeView.vue:30 出院诊断仍手填 ICD"
+  ],
+  "fact": "①②③三项已在门诊医生站交付（v44 车道E，中医无码表按名称录入），说明的「尚未提供」已不成立；仅④住院出院诊断 ICD 联想仍未提供。",
+  "note_other_error": ""
+ },
+ {
+  "no": "1332",
+  "bucket": "C",
+  "param_verbatim": "病历存为模板、疾病组：可将当前病历存为模板，一般能够存为科室模板和个人模板；并且兼容将患者病历存为疾病组。",
+  "claimed_missing": "在医生站将当前病历直接存为科室模板/个人模板；存为疾病组模板",
+  "verdict": "部分低报",
+  "evidence": [
+   "modules/medtech/src/main/java/cn/hip/medtech/web/MedTechController.java:654-659 POST /api/emr-templates/from-record",
+   "modules/medtech/src/main/java/cn/hip/medtech/service/EmrTemplateService.java:106-107 FromRecordReq 含 scope/deptId",
+   "frontend/shell/src/views/outpatient/DoctorStationView.vue:235-237 「存为模板」按钮,:753-775 saveAsTemplate 固定 scope PERSONAL"
+  ],
+  "fact": "门诊医生站已有「存为模板」一键存为个人模板（后端支持科室范围但前端写死 PERSONAL）；住院医生站无入口，疾病组无。",
+  "note_other_error": ""
+ },
+ {
+  "no": "1335",
+  "bucket": "C",
+  "param_verbatim": "检索结构化元素内容接口通道：给予检索门急诊病历中某个结构化元素内容的接口通道，借助接口通道能够检索到结构化元素的书写内容。",
+  "claimed_missing": "按结构化元素单独检索病历中某一元素内容的接口通道",
+  "verdict": "部分低报",
+  "evidence": [
+   "modules/medtech/src/main/java/cn/hip/medtech/web/EmrFieldController.java:286-330 GET /api/emr/field-search（fieldCode/value/emrType OUTP|INP/时间范围）,:336-365 OUTP_SQL/INP_SQL 按 content_json 键检索"
+  ],
+  "fact": "按结构化元素检索的接口通道已存在（v45 1098★），能按字段码与值检索门急诊/住院病历；前端无消费方，本条要求本身是接口通道，判部分低报。",
+  "note_other_error": ""
+ },
+ {
+  "no": "1357",
+  "bucket": "G",
+  "param_verbatim": "系统支持三种不同的发药操作模式：直接完成发药、发药时弹出窗口提示进行配药、以及发药完成后再单独进行配药。",
+  "claimed_missing": "配药环节；三种发药操作模式（直接发药/发药时弹窗配药/发药后单独配药）",
+  "verdict": "部分低报",
+  "evidence": [
+   "frontend/shell/src/views/outpatient/pharmacy/PharmPickingView.vue:4 「摆药与预调剂 · 待摆药队列 / 摆药单 / 发药窗口」",
+   "frontend/shell/src/views/outpatient/pharmacy/PharmPickingView.vue:18 「摆药单是发药之前的作业记录：不扣库存、不改医嘱状态」",
+   "frontend/shell/src/views/outpatient/pharmacy/DispenseCheckView.vue:15-16 「发药目前有两个入口，只有本页这条过核对 gate 并记台账」（旧入口直接发药 vs 摆药→核对→发药）",
+   "server/src/main/resources/db/migration/V148__pharmacy_picking.sql:71-117 pharm_picking_order/line",
+   "modules/outpatient/src/main/java/cn/hip/outpatient/web/PharmPickController.java:115-167"
+  ],
+  "fact": "v50 已建立独立的配药（摆药/预调剂）环节，形成「直接发药」与「摆药→核对→发药」两条操作路径；「发药时弹窗提示配药」「发药完成后再单独配药」两种模式仍无。",
+  "note_other_error": "门诊药房口径；本条参数所在章节为住院药房，住院无发药环节。"
+ },
+ {
+  "no": "1361",
+  "bucket": "G",
+  "param_verbatim": "系统提供历史发药查询功能，可以随时检索和查看过去任意时间段的发药记录。",
+  "claimed_missing": "按任意时间段检索发药记录；病区口径；分页与导出",
+  "verdict": "部分低报",
+  "evidence": [
+   "frontend/shell/src/views/outpatient/pharmacy/PharmStockView.vue:182-224 出入库流水页签：类型筛选（OUT 发药出库等，:184-186）+ 日期区间（:189）+ 关联单号/发生时间列",
+   "modules/outpatient/src/main/java/cn/hip/outpatient/web/PharmStockController.java:145-156 GET /api/pharm/stock/flows 带 from/to LocalDate 与 flowType",
+   "frontend/shell/src/views/outpatient/pharmacy/DispenseCheckView.vue:195-228 发药台账按日期查询；:155-192 核对记录按日期/状态",
+   "server/src/main/resources/db/migration/V147__pharmacy_inventory.sql:185-232 pharm_stock_flow（OUT 类型，ref_no=处方组号）"
+  ],
+  "fact": "①按时间段检索发药出库记录已可做（批次级流水按日期区间+OUT 类型筛选；发药台账按日）——但只覆盖已纳入批次管理的药品与门诊；②病区口径、③分页导出仍无。",
+  "note_other_error": "流水查询 limit 默认 100，无分页。"
+ },
+ {
+  "no": "1373",
+  "bucket": "G",
+  "param_verbatim": "系统支持对来自同一生产厂家的药品，按照不同的生产批号、采购价格和有效期进行精细化的分批次入库管理。",
+  "claimed_missing": "批次采购价格记录；批次级在库数量账",
+  "verdict": "部分低报",
+  "evidence": [
+   "server/src/main/resources/db/migration/V147__pharmacy_inventory.sql:114-141 pharm_batch.purchase_price numeric(12,4)「含税进价单价」；:154-172 pharm_stock 批次级实时余额",
+   "modules/outpatient/src/main/java/cn/hip/outpatient/service/PharmStockService.java:186-236 stockIn 落批次+进价+批次余额",
+   "frontend/shell/src/views/outpatient/pharmacy/PharmStockView.vue:267-296 「批次入库登记」对话框含批号/生产日期/进价字段（:295）；:129-179 批次页签含在库量（:164）、进价（:168）"
+  ],
+  "fact": "注释中的两项缺项①批次进价②批次级在库量账在 v50 均已落地并有页面（药房批次库存页）。但库房仅自由编码、默认门诊药房，本条章节为住院药房。",
+  "note_other_error": "药库验收入库路径（InventoryService.acceptStockIn:83-104）仍不建批次；只有药房批次入库端点建批次账。"
+ },
+ {
+  "no": "1375",
+  "bucket": "G",
+  "param_verbatim": "除了常规的科室申领出库，系统还支持其他类型的出库业务，例如药品报损、科室直接领用、以及盘点后产生的盘亏出库等。",
+  "claimed_missing": "药品报损出库、科室直接领用出库、盘亏出库分类单据",
+  "verdict": "部分低报",
+  "evidence": [
+   "modules/outpatient/src/main/java/cn/hip/outpatient/service/PharmStockService.java:240-280 scrap：按批次报损，原因必填（E_REASON 5409），SCRAP 流水+流水号",
+   "frontend/shell/src/views/outpatient/pharmacy/PharmStockView.vue:171-174 批次行「报损」按钮；:309-334 「批次报损（不可逆，原因必填）」对话框",
+   "server/src/main/resources/db/migration/V147__pharmacy_inventory.sql:226-227 flow_type SCRAP 报损"
+  ],
+  "fact": "报损出库已是独立类型（按批次、原因必填、留 SCRAP 流水与流水号）并有页面；科室直接领用出库、盘亏出库单据仍无。",
+  "note_other_error": "门诊药房批次账口径；无审批环节。"
+ },
+ {
+  "no": "1376",
+  "bucket": "G",
+  "param_verbatim": "系统在自动扣减库存时，内置了多种出库策略，例如优先出库最早入库的药品（先进先出），或优先出库距离失效期最近的药品（近效期先出）。同时，也支持用户在出库时手动选择从哪个具体批次的药品中进行出库。",
+  "claimed_missing": "先进先出/近效期先出批次出库策略；出库时手动选择批次",
+  "verdict": "部分低报",
+  "evidence": [
+   "server/src/main/resources/db/migration/V147__pharmacy_inventory.sql:252-254 sys_config pharm.batch.pick_rule=FEFO|FIFO",
+   "modules/outpatient/src/main/java/cn/hip/outpatient/service/PharmStockService.java:305-330 consumeForDispense 按取批规则扣批次；:363-395 pick",
+   "modules/outpatient/src/main/java/cn/hip/outpatient/service/DispenseService.java:93-102 发药对已纳管药品调用 consumeForDispense 并落 pharm_dispense_batch",
+   "frontend/shell/src/views/outpatient/pharmacy/PharmStockView.vue:40 页面显示「取批规则」；modules/outpatient/src/main/java/cn/hip/outpatient/web/PharmStockController.java:163-175 pick-preview 取批预览"
+  ],
+  "fact": "FEFO/FIFO 自动出库策略已实现并在门诊发药链路生效（仅已纳入批次管理的药品）；发药时手动选择批次仍无（仅报损可指定批次）。",
+  "note_other_error": "住院药房章节；住院无发药。"
+ },
+ {
+  "no": "1385",
+  "bucket": "A",
+  "param_verbatim": "在库存禁用管理中，系统提供了多种禁用模式，包括按批次禁用和按药品禁用等。支持填写药品禁用的原因，并提供取消禁用的功能，以完善库存管理的流程控制。",
+  "claimed_missing": "按批次禁用、按药品禁用等禁用模式，填写禁用原因，取消禁用，以及禁用操作入口",
+  "verdict": "部分低报",
+  "evidence": [
+   "server/src/main/resources/db/migration/V134__drug_disable.sql:33-35 md_drug 增 disable_reason/disabled_at/disabled_by",
+   "platform/masterdata/src/main/java/cn/hip/platform/masterdata/web/MasterDataController.java:367-391 PUT /masterdata/drugs/{id}/disable（原因必填 8015）；:395-409 PUT /drugs/{id}/enable 取消停用",
+   "frontend/shell/src/views/masterdata/DrugsView.vue:61-66 「停用」「启用」按钮；:107-119 停用弹框（停用原因必填）；:8-11 启用/停用状态筛选",
+   "frontend/shell/src/views/masterdata/DrugsView.vue:80 「按批次停用本版不提供」；V134__drug_disable.sql:26-31 明确不做批次级禁用",
+   "git c8f4238 (2026-09-03 v43) 1162★ 药品启停"
+  ],
+  "fact": "v43 起药品目录页可按药品停用（原因必填、记录时间/操作人）与取消停用，并阻止停用药进入新医嘱；说明中「尚未提供操作入口/原因/取消禁用」已不成立。按批次禁用确未提供。",
+  "note_other_error": ""
+ },
+ {
+  "no": "1393",
+  "bucket": "G",
+  "param_verbatim": "系统提供药品有效期的自动报警功能，能够统计即将过期和已过期药品的品种数量及金额，并对库存量不足的药品进行提示。",
+  "claimed_missing": "近效期/已过期品种数量与金额汇总；基于批次级精确在库量的报警口径",
+  "verdict": "部分低报",
+  "evidence": [
+   "modules/outpatient/src/main/java/cn/hip/outpatient/web/PharmStockController.java:108-114 GET /batches?expiringInDays",
+   "modules/outpatient/src/main/java/cn/hip/outpatient/service/PharmStockService.java:403-424 batches 按效期窗口过滤（含 pharm_stock 账面余额）",
+   "frontend/shell/src/views/outpatient/pharmacy/PharmStockView.vue:129-179 批次页签「效期窗口 N 天内到期」筛选，列出效期状态/剩余天数/在库量（账面）/进价",
+   "对照：frontend/shell/src/views/outpatient/pharmacy/PharmOpsView.vue:172 近效期页签仍标「估算在库（非账面）」，modules/outpatient/.../PharmOpsService.java:443-484 委托 InventoryService.expiryWarnings 估算并写 caveat"
+  ],
+  "fact": "②基于批次级账面在库量的近效期查询已在药房批次库存页提供（效期窗口筛选+账面在库量+进价），但自动预警巡检（ExpiryAlertScheduler/近效期页签）仍走估算口径；①品种数与金额汇总仍无（只有已过期批次计数 expiredCount）。",
+  "note_other_error": "批次页有进价与在库量两列，金额可算但页面未汇总。"
+ },
+ {
+  "no": "1703",
+  "bucket": "H",
+  "param_verbatim": "支持护士站患者信息快速检索，实时同步并呈现床号、主诊断及过敏史等关键信息以确保护理安全。",
+  "claimed_missing": "护理白板展示主诊断；患者快速检索框",
+  "verdict": "部分低报",
+  "evidence": [
+   "NursingBoardView.vue:11 「姓名 / 住院号」检索框；:108-115 keyword 参数",
+   "NursingBoardView.vue:33-65 无诊断列",
+   "git c8f4238 2026-09-03 v43"
+  ],
+  "fact": "②快速检索框已有（姓名/住院号 + 科室/病区/护理级别筛选）；①主诊断仍未展示。",
+  "note_other_error": "同 1246，交付日与重出同日。"
+ },
+ {
+  "no": "2092",
+  "bucket": "A",
+  "param_verbatim": "支持检查导引单和报告领取通知单的打印功能，导引单包含检查时间、地点、注意事项等信息，支持自定义打印模板；可查看患者历史信息、职业病史等相关资料。",
+  "claimed_missing": "检查导引单（检查时间、地点、注意事项）与报告领取通知单打印，自定义打印模板",
+  "verdict": "部分低报",
+  "evidence": [
+   "server/src/main/java/cn/hip/server/web/PrintReportController.java:223-296 GET /api/print/doc/{docType}/{registrationId}（门诊 outp_registration 取数）",
+   "frontend/shell/src/views/PrintView.vue:274-300 导诊单版式（项目/环节/前往科室/状态，无二维码、无检查时间、无注意事项）",
+   "frontend/shell/src/views/PrintView.vue:196-221 检验申请单版式；:222-246 检查申请单版式（申请医师/登记/检查技师/报告医师 签名栏）",
+   "frontend/shell/src/views/outpatient/DoctorStationView.vue:362-374 「打印单据」下拉五项（处方笺/检验申请单/检查申请单/治疗单/导诊单）；:1004-1006 printDoc 打开 /print?type=&id=registrationId",
+   "frontend/shell/src/views/outpatient/ChargeView.vue:30-40 与 :81-90 「打印单据」下拉；:161-174 CLINICAL_DOCS 五项 + printDoc",
+   "frontend/shell/src/views/PrintView.vue:222-246 检查申请单「检查目的/临床要求」仍为手填栏，未印 notice 字段（grep PrintView 无 notice/exam_purpose）"
+  ],
+  "fact": "门诊已有导诊单（列出检查项目与前往科室=地点）及检查申请单（含执行科室），可视为导引单的一部分；但无检查预约时间、无注意事项印制、无报告领取通知单、无自定义模板，且入口在门诊医生站/收费台而非检查登记台。低置信部分低报",
+  "note_other_error": "说明把「检验报告(单)打印」列为已提供能力，但检验报告单打印仅有数据集（PrintReportController.java:111-127）与版式（PrintView.vue:24-36）；grep 全前端无任何页面打开 type=lab-report（仅 portal 调 /my/lab-reports 查看），须手输 URL 才能到打印页"
+ },
+ {
+  "no": "2105",
+  "bucket": "C",
+  "param_verbatim": "支持描述模板的引用、新建、删除、修改操作，模板按科室和个人分类管理，支持模板共享和权限控制；支持自定义常用词条，可按类型、项目定义，设置为共有词条或私有词条。",
+  "claimed_missing": "描述模板的修改与删除；个人（私有）模板分类、模板共享与权限控制；自定义常用词条",
+  "verdict": "部分低报",
+  "evidence": [
+   "server/src/main/resources/db/migration/V138__emr_template_scope.sql:45-46 emr_template 四级 scope（RIS 模板同表）",
+   "modules/medtech/src/main/java/cn/hip/medtech/web/MedTechController.java:555,564 PUT /emr-templates/{id} 修改、disable 停用,:581-598 grants 共享授权",
+   "frontend/shell/src/views/quality/EmrTemplateView.vue:75 编辑,:81-84 停用/启用,:183-184 类型含 RIS 报告,:132-165 授权",
+   "frontend/shell/src/views/medtech/RisView.vue:67 GET /emr-templates?type=RIS 套用"
+  ],
+  "fact": "RIS 描述模板与病历模板同表，v45 后可在维护页就地修改、停用（无物理删除）、建个人模板并向科室/个人授权共享；常用词条仍无。注意 RisView 套用下拉仍走旧端点，不按登录人可见性过滤。",
+  "note_other_error": ""
+ },
+ {
+  "no": "2192",
+  "bucket": "A",
+  "param_verbatim": "支持检查导引单和报告领取通知单的打印功能，导引单包含检查时间、地点、注意事项等信息，支持自定义打印模板。",
+  "claimed_missing": "检查导引单（检查时间、地点、注意事项）与报告领取通知单打印，自定义打印模板",
+  "verdict": "部分低报",
+  "evidence": [
+   "server/src/main/java/cn/hip/server/web/PrintReportController.java:223-296 GET /api/print/doc/{docType}/{registrationId}（门诊 outp_registration 取数）",
+   "frontend/shell/src/views/PrintView.vue:274-300 导诊单版式（项目/环节/前往科室/状态，无二维码、无检查时间、无注意事项）",
+   "frontend/shell/src/views/PrintView.vue:196-221 检验申请单版式；:222-246 检查申请单版式（申请医师/登记/检查技师/报告医师 签名栏）",
+   "frontend/shell/src/views/outpatient/DoctorStationView.vue:362-374 「打印单据」下拉五项（处方笺/检验申请单/检查申请单/治疗单/导诊单）；:1004-1006 printDoc 打开 /print?type=&id=registrationId",
+   "frontend/shell/src/views/outpatient/ChargeView.vue:30-40 与 :81-90 「打印单据」下拉；:161-174 CLINICAL_DOCS 五项 + printDoc",
+   "frontend/shell/src/views/PrintView.vue:222-246 检查申请单「检查目的/临床要求」仍为手填栏，未印 notice 字段（grep PrintView 无 notice/exam_purpose）"
+  ],
+  "fact": "门诊已有导诊单（列出检查项目与前往科室=地点）及检查申请单（含执行科室），可视为导引单的一部分；但无检查预约时间、无注意事项印制、无报告领取通知单、无自定义模板，且入口在门诊医生站/收费台而非检查登记台。低置信部分低报",
+  "note_other_error": "说明把「检验报告(单)打印」列为已提供能力，但检验报告单打印仅有数据集（PrintReportController.java:111-127）与版式（PrintView.vue:24-36）；grep 全前端无任何页面打开 type=lab-report（仅 portal 调 /my/lab-reports 查看），须手输 URL 才能到打印页；说明称打印中心提供「检验报告」打印——检验报告单打印仅有数据集（PrintReportController.java:111-127）与版式（PrintView.vue:24-36）；grep 全前端无任何页面打开 type=lab-report（仅 portal 调 /my/lab-reports 查看），须手输 URL 才能到打印页"
+ },
+ {
+  "no": "2219",
+  "bucket": "B",
+  "param_verbatim": "支持检查报告模板自定义，可按检查类型、部位等维度创建专科报告模板；支持自定义诊断模板，可根据项目定义，设置为公共或私有，提高报告书写效率和规范性。",
+  "claimed_missing": "按检查部位维度建模板；公共/私有区分；按项目定义的独立诊断模板；模板原地修改与停用",
+  "verdict": "部分低报",
+  "evidence": [
+   "modules/medtech/src/main/java/cn/hip/medtech/web/MedTechController.java:555,564,572 PUT 修改/disable/enable",
+   "server/src/main/resources/db/migration/V138__emr_template_scope.sql:45-46 HOSPITAL(公共)/PERSONAL(私有) 等四级",
+   "frontend/shell/src/views/quality/EmrTemplateView.vue:75,81-84 编辑/停用/启用,:183-184 类型含 RIS 报告,:193-196 范围",
+   "frontend/shell/src/views/medtech/RisView.vue:67 套用 type=RIS"
+  ],
+  "fact": "检查报告模板与病历模板同表：v45 后可原地修改、停用，并有全院(公共)/个人(私有)范围；按部位维度与独立诊断模板仍无，故部分。",
+  "note_other_error": ""
+ },
+ {
+  "no": "2252",
+  "bucket": "A",
+  "param_verbatim": "支持检查导引单和报告领取通知单的打印功能，导引单包含检查时间、地点、注意事项等信息，支持自定义打印模板。",
+  "claimed_missing": "检查导引单（检查时间、地点、注意事项）与报告领取通知单打印，自定义打印模板",
+  "verdict": "部分低报",
+  "evidence": [
+   "server/src/main/java/cn/hip/server/web/PrintReportController.java:223-296 GET /api/print/doc/{docType}/{registrationId}（门诊 outp_registration 取数）",
+   "frontend/shell/src/views/PrintView.vue:274-300 导诊单版式（项目/环节/前往科室/状态，无二维码、无检查时间、无注意事项）",
+   "frontend/shell/src/views/PrintView.vue:196-221 检验申请单版式；:222-246 检查申请单版式（申请医师/登记/检查技师/报告医师 签名栏）",
+   "frontend/shell/src/views/outpatient/DoctorStationView.vue:362-374 「打印单据」下拉五项（处方笺/检验申请单/检查申请单/治疗单/导诊单）；:1004-1006 printDoc 打开 /print?type=&id=registrationId",
+   "frontend/shell/src/views/outpatient/ChargeView.vue:30-40 与 :81-90 「打印单据」下拉；:161-174 CLINICAL_DOCS 五项 + printDoc",
+   "frontend/shell/src/views/PrintView.vue:222-246 检查申请单「检查目的/临床要求」仍为手填栏，未印 notice 字段（grep PrintView 无 notice/exam_purpose）"
+  ],
+  "fact": "门诊已有导诊单（列出检查项目与前往科室=地点）及检查申请单（含执行科室），可视为导引单的一部分；但无检查预约时间、无注意事项印制、无报告领取通知单、无自定义模板，且入口在门诊医生站/收费台而非检查登记台。低置信部分低报",
+  "note_other_error": "说明把「检验报告(单)打印」列为已提供能力，但检验报告单打印仅有数据集（PrintReportController.java:111-127）与版式（PrintView.vue:24-36）；grep 全前端无任何页面打开 type=lab-report（仅 portal 调 /my/lab-reports 查看），须手输 URL 才能到打印页；说明称打印中心提供「检验报告」打印——检验报告单打印仅有数据集（PrintReportController.java:111-127）与版式（PrintView.vue:24-36）；grep 全前端无任何页面打开 type=lab-report（仅 portal 调 /my/lab-reports 查看），须手输 URL 才能到打印页"
+ },
+ {
+  "no": "2279",
+  "bucket": "B",
+  "param_verbatim": "支持检查报告模板自定义，可按检查类型、部位等维度创建专科报告模板；支持自定义诊断模板，可根据项目定义，设置为公共或私有，提高报告书写效率和规范性。",
+  "claimed_missing": "按检查类型、部位维度建模板；个人私有模板；独立诊断模板；模板修改与删除",
+  "verdict": "部分低报",
+  "evidence": [
+   "modules/medtech/src/main/java/cn/hip/medtech/web/MedTechController.java:555,564 PUT 修改/disable 停用",
+   "server/src/main/resources/db/migration/V138__emr_template_scope.sql:45-46 PERSONAL 范围",
+   "frontend/shell/src/views/quality/EmrTemplateView.vue:75,81-84,183-184,193-196",
+   "frontend/shell/src/views/medtech/RisView.vue:67"
+  ],
+  "fact": "RIS 报告模板已可修改、停用（无物理删除）并可建个人私有模板；按类型/部位维度（模板只按 template_type=RIS 与科室）与独立诊断模板仍无，故部分。",
+  "note_other_error": ""
+ },
+ {
+  "no": "2295",
+  "bucket": "D",
+  "param_verbatim": "支持病理取材手术记录单填报功能，可在内镜检查报告中记录病理取材部位、数量、标本处理方式等信息，与病理系统无缝对接，支持病理申请单打印。",
+  "claimed_missing": "在内镜报告内填报病理取材记录；取材部位/数量/标本处理方式结构化字段；病理申请单打印",
+  "verdict": "部分低报",
+  "evidence": [
+   "server/src/main/resources/db/migration/V144__pathology_base.sql:47 sampling_site 取材部位（varchar 128）；:49 fixative 固定液；:23 part_no 多部位分别送检（v48）",
+   "frontend/shell/src/views/medtech/pathology/RegistryPanel.vue:210-211 「取材部位」输入；:217-218 「固定液」输入",
+   "frontend/shell/src/views/medtech/pathology/GrossingPanel.vue:59 取材部位列",
+   "modules/medtech/src/main/java/cn/hip/medtech/web/PathologyRegistryController.java:782 samplingSite 校验",
+   "RegistryPanel.vue grep 申请单打印 零命中；RIS 内镜报告页无取材字段"
+  ],
+  "fact": "「当前为单一自由文本描述」已不成立：取材部位、固定液（标本处理方式）已是病理登记侧的结构化字段并有多部位序号；但仍不在内镜报告内填报、无数量字段、无申请单打印。（与 F 病理桶交叉）",
+  "note_other_error": ""
+ },
+ {
+  "no": "2367",
+  "bucket": "C",
+  "param_verbatim": "系统内置医嘱模板功能，可支持自定义医嘱模板或将 已有医嘱转存为科室或个人模板。",
+  "claimed_missing": "自定义医嘱模板；将已有医嘱转存为科室或个人模板",
+  "verdict": "部分低报",
+  "evidence": [
+   "server/src/main/resources/db/migration/V136__rx_template.sql:28,45-46,55 rx_template(PERSONAL/DEPT/HOSPITAL, RX/AGREED) + rx_template_line(DRUG/LAB/EXAM/TREAT)",
+   "modules/outpatient/src/main/java/cn/hip/outpatient/web/RxTemplateController.java:51,85,102 列表/新建/修改",
+   "frontend/shell/src/views/outpatient/RxTemplateView.vue:82-90 分类与范围,:130-140 明细录入",
+   "frontend/shell/src/views/outpatient/DoctorStationView.vue:288-315 医生站套用处方模板/协定处方"
+  ],
+  "fact": "章节是门急诊医生站（2355 分诊、2356 留观）；门诊已有自定义处方/医嘱模板（药品+检验+检查+治疗，个人/科室/全院）并可套用，但「将已有医嘱一键转存为模板」无端点无按钮，故部分。",
+  "note_other_error": ""
+ },
+ {
+  "no": "2376",
+  "bucket": "B",
+  "param_verbatim": "支持检验申请开具，支持检验申请合并，支持录入频次、数量、加急标记。",
+  "claimed_missing": "①检验申请加急标记；②检验申请合并",
+  "verdict": "部分低报",
+  "evidence": [
+   "server/src/main/resources/db/migration/V137__outp_order_fields.sql:41 outp_order.urgent",
+   "modules/outpatient/src/main/java/cn/hip/outpatient/service/DoctorStationService.java:671-678,774 开单行 urgent 入库",
+   "modules/medtech/src/main/java/cn/hip/medtech/web/MedTechController.java:91,140 lis/pending 与 samples 回显 urgent",
+   "frontend/shell/src/views/outpatient/DoctorStationView.vue 全文无 urgent/加急 控件"
+  ],
+  "fact": "门诊医嘱后端已有加急字段并在检验队列回显，但门诊医生站没有加急勾选控件、住院医嘱无该列——后端有前端无；申请合并仍无。",
+  "note_other_error": ""
+ },
+ {
+  "no": "2377",
+  "bucket": "B",
+  "param_verbatim": "支持检查申请开具，支持检验申请合并，支持录入频次、数量、加急标记。",
+  "claimed_missing": "①检查申请加急标记；②申请合并",
+  "verdict": "部分低报",
+  "evidence": [
+   "server/src/main/resources/db/migration/V137__outp_order_fields.sql:41 outp_order.urgent（检查医嘱同表）",
+   "modules/outpatient/src/main/java/cn/hip/outpatient/service/DoctorStationService.java:678,774",
+   "frontend/shell/src/views/outpatient/DoctorStationView.vue 全文无 urgent/加急 控件",
+   "frontend/shell/src/views/medtech/RisView.vue 无加急列"
+  ],
+  "fact": "同 2376：门诊检查医嘱后端具备 urgent 字段，前端无录入/展示控件，住院侧无；合并仍无。",
+  "note_other_error": ""
+ },
+ {
+  "no": "2378",
+  "bucket": "D",
+  "param_verbatim": "支持登记手术申请，支持标记日间手术、急诊手术等。",
+  "claimed_missing": "日间手术、急诊手术等手术类别标记",
+  "verdict": "部分低报",
+  "evidence": [
+   "server/src/main/resources/db/migration/V140__surgery_base.sql:73 surgery_kind 列（ELECTIVE 择期 / EMERGENCY 急诊 / DAY 日间）",
+   "modules/medtech/src/main/java/cn/hip/medtech/service/SurgeryService.java:91-92 SURGERY_KINDS 择期/急诊/日间；:240 非法返 4906",
+   "frontend/shell/src/views/inpatient/SurgeryView.vue:162-166 「手术类别」下拉（择期/急诊/日间，术中信息弹窗）；:375-382 PUT /inpatient/surgeries/{id}/op-info 提交 surgeryKind",
+   "frontend/shell/src/views/inpatient/SurgeryView.vue:116-133 手术申请表单仅 在院患者/术式/麻醉方式/排台时间，无手术类别字段",
+   "modules/medtech/src/main/java/cn/hip/medtech/web/MedTechController.java:383 PUT /api/inpatient/surgeries/{id}/op-info；:410 GET /dict 下发 surgeryKinds"
+  ],
+  "fact": "手术类别（择期/急诊/日间）标记已可在手术管理页「术中信息」弹窗对任一未取消台次（含刚申请的）选择并展示于排程视图，但手术申请表单本身无该字段，需申请后二次维护。",
+  "note_other_error": ""
+ },
+ {
+  "no": "2379",
+  "bucket": "A",
+  "param_verbatim": "支持各项制式单据打印、重打。",
+  "claimed_missing": "①检验检查申请单、瓶签、执行单等单据的打印版式；②其他单据的重打留痕",
+  "verdict": "部分低报",
+  "evidence": [
+   "server/src/main/java/cn/hip/server/web/PrintReportController.java:223-296 GET /api/print/doc/{docType}/{registrationId}（门诊 outp_registration 取数）",
+   "frontend/shell/src/views/PrintView.vue:196-221 检验申请单版式；:222-246 检查申请单版式（申请医师/登记/检查技师/报告医师 签名栏）",
+   "frontend/shell/src/views/outpatient/DoctorStationView.vue:362-374 「打印单据」下拉五项（处方笺/检验申请单/检查申请单/治疗单/导诊单）；:1004-1006 printDoc 打开 /print?type=&id=registrationId",
+   "frontend/shell/src/views/outpatient/ChargeView.vue:30-40 与 :81-90 「打印单据」下拉；:161-174 CLINICAL_DOCS 五项 + printDoc",
+   "modules/outpatient 急诊仅 Triage/ErObservation/ErRescue 控制器，急诊医生开单走同一 DoctorStationView（:580 注释提及急诊夜班）"
+  ],
+  "fact": "检验申请单与检查申请单的打印版式与入口在门诊医生站/收费台已有（急诊共用该医生站），说明①中「检验检查申请单打印版式尚未提供」已不成立；瓶签、执行单、非票据重打留痕确无",
+  "note_other_error": "说明把「检验报告(单)打印」列为已提供能力，但检验报告单打印仅有数据集（PrintReportController.java:111-127）与版式（PrintView.vue:24-36）；grep 全前端无任何页面打开 type=lab-report（仅 portal 调 /my/lab-reports 查看），须手输 URL 才能到打印页"
+ },
+ {
+  "no": "2450",
+  "bucket": "A",
+  "param_verbatim": "病历内容：①患者相关元素自动提取，病历内容分为时间、文本、多选框、单选框、诊断控件等多种元素形式，支持表格、图片 等多种文本媒体；②支持在病历书写时，插入医生和患者签名，支持插 入CA电子签名。③支持结构化录入与自由化录入相结合。 （投标人提供相关软件界面截图，并加盖投标人公章）",
+  "claimed_missing": "①病历内容按时间/文本/多选/单选/诊断控件等元素组织并支持表格、图片；②病历书写时插入患者签名；③结构化录入与自由化录入相结合",
+  "verdict": "部分低报",
+  "evidence": [
+   "server/src/main/resources/db/migration/V139__emr_structured.sql:64 datatype 六型 TEXT/NUMBER/CHECKBOX/RADIO/MULTI/DATE",
+   "frontend/shell/src/components/StructuredFieldForm.vue:27-54 按类型渲染文本/数字/复选/单选/多选/日期控件",
+   "frontend/shell/src/views/outpatient/DoctorStationView.vue:118-129 门诊病历书写页选结构化模板→StructuredFieldForm 与五段自由文本并存（保存后写入现病史）",
+   "frontend/shell/src/views/outpatient/DoctorStationView.vue:693 「结构化元素定义当前只有后端端点、没有维护界面，须由管理员在实施期配置」",
+   "frontend/shell/src/views/inpatient/InpDoctorView.vue 无 StructuredFieldForm 引用（住院病历书写页无结构化录入入口）",
+   "modules/inpatient/src/main/java/cn/hip/inpatient/web/ConsentController.java:96-100 患者签名仅在知情同意书"
+  ],
+  "fact": "门诊医生站 v45 起支持按模板定义的时间/文本/数字/单选/多选/复选元素结构化录入并与自由文本结合（③及①的元素部分），说明称①③「尚未提供」不完全成立；但元素定义无维护界面、住院病历无结构化入口、无诊断控件/表格/图片、病历内无患者签名。",
+  "note_other_error": "说明称「医师 CA 电子签名」——实际为 MockSignatureAdapter 摘要签名，未对接真实 CA。"
+ },
+ {
+  "no": "2474",
+  "bucket": "C",
+  "param_verbatim": "提供既往病历查阅功能，医生能直接查看患者既往病历资料信息，包括：①病历内容、②检验、③检查、④医嘱、⑤生命体征、⑥首页、⑦既往病历；（投标人提供相关软件界面截图，并加盖投标人公章）",
+  "claimed_missing": "③检查报告、④医嘱、⑤生命体征、⑥病案首页纳入既往病历查阅；医生站内直接调阅跨次住院资料入口",
+  "verdict": "部分低报",
+  "evidence": [
+   "modules/outpatient/src/main/java/cn/hip/outpatient/web/EmrRefController.java:147 GET 引用资料",
+   "frontend/shell/src/views/components/EmrRefDrawer.vue:21-24 基本资料/检验/检查/历史病历四页签,:41-44 诚实边界（仅门诊侧结果）",
+   "frontend/shell/src/views/outpatient/DoctorStationView.vue:557 引用抽屉挂载,:538 既往病历列表含 INP 来源"
+  ],
+  "fact": "门诊医生站的临床资料引用抽屉已可直接查看该患者的③检查报告（仅门诊医嘱产生的报告）与既往病历（含住院文书）；④医嘱⑤体征⑥首页仍无，故部分。",
+  "note_other_error": ""
+ },
+ {
+  "no": "2592",
+  "bucket": "A",
+  "param_verbatim": "能够医技申请单批量打印功能。",
+  "claimed_missing": "医技申请单打印版式及批量打印",
+  "verdict": "部分低报",
+  "evidence": [
+   "server/src/main/java/cn/hip/server/web/PrintReportController.java:223-296 GET /api/print/doc/{docType}/{registrationId}（门诊 outp_registration 取数）",
+   "frontend/shell/src/views/PrintView.vue:196-221 检验申请单版式；:222-246 检查申请单版式（申请医师/登记/检查技师/报告医师 签名栏）",
+   "frontend/shell/src/views/outpatient/DoctorStationView.vue:362-374 「打印单据」下拉五项（处方笺/检验申请单/检查申请单/治疗单/导诊单）；:1004-1006 printDoc 打开 /print?type=&id=registrationId",
+   "frontend/shell/src/views/outpatient/ChargeView.vue:30-40 与 :81-90 「打印单据」下拉；:161-174 CLINICAL_DOCS 五项 + printDoc",
+   "PrintReportController.java:223-296 按 registrationId/groupNo 单张出单，无批量端点；modules/inpatient 无申请单打印端点"
+  ],
+  "fact": "门诊检验/检查申请单打印版式已存在（说明称版式尚未提供不准确）；但本章语境为住院医技管控（2595 在院病人床位列表），住院侧无申请单打印，且批量打印全无。以「版式」一项计部分低报",
+  "note_other_error": "说明把「检验报告(单)打印」列为已提供能力，但检验报告单打印仅有数据集（PrintReportController.java:111-127）与版式（PrintView.vue:24-36）；grep 全前端无任何页面打开 type=lab-report（仅 portal 调 /my/lab-reports 查看），须手输 URL 才能到打印页"
+ },
+ {
+  "no": "2645",
+  "bucket": "I",
+  "param_verbatim": "能够让已提交病历经医生更新后保留修改痕迹;能够让质控平台浏览病历多次更新的完整痕迹;能够对修改痕迹进行审计日志记录。",
+  "claimed_missing": "①质控平台侧浏览病历多次更新完整痕迹的入口；②未签名病历的修改留痕（当前未签名病历为直接修改）",
+  "verdict": "部分低报",
+  "evidence": [
+   "server/src/main/resources/db/migration/V157__emr_version.sql:60,124 emr_version(MANUAL/AUTO/SUBMIT)",
+   "modules/outpatient/src/main/java/cn/hip/outpatient/service/DoctorStationService.java:148 每次保存(未签名)记 MANUAL 版本,:1081 签名记 SUBMIT",
+   "modules/inpatient/src/main/java/cn/hip/inpatient/web/InpEmrController.java:105,142,761 住院病历新建/修订记版本",
+   "modules/outpatient/src/main/java/cn/hip/outpatient/web/EmrVersionController.java:47,77-128 列表/单版/对比，角色含 QUALITY",
+   "frontend/shell/src/views/outpatient/emr-version/EmrVersionView.vue:7-9 OUTP/INP 选择,:158,256-276 质控/病案按类型+id 直查",
+   "frontend/shell/src/views/outpatient/emr-version/EmrVersionDiff.vue 版本比对",
+   "server/src/main/resources/db/migration/V162__v54_menus.sql:39 菜单 180 /emr-version（父级 25 数据中心）",
+   "frontend/shell/src/views/outpatient/DoctorStationView.vue:777 「版本留痕」按钮"
+  ],
+  "fact": "②已不成立：门诊每次保存（含未签名）与住院新建/修订都落版本并可逐版比对；①有「病历版本留痕」页面且 QUALITY 角色可用、支持住院与门诊，但挂在数据中心菜单且质控需手输病历 id（无按患者/科室检索），入口成立但弱，故判部分。",
+  "note_other_error": ""
+ },
+ {
+  "no": "2761",
+  "bucket": "G",
+  "param_verbatim": "系统支持对来自同一生产厂家的药品，按照不同的生产批号和有效期进行精细化的分批次入库管理。",
+  "claimed_missing": "药库批次级在库量账；按批次结存与追溯查询",
+  "verdict": "部分低报",
+  "evidence": [
+   "server/src/main/resources/db/migration/V147__pharmacy_inventory.sql:154-176 pharm_stock 批次级余额；:185-232 pharm_stock_flow 批次级流水",
+   "modules/outpatient/src/main/java/cn/hip/outpatient/web/PharmStockController.java:131-160 GET /balance/by-batch、GET /flows（按 drugId/batchId/类型/日期）",
+   "frontend/shell/src/views/outpatient/pharmacy/PharmStockView.vue:129-179 批次页签（在库量）；:182-224 出入库流水页签（批号/增减/结存/关联单号）；:227-262 对账页签",
+   "对照：platform/masterdata/.../InventoryService.java:83-104 acceptStockIn 只加 md_drug.stock 不建批次（server/src/main/resources/db/migration/V155__cdss_route_and_stocktake.sql:321-323 自陈）"
+  ],
+  "fact": "批次级在库量账与按批次结存/流水追溯查询已落地并有页面；但只有「药房批次入库」端点建批次账，药库验收入库（StockInAcceptView 路径）仍不建批次，且库房仅默认门诊药房编码。",
+  "note_other_error": "章节为药库；平台无独立药库/药房库房划分。"
+ },
+ {
+  "no": "2775",
+  "bucket": "G",
+  "param_verbatim": "除了常规的药房申领出库，系统还支持其他类型的出库业务，例如药品报损、临床科室直接领用、以及盘点后产生的盘亏出库等。",
+  "claimed_missing": "药品报损出库单据与审批；临床科室直接领用出库；分类统计",
+  "verdict": "部分低报",
+  "evidence": [
+   "modules/outpatient/src/main/java/cn/hip/outpatient/service/PharmStockService.java:240-280 scrap（原因必填、SCRAP 流水）",
+   "frontend/shell/src/views/outpatient/pharmacy/PharmStockView.vue:171-174 报损按钮、:309-334 报损对话框",
+   "modules/outpatient/src/main/java/cn/hip/outpatient/web/PharmStockController.java:95-106 POST /api/pharm/stock/scrap"
+  ],
+  "fact": "①报损出库已有独立操作与流水留痕（按批次、原因必填、流水号），但无审批；②科室领用出库、③分类统计仍无。",
+  "note_other_error": "报损无审批流。"
+ },
+ {
+  "no": "2776",
+  "bucket": "G",
+  "param_verbatim": "系统在自动扣减库存时，内置了多种出库策略，例如优先出库最早入库的药品（先进先出），或优先出库距离失效期最近的药品（近效期先出），以保证库存的良性周转。",
+  "claimed_missing": "先进先出/近效期先出自动出库批次策略",
+  "verdict": "部分低报",
+  "evidence": [
+   "server/src/main/resources/db/migration/V147__pharmacy_inventory.sql:252-254 pharm.batch.pick_rule FEFO/FIFO",
+   "modules/outpatient/src/main/java/cn/hip/outpatient/service/PharmStockService.java:305-330 consumeForDispense、:363-395 pick",
+   "modules/outpatient/src/main/java/cn/hip/outpatient/service/DispenseService.java:93-102 发药接入",
+   "frontend/shell/src/views/outpatient/pharmacy/PharmStockView.vue:40 页面显示取批规则"
+  ],
+  "fact": "注释称「依赖批次级在库量账，当前版本未提供」已不成立：批次账与 FEFO/FIFO 自动取批策略均已实现并在门诊发药扣减中生效（仅已纳管药品）。",
+  "note_other_error": "章节为药库；策略只在门诊发药扣减路径生效，药库无独立出库业务。"
+ },
+ {
+  "no": "2843",
+  "bucket": "D",
+  "param_verbatim": "手术内容包含患者床号、住院号、患者姓名、性别、诊断、手术名称、主刀医生、手术时间、送入术室时间、手术结束时间、回到病房时间等数据的展示。",
+  "claimed_missing": "手术列表展示床号、性别、诊断、主刀医生、送入术室时间、手术结束时间、回到病房时间",
+  "verdict": "部分低报",
+  "evidence": [
+   "frontend/shell/src/views/inpatient/SurgeryView.vue:34 手术间排程表「床号」列；:43-47 「入室→开台→结束→出室」四时间点列；:48-50 时长",
+   "server/src/main/resources/db/migration/V140__surgery_base.sql:50-53 in_room_at/start_at/end_at/out_room_at 四个时间点",
+   "modules/medtech/src/main/java/cn/hip/medtech/service/SurgeryService.java:315-320 room-board SQL 已返回 b.bed_no、p.sex、u.real_name as surgeon_name（性别与主刀后端有、前端未展示）",
+   "frontend/shell/src/views/inpatient/SurgeryView.vue:82-112 近期台次页签仍只有 住院号/患者/术式/麻醉方式/状态"
+  ],
+  "fact": "排程视图已展示床号与送入术室（入室）、手术结束、出室时间；性别与主刀医生后端已返回但前端未展示；诊断与「回到病房时间」仍无（出室≠回病房）。",
+  "note_other_error": ""
+ },
+ {
+  "no": "2922",
+  "bucket": "D",
+  "param_verbatim": "支持自动获取所有外科手术记录；包括手术名称、切口等级、愈合情况、手术时间、麻醉方法、ASA评分等信息。",
+  "claimed_missing": "手术记录的切口等级、愈合情况、ASA 评分字段；手术记录自动采集进院感目标性监测",
+  "verdict": "部分低报",
+  "evidence": [
+   "server/src/main/resources/db/migration/V140__surgery_base.sql:67 incision_type 列（Ⅰ/Ⅱ/Ⅲ/Ⅳ类，v46 2026-09-04 落库）",
+   "server/src/main/resources/db/migration/V140__surgery_base.sql:62 asa_grade 列",
+   "frontend/shell/src/views/inpatient/SurgeryView.vue:157-161 「切口等级」下拉（术中信息弹窗）",
+   "frontend/shell/src/views/inpatient/SurgeryView.vue:152-156 「ASA 分级」下拉（术中信息弹窗）",
+   "modules/medtech/src/main/java/cn/hip/medtech/service/SurgeryService.java:85-92 SURGERY_LEVELS/ASA_GRADES/INCISION_TYPES/SURGERY_KINDS 白名单；:222-240 写侧校验",
+   "modules/medtech/src/main/java/cn/hip/medtech/web/AnesQcController.java:409-410 1429★ ASA 分级分布、:579 切口等级覆盖率",
+   "modules/qualitycare 对 inp_surgery 的引用仅 DrgController.java:84、NursingPlusController.java:84-86（术后发热）、NursingQualityController.java:359；院感病例表与手术记录无关联",
+   "全仓 grep 愈合|healing 在手术域零命中"
+  ],
+  "fact": "切口等级与 ASA 分级字段已可录入并展示；愈合情况字段仍无；手术记录仍未自动采集进院感目标性监测。",
+  "note_other_error": ""
+ },
+ {
+  "no": "3062",
+  "bucket": "D",
+  "param_verbatim": "支持生成择期手术患者医院感染率。",
+  "claimed_missing": "择期/急诊手术分类标识；择期手术患者医院感染率分层统计",
+  "verdict": "部分低报",
+  "evidence": [
+   "server/src/main/resources/db/migration/V140__surgery_base.sql:73 surgery_kind 列（ELECTIVE 择期 / EMERGENCY 急诊 / DAY 日间）",
+   "modules/medtech/src/main/java/cn/hip/medtech/service/SurgeryService.java:91-92 SURGERY_KINDS",
+   "frontend/shell/src/views/inpatient/SurgeryView.vue:162-166 「手术类别」下拉（择期/急诊/日间，术中信息弹窗）；:375-382 PUT /inpatient/surgeries/{id}/op-info 提交 surgeryKind",
+   "modules/medtech/src/main/java/cn/hip/medtech/web/AnesQcController.java:408 1428★ 各类手术数量（择期/急诊/日间）",
+   "modules/qualitycare 对 inp_surgery 的引用仅 DrgController.java:84、NursingPlusController.java:84-86（术后发热）、NursingQualityController.java:359；院感病例表与手术记录无关联"
+  ],
+  "fact": "择期/急诊/日间分类标识已可录入并有全院分布统计；择期手术患者医院感染率仍无（感染病例未与手术关联）。",
+  "note_other_error": ""
+ },
+ {
+  "no": "3561",
+  "bucket": "A",
+  "param_verbatim": "也能够手工补打挂号单和结算发票，能够挂号结算予以完成自动化打印就诊指引单、结算发票。",
+  "claimed_missing": "①挂号界面的挂号单打印与补打入口；②挂号与结算完成后自动弹出打印；③独立的就诊指引单版式",
+  "verdict": "部分低报",
+  "evidence": [
+   "server/src/main/java/cn/hip/server/web/PrintReportController.java:223-296 GET /api/print/doc/{docType}/{registrationId}（门诊 outp_registration 取数）",
+   "frontend/shell/src/views/PrintView.vue:274-300 导诊单版式（项目/环节/前往科室/状态，无二维码、无检查时间、无注意事项）",
+   "frontend/shell/src/views/outpatient/ChargeView.vue:30-40 与 :81-90 「打印单据」下拉；:161-174 CLINICAL_DOCS 五项 + printDoc",
+   "grep 全前端无 type=registration 打开点（挂号凭条仍无入口）；ChargeView.vue:150-153 printCharge 需手点，无自动弹出"
+  ],
+  "fact": "③已不成立：v43 导诊单即就诊指引单，收费台结算前后均可打（ChargeView 两处入口）；①挂号单入口、②自动弹出打印确无",
+  "note_other_error": ""
+ },
+ {
+  "no": "3590",
+  "bucket": "A",
+  "param_verbatim": "能够收费凭证、发票、指引单等多种单据的打印、补打、作废重打等。",
+  "claimed_missing": "①票据作废状态及作废后重打；②独立的就诊指引单版式；③挂号凭条的打印入口按钮",
+  "verdict": "部分低报",
+  "evidence": [
+   "server/src/main/java/cn/hip/server/web/PrintReportController.java:223-296 GET /api/print/doc/{docType}/{registrationId}（门诊 outp_registration 取数）",
+   "frontend/shell/src/views/PrintView.vue:274-300 导诊单版式（项目/环节/前往科室/状态，无二维码、无检查时间、无注意事项）",
+   "frontend/shell/src/views/outpatient/ChargeView.vue:30-40 与 :81-90 「打印单据」下拉；:161-174 CLINICAL_DOCS 五项 + printDoc",
+   "grep 全前端无 type=registration 打开点；outp_charge 无票据作废重打端点"
+  ],
+  "fact": "②已不成立：导诊单版式与收费台入口均有；①票据作废重打、③挂号凭条入口确无",
+  "note_other_error": ""
+ },
+ {
+  "no": "3594",
+  "bucket": "G",
+  "param_verbatim": "且当所有窗口排队都空闲时能平均分配处方到发药窗口，能够药品费用收费时，自动化智能化分配处方到排队最少的发药窗口。",
+  "claimed_missing": "收费后按窗口排队智能分配处方；窗口均空闲时平均分配",
+  "verdict": "部分低报",
+  "evidence": [
+   "server/src/main/resources/db/migration/V148__pharmacy_picking.sql:186-187 sys_config pharm.picking.auto_window=off|least_load「分配到在途单最少的启用窗口」",
+   "modules/outpatient/src/main/java/cn/hip/outpatient/service/PharmPickService.java:809-825 autoWindow() 按在途单数升序取窗口",
+   "frontend/shell/src/views/outpatient/pharmacy/PharmPickingView.vue:270-275 建摆药单窗口选择「留空由后端按最少负载自动分配」；:134-167 发药窗口页签（在途单/已配好待取）"
+  ],
+  "fact": "按排队最少窗口自动分配已实现（least_load，默认 off，需管理员开启），触发点是药房建摆药单而非收费时；均空闲时按 sort_no 取第一个窗口，非平均轮询。",
+  "note_other_error": "章节为门诊收费；分配发生在药房建单，不是收费环节。"
+ }
+]
