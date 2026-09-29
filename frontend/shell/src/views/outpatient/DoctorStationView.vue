@@ -307,6 +307,13 @@
             <el-table-column prop="usageRoute" label="途径" width="70" />
             <el-table-column prop="days" label="天数" width="60" />
             <el-table-column prop="qty" label="数量" width="60" />
+            <!-- v74（1006★「所有医嘱均拥有备注功能」）：药品行同样开放加急与备注，键名与后端 OrderLine 一致 -->
+            <el-table-column label="加急" width="56" align="center">
+              <template #default="{ row }"><el-checkbox v-model="row.urgent" /></template>
+            </el-table-column>
+            <el-table-column label="备注" min-width="110">
+              <template #default="{ row }"><el-input v-model="row.remark" size="small" placeholder="备注" maxlength="200" /></template>
+            </el-table-column>
             <el-table-column label="" width="60">
               <template #default="{ row, $index }">
                 <!-- v44：协定处方由药事委员会固定，要么整组用要么整组撤，不许单行删 -->
@@ -339,9 +346,31 @@
             <el-button type="primary" @click="addLabLine">加入</el-button>
           </div>
           <el-table :data="labLines" size="small">
-            <el-table-column prop="itemName" label="项目" />
-            <el-table-column label="类别" width="80">
+            <el-table-column prop="itemName" label="项目" min-width="140" />
+            <el-table-column label="类别" width="70">
               <template #default="{ row }">{{ categoryNames[row.category as string] }}</template>
+            </el-table-column>
+            <!-- v74 复核补录入口（1006★/1013★/1014★/1016★）：V137 七个申请单字段后端一直能收、打印页也会印，
+                 但医生站此前没有任何控件能填——真实业务下恒为空。按类别只露相关字段：检验行填标本类型/采样部位，
+                 检查行填检查目的/临床摘要/注意事项；加急与备注各行都有。键名与后端 OrderLine 一致，随 lines 原样上送。 -->
+            <el-table-column label="申请信息" min-width="300">
+              <template #default="{ row }">
+                <template v-if="row.category === 'LAB'">
+                  <el-input v-model="row.specimenType" size="small" placeholder="标本类型" maxlength="32" style="width: 46%; margin-right: 4px" />
+                  <el-input v-model="row.samplingSite" size="small" placeholder="采样部位" maxlength="32" style="width: 46%" />
+                </template>
+                <template v-else-if="row.category === 'EXAM'">
+                  <el-input v-model="row.examPurpose" size="small" placeholder="检查目的 / 临床要求" maxlength="200" style="width: 100%; margin-bottom: 4px" />
+                  <el-input v-model="row.clinicalSummary" size="small" placeholder="临床摘要" maxlength="500" style="width: 100%; margin-bottom: 4px" />
+                  <el-input v-model="row.notice" size="small" placeholder="注意事项" maxlength="200" style="width: 100%" />
+                </template>
+              </template>
+            </el-table-column>
+            <el-table-column label="加急" width="56" align="center">
+              <template #default="{ row }"><el-checkbox v-model="row.urgent" /></template>
+            </el-table-column>
+            <el-table-column label="备注" min-width="120">
+              <template #default="{ row }"><el-input v-model="row.remark" size="small" placeholder="备注" maxlength="200" /></template>
             </el-table-column>
             <el-table-column label="" width="60">
               <template #default="{ $index }">
