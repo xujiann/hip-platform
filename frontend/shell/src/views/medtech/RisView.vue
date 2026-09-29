@@ -11,6 +11,17 @@
       <el-table-column prop="group_no" label="申请单号" width="150" />
       <el-table-column prop="patient_name" label="患者" width="90" />
       <el-table-column prop="item_name" label="检查项目" width="160" />
+      <!-- v74 复核（1014★ 审计打回点）：检查目的/临床摘要/注意事项/加急后端已随工作列表下发，技师屏幕此前看不到——只在医生那张纸上。 -->
+      <el-table-column label="申请信息" min-width="240">
+        <template #default="{ row }">
+          <el-tag v-if="row.urgent" type="danger" size="small" style="margin-right: 4px">加急</el-tag>
+          <span v-if="row.diagnosis">诊断：{{ row.diagnosis }}</span>
+          <span v-if="row.exam_purpose" :style="row.diagnosis ? 'margin-left: 6px' : ''">目的：{{ row.exam_purpose }}</span>
+          <span v-if="row.clinical_summary" style="margin-left: 6px">摘要：{{ row.clinical_summary }}</span>
+          <span v-if="row.notice" style="margin-left: 6px; color: #c00">注意：{{ row.notice }}</span>
+          <span v-if="!row.urgent && !row.diagnosis && !row.exam_purpose && !row.clinical_summary && !row.notice">—</span>
+        </template>
+      </el-table-column>
       <el-table-column label="状态" width="90">
         <template #default="{ row }">{{ { REGISTERED: '已登记', ARRIVED: '已到检', REPORTED: '已报告' }[row.status as string] }}</template>
       </el-table-column>

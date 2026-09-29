@@ -194,7 +194,11 @@ public class MedTechController {
                 -- V137 已建列但本队列原先不取（同 lis/pending）。
                 select e.id, e.status, e.modality, e.findings, e.impression, o.item_name, o.group_no,
                        o.clinical_summary, o.exam_purpose, o.notice, o.urgent,
-                       p.name as patient_name
+                       p.name as patient_name,
+                       -- v74 复核（1014★ 反驳者一）：申请诊断此前只印在纸上，技师屏幕看不到。
+                       -- 取就诊的全部诊断、主诊断排首，与检查申请单打印页同一口径（当前诊断，非开单时快照）。
+                       (select string_agg(d.icd_name, '；' order by d.primary_diag desc, d.id)
+                          from outp_diagnosis d where d.registration_id = r.id) as diagnosis
                 from ris_exam e
                 join outp_order o on o.id = e.order_id
                 join outp_registration r on r.id = o.registration_id

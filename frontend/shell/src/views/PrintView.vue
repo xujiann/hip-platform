@@ -171,7 +171,7 @@
             <ol class="rx">
               <li v-for="(r, i) in g.rows" :key="i">
                 <div class="rx-name">
-                  {{ r.item_name }}<span v-if="r.spec">　{{ r.spec }}</span>
+                  {{ r.item_name }}<span v-if="r.spec">　{{ r.spec }}</span><span v-if="r.urgent" class="urgent">【加急】</span><span v-if="r.remark" class="remark">（{{ r.remark }}）</span>
                   <span class="rx-qty">× {{ r.qty }} {{ r.unit }}</span>
                   <span v-if="r.antibiotic" class="tag-abx">抗菌药</span>
                 </div>
@@ -203,6 +203,7 @@
                  打印页此前一个都没印——CHANGELOG 写的「有值印值」并不成立，医生填了等于白填。
                  口径照 CHANGELOG 原意：有值印值，无值仍保留手填栏（历史单据必然为空）。 -->
             <div v-if="firstOf(g, 'clinical_summary')" class="doc-line">临床摘要：{{ firstOf(g, 'clinical_summary') }}</div>
+            <div v-else class="fill-line">临床摘要：</div>
             <table class="items">
               <tr><th>检验项目</th><th>数量</th><th>标本类型 / 采样部位</th><th>执行科室</th><th>标本条码</th><th>标本状态</th></tr>
               <tr v-for="(r, i) in g.rows" :key="i">
@@ -215,6 +216,7 @@
               </tr>
             </table>
             <div v-if="firstOf(g, 'notice')" class="doc-line">注意事项：{{ firstOf(g, 'notice') }}</div>
+            <div v-else class="fill-line">注意事项：</div>
             <div class="fill-line">标本要求（采集容器 / 采集时间 / 送检要求）：</div>
             <div class="sign-bar">
               <span>申请医师：{{ docDoctor(g) || '' }}</span>
@@ -245,7 +247,9 @@
             <div v-if="firstOf(g, 'exam_purpose')" class="doc-line">检查目的 / 临床要求：{{ firstOf(g, 'exam_purpose') }}</div>
             <div v-else class="fill-line">检查目的 / 临床要求：</div>
             <div v-if="firstOf(g, 'clinical_summary')" class="doc-line">临床摘要：{{ firstOf(g, 'clinical_summary') }}</div>
+            <div v-else class="fill-line">临床摘要：</div>
             <div v-if="firstOf(g, 'notice')" class="doc-line">注意事项：{{ firstOf(g, 'notice') }}</div>
+            <div v-else class="fill-line">注意事项：</div>
             <div class="doc-line">病史摘要：{{ briefHistory }}</div>
             <div class="doc-line">体格检查：{{ emrInfo.physical_exam || '—' }}</div>
             <div class="sign-bar">

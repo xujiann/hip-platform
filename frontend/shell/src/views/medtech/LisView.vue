@@ -6,6 +6,15 @@
           <el-table-column prop="group_no" label="申请单号" width="150" />
           <el-table-column prop="patient_name" label="患者" width="90" />
           <el-table-column prop="item_name" label="项目" />
+          <!-- v74 复核（1013★/1016★ 审计打回点）：加急/标本类型/采样部位/备注后端早就下发，检验科屏幕上此前一个都不显示——
+               信息只在医生那张纸上，等于没到检验科。 -->
+          <el-table-column label="申请信息" min-width="200">
+            <template #default="{ row }">
+              <el-tag v-if="row.urgent" type="danger" size="small" style="margin-right: 4px">加急</el-tag>
+              <span>{{ [row.specimen_type, row.sampling_site].filter(Boolean).join(' / ') || '—' }}</span>
+              <span v-if="row.remark" style="color: #666">（{{ row.remark }}）</span>
+            </template>
+          </el-table-column>
           <el-table-column label="操作" width="110">
             <template #default="{ row }">
               <el-button link type="primary" size="small" :loading="busyId === row.order_id" @click="collect(row)">采样打码</el-button>
@@ -18,6 +27,13 @@
           <el-table-column prop="barcode" label="条码" width="140" />
           <el-table-column prop="patient_name" label="患者" width="90" />
           <el-table-column prop="item_name" label="项目" />
+          <el-table-column label="申请信息" min-width="200">
+            <template #default="{ row }">
+              <el-tag v-if="row.urgent" type="danger" size="small" style="margin-right: 4px">加急</el-tag>
+              <span>{{ [row.specimen_type, row.sampling_site].filter(Boolean).join(' / ') || '—' }}</span>
+              <span v-if="row.remark" style="color: #666">（{{ row.remark }}）</span>
+            </template>
+          </el-table-column>
           <el-table-column label="替检" width="110">
             <template #default="{ row }">
               <el-tag v-if="row.substitute" type="danger" size="small">替检：{{ row.substitute_name }}</el-tag>
