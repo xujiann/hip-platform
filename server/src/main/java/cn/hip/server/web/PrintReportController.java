@@ -265,7 +265,9 @@ public class PrintReportController {
                 """, String.class, head.get(0).get("patient_id"));
         var freeText = String.valueOf(head.get(0).getOrDefault("allergy_history", "") == null ? "" : head.get(0).get("allergy_history")).trim();
         var parts = new ArrayList<String>();
-        if (!freeText.isEmpty()) parts.add(freeText);
+        // 档案文本写"无"而结构化记录已登记过敏原时，不印成「无；青霉素(重度)」——文本"无"让位于结构化记录
+        boolean textSaysNone = freeText.matches("无|无过敏|否认|否认过敏史?|无过敏史");
+        if (!freeText.isEmpty() && !(textSaysNone && !structured.isEmpty())) parts.add(freeText);
         parts.addAll(structured);
         m.put("allergyText", parts.isEmpty() ? null : String.join("；", parts));
         // 临床诊断：主诊断排首位（申请单法定必填项）。
@@ -290,7 +292,10 @@ public class PrintReportController {
             // v74 复核（1026★ 第二轮实测）：挂号费（REG）也是一行 outp_order，此前会被当成一个"环节"印在导诊单上
             // ——"REG 挂号费 前往科室 — 待执行"，患者拿着单子不知道去哪办。挂号费不是要患者去跑的项目，排除。
             m.put("rows", jdbc.queryForList(
-                    DOC_ORDER_SQL + " and o.status in ('CREATED','CHARGED') and o.order_type <> 'REG' order by o.order_type, o.id",
+                    DOC_ORDER_SQL + " and o.status in ('CREATED','CHARGED') and o.order_type <> 'REG' "
+                    // v74 复核（1026★ 第三轮反驳者三）：此前按 order_type 字母序（DRUG 排最前），纸上却写"按上表顺序"办理——
+                    // 让患者先取药再去验血。改按患者动线：检验 → 检查 → 治疗 → 取药。
+                    + " order by case o.order_type when 'LAB' then 1 when 'EXAM' then 2 when 'TREAT' then 3 else 4 end, o.id",
                     registrationId));
             return R.ok(m);
         }

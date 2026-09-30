@@ -356,8 +356,11 @@
             <el-table-column label="申请信息" min-width="300">
               <template #default="{ row }">
                 <template v-if="row.category === 'LAB'">
-                  <el-input v-model="row.specimenType" size="small" placeholder="标本类型" maxlength="32" style="width: 46%; margin-right: 4px" />
-                  <el-input v-model="row.samplingSite" size="small" placeholder="采样部位" maxlength="32" style="width: 46%" />
+                  <el-input v-model="row.specimenType" size="small" placeholder="标本类型" maxlength="32" style="width: 46%; margin-right: 4px; margin-bottom: 4px" />
+                  <el-input v-model="row.samplingSite" size="small" placeholder="采样部位" maxlength="32" style="width: 46%; margin-bottom: 4px" />
+                  <!-- v74 复核（1026★ 第三轮反驳者二）：检验申请单印"临床摘要/注意事项"两栏，此前检验行没有录入框，纸上永远是空线 -->
+                  <el-input v-model="row.clinicalSummary" size="small" placeholder="临床摘要" maxlength="500" style="width: 100%; margin-bottom: 4px" />
+                  <el-input v-model="row.notice" size="small" placeholder="注意事项" maxlength="200" style="width: 100%" />
                 </template>
                 <template v-else-if="row.category === 'EXAM'">
                   <el-input v-model="row.examPurpose" size="small" placeholder="检查目的 / 临床要求" maxlength="200" style="width: 100%; margin-bottom: 4px" />
