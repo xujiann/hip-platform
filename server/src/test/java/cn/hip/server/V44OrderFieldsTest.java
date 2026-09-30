@@ -462,4 +462,58 @@ class V44OrderFieldsTest {
                 String.valueOf(drug.getId()), 1).getData(), "rows").get(0);
         assertEquals(1, ((Number) hit.get("stock")).intValue());
     }
+
+    // ==================== 技术债：医嘱类型白名单（API 直调传未知类型） ====================
+
+    private long groupSeq() {
+        return jdbc.queryForObject("select last_value from outp_order_group_seq", Long.class);
+    }
+
+    /**
+     * 未知医嘱类型（如 RX）→ 4000，且零副作用：无订单落库、处方组号序列不消耗。
+     * 此前 RX 会被当成"非 DRUG"按收费项目落库（实测落成"血常规"），界面不会产生、API 直调会。
+     * 混合请求里只要有一行非法就整单拒绝（合法行不得先落库）。
+     */
+    @Test
+    void unknownOrderTypeRejectedWith4000AndZeroSideEffects() {
+        Long rid = visit();
+        Long labId = seeds.chargeItem("类型白名单测试检验", "LAB").getId();
+        Long drugId = seeds.drug("类型白名单测试药").getId();
+        long seqBefore = groupSeq();
+
+        var e = assertThrows(cn.hip.platform.core.common.HipBizException.class, () ->
+                doctorStationService.createOrders(rid, List.of(
+                        new OrderLine("DRUG", drugId, 1, "口服", "每日三次", "1粒", 3),
+                        new OrderLine("RX", labId, 1, null, null, null, null)), doctorId()));
+        assertEquals(4000, e.code, e.getMessage());
+        assertTrue(e.getMessage().contains("RX"), "消息应点名非法类型：" + e.getMessage());
+
+        assertThrows(cn.hip.platform.core.common.HipBizException.class, () ->
+                doctorStationService.createOrders(rid, List.of(
+                        new OrderLine(null, labId, 1, null, null, null, null)), doctorId()));
+        assertThrows(cn.hip.platform.core.common.HipBizException.class, () ->
+                doctorStationService.createOrders(rid, List.of(
+                        new OrderLine("drug", drugId, 1, "口服", "每日三次", "1粒", 3)), doctorId()),
+                "大小写敏感：下游全是精确等值判定，小写 drug 会落成非药品行");
+        em.flush();
+
+        assertEquals(0, jdbc.queryForObject("select count(*) from outp_order where registration_id = ?",
+                Integer.class, rid), "被拒时一条订单都不得落库");
+        assertEquals(seqBefore, groupSeq(), "被拒时不得消耗处方组号序列（nextval 回滚退不回）");
+    }
+
+    /** 合法类型（界面实际会产生的 DRUG/LAB/EXAM/TREAT/MATERIAL）照常开单 */
+    @Test
+    void legalOrderTypesStillAccepted() {
+        Long rid = visit();
+        var created = doctorStationService.createOrders(rid, List.of(
+                new OrderLine("DRUG", seeds.drug("类型合法药").getId(), 1, "口服", "每日三次", "1粒", 3),
+                new OrderLine("LAB", seeds.chargeItem("类型合法检验", "LAB").getId(), 1, null, null, null, null),
+                new OrderLine("EXAM", seeds.chargeItem("类型合法检查", "EXAM").getId(), 1, null, null, null, null),
+                new OrderLine("TREAT", seeds.chargeItem("类型合法治疗", "TREAT").getId(), 1, null, null, null, null),
+                new OrderLine("MATERIAL", seeds.chargeItem("类型合法材料", "MATERIAL").getId(), 1, null, null, null, null)),
+                doctorId());
+        assertEquals(List.of("DRUG", "LAB", "EXAM", "TREAT", "MATERIAL"),
+                created.stream().map(OutpOrder::getOrderType).toList());
+    }
 }

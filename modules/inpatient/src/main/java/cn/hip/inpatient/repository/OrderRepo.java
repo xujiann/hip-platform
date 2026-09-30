@@ -11,6 +11,9 @@ public interface OrderRepo extends JpaRepository<InpOrder, Long> {
 
     List<InpOrder> findByStatusOrderByIdAsc(String status);
 
+    /** 护士站待执行队列：order_nature 列 not null default 'TEMP'（V124），故 <> 不会误丢 NULL 行 */
+    List<InpOrder> findByStatusAndOrderNatureNotOrderByIdAsc(String status, String orderNature);
+
     /** 抢占执行：受影响行数为 0 说明已被他人执行/作废——防两名护士各扣一次库存 */
     @org.springframework.data.jpa.repository.Modifying(clearAutomatically = true, flushAutomatically = true)
     @org.springframework.data.jpa.repository.Query(

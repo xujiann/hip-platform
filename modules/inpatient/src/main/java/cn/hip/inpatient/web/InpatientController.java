@@ -658,10 +658,14 @@ public class InpatientController {
         }
     }
 
-    /** 护士执行队列（全院未执行医嘱） */
+    /**
+     * 护士执行队列（全院未执行的<b>临时</b>医嘱）。
+     * 长期医嘱首次执行前同样是 CREATED，但单次执行路径对它恒报 9125（按执行行逐次执行计费），
+     * 放进这张表只会让护士点了报错；长期医嘱只走 {@link #execLines} 执行行表。
+     */
     @GetMapping("/orders/pending")
     public R<List<Map<String, Object>>> pendingOrders() {
-        return R.ok(orderRepo.findByStatusOrderByIdAsc("CREATED").stream().map(o -> {
+        return R.ok(orderRepo.findByStatusAndOrderNatureNotOrderByIdAsc("CREATED", "LONG").stream().map(o -> {
             var m = new LinkedHashMap<String, Object>();
             m.put("orderId", o.getId());
             m.put("groupNo", o.getGroupNo());

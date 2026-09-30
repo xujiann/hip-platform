@@ -686,6 +686,15 @@ public class DoctorStationService {
         }
     }
 
+    /**
+     * 门诊开单合法医嘱类型：DRUG 药品；其余即 md_charge_item.category 的声明值域
+     * （LAB 检验 / EXAM 检查 / TREAT 治疗 / MATERIAL 材料，见 ChargeItem 实体注释），
+     * 前端检验检查行直接以 item.category 作 orderType。
+     * 注意：主数据 category 无 CHECK（CSV 导入可带院内自有类别），但此类项目本就走不通
+     * 检验/检查/治疗任一执行线，且界面 typeNames 也不认——宁在开单口拦下，不落成幽灵行。
+     */
+    static final List<String> ORDER_TYPES = List.of("DRUG", "LAB", "EXAM", "TREAT", "MATERIAL");
+
     /** 开立一组医嘱（药品成一张处方，检查检验各自成申请单） */
     @Transactional
     public List<OutpOrder> createOrders(Long registrationId, List<OrderLine> lines, Long doctorId) {
@@ -693,6 +702,16 @@ public class DoctorStationService {
                 .orElseThrow(() -> new BizException(4001, "挂号记录不存在"));
         if (!"VISITED".equals(reg.getStatus())) {
             throw new BizException(4003, "请先接诊后再开单");
+        }
+        // 医嘱类型白名单：**纯只读预检，放在一切落库与 nextGroupSeq() 之前**（零副作用）。
+        // 此前任意字符串被当成"非 DRUG"按收费项目落库（API 直调传 RX 落成了"血常规"），
+        // 而下游（收费/执行/打印/发药）全是对 orderType 的精确等值判定，脏类型行会静默失踪。
+        // 错误码沿用通用 4000"请求参数不正确"（EmrRefController 同口径），不新增码。
+        for (OrderLine line : lines) {
+            if (line.orderType() == null || !ORDER_TYPES.contains(line.orderType())) {
+                throw new BizException(4000, "请求参数不正确：医嘱类型「" + line.orderType()
+                        + "」不合法，须为 " + String.join(" / ", ORDER_TYPES) + " 之一");
+            }
         }
         // v43 车道C（8016）：停用药品不可开单。**本方法唯一的新增判断，且是纯只读预检**——
         // 刻意放在 nextGroupSeq() 之前：那是 nextval，事务回滚也退不回去，

@@ -56,10 +56,10 @@
 
   <el-card>
     <template #header>
-      护士执行队列（全院未执行医嘱）
+      护士执行队列（全院未执行的临时医嘱；长期医嘱见下方执行行）
       <el-button link type="primary" style="float: right" @click="load">刷新</el-button>
     </template>
-    <el-empty v-if="!worklist.length" description="暂无待执行医嘱" />
+    <el-empty v-if="!worklist.length" description="暂无待执行临时医嘱（长期医嘱见下方执行行）" />
     <el-table v-else :data="worklist" border stripe>
       <el-table-column prop="admissionNo" label="住院号" width="160" />
       <el-table-column prop="patientName" label="姓名" width="90" />

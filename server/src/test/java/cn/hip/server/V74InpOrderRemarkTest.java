@@ -113,6 +113,29 @@ class V74InpOrderRemarkTest {
         assertNull(mine.get("notice"));
     }
 
+    /**
+     * 技术债：护士站待执行队列不得混入长期医嘱（首次执行前 LONG 也是 CREATED，点「执行」只会得 9125）。
+     * 长期医嘱只走执行行表；临时医嘱照常出现在队列里。
+     */
+    @Test
+    void 待执行队列只含临时医嘱_长期医嘱走执行行() {
+        Long admId = admit();
+        InpOrder temp = inpatientService.createOrders(admId, List.of(
+                new OrderLine("DRUG", drugId(), 1, "口服", "bid", "1粒", "TEMP")), null).get(0);
+        InpOrder lng = inpatientService.createOrders(admId, List.of(
+                new OrderLine("DRUG", drugId(), 1, "口服", "bid", "1粒", "LONG")), null).get(0);
+        em.flush();
+
+        List<Long> queue = inpatientController.pendingOrders().getData().stream()
+                .map(m -> (Long) m.get("orderId")).toList();
+        assertTrue(queue.contains(temp.getId()), "临时医嘱应在待执行队列");
+        assertFalse(queue.contains(lng.getId()), "长期医嘱不得在待执行队列（点执行只会 9125）");
+
+        // 长期医嘱的正路：执行行表里能看到它
+        assertTrue(inpatientController.execLines(BusinessDates.today().toString()).getData().stream()
+                .anyMatch(m -> lng.getId().equals(m.get("order_id"))), "长期医嘱应出现在执行行表");
+    }
+
     @Test
     void 长期医嘱执行行带出三字段_历史行加急读作false() {
         Long admId = admit();
