@@ -26,6 +26,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -111,7 +112,11 @@ public class MasterDataController {
 
     /**
      * 产品化一期：收费项目 CSV 批量导入。
-     * 列：code,name,category,unit,price[,fee_category_code][,self_pay 0/1]
+     * 列：code,name,category,unit,price[,fee_category_code][,self_pay 0/1][,exec_dept_code]
+     *
+     * <p><b>v74 执行科室列</b>：可选第 8 列 {@code exec_dept_code} 按 sys_dept.code 解析，
+     * 口径与费用类别同为**软校验**——未知/已停用科室码 → 行级错误、该行照常导入但不动执行科室；
+     * 空列 = 保持原值（upsert 命中旧项目时不得被"没填"清掉）。治疗单/导诊单的"前往科室"取自该列。
      *
      * <p><b>v42 费用类别软校验（刻意不做成硬失败）</b>：CSV 批量导入是实施期落数主手段，
      * 院方真实收费目录的类别值远超现有 4 种。若给 category 加数据库 CHECK 白名单、
@@ -127,6 +132,10 @@ public class MasterDataController {
         int ok = 0;
         List<String> errors = new ArrayList<>();
         Set<String> categories = enabledCategoryCodes();
+        Map<String, Long> deptIdByCode = new HashMap<>();
+        for (var d : jdbc.queryForList("select code, id from sys_dept where enabled")) {
+            deptIdByCode.put(String.valueOf(d.get("code")), ((Number) d.get("id")).longValue());
+        }
         String[] lines = csv.split("\\r?\\n");
         for (int i = 0; i < lines.length; i++) {
             String line = lines[i].strip();
@@ -138,18 +147,28 @@ public class MasterDataController {
             }
             String cat = softCategory(field(f, 5), categories, i + 1, errors);
             Boolean selfPay = flag(field(f, 6));
+            Long execDeptId = null;
+            String execDeptCode = nullIfBlank(field(f, 7));
+            if (execDeptCode != null) {
+                execDeptId = deptIdByCode.get(execDeptCode);
+                if (execDeptId == null) {
+                    errors.add("第" + (i + 1) + "行：执行科室码「" + execDeptCode + "」不在科室表中或已停用，"
+                            + "该行已导入但未配执行科室（请先在「系统管理 → 科室管理」登记后重新导入本行）");
+                }
+            }
             try {
                 jdbc.update("""
                         insert into md_charge_item(code, name, category, unit, price,
-                                                   fee_category_code, self_pay, enabled)
-                        values (?,?,?,?,?::numeric,?::varchar,coalesce(?::boolean, false),true)
+                                                   fee_category_code, self_pay, exec_dept_id, enabled)
+                        values (?,?,?,?,?::numeric,?::varchar,coalesce(?::boolean, false),?::bigint,true)
                         on conflict (code) do update set name = excluded.name, category = excluded.category,
                             unit = excluded.unit, price = excluded.price,
                             fee_category_code = coalesce(?::varchar, md_charge_item.fee_category_code),
                             self_pay = coalesce(?::boolean, md_charge_item.self_pay),
+                            exec_dept_id = coalesce(?::bigint, md_charge_item.exec_dept_id),
                             enabled = true
                         """, f[0].strip(), f[1].strip(), f[2].strip(), f[3].strip(), f[4].strip(),
-                        cat, selfPay, cat, selfPay);
+                        cat, selfPay, execDeptId, cat, selfPay, execDeptId);
                 ok++;
             } catch (Exception e) {
                 errors.add("第" + (i + 1) + "行：" + e.getMessage().split("\n")[0]);
@@ -425,8 +444,26 @@ public class MasterDataController {
     public record FeeCategoryReq(String code, String name, Integer sortNo, Boolean enabled,
                                  String stdCode, String stdSystem) {}
 
-    /** 项目/药品挂类与自费标记维护入参 */
-    public record ItemAttrReq(String feeCategoryCode, Boolean selfPay) {}
+    /**
+     * 项目/药品挂类与自费标记维护入参。
+     *
+     * <p>v74 审阅修补：收费项目再加**执行科室**（{@code execDeptId}）。语义与其余两项刻意不同——
+     * feeCategoryCode 是整体替换，而执行科室要**保持向后兼容**：既有调用方（V42 用例、任何脚本）
+     * 只传两项，若也按整体替换，它们每改一次挂类就会悄悄清掉执行科室。故：
+     * <ul>
+     *   <li>{@code execDeptId} 为 null：保持原值；</li>
+     *   <li>{@code execDeptId} 有值：须是存在且启用的科室，否则 4000（不新增错误码）；</li>
+     *   <li>{@code clearExecDept=true}：清空执行科室（与 execDeptId 同传时以校验通过的 execDeptId 为准会自相矛盾，
+     *       故同传直接 4000）。</li>
+     * </ul>
+     * 药品没有执行科室这一列，药品端点收到这两个字段一律 4000，不静默吞掉。
+     */
+    public record ItemAttrReq(String feeCategoryCode, Boolean selfPay, Long execDeptId, Boolean clearExecDept) {
+        /** 向后兼容的两参构造（V42 既有调用方与 drugs/attrs 沿用） */
+        public ItemAttrReq(String feeCategoryCode, Boolean selfPay) {
+            this(feeCategoryCode, selfPay, null, null);
+        }
+    }
 
     /**
      * 费用类别字典。默认只返回启用项（挂类下拉直接用）；all=true 返回全部（维护页用）。
@@ -516,17 +553,40 @@ public class MasterDataController {
         return R.ok();
     }
 
-    /** 收费项目挂类 + 自费标记维护 */
+    /** 收费项目挂类 + 自费标记 + 执行科室维护 */
     @PutMapping("/charge-items/{id}/attrs")
     @PreAuthorize("hasRole('ADMIN')")
     public R<Void> updateChargeItemAttrs(@PathVariable Long id, @RequestBody ItemAttrReq req) {
-        return updateItemAttrs("md_charge_item", id, req);
+        // 执行科室校验前置于任何写：被拒的请求不得顺带落下挂类/自费（与 updateItemAttrs 同为"先校验后写"）
+        Long execDept = req.execDeptId();
+        boolean clearExec = Boolean.TRUE.equals(req.clearExecDept());
+        if (execDept != null && clearExec) {
+            return R.fail(4000, "执行科室不能同时「设置」与「清空」");
+        }
+        if (execDept != null) {
+            Long ok = jdbc.queryForObject(
+                    "select count(*) from sys_dept where id = ? and enabled", Long.class, execDept);
+            if (ok == null || ok == 0) {
+                return R.fail(4000, "执行科室不存在或已停用：" + execDept);
+            }
+        }
+        R<Void> r = updateItemAttrs("md_charge_item", id, req);
+        if (r.getCode() != 0) {
+            return r;
+        }
+        if (execDept != null || clearExec) {
+            jdbc.update("update md_charge_item set exec_dept_id = ? where id = ?", execDept, id);
+        }
+        return r;
     }
 
-    /** 药品挂类 + 自费标记维护 */
+    /** 药品挂类 + 自费标记维护（药品没有执行科室：带了该字段就明确拒绝，不静默吞掉） */
     @PutMapping("/drugs/{id}/attrs")
     @PreAuthorize("hasRole('ADMIN')")
     public R<Void> updateDrugAttrs(@PathVariable Long id, @RequestBody ItemAttrReq req) {
+        if (req.execDeptId() != null || req.clearExecDept() != null) {
+            return R.fail(4000, "药品没有执行科室，请勿传 execDeptId / clearExecDept");
+        }
         return updateItemAttrs("md_drug", id, req);
     }
 

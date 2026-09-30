@@ -60,6 +60,28 @@ if not pkgs:
 else:
     print(f'体检套餐：已有 {len(pkgs)} 个，跳过')
 
+# v74 审阅修补（1026★）：收费项目执行科室——治疗单/导诊单"前往科室"取自 md_charge_item.exec_dept_id，
+# 此前种子全空、产品内无写入路径，单据上恒印"—"。现在走产品自己的写入口（attrs 接口，同管理员在
+# 「基础数据 → 收费项目 → 维护属性」里点的那一下）给**已有科室能对上的**种子项目配上。
+# 只配能诚实对上的：门诊治疗（静脉输液/肌肉注射/雾化吸入）在内科门诊 OUTP_IM 做；
+# 种子科室里没有检验科/影像科，检验/检查类种子项目**不硬套**别的科室，保持未配置——
+# 要演示检验/检查的前往科室，先在「系统管理 → 科室管理」建科室，再到收费项目页给项目选上。
+# 只补空值（execDeptId 已配的不覆盖），幂等。
+dept_rows = call('GET', '/system/depts', t=t).get('data') or []
+im = next((d for d in dept_rows if d.get('code') == 'OUTP_IM' and d.get('enabled', True)), None)
+if im:
+    n_cfg = 0
+    for it in call('GET', '/masterdata/charge-items?category=TREAT&keyword=', t=t).get('data') or []:
+        if it.get('code') in ('C0201', 'C0202', 'C0203') and not it.get('execDeptId'):
+            # attrs 的 feeCategoryCode 是整体替换，须把原值带回，否则会顺手清掉挂类
+            body = {'feeCategoryCode': it.get('feeCategoryCode'), 'execDeptId': im['id']}
+            r = call('PUT', f"/masterdata/charge-items/{it['id']}/attrs", body, t)
+            if r.get('code') == 0:
+                n_cfg += 1
+    print(f'收费项目执行科室：新配 {n_cfg} 项（治疗类 → 内科门诊）')
+else:
+    print('收费项目执行科室：未找到内科门诊(OUTP_IM)，跳过')
+
 # 三十八期：多角色演示账号（幂等）
 # v74（993★ 复核）：演示医生必须挂科室——病历模板按登录人科室与授权过滤，无科室的医生看不到任何科室模板；
 # 门诊排班、导诊单"挂号医师"也依赖它。deptId=1 即内科门诊（V8 种子）。其余账号暂不挂科室（无依赖）。
