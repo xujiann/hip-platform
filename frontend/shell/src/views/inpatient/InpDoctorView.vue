@@ -84,6 +84,13 @@
         </el-select>
         <el-button type="primary" @click="addItem">开申请</el-button>
       </div>
+      <!-- v74（1006★ 唯一缺口）：备注/注意事项/加急对开药与开申请同时生效，随本次开立一并上送；
+           长度与 V171 列宽一致（200）。开立后清空，避免上一条的备注串到下一条。 -->
+      <div class="add-row">
+        <el-input v-model="remark" placeholder="备注（随医嘱保存，护士站可见）" maxlength="200" clearable style="width: 300px" />
+        <el-input v-model="notice" placeholder="注意事项" maxlength="200" clearable style="width: 300px" />
+        <el-checkbox v-model="urgent">加急</el-checkbox>
+      </div>
       <el-table :data="orders" size="small" height="calc(100vh - 330px)">
         <el-table-column prop="groupNo" label="医嘱号" width="140" />
         <el-table-column label="类型" width="60">
@@ -96,6 +103,13 @@
           </template>
         </el-table-column>
         <el-table-column prop="qty" label="量" width="50" />
+        <el-table-column label="备注 / 注意事项" min-width="160">
+          <template #default="{ row }">
+            <el-tag v-if="row.urgent" type="danger" size="small" style="margin-right: 4px">加急</el-tag>
+            <span v-if="row.remark">{{ row.remark }}</span>
+            <span v-if="row.notice" style="color: #c00; margin-left: 6px">注意：{{ row.notice }}</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="amount" label="金额" width="80" />
         <el-table-column label="状态" width="130">
           <template #default="{ row }">
@@ -400,6 +414,17 @@ const freq = ref('bid')
 const route = ref('口服')
 const qty = ref(1)
 const orderNature = ref('TEMP')   // v39：临时/长期
+const remark = ref('')            // v74（1006★）：备注 / 注意事项 / 加急
+const notice = ref('')
+const urgent = ref(false)
+function orderExtras() {
+  return { remark: remark.value || null, notice: notice.value || null, urgent: urgent.value }
+}
+function resetExtras() {
+  remark.value = ''
+  notice.value = ''
+  urgent.value = false
+}
 const tab = ref('orders')
 const records = ref<Record<string, unknown>[]>([])
 const vitals = ref<Record<string, unknown>[]>([])
@@ -771,10 +796,11 @@ async function searchItems(kw: string) {
 async function addDrug() {
   if (!current.value || !drugId.value) return
   await client.post(`/inpatient/admissions/${current.value.id}/orders`, {
-    lines: [{ orderType: 'DRUG', itemId: drugId.value, qty: qty.value, usageRoute: route.value, frequency: freq.value, dosePerTime: dose.value, orderNature: orderNature.value }],
+    lines: [{ orderType: 'DRUG', itemId: drugId.value, qty: qty.value, usageRoute: route.value, frequency: freq.value, dosePerTime: dose.value, orderNature: orderNature.value, ...orderExtras() }],
   })
   ElMessage.success(orderNature.value === 'LONG' ? '长期医嘱已开立（按执行行逐日计费）' : '医嘱已开立')
   drugId.value = null
+  resetExtras()
   await open(current.value)
 }
 
@@ -794,10 +820,11 @@ async function addItem() {
   if (!current.value || !itemId.value) return
   const item = itemOptions.value.find((c) => c.id === itemId.value)
   await client.post(`/inpatient/admissions/${current.value.id}/orders`, {
-    lines: [{ orderType: item?.category ?? 'TREAT', itemId: itemId.value, qty: 1 }],
+    lines: [{ orderType: item?.category ?? 'TREAT', itemId: itemId.value, qty: 1, ...orderExtras() }],
   })
   ElMessage.success('申请已开立')
   itemId.value = null
+  resetExtras()
   await open(current.value)
 }
 

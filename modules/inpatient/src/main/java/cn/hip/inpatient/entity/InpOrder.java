@@ -77,6 +77,15 @@ public class InpOrder {
 
     private Long stopDoctorId;
 
+    /** v74（1006★）：备注 / 加急 / 注意事项，列宽与门诊 outp_order（V137）对齐；历史行三者皆 null */
+    @Column(length = 200)
+    private String remark;
+
+    private Boolean urgent;
+
+    @Column(length = 200)
+    private String notice;
+
     private Long doctorId;
 
     private Long executorId;

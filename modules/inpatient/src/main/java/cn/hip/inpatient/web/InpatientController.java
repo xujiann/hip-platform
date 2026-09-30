@@ -63,6 +63,7 @@ public class InpatientController {
         return R.ok(jdbcTemplate.queryForList("""
                 select e.id, e.exec_date, e.seq_no, e.status, e.amount,
                        o.id as order_id, o.item_name, o.spec, o.qty, o.usage_route, o.frequency, o.dose_per_time,
+                       o.remark, coalesce(o.urgent, false) as urgent, o.notice,
                        a.admission_no, p.name as patient_name, b.bed_no
                 from inp_order_exec e
                 join inp_order o on o.id = e.order_id
@@ -670,6 +671,10 @@ public class InpatientController {
             m.put("usageRoute", o.getUsageRoute());
             m.put("frequency", o.getFrequency());
             m.put("dosePerTime", o.getDosePerTime());
+            // v74（1006★）：医生填的备注/加急/注意事项要到护士屏幕上，不能只留在表里
+            m.put("remark", o.getRemark());
+            m.put("urgent", Boolean.TRUE.equals(o.getUrgent()));
+            m.put("notice", o.getNotice());
             admissionRepo.findById(o.getAdmissionId()).ifPresent(a -> {
                 m.put("admissionNo", a.getAdmissionNo());
                 patientRepository.findById(a.getPatientId()).ifPresent(p -> m.put("patientName", p.getName()));

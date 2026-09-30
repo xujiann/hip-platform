@@ -108,13 +108,24 @@ public class InpatientService {
         return depositRepo.save(d);
     }
 
+    /**
+     * 开单行。v74（1006★）在既有 7 个分量之后追加 remark/urgent/notice，
+     * 并保留原 6 参、7 参兼容构造器——既有 90+ 调用点一字不改，新字段缺省 null（urgent 落库为 null，读方视同 false）。
+     */
     public record OrderLine(String orderType, Long itemId, Integer qty,
                             String usageRoute, String frequency, String dosePerTime,
-                            String orderNature) {
+                            String orderNature,
+                            String remark, Boolean urgent, String notice) {
         /** 兼容构造器：既有 50+ 调用点缺省 TEMP（行为与历史一致） */
         public OrderLine(String orderType, Long itemId, Integer qty,
                          String usageRoute, String frequency, String dosePerTime) {
             this(orderType, itemId, qty, usageRoute, frequency, dosePerTime, null);
+        }
+        /** 兼容构造器：v39 起的 7 参调用点 */
+        public OrderLine(String orderType, Long itemId, Integer qty,
+                         String usageRoute, String frequency, String dosePerTime,
+                         String orderNature) {
+            this(orderType, itemId, qty, usageRoute, frequency, dosePerTime, orderNature, null, null, null);
         }
     }
 
@@ -154,6 +165,11 @@ public class InpatientService {
             o.setQty(line.qty() == null || line.qty() <= 0 ? 1 : line.qty());
             o.setDoctorId(doctorId);
             o.setGroupNo("YZ" + stamp + "-" + nextGroupSeq());
+            // v74（1006★）：备注/加急/注意事项对四类医嘱一视同仁；空串按 null 落库（与门诊 V137 同口径），
+            // 长度由前端 maxlength 与列宽兜底，后端不另设错误码（门诊侧亦然）。
+            o.setRemark(blankToNull(line.remark()));
+            o.setUrgent(line.urgent());
+            o.setNotice(blankToNull(line.notice()));
             if ("DRUG".equals(line.orderType())) {
                 DrugItem drug = drugRepository.findById(line.itemId())
                         .orElseThrow(() -> new InpException(9006, "药品不存在"));
@@ -187,6 +203,10 @@ public class InpatientService {
             }
             return saved;
         }).toList();
+    }
+
+    private static String blankToNull(String s) {
+        return s == null || s.isBlank() ? null : s;
     }
 
     /** v39：按频次为长期医嘱生成某日执行行（qd=1/bid=2/tid=3/qid=4 行/日；幂等 on conflict skip） */

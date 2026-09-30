@@ -74,6 +74,15 @@
         </template>
       </el-table-column>
       <el-table-column prop="qty" label="量" width="50" />
+      <!-- v74（1006★）：医生填的备注/注意事项/加急要到执行者屏幕上——只在表里等于没有 -->
+      <el-table-column label="备注 / 注意事项" min-width="160">
+        <template #default="{ row }">
+          <el-tag v-if="row.urgent" type="danger" size="small" style="margin-right: 4px">加急</el-tag>
+          <span v-if="row.remark">{{ row.remark }}</span>
+          <span v-if="row.notice" style="color: #c00; margin-left: 6px">注意：{{ row.notice }}</span>
+          <span v-if="!row.urgent && !row.remark && !row.notice">—</span>
+        </template>
+      </el-table-column>
       <el-table-column label="操作" width="90">
         <template #default="{ row }">
           <el-button type="success" size="small" @click="execute(row)">执行</el-button>
@@ -98,6 +107,14 @@
         <template #default="{ row }">{{ row.usage_route }} {{ row.dose_per_time }} {{ row.frequency }}</template>
       </el-table-column>
       <el-table-column prop="seq_no" label="次" width="50" />
+      <el-table-column label="备注 / 注意事项" min-width="160">
+        <template #default="{ row }">
+          <el-tag v-if="row.urgent" type="danger" size="small" style="margin-right: 4px">加急</el-tag>
+          <span v-if="row.remark">{{ row.remark }}</span>
+          <span v-if="row.notice" style="color: #c00; margin-left: 6px">注意：{{ row.notice }}</span>
+          <span v-if="!row.urgent && !row.remark && !row.notice">—</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="amount" label="金额" width="80" />
       <el-table-column label="操作" width="90">
         <template #default="{ row }">
