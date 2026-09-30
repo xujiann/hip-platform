@@ -251,8 +251,10 @@ public class PrintReportController {
             // 导诊单：本次就诊"还没做完"的项目——CREATED 待缴费 / CHARGED 已缴费待执行。
             // 已 EXECUTED / DISPENSED / CANCELLED 的不再引导患者去跑。空清单也是合法导诊单
             // （只挂号未开单的患者照样要拿着单子找诊室），故此处不返 4893。
+            // v74 复核（1026★ 第二轮实测）：挂号费（REG）也是一行 outp_order，此前会被当成一个"环节"印在导诊单上
+            // ——"REG 挂号费 前往科室 — 待执行"，患者拿着单子不知道去哪办。挂号费不是要患者去跑的项目，排除。
             m.put("rows", jdbc.queryForList(
-                    DOC_ORDER_SQL + " and o.status in ('CREATED','CHARGED') order by o.order_type, o.id",
+                    DOC_ORDER_SQL + " and o.status in ('CREATED','CHARGED') and o.order_type <> 'REG' order by o.order_type, o.id",
                     registrationId));
             return R.ok(m);
         }

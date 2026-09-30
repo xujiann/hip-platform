@@ -242,6 +242,24 @@ class V43PrintDocsTest {
                 "医技项目必须写明前往科室，否则患者不知道去哪做");
     }
 
+    /**
+     * v74 复核（1026★ 第二轮实测）：有挂号费的就诊，REG 行也是 outp_order（RegistrationService 按 fee>0 生成），
+     * 此前会被当成一个"环节"印上导诊单（"REG 挂号费 前往科室 — 待执行"）。挂号费不是要患者去跑的项目。
+     * 用例造数按 RegistrationService 的写法（group_no GH-、item_id 0、item_code REG）。
+     */
+    @Test
+    void guideSheetExcludesRegistrationFeeRow() {
+        Long rid = visitWithAllOrderTypes();
+        jdbc.update("""
+                insert into outp_order(registration_id, group_no, order_type, item_id, item_code, item_name,
+                                       unit, qty, unit_price, amount, status)
+                values (?, ?, 'REG', 0, 'REG', '挂号费', '次', 1, 10, 10, 'CREATED')
+                """, rid, "GH-" + rid);
+        var rows = rowsOf(printController.clinicalDoc("guide-sheet", rid, null).getData());
+        assertEquals(4, rows.size(), "挂号费行不得出现在导诊单上");
+        assertTrue(rows.stream().noneMatch(r -> "REG".equals(r.get("order_type"))));
+    }
+
     @Test
     void missingDocDataReturns4893() {
         // ① 挂号根本不存在
