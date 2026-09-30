@@ -294,7 +294,7 @@
             <div class="doc-line">
               <!-- v74 复核（1026★ 第二轮审计者 #10）：页眉 doctor_name 是挂号时的排班医生，代班/转接时不是接诊的人——
                    与四种单据署名同一类口径错。挂号医师照印排班；接诊医师取行上的开单医生（后端随行返回），未开单印「—」。 -->
-              就诊科室：<b>{{ data.dept_name }}</b>　诊室：—　挂号医师：{{ data.doctor_name || '—' }}　接诊医师：{{ firstOf(g, 'order_doctor_name') || '—' }}
+              就诊科室：<b>{{ data.dept_name }}</b>　诊室：—　挂号医师：{{ data.doctor_name || '—' }}　开单医师：{{ firstOf(g, 'order_doctor_name') || '—' }}
             </div>
             <div class="doc-line">请到上述科室候诊，叫号序号：<b class="big">{{ data.reg_no }}</b></div>
             <table class="items">
@@ -314,7 +314,7 @@
             </table>
             <p class="tip">
               温馨提示：请先到收费处缴费，再持本单按上表顺序到对应科室完成各项目；
-              检查检验结果可凭本单单号或患者号查询。
+              检查检验结果可凭患者号查询。
             </p>
           </template>
 
@@ -408,12 +408,17 @@ const diagText = computed(() => ((data.value?.diagnoses as Record<string, unknow
     const core = `${s(d.prefix) ? s(d.prefix) + ' ' : ''}${name}${custom}${s(d.suffix) ? ' ' + s(d.suffix) : ''}`
     const code = d.icd_code ? '(' + d.icd_code + ')' : ''
     const cert = s(d.certainty) === 'SUSPECTED' ? '（疑诊）' : ''
-    return core + code + cert
+    // diag_system='TCM' 为中医诊断（V135：icd_code 留空串），与西医诊断混排时加标识；历史行 null 按西医解释
+    const sys = s(d.diag_system) === 'TCM' ? '[中医]' : ''
+    return sys + core + code + cert
   }).join('；'))
 const emrInfo = computed(() => (data.value?.emr as Record<string, unknown>) ?? {})
+// v74 复核（1026★ 第三轮审计者）：现病史里由医生站写入的「【结构化记录】…【结构化记录结束】」是渲染块的内部标记，
+// 不能原样上纸；只剥标记、保留块内正文（与 DoctorStationService.BLOCK_BEGIN/END 同一对字面量）。
+const stripBlockMarks = (v: unknown) => String(v ?? '').replace(/【结构化记录结束】|【结构化记录】/g, '').trim()
 const briefHistory = computed(() => {
-  const cc = String(emrInfo.value.chief_complaint ?? '').trim()
-  const pi = String(emrInfo.value.present_illness ?? '').trim()
+  const cc = stripBlockMarks(emrInfo.value.chief_complaint)
+  const pi = stripBlockMarks(emrInfo.value.present_illness)
   return [cc, pi].filter(Boolean).join('；') || '—'
 })
 const docTitleSuffix = computed(() => (data.value?.doctor_title ? `（${data.value.doctor_title}）` : ''))
