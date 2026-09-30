@@ -260,6 +260,26 @@ class V43PrintDocsTest {
         assertTrue(rows.stream().noneMatch(r -> "REG".equals(r.get("order_type"))));
     }
 
+    /**
+     * v74 复核（1026★ 第二轮反驳者三推翻点）：诊断的前缀「疑似」、后缀、确诊/疑诊标记、自定义名称此前不随打印数据集
+     * 下发，处方笺把疑诊印成确诊。数据集须逐列带出，前端据此拼接（前端拼接无自动化，此处只守后端契约）。
+     */
+    @Test
+    void diagnosisPrefixSuffixCertaintyAreCarriedToPrintData() {
+        Long rid = visitWithAllOrderTypes();
+        jdbc.update("""
+                insert into outp_diagnosis(registration_id, icd_code, icd_name, primary_diag, prefix, suffix, certainty)
+                values (?, 'J06.900', '急性上呼吸道感染', false, '疑似', '待排', 'SUSPECTED')
+                """, rid);
+        @SuppressWarnings("unchecked")
+        var diags = (List<Map<String, Object>>) printController.clinicalDoc("prescription", rid, null).getData().get("diagnoses");
+        var mine = diags.stream().filter(d -> "J06.900".equals(d.get("icd_code"))).findFirst().orElseThrow();
+        assertEquals("疑似", mine.get("prefix"));
+        assertEquals("待排", mine.get("suffix"));
+        assertEquals("SUSPECTED", mine.get("certainty"));
+        assertTrue(mine.containsKey("custom_name"), "自定义名称列须在数据集里（可为 null）");
+    }
+
     @Test
     void missingDocDataReturns4893() {
         // ① 挂号根本不存在

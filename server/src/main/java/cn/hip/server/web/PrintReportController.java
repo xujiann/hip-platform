@@ -234,9 +234,11 @@ public class PrintReportController {
         m.put("docType", docType);
         m.put("docTitle", DOC_TITLE.get(docType));
         m.put("age", ageOf(head.get(0).get("birth_date")));
-        // 临床诊断：主诊断排首位（申请单法定必填项）
+        // 临床诊断：主诊断排首位（申请单法定必填项）。
+        // v74 复核（1026★ 第二轮反驳者三）：此前只取 icd_code/icd_name，医生在诊断表填的前缀「疑似」、后缀「术后」、
+        // 确诊/疑诊标记、自定义名称一个都不上纸——处方笺会把疑诊印成确诊。四列一并带出，前端负责拼接。
         m.put("diagnoses", jdbc.queryForList("""
-                select icd_code, icd_name, primary_diag from outp_diagnosis
+                select icd_code, icd_name, primary_diag, prefix, suffix, certainty, custom_name from outp_diagnosis
                 where registration_id = ? order by primary_diag desc, id
                 """, registrationId));
         // 病史摘要：申请单要给医技科室看"为什么做这个检查"，取自本次门诊病历

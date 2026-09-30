@@ -291,7 +291,9 @@
           <template v-else>
             <!-- 诊室：本版无诊室主数据（sys_dept 无房间号列、无诊室表），纸面留「—」而不是编一个 -->
             <div class="doc-line">
-              就诊科室：<b>{{ data.dept_name }}</b>　诊室：—　接诊医师：{{ data.doctor_name || '—' }}
+              <!-- v74 复核（1026★ 第二轮审计者 #10）：页眉 doctor_name 是挂号时的排班医生，代班/转接时不是接诊的人——
+                   与四种单据署名同一类口径错。挂号医师照印排班；接诊医师取行上的开单医生（后端随行返回），未开单印「—」。 -->
+              就诊科室：<b>{{ data.dept_name }}</b>　诊室：—　挂号医师：{{ data.doctor_name || '—' }}　接诊医师：{{ firstOf(g, 'order_doctor_name') || '—' }}
             </div>
             <div class="doc-line">请到上述科室候诊，叫号序号：<b class="big">{{ data.reg_no }}</b></div>
             <table class="items">
@@ -394,8 +396,17 @@ function firstOf(g: { rows?: Array<Record<string, unknown>> }, key: string): str
   }
   return ''
 }
+// v74 复核（1026★ 第二轮反驳者三）：诊断要连前缀/后缀/疑诊标记一起印——「疑似 急性上呼吸道感染(J06.900)（疑诊）」，
+// 否则疑诊在处方笺上就成了确诊。自定义名称优先于 ICD 名称（与医生站诊断表同口径）。
 const diagText = computed(() => ((data.value?.diagnoses as Record<string, unknown>[]) ?? [])
-  .map((d) => `${d.icd_name}${d.icd_code ? '(' + d.icd_code + ')' : ''}`).join('；'))
+  .map((d) => {
+    const s = (v: unknown) => (v == null ? '' : String(v).trim())
+    const name = s(d.custom_name) || s(d.icd_name)
+    const core = `${s(d.prefix) ? s(d.prefix) + ' ' : ''}${name}${s(d.suffix) ? ' ' + s(d.suffix) : ''}`
+    const code = d.icd_code ? '(' + d.icd_code + ')' : ''
+    const cert = s(d.certainty) === 'SUSPECTED' ? '（疑诊）' : ''
+    return core + code + cert
+  }).join('；'))
 const emrInfo = computed(() => (data.value?.emr as Record<string, unknown>) ?? {})
 const briefHistory = computed(() => {
   const cc = String(emrInfo.value.chief_complaint ?? '').trim()

@@ -101,4 +101,13 @@ function onPasswordChanged() {
 }
 .user-name { cursor: pointer; color: #333; display: flex; align-items: center; gap: 4px; }
 .main { background: #f5f7fa; }
+
+/* v74 复核（1026★ 第二轮反驳者二）：打印页嵌在本布局里，此前全仓没有任何打印样式隐藏侧栏与顶栏——
+   Ctrl+P 会把 220px 侧栏和顶栏一起印上，且 .layout 定高 + .el-main 滚动会让多页单据只出第一页。
+   打印时抽掉壳、让内容自然流动，各打印视图自己的 page-break 才生效。 */
+@media print {
+  .aside, .header { display: none !important; }
+  .layout { height: auto !important; }
+  .main { background: #fff; padding: 0; overflow: visible !important; height: auto !important; }
+}
 </style>
