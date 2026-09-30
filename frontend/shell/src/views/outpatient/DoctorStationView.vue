@@ -708,7 +708,10 @@ async function loadBasicRef(isNewEmr: boolean) {
 /** 本科室可用的病历模板（沿用住院侧同一个冻结契约端点；本页只用来挑结构化模板） */
 async function loadEmrTemplates() {
   try {
-    emrTemplates.value = (await client.get('/emr-templates', { params: { type: 'EMR' } })).data.data ?? []
+    // v74 补 993★ 硬缺口（v68 三方复核）：此前走不认使用范围的旧通道 /emr-templates，下拉里是全院全部启用模板、
+    // 含所有人的个人模板；改走按登录人可见范围与授权过滤的 /emr-templates/visible（GLOBAL/HOSPITAL 人人可见，
+    // DEPT 本科室 + 被授权科室，PERSONAL 本人 + 被授权个人），默认模板置顶。
+    emrTemplates.value = (await client.get('/emr-templates/visible', { params: { type: 'EMR' } })).data.data ?? []
   } catch {
     emrTemplates.value = []
   }
@@ -1396,6 +1399,9 @@ async function cancelOrder(row: Record<string, unknown>) {
 onMounted(async () => {
   await loadWorklist()
   await loadRxTemplates()   // v44：进页时拉一次可见模板（后端已按登录人算好可见范围，前端不再过滤）
+  // v74 复核（993★）：loadEmrTemplates 自 v45 起定义了却从未被调用——结构化模板那一栏（989★/1075★）在门诊
+  // 医生站从来渲染不出来。进页拉一次可见范围内的病历模板，与处方模板同口径。
+  await loadEmrTemplates()
 })
 </script>
 

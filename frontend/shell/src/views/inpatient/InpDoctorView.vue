@@ -619,11 +619,10 @@ async function loadAccount(id: unknown) {
  * 用已加载的科室字典按名反查 id；查不到就退化为不带 deptId 的全量查询（只会多出别科模板，不会漏）。
  */
 async function loadEmrTemplates() {
-  const deptName = String(current.value?.deptName ?? '')
-  const deptId = depts.value.find((d) => d.name === deptName)?.id
-  const params: Record<string, unknown> = { type: 'EMR' }
-  if (deptId) params.deptId = deptId
-  emrTemplates.value = (await client.get('/emr-templates', { params })).data.data
+  // v74 补 993★ 硬缺口（v68 三方复核）：此前走 /emr-templates?deptId=患者所在科室，不认登录人与使用范围，
+  // 下拉里含所有人的个人模板。改走 /emr-templates/visible：按登录医生的科室与授权过滤（DEPT 本科室 + 被授权科室，
+  // PERSONAL 本人 + 被授权个人，GLOBAL/HOSPITAL 人人可见），默认模板置顶。口径从"患者所在科室"改为"医生所在科室"。
+  emrTemplates.value = (await client.get('/emr-templates/visible', { params: { type: 'EMR' } })).data.data ?? []
 }
 
 /** 套用模板到病历正文。已有内容时先确认——医生写了一半被模板冲掉是不可撤销的损失。 */

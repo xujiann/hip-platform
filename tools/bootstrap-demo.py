@@ -61,8 +61,10 @@ else:
     print(f'体检套餐：已有 {len(pkgs)} 个，跳过')
 
 # 三十八期：多角色演示账号（幂等）
+# v74（993★ 复核）：演示医生必须挂科室——病历模板按登录人科室与授权过滤，无科室的医生看不到任何科室模板；
+# 门诊排班、导诊单"挂号医师"也依赖它。deptId=1 即内科门诊（V8 种子）。其余账号暂不挂科室（无依赖）。
 DEMO_USERS = [
-    ('doctor01', '演示门诊医生', ['DOCTOR_OUTP']),
+    ('doctor01', '演示门诊医生', ['DOCTOR_OUTP'], 1),
     ('nurse01', '演示护士', ['NURSE']),
     ('cashier01', '演示收费员', ['CASHIER']),
     ('pharm01', '演示药师', ['PHARMACIST']),
@@ -70,10 +72,18 @@ DEMO_USERS = [
     ('quality01', '演示质控院感', ['QUALITY']),
     ('ops01', '演示运营后勤', ['OPERATION']),
 ]
-existing = {u['username'] for u in call('GET', '/system/users?page=0&size=100', t=t)['data']['records']}
+records = {u['username']: u for u in call('GET', '/system/users?page=0&size=100', t=t)['data']['records']}
+existing = set(records)
 created = 0
-for username, real_name, roles in DEMO_USERS:
+for username, real_name, roles, *rest in DEMO_USERS:
+    dept_id = rest[0] if rest else None
     if username in existing:
+        # v74：老库里的演示医生没有科室——补上（连同角色一并回传，更新接口按整体覆盖）
+        if dept_id and records[username].get('deptId') is None:
+            r0 = call('PUT', f"/system/users/{records[username]['id']}",
+                      {'username': username, 'realName': real_name, 'deptId': dept_id, 'roleCodes': roles}, t)
+            assert r0['code'] == 0, f'{username} 补科室失败: {r0}'
+            print(f'  {username}: 已补科室 {dept_id}')
         # 自愈（第六轮审阅 P3）：首跑若在"建号成功、闭环未完成"间崩溃，
         # 该账号会永留强制改密标志——重跑时探测一次并补闭环，而不是跳过了事
         probe = call('POST', '/auth/login', {'username': username, 'password': 'Demo1234'})
@@ -86,7 +96,7 @@ for username, real_name, roles in DEMO_USERS:
             print(f'  {username}: 检出残留强制改密标志，已补闭环')
         continue
     r = call('POST', '/system/users', {'username': username, 'password': 'Demo1234',
-                                       'realName': real_name, 'roleCodes': roles}, t)
+                                       'realName': real_name, 'roleCodes': roles, 'deptId': dept_id}, t)
     if r['code'] == 0:
         created += 1
         # v27-A：管理员设的初始口令首登会被强制改密（业务接口一律 1009）。
