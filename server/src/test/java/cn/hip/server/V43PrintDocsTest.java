@@ -280,6 +280,40 @@ class V43PrintDocsTest {
         assertTrue(mine.containsKey("custom_name"), "自定义名称列须在数据集里（可为 null）");
     }
 
+    /** v74 复核（1026★ 第三轮自查）：结构化过敏记录（cdss_patient_allergy）此前不上纸；文本栏为空时处方笺印「无」 */
+    @Test
+    void structuredAllergyIsPrintedEvenWhenFreeTextIsBlank() {
+        Long rid = visitWithAllOrderTypes();
+        Long pid = jdbc.queryForObject("select patient_id from outp_registration where id = ?", Long.class, rid);
+        jdbc.update("update empi_patient set allergy_history = null where id = ?", pid);
+        Long allergen = jdbc.queryForObject("select id from cdss_allergen order by id limit 1", Long.class);
+        String name = jdbc.queryForObject("select name from cdss_allergen where id = ?", String.class, allergen);
+        jdbc.update("insert into cdss_patient_allergy(patient_id, allergen_id, severity, source, confirmed_by, confirmed_at, status) values (?, ?, 'SEVERE', 'CLINICAL', (select id from sys_user where username = 'admin'), now(), 'ACTIVE')",
+                pid, allergen);
+        var doc = printController.clinicalDoc("prescription", rid, null).getData();
+        assertEquals(name + "(重度)", doc.get("allergyText"), "严重度印中文，不印枚举码");
+    }
+
+    /** v74 复核（1026★ 第三轮自查）：婴幼儿年龄印日、月龄，基准为就诊日；出生日期缺失印 null（前端「—」） */
+    @Test
+    void ageTextUsesVisitDateAndInfantUnits() {
+        assertEquals("30 岁", PrintReportController.ageTextOf(java.sql.Date.valueOf("1996-03-10"), java.sql.Date.valueOf("2026-03-10")));
+        assertEquals("2 月", PrintReportController.ageTextOf(java.sql.Date.valueOf("2026-01-01"), java.sql.Date.valueOf("2026-03-10")));
+        assertEquals("9 天", PrintReportController.ageTextOf(java.sql.Date.valueOf("2026-03-01"), java.sql.Date.valueOf("2026-03-10")));
+        assertNull(PrintReportController.ageTextOf(null, java.sql.Date.valueOf("2026-03-10")));
+        assertNull(PrintReportController.ageTextOf(java.sql.Date.valueOf("2026-04-01"), java.sql.Date.valueOf("2026-03-10")), "生日晚于就诊日不得印负数");
+    }
+
+    /** v74 复核（1026★ 第三轮自查）：已退号的挂号不得再打出任何临床单据 */
+    @Test
+    void cancelledRegistrationCannotPrintClinicalDocs() {
+        Long rid = visitWithAllOrderTypes();
+        jdbc.update("update outp_registration set status = 'CANCELLED' where id = ?", rid);
+        for (String t : List.of("prescription", "guide-sheet")) {
+            assertEquals(4893, printController.clinicalDoc(t, rid, null).getCode(), t);
+        }
+    }
+
     @Test
     void missingDocDataReturns4893() {
         // ① 挂号根本不存在

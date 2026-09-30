@@ -150,7 +150,7 @@ public class PrintReportController {
     /** 五种单据共用页眉：患者 + 就诊科室/号序 + 接诊医师（含职称，签名栏要用） */
     private static final String DOC_HEADER_SQL = """
             select r.id as registration_id, r.reg_no, r.visit_date, r.status as reg_status, r.created_at,
-                   p.name as patient_name, p.patient_no, p.sex, p.birth_date, p.allergy_history,
+                   p.id as patient_id, p.name as patient_name, p.patient_no, p.sex, p.birth_date, p.allergy_history,
                    d.name as dept_name, d.code as dept_code,
                    u.real_name as doctor_name, u.title as doctor_title
             from outp_registration r
@@ -183,7 +183,8 @@ public class PrintReportController {
                    dr.dose_form, dr.antibiotic,
                    ci.category as item_category,
                    ed.name as exec_dept_name,
-                   s.barcode as sample_barcode, s.status as sample_status, s.collected_at as sample_collected_at
+                   s.barcode as sample_barcode, s.status as sample_status, s.collected_at as sample_collected_at,
+                   (select e.status from ris_exam e where e.order_id = o.id order by e.id desc limit 1) as exam_status
             from outp_order o
             left join sys_user du on du.id = o.doctor_id
             left join md_drug dr on dr.id = o.item_id and o.order_type = 'DRUG'
@@ -196,10 +197,26 @@ public class PrintReportController {
     /** 出生日期 → 周岁。业务日期走 BusinessDates（演示库冻结日期时年龄不能按真实今天算）。 */
     private static Integer ageOf(Object birthDate) {
         if (birthDate == null) return null;
-        LocalDate b = birthDate instanceof java.sql.Date d
-                ? d.toLocalDate()
-                : LocalDate.parse(String.valueOf(birthDate).substring(0, 10));
-        return java.time.Period.between(b, BusinessDates.today()).getYears();
+        return java.time.Period.between(toDate(birthDate), BusinessDates.today()).getYears();
+    }
+
+    private static LocalDate toDate(Object d) {
+        return d instanceof java.sql.Date sd ? sd.toLocalDate() : LocalDate.parse(String.valueOf(d).substring(0, 10));
+    }
+
+    /**
+     * v74 复核（1026★ 第三轮自查）：单据上的年龄按《处方管理办法》口径——婴幼儿写日、月龄，且以就诊日为基准
+     * （补打旧单不能把年龄算大）。出生日期缺失或晚于就诊日返 null，纸面印「—」而不是「0 岁」或负数。
+     */
+    public static String ageTextOf(Object birthDate, Object visitDate) {
+        if (birthDate == null) return null;
+        LocalDate b = toDate(birthDate);
+        LocalDate v = visitDate == null ? BusinessDates.today() : toDate(visitDate);
+        if (b.isAfter(v)) return null;
+        var p = java.time.Period.between(b, v);
+        if (p.getYears() >= 1) return p.getYears() + " 岁";
+        if (p.getMonths() >= 1) return p.getMonths() + " 月";
+        return java.time.temporal.ChronoUnit.DAYS.between(b, v) + " 天";
     }
 
     /**
@@ -229,16 +246,33 @@ public class PrintReportController {
         }
         var head = jdbc.queryForList(DOC_HEADER_SQL, registrationId);
         if (head.isEmpty()) return R.fail(4893, "单据数据不存在：挂号记录不存在");
+        // v74 复核（1026★ 第三轮自查）：已退号的挂号此前照样能打出一张看起来正常的导诊单/空单
+        if ("CANCELLED".equals(head.get(0).get("reg_status"))) {
+            return R.fail(4893, "单据数据不存在：该挂号已退号");
+        }
 
         var m = new LinkedHashMap<String, Object>(head.get(0));
         m.put("docType", docType);
         m.put("docTitle", DOC_TITLE.get(docType));
         m.put("age", ageOf(head.get(0).get("birth_date")));
+        m.put("ageText", ageTextOf(head.get(0).get("birth_date"), head.get(0).get("visit_date")));
+        // v74 复核（1026★ 第三轮自查）：过敏史此前只取患者档案的自由文本，结构化过敏记录（cdss_patient_allergy，
+        // V152 明写不回写文本栏）登记了严重过敏而文本栏为空时，处方笺会印「过敏史：无」。两处并印，皆空才印「无」。
+        var structured = jdbc.queryForList("""
+                select a.name || case pa.severity when 'MILD' then '(轻度)' when 'MODERATE' then '(中度)' when 'SEVERE' then '(重度)' else '' end as t
+                from cdss_patient_allergy pa join cdss_allergen a on a.id = pa.allergen_id
+                where pa.patient_id = ? and pa.status = 'ACTIVE' order by pa.id
+                """, String.class, head.get(0).get("patient_id"));
+        var freeText = String.valueOf(head.get(0).getOrDefault("allergy_history", "") == null ? "" : head.get(0).get("allergy_history")).trim();
+        var parts = new ArrayList<String>();
+        if (!freeText.isEmpty()) parts.add(freeText);
+        parts.addAll(structured);
+        m.put("allergyText", parts.isEmpty() ? null : String.join("；", parts));
         // 临床诊断：主诊断排首位（申请单法定必填项）。
         // v74 复核（1026★ 第二轮反驳者三）：此前只取 icd_code/icd_name，医生在诊断表填的前缀「疑似」、后缀「术后」、
         // 确诊/疑诊标记、自定义名称一个都不上纸——处方笺会把疑诊印成确诊。四列一并带出，前端负责拼接。
         m.put("diagnoses", jdbc.queryForList("""
-                select icd_code, icd_name, primary_diag, prefix, suffix, certainty, custom_name from outp_diagnosis
+                select icd_code, icd_name, primary_diag, prefix, suffix, certainty, custom_name, diag_system from outp_diagnosis
                 where registration_id = ? order by primary_diag desc, id
                 """, registrationId));
         // 病史摘要：申请单要给医技科室看"为什么做这个检查"，取自本次门诊病历

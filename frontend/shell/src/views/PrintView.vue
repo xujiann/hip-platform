@@ -166,7 +166,8 @@
 
           <!-- 处方笺：Rp. + 逐条用法用量 + 医师/药师/核对/发药 四签名栏 -->
           <template v-if="type === 'prescription'">
-            <div class="doc-line">过敏史：{{ data.allergy_history || '无' }}</div>
+            <!-- v74 复核（1026★ 第三轮自查）：allergyText = 档案文本 + 结构化过敏记录，皆空才印「无」 -->
+            <div class="doc-line">过敏史：{{ data.allergyText || '无' }}</div>
             <div class="rp">Rp.</div>
             <ol class="rx">
               <li v-for="(r, i) in g.rows" :key="i">
@@ -182,7 +183,7 @@
               </li>
             </ol>
             <p class="rx-end">—— 以下空白 ——</p>
-            <div class="doc-line">药品金额：¥{{ g.total }}</div>
+            <div class="doc-line">药品金额：¥{{ Number(g.total ?? 0).toFixed(2) }}</div>
             <div class="sign-bar">
               <span>医师：{{ docDoctor(g) || '' }}</span>
               <span>药师（审核）：</span>
@@ -301,7 +302,7 @@
                 <th style="width:12%">数量</th><th style="width:18%">前往科室</th><th style="width:14%">状态</th></tr>
               <tr v-for="(r, i) in g.rows" :key="i">
                 <td>{{ i + 1 }}</td>
-                <td>{{ guideStageNames[String(r.order_type)] ?? r.order_type }}</td>
+                <td>{{ guideStageNames[String(r.order_type)] ?? '其他' }}</td>
                 <td>{{ r.item_name }}</td>
                 <td>{{ r.qty }} {{ r.unit }}</td>
                 <td>{{ r.exec_dept_name || (r.order_type === 'DRUG' ? '药房' : '—') }}</td>
@@ -396,13 +397,15 @@ function firstOf(g: { rows?: Array<Record<string, unknown>> }, key: string): str
   }
   return ''
 }
-// v74 复核（1026★ 第二轮反驳者三）：诊断要连前缀/后缀/疑诊标记一起印——「疑似 急性上呼吸道感染(J06.900)（疑诊）」，
-// 否则疑诊在处方笺上就成了确诊。自定义名称优先于 ICD 名称（与医生站诊断表同口径）。
+// v74 复核（1026★ 第二轮反驳者三 + 第三轮自查）：诊断要连前缀/后缀/疑诊标记一起印——
+// 「疑似 急性上呼吸道感染(J06.900)（疑诊）」，否则疑诊在处方笺上就成了确诊。
+// 自定义描述与标准名**并存**（医生站占位符与 V135 注释口径：不替代标准名），作括注跟在标准名后。
 const diagText = computed(() => ((data.value?.diagnoses as Record<string, unknown>[]) ?? [])
   .map((d) => {
     const s = (v: unknown) => (v == null ? '' : String(v).trim())
-    const name = s(d.custom_name) || s(d.icd_name)
-    const core = `${s(d.prefix) ? s(d.prefix) + ' ' : ''}${name}${s(d.suffix) ? ' ' + s(d.suffix) : ''}`
+    const name = s(d.icd_name) || s(d.custom_name)
+    const custom = s(d.icd_name) && s(d.custom_name) ? '［' + s(d.custom_name) + '］' : ''
+    const core = `${s(d.prefix) ? s(d.prefix) + ' ' : ''}${name}${custom}${s(d.suffix) ? ' ' + s(d.suffix) : ''}`
     const code = d.icd_code ? '(' + d.icd_code + ')' : ''
     const cert = s(d.certainty) === 'SUSPECTED' ? '（疑诊）' : ''
     return core + code + cert
@@ -427,12 +430,19 @@ function docDoctorSuffix(g: { rows?: Array<Record<string, unknown>> }): string {
   const od = firstOf(g, 'order_doctor_name')
   return !od || od === String(data.value?.doctor_name ?? '') ? docTitleSuffix.value : ''
 }
-/** 出生日期缺失时纸面留「—」而不是「—岁」——建档时可以不填生日，单据不能因此印出病句 */
-const ageText = computed(() => (data.value?.age == null ? '—' : `${data.value.age} 岁`))
-/** 导诊单状态列：药品未缴费=待缴费、已缴费=待取药；医技项目已缴费=待执行 */
+/** 出生日期缺失或晚于就诊日时纸面留「—」而不是「—岁」/「0 岁」；婴幼儿按后端 ageText 印日、月龄，基准为就诊日 */
+const ageText = computed(() => String(data.value?.ageText ?? '—'))
+/**
+ * 导诊单状态列：药品未缴费=待缴费、已缴费=待取药；
+ * v74 复核（1026★ 第三轮自查）：检验已采样、检查已到检后医嘱仍是 CHARGED，此前一律印「待执行」。
+ * 按标本/检查记录细分：检验 待采样→已采样；检查 待检查→检查中；治疗 待执行。
+ */
 function guideStatusOf(r: Record<string, unknown>): string {
   if (r.status === 'CREATED') return '待缴费'
-  return r.order_type === 'DRUG' ? '待取药' : '待执行'
+  if (r.order_type === 'DRUG') return '待取药'
+  if (r.order_type === 'LAB') return r.sample_status ? '已采样' : '待采样'
+  if (r.order_type === 'EXAM') return r.exam_status && r.exam_status !== 'REGISTERED' ? '检查中' : '待检查'
+  return '待执行'
 }
 
 // 住院单据用较宽版式（A5 清单/小结），门诊凭条保持窄条
