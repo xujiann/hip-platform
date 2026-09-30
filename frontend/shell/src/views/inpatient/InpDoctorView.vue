@@ -643,6 +643,9 @@ async function applyEmrTemplate() {
 }
 
 async function open(row: Record<string, unknown> | null) {
+  // v74 复核（1006★ 第二轮审计者）：备注/注意事项/加急是页面级值，换患者必须清空，
+  // 否则给 A 填了没开立、切到 B 再点开药，备注会落到 B 的医嘱上。同一患者刷新（开立/停嘱后）不清。
+  if (row?.id !== current.value?.id) resetExtras()
   current.value = row
   account.value = null
   emrTemplateId.value = null
