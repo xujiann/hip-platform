@@ -195,7 +195,10 @@ LIT = re.compile('|'.join('%s((?:[^%s\\\\]|\\\\.)*)%s' % (q, q, q) for q in _Q))
 
 def touched_claims(base, head='HEAD'):
     """<base>..HEAD 新增行里的带句读文案。diff 只看 + 行——改过的那一句才进棘轮。"""
-    paths = ['frontend/shell/src', 'modules']
+    # v75：前端测试文件（vitest）里的期望字符串不是上屏文案——它们是对拍台，不是屏幕；
+    # 不排除就会把 print-format.test.ts 里的用例期望当成"新改的一句话"要求登记。用 git pathspec 排除。
+    paths = ['frontend/shell/src', 'modules',
+             ':(glob,exclude)frontend/shell/src/**/__tests__/**', ':(glob,exclude)frontend/shell/src/**/*.test.ts']
     try:
         diff = subprocess.run(['git', '-C', str(ROOT), 'diff', f'{base}..{head}', '--', *paths],
                               capture_output=True, text=True, encoding='utf-8',
