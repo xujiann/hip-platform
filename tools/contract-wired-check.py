@@ -29,7 +29,17 @@ FRONTEND = ROOT / "frontend" / "shell" / "src"
 ALLOW = ROOT / "tools" / "contract-wired-allow.txt"
 
 # 只扫这些后端目录里的控制器：返回体键就是在这里 put 进去的
-BACKEND_GLOBS = ["modules/*/src/main/java/**/web/*Controller.java"]
+# v75 车道 A：补上 server/ 下的控制器（PrintReportController / FinanceController 等）——
+# 1.7.0 打印数据集新增的 ageText/allergyText/exam_status 就在那里，此前从未被扫，全靠人工核。
+#
+# **范围说明（本轮不扩的）**：只认 `x.put("key", …)` 形态。server/ 下另有一类
+# 「SQL 列别名」形态（`select … as some_col`，列由 JdbcTemplate 查询结果直接成为返回体键），
+# 这类键不经 put( ，本脚本抓不到——量不小（PrintReportController / StatsController 的报表 SQL 里成片），
+# 本轮不扩，记为下一步：要扩须同时解决「别名是 snake_case、前端读 camelCase/原样」的匹配口径。
+BACKEND_GLOBS = [
+    "modules/*/src/main/java/**/web/*Controller.java",
+    "server/src/main/java/**/web/*Controller.java",
+]
 
 # body.put("xxx", ...) / m.put("xxx", ...) / one.put("xxx", ...) —— 本仓一律是这个形态
 PUT_RE = re.compile(r'\b\w+\.put\(\s*"([A-Za-z_][A-Za-z0-9_]*)"\s*,')
@@ -92,7 +102,7 @@ def keys_added_since(base: str) -> set:
     """只取 diff 里 + 行新增的 put 键——合并后对账时，我们关心的是本轮新产生的契约。"""
     try:
         diff = subprocess.run(
-            ["git", "-C", str(ROOT), "diff", f"{base}..HEAD", "--", "modules"],
+            ["git", "-C", str(ROOT), "diff", f"{base}..HEAD", "--", "modules", "server/src/main/java"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
         ).stdout
     except subprocess.CalledProcessError as e:

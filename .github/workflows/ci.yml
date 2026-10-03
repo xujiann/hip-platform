@@ -75,7 +75,11 @@ jobs:
     name: 前端构建（vue-tsc + vite）
     runs-on: ubuntu-latest
     steps:
+      # v75：fetch-depth: 0 是给下面的 unused-fn-check --selftest 用的——
+      # 它的对照组要 `git show 161904f^:<file>` 取历史文件，浅克隆取不到会响亮地失败（不静默跳过）
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -88,6 +92,15 @@ jobs:
         run: |
           npm ci
           npm run build
+
+      # v75：「定义了从未调用」扫描。v74 的 loadEmrTemplates 自 v45 起定义了没人调，
+      # 结构化模板栏在门诊站从没加载过数据，vue-tsc / vite 都不报，近三十轮后才被手点发现。
+      # 与契约对账互补：那条盯后端键没人用，这条盯前端函数没人调。
+      # selftest 先过——一把抓不到已知死函数的尺子不配当闸门。
+      - name: 死函数扫描（定义了从未调用，同文件再无第二处提及）
+        run: |
+          python3 tools/unused-fn-check.py --selftest
+          python3 tools/unused-fn-check.py
 
   e2e:
     name: 端到端回归（完整后端）
