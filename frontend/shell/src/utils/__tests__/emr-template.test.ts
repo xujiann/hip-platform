@@ -232,3 +232,18 @@ describe('outpTemplatesOnly：下拉只列 OUTP 或空 record_type', () => {
     expect(outpTemplatesOnly(list).map((t) => t.id)).toEqual([1, 2, 3, 4, 6])
   })
 })
+
+describe('未知标签段（维护页骨架「辅助检查/初步诊断」）', () => {
+  it('不并入上一段，单列为 skipped', () => {
+    const r = splitTemplateContent('主诉：咳嗽\n体格检查：咽充血\n辅助检查：血常规正常\n初步诊断：上感\n处理意见：休息')
+    expect(r.format).toBe('labeled')
+    expect(r.parts.physicalExam).toBe('咽充血')
+    expect(r.parts.advice).toBe('休息')
+    expect(r.skipped).toEqual([{ label: '辅助检查', text: '血常规正常' }, { label: '初步诊断', text: '上感' }])
+  })
+  it('空值的未知标签不进 skipped', () => {
+    const r = splitTemplateContent('主诉：咳嗽\n初步诊断：\n')
+    expect(r.skipped).toEqual([])
+    expect(r.parts.chiefComplaint).toBe('咳嗽')
+  })
+})

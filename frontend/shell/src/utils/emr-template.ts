@@ -39,12 +39,20 @@ const LABEL_TO_KEY = new Map<string, EmrSectionKey>(EMR_SECTION_DEFS.map((s) => 
 const labelOf = (k: EmrSectionKey) => EMR_SECTION_DEFS.find((s) => s.key === k)!.label
 /** 行首标签：只认全角冒号，与后端拼法逐字对应 */
 const LABEL_LINE = /^(主诉|现病史|既往史|体格检查|处理意见)：(.*)$/
+/**
+ * 任意「中文标签：」行（2–8 个汉字）。993★ 第三轮审计者实测：模板维护页的正文骨架含「辅助检查：」「初步诊断：」，
+ * 此前这两行会并入上一段（体格检查）——不丢字但错段。现把未知标签段单列为 skipped，由页面提示"未套用"。
+ */
+const ANY_LABEL_LINE = /^([\u4e00-\u9fa5]{2,8})：(.*)$/
 
 export type TemplateFormat = 'json' | 'labeled' | 'plain' | 'empty'
+export interface SkippedSection { label: string; text: string }
 export interface SplitResult {
   format: TemplateFormat
   /** 只含有值的段（空串/纯空白已丢弃） */
   parts: EmrParts
+  /** 标签行格式里不属于五段正文的段（如「初步诊断」），未套用、由页面提示 */
+  skipped: SkippedSection[]
 }
 
 const isBlank = (s: string | null | undefined) => !s || s.trim().length === 0
@@ -69,12 +77,13 @@ function trySplitJson(text: string): EmrParts | null {
   return Object.keys(parts).length ? parts : null
 }
 
-function trySplitLabeled(text: string): EmrParts | null {
+function trySplitLabeled(text: string): { parts: EmrParts; skipped: SkippedSection[] } | null {
   const lines = text.replace(/\r\n?/g, '\n').split('\n')
   // 首个非空行必须是标签行：前面若有前言，说明这不是「存为模板」的产物，整段按纯文本处理才不丢前言
   const first = lines.find((l) => l.trim().length > 0)
   if (first === undefined || !LABEL_LINE.test(first)) return null
   const buckets: Partial<Record<EmrSectionKey, string[]>> = {}
+  const unknown: Array<{ label: string; lines: string[] }> = []
   let cur: string[] | null = null
   for (const line of lines) {
     const m = LABEL_LINE.exec(line)
@@ -83,16 +92,25 @@ function trySplitLabeled(text: string): EmrParts | null {
       // 同一标签重复出现：追加到同段，不丢字
       cur = buckets[key] ?? (buckets[key] = [])
       cur.push(m[2])
-    } else if (cur) {
-      cur.push(line)   // 多行值（含空行）归上一个标签
+      continue
     }
+    const u = ANY_LABEL_LINE.exec(line)
+    if (u) {
+      // 未知标签（骨架里的「辅助检查」「初步诊断」等）：另起一段单列，不并入上一段
+      const bucket = { label: u[1], lines: [u[2]] }
+      unknown.push(bucket)
+      cur = bucket.lines
+      continue
+    }
+    if (cur) cur.push(line)   // 多行值（含空行）归上一个标签
   }
   const parts: EmrParts = {}
   for (const def of EMR_SECTION_DEFS) {
     const v = (buckets[def.key] ?? []).join('\n').trim()
     if (v) parts[def.key] = v
   }
-  return parts
+  const skipped = unknown.map((u) => ({ label: u.label, text: u.lines.join('\n').trim() })).filter((u) => u.text)
+  return { parts, skipped }
 }
 
 /**
@@ -104,12 +122,12 @@ export function splitTemplateContent(
   insertTarget: EmrSectionKey = 'presentIllness',
 ): SplitResult {
   const text = (content ?? '').trim()
-  if (!text) return { format: 'empty', parts: {} }
+  if (!text) return { format: 'empty', parts: {}, skipped: [] }
   const json = trySplitJson(text)
-  if (json) return { format: 'json', parts: json }
+  if (json) return { format: 'json', parts: json, skipped: [] }
   const labeled = trySplitLabeled(text)
-  if (labeled) return { format: 'labeled', parts: labeled }
-  return { format: 'plain', parts: { [insertTarget]: text } }
+  if (labeled) return { format: 'labeled', parts: labeled.parts, skipped: labeled.skipped }
+  return { format: 'plain', parts: { [insertTarget]: text }, skipped: [] }
 }
 
 export interface OverLimit {

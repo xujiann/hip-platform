@@ -755,6 +755,9 @@ async function applyTemplateBody() {
   })
   if (r.cancelled) return
   ElMessage.success(`已套用模板「${t.name}」到：${r.applied.map((k) => EMR_SECTIONS.find((x) => x.key === k)?.label).join('、')}；点「保存病历」后生效`)
+  if (split.skipped.length) {
+    ElMessage.info(`模板里的「${split.skipped.map((x) => x.label).join('、')}」不属于病历正文五段，未套用；诊断请在下方诊断区录入`)
+  }
   if (r.overLimit.length) {
     ElMessage.warning(`${r.overLimit.map((o) => `${o.label}${o.length}字（上限 ${o.limit}）`).join('、')}，超出部分保存时可能失败，请先精简`)
   }
