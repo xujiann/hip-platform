@@ -338,8 +338,7 @@ import TempSheetSvg from '../components/TempSheetSvg.vue'
 // v75 车道C：纯拼装逻辑抽到 utils/print-format.ts（vitest 锁定）；此处同名变量/函数的用别名导入，模板用法不变
 import {
   ageText as ageTextOf, allergyLine, briefHistory as briefHistoryOf, docDoctor as docDoctorOf,
-  docDoctorSuffix as docDoctorSuffixOf, firstOf, formatDiagnoses, guideStatusOf, money2,
-} from '../utils/print-format'
+  docDoctorSuffix as docDoctorSuffixOf, firstOf, formatDiagnoses, guideStatusOf, money2, printedAt } from '../utils/print-format'
 
 const route = useRoute()
 const type = String(route.query.type ?? 'registration')
@@ -353,7 +352,8 @@ const nurKind = String(route.query.kind ?? '')
 const groupNo = String(route.query.groupNo ?? '')
 const data = ref<Record<string, unknown> | null>(null)
 const hospitalName = ref('')
-const now = new Date().toLocaleString('zh-CN')
+// v75 合并后补齐：日期取后端业务日期 printedOn（演示库可冻结），时刻取本机钟；无 printedOn 的凭条票据照旧本地时间
+const now = computed(() => printedAt((data.value as Record<string, unknown> | null)?.printedOn))
 
 const titles: Record<string, string> = {
   registration: '挂号凭条', charge: '收费票据', 'lab-report': '检验报告单',

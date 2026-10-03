@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   ageText, allergyLine, briefHistory, docDoctor, docDoctorSuffix, docTitleSuffix,
-  firstOf, formatDiagnoses, guideStatusOf, money2, stripBlockMarks,
-} from '../print-format'
+  firstOf, formatDiagnoses, guideStatusOf, money2, stripBlockMarks, printedAt } from '../print-format'
 
 /**
  * v75 车道C：PrintView 纯拼装逻辑的锁定测试。
@@ -217,5 +216,16 @@ describe('allergyLine：过敏行只兜底', () => {
     expect(allergyLine(null)).toBe('无')
     expect(allergyLine(undefined)).toBe('无')
     expect(allergyLine('')).toBe('无')
+  })
+})
+
+describe('printedAt（打印时间：日期取业务日期，时刻取本机钟）', () => {
+  const fixed = new Date(2026, 9, 3, 17, 5, 9)
+  it('有 printedOn 时日期取它、时刻取本机', () => {
+    expect(printedAt('2026-09-29', fixed)).toBe('2026-09-29 17:05:09')
+  })
+  it('无 printedOn（凭条/票据）照旧印本地完整时间', () => {
+    expect(printedAt(null, fixed)).toBe(fixed.toLocaleString('zh-CN'))
+    expect(printedAt('', fixed)).toBe(fixed.toLocaleString('zh-CN'))
   })
 })

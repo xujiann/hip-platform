@@ -106,3 +106,14 @@ export function briefHistory(emr: Row | null | undefined): string {
 export function allergyLine(v: unknown): string {
   return v ? String(v) : '无'
 }
+
+/**
+ * 打印时间。v75 合并后补齐：后端随临床单据下发 printedOn（BusinessDates 业务日期——演示库可冻结日期），
+ * 此前前端只印浏览器本地时间、printedOn 无人消费，冻结日期的演示库上"就诊日期"与"打印时间"会对不上。
+ * 口径：日期取 printedOn（有则用），时刻取本机钟；没有 printedOn（挂号凭条/票据等）照旧印本地完整时间。
+ */
+export function printedAt(printedOn: unknown, now: Date = new Date()): string {
+  const d = printedOn == null ? '' : String(printedOn).trim()
+  const hms = now.toLocaleTimeString('zh-CN', { hour12: false })
+  return d ? `${d} ${hms}` : now.toLocaleString('zh-CN')
+}
