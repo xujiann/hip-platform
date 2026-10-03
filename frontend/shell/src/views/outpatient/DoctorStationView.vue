@@ -123,7 +123,12 @@
               <el-option v-for="t in emrTemplates" :key="t.id as number"
                          :label="`${t.name}${t.dept_id ? '' : '（通用）'}`" :value="t.id as number" />
             </el-select>
+            <!-- v76（993★ ③）：整段套用模板正文。与结构化录入互不替代：结构化只读模板的元素定义，这里读模板的 content -->
+            <el-button size="small" :disabled="emrSigned || !structTemplateId" @click="applyTemplateBody">套用正文</el-button>
             <span v-if="structHint" class="dim">{{ structHint }}</span>
+            <span v-if="structFields.length" class="dim">
+              已选结构化元素时，保存会把结构化内容追加到现病史末尾；套用正文若也写了现病史，两部分会并存。
+            </span>
           </div>
           <StructuredFieldForm v-if="structFields.length" v-model="structValues" :fields="structFields"
                                :disabled="emrSigned" preview-label="保存后写入现病史" />
@@ -602,6 +607,7 @@ import client from '../../api/client'
 import { useAuthStore } from '../../stores/auth'
 import EmrRefDrawer, { useEmrPasteGuard } from '../../components/EmrRefDrawer.vue'
 import StructuredFieldForm, { type EmrTemplateField } from '../../components/StructuredFieldForm.vue'
+import { applyTemplate as applyTemplateToEmr, outpTemplatesOnly, splitTemplateContent } from '../../utils/emr-template'
 
 const categoryNames: Record<string, string> = { LAB: '检验', EXAM: '检查', TREAT: '治疗', MATERIAL: '材料' }
 const typeNames: Record<string, string> = { DRUG: '药品', LAB: '检验', EXAM: '检查', TREAT: '治疗' }
@@ -711,9 +717,46 @@ async function loadEmrTemplates() {
     // v74 补 993★ 硬缺口（v68 三方复核）：此前走不认使用范围的旧通道 /emr-templates，下拉里是全院全部启用模板、
     // 含所有人的个人模板；改走按登录人可见范围与授权过滤的 /emr-templates/visible（GLOBAL/HOSPITAL 人人可见，
     // DEPT 本科室 + 被授权科室，PERSONAL 本人 + 被授权个人），默认模板置顶。
-    emrTemplates.value = (await client.get('/emr-templates/visible', { params: { type: 'EMR' } })).data.data ?? []
+    // v76：门诊下拉只列 OUTP 或空 record_type 的模板（住院长正文套进门诊会超 2000 字；旧 JSON 模板 record_type 为 null，
+    // 传 recordType=OUTP 给后端会漏掉它们，故在前端过滤）
+    emrTemplates.value = outpTemplatesOnly(
+      ((await client.get('/emr-templates/visible', { params: { type: 'EMR' } })).data.data ?? []) as Record<string, unknown>[])
   } catch {
     emrTemplates.value = []
+  }
+}
+
+/**
+ * v76（993★ ③）套用模板正文到门诊五段：旧 JSON / 「主诉：…」标签行 / 纯文本三种形态由 splitTemplateContent 拆，
+ * 纯文本整段进「插入到」选定的段。目标段非空先确认；超出库列宽只提示、不截断。
+ * 只改本页表单，仍须点「保存病历」才落库；已签名在这里先拦，后端 4008 兜底。
+ */
+async function applyTemplateBody() {
+  if (emrSigned.value) {
+    ElMessage.warning('病历已签名冻结，不能套用模板；如需更正请追加补正记录')
+    return
+  }
+  const t = emrTemplates.value.find((x) => x.id === structTemplateId.value)
+  if (!t) return
+  let content = t.content as string | null | undefined
+  if (content === undefined) {
+    // 列表行不带正文时按 id 取一次（只读端点，不可见/已停用返 4066 由拦截器提示）
+    content = (await client.get(`/emr-templates/${t.id}`)).data.data?.content as string | null | undefined
+  }
+  const split = splitTemplateContent(content, insertTarget.value)
+  if (split.format === 'empty') {
+    ElMessage.warning(`模板「${t.name}」没有正文可套用`)
+    return
+  }
+  const r = await applyTemplateToEmr(emr, split.parts, {
+    confirmOverwrite: (labels) => ElMessageBox.confirm(
+      `「${labels.join('、')}」已有内容，套用模板将覆盖它，是否继续？`, '套用模板正文', { type: 'warning' })
+      .then(() => true, () => false),
+  })
+  if (r.cancelled) return
+  ElMessage.success(`已套用模板「${t.name}」到：${r.applied.map((k) => EMR_SECTIONS.find((x) => x.key === k)?.label).join('、')}；点「保存病历」后生效`)
+  if (r.overLimit.length) {
+    ElMessage.warning(`${r.overLimit.map((o) => `${o.label}${o.length}字（上限 ${o.limit}）`).join('、')}，超出部分保存时可能失败，请先精简`)
   }
 }
 

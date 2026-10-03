@@ -27,8 +27,7 @@
                 :title="`病历不完整（${integrity.dischargeGate === 'block' ? '已启用硬拦，须补齐后方可出院' : '当前仅提示，允许出院'}）：${integrity.missing.join('、')}`" />
       <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
         <b style="font-size: 13px;">出院诊断</b>
-        <el-input v-model="dischargeIcd" placeholder="ICD-10" style="width: 110px" size="small" />
-        <el-input v-model="dischargeName" placeholder="诊断名称" style="width: 200px" size="small" />
+        <IcdSelect v-model:icd="dischargeIcd" v-model:name="dischargeName" />
         <el-button size="small" @click="saveDischargeDiag">保存</el-button>
       </div>
       <div class="actions">
@@ -93,6 +92,7 @@ import { computed, onMounted, ref } from 'vue'
 import { fmtDateTimeSec, todayLocal } from '../../utils/date'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
+import IcdSelect from '../../components/IcdSelect.vue'
 
 const admissions = ref<Record<string, unknown>[]>([])
 const current = ref<Record<string, unknown> | null>(null)

@@ -98,12 +98,11 @@
       </el-tab-pane>
 
       <el-tab-pane label="诊断补录" name="diag">
-        <el-alert title="其他诊断（并发症/合并症）决定细分组尾码：命中 MCC 目录→尾码1（权重×1.3），CC→尾码3（×1.15），无→尾码5；补录后点「重新入组」生效"
+        <el-alert title="其他诊断（并发症/合并症）决定细分组尾码：命中 MCC 目录→尾码1（权重×1.3），CC→尾码3（×1.15），无→尾码5；补录后点「重新入组」生效。诊断优先从字典检索选择；字典没有时可手工录入，但编码须是标准 ICD-10 写法，否则无法命中 MCC/CC 目录"
                   type="info" show-icon :closable="false" style="margin-bottom: 8px" />
         <el-form inline size="small">
           <el-form-item><el-input v-model="diag.admissionId" placeholder="住院ID" style="width: 110px" /></el-form-item>
-          <el-form-item><el-input v-model="diag.icd" placeholder="ICD（如 I50.9）" style="width: 130px" /></el-form-item>
-          <el-form-item><el-input v-model="diag.name" placeholder="诊断名称" style="width: 180px" /></el-form-item>
+          <el-form-item><IcdSelect v-model:icd="diag.icd" v-model:name="diag.name" /></el-form-item>
           <el-button type="primary" size="small" @click="addDiag" :loading="addDiagLoading">补录其他诊断</el-button>
           <el-button size="small" @click="loadDiags">查询</el-button>
         </el-form>
@@ -154,6 +153,7 @@
 import { onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import client from '../../api/client'
+import IcdSelect from '../../components/IcdSelect.vue'
 
 interface Analysis {
   groups: Record<string, unknown>[]
