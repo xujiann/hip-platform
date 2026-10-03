@@ -67,6 +67,7 @@ declare module 'vue' {
     ElTooltip: typeof import('element-plus/es')['ElTooltip']
     ElTree: typeof import('element-plus/es')['ElTree']
     EmrRefDrawer: typeof import('./src/components/EmrRefDrawer.vue')['default']
+    IcdSelect: typeof import('./src/components/IcdSelect.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     StructuredFieldForm: typeof import('./src/components/StructuredFieldForm.vue')['default']
