@@ -42,6 +42,27 @@ r2 = ok(call('POST', '/masterdata/charge-items/import', token=t, text=items_csv)
 assert r2['imported'] == 1 and r2['errorCount'] == 0, r2
 print('[产品化-2] 字典 CSV 导入 OK（药品 1 入库 1 拦截，项目 1 入库，检索可见）')
 
+# 2b v76 诊断字典 CSV 导入（993★ ①）：口径与药品/项目不同——任一行格式错整批不落库、返 5901 带行级错误；
+#    好行 upsert、医生站检索（/masterdata/icd10）即时可见；停用后医生站搜不到、维护页「含停用」可见。
+icd_csv = ("code,name,pinyin\n"
+           "E2EP1I1,产品化验证诊断,CPHYZZD\n")
+r3 = ok(call('POST', '/masterdata/icd-dict/import', token=t, text=icd_csv), '诊断字典导入')
+assert r3['imported'] == 1 and r3['errorCount'] == 0, r3
+hit = ok(call('GET', '/masterdata/icd10?keyword=' + q('产品化验证诊断'), token=t), '医生站诊断检索')
+assert any(d['code'] == 'E2EP1I1' for d in hit), hit
+assert set(hit[0].keys()) == {'code', 'name', 'pinyin'}, f'医生站检索返回体键不得变: {hit[0].keys()}'
+bad = call('POST', '/masterdata/icd-dict/import', token=t, text="code,name,pinyin\nE2EP1I2,缺拼音\nX1\n")
+assert bad['code'] == 5901 and bad['data']['errorCount'] >= 2, bad
+miss = ok(call('GET', '/masterdata/icd10?keyword=E2EP1I2', token=t), '坏批检索')
+assert not any(d['code'] == 'E2EP1I2' for d in miss), '坏批里的合法行也不得落库（整批原子）'
+ok(call('PUT', '/masterdata/icd-dict/E2EP1I1/enabled?enabled=false', token=t), '停用诊断')
+gone = ok(call('GET', '/masterdata/icd10?keyword=E2EP1I1', token=t), '停用后医生站检索')
+assert not any(d['code'] == 'E2EP1I1' for d in gone), '停用的诊断不得进医生站下拉'
+page = ok(call('GET', '/masterdata/icd-dict?keyword=E2EP1I1&includeDisabled=true', token=t), '维护页含停用')
+assert any(x['code'] == 'E2EP1I1' and x['enabled'] is False for x in page['records']), page
+ok(call('PUT', '/masterdata/icd-dict/E2EP1I1/enabled?enabled=true', token=t), '恢复启用（复跑干净）')
+print('[产品化-2b] 诊断字典 CSV 导入 OK（1 入库、坏批 5901 整批拒绝、停用不进医生站下拉）')
+
 # 3 病区床位批量创建（找护理病区补 1 张，重复号自动跳过）
 wards = [d for d in ok(call('GET', '/system/depts', token=t), '科室') if d['type'] == 'NURSING']
 assert wards, '应有护理病区'
