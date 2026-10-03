@@ -40,10 +40,12 @@ const labelOf = (k: EmrSectionKey) => EMR_SECTION_DEFS.find((s) => s.key === k)!
 /** 行首标签：只认全角冒号，与后端拼法逐字对应 */
 const LABEL_LINE = /^(主诉|现病史|既往史|体格检查|处理意见)：(.*)$/
 /**
- * 任意「中文标签：」行（2–8 个汉字）。993★ 第三轮审计者实测：模板维护页的正文骨架含「辅助检查：」「初步诊断：」，
- * 此前这两行会并入上一段（体格检查）——不丢字但错段。现把未知标签段单列为 skipped，由页面提示"未套用"。
+ * 骨架里不属于五段正文的段：模板维护页的正文骨架含「辅助检查：」「初步诊断：」（993★ 第三轮审计者实测），
+ * 此前这两行会并入上一段（体格检查）——不丢字但错段。这些段单列为 skipped，由页面提示"未套用"。
+ * **只认这份白名单**：第三轮反驳者一/三实测，若把任意「xx：」行都当未知标签，现病史里的续行「体温：38.5℃」
+ * 「伴随症状：无咳嗽」会被扣掉——那正是「存为模板」产物的常见形态。白名单之外的「xx：」行一律是段内续行。
  */
-const ANY_LABEL_LINE = /^([\u4e00-\u9fa5]{2,8})：(.*)$/
+const SKIP_LABEL_LINE = /^(辅助检查|初步诊断|诊断|鉴别诊断|西医诊断|中医诊断)：(.*)$/
 
 export type TemplateFormat = 'json' | 'labeled' | 'plain' | 'empty'
 export interface SkippedSection { label: string; text: string }
@@ -94,15 +96,15 @@ function trySplitLabeled(text: string): { parts: EmrParts; skipped: SkippedSecti
       cur.push(m[2])
       continue
     }
-    const u = ANY_LABEL_LINE.exec(line)
+    const u = SKIP_LABEL_LINE.exec(line)
     if (u) {
-      // 未知标签（骨架里的「辅助检查」「初步诊断」等）：另起一段单列，不并入上一段
+      // 白名单里的非正文段（「辅助检查」「初步诊断」等）：另起一段单列，不并入上一段
       const bucket = { label: u[1], lines: [u[2]] }
       unknown.push(bucket)
       cur = bucket.lines
       continue
     }
-    if (cur) cur.push(line)   // 多行值（含空行）归上一个标签
+    if (cur) cur.push(line)   // 多行值（含空行、含「体温：」这类段内「xx：」行）归上一个标签
   }
   const parts: EmrParts = {}
   for (const def of EMR_SECTION_DEFS) {
@@ -191,10 +193,15 @@ export async function applyTemplate(emr: EmrFields, parts: EmrParts, opts: Apply
  * 而旧 JSON 模板的 record_type 是 null（传 recordType=OUTP 给后端会把它们漏掉），所以在前端过滤。
  * 兼容 snake_case（/emr-templates/visible 直出 jdbc 列名）与 camelCase。
  */
+/**
+ * 门诊医生站的模板下拉：只排除明确标为住院（INP）的模板。
+ * 第三轮反驳者三：record_type 是开放集合（结构化元素挂着的模板写的是其他值），"只留 OUTP 或空"会把
+ * 结构化模板从门诊入口里顺带删掉；改为"只剔 INP"，其余一律保留。
+ */
 export function outpTemplatesOnly<T extends Record<string, unknown>>(list: T[]): T[] {
   return list.filter((t) => {
     const raw = t.record_type ?? t.recordType
     const rt = typeof raw === 'string' ? raw.trim().toUpperCase() : ''
-    return rt === '' || rt === 'OUTP'
+    return rt !== 'INP'
   })
 }

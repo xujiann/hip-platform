@@ -372,8 +372,8 @@ def ensure_demo_outp_template():
                '既往史：无特殊\n'
                '体格检查：咽部充血，扁桃体 I 度肿大，双肺呼吸音清\n'
                '处理意见：多饮水，对症治疗，3 天后复诊')
-    r = call('POST', '/emr-templates', {'name': name, 'content': content, 'templateType': 'EMR',
-                                        'scope': 'HOSPITAL', 'deptId': None, 'recordType': 'OUTP'}, t)
+    # 旧端点按 deptId 推范围（null → HOSPITAL 全院），不收 scope/recordType（第三轮反驳者三核过）
+    r = call('POST', '/emr-templates', {'name': name, 'content': content, 'templateType': 'EMR', 'deptId': None}, t)
     assert r.get('code') == 0, f'门诊演示模板创建失败: {r}'
     print('  门诊演示模板：已创建（全院可见）')
 

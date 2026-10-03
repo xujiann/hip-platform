@@ -164,7 +164,7 @@ public class IcdDictController {
      *
      * <p><b>与既有药品/收费项目导入口径的差异（有意）</b>：那两个端点对短行是"跳过该行、其余照导、返回成功+errors"，
      * 软错误（未知费用类别等）也只记不拦。诊断字典是**其余模块的检索与病案编码的基准字典**，
-     * 格式错行几乎总意味着拿错了文件/列序错位/编码被转成 GBK 乱码——静默导入"对的那一半"，
+     * 格式错行几乎总意味着拿错了文件/列序错位；非 UTF-8 文件按解码出的替换符整批拒绝——静默导入"对的那一半"，
      * 实施者看不出字典缺了哪些行；故格式硬错整批拒绝（5901 即为此登记）。
      * 而与既有口径<b>相同</b>的软口径照旧：upsert 命中<b>已停用</b>行时名称/拼音照更但
      * <b>不复活</b>（enabled 不动），并在返回里用 {@code disabledKept} 告知条数（v43 药品同款）。
@@ -177,6 +177,11 @@ public class IcdDictController {
     public R<Map<String, Object>> importCsv(@RequestBody String csv) {
         String text = csv == null ? "" : csv;
         if (text.startsWith("﻿")) text = text.substring(1);
+        // 第三轮反驳者二/三实测：Excel 中文系统另存的 GBK/ANSI 文件按 UTF-8 解码后名称成乱码、编码与拼音仍是纯 ASCII，
+        // 此前能"成功"导入乱码名称——注释写"能挡 GBK"是假的。解码出替换符 U+FFFD 即非 UTF-8，整批拒绝。
+        if (text.indexOf('\uFFFD') >= 0) {
+            return fail5901(List.of(err(0, "文件不是 UTF-8 编码（疑为 GBK/ANSI），请在编辑器或 Excel 中另存为 UTF-8 后重试")), 1);
+        }
         String[] lines = text.split("\\r?\\n", -1);
 
         List<Map<String, Object>> errors = new ArrayList<>();

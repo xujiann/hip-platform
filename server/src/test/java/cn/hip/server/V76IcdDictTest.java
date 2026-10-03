@@ -210,4 +210,23 @@ class V76IcdDictTest {
         assertThrows(AccessDeniedException.class, () -> icdDict.importCsv("T76K01,x,X"));
         assertEquals(0, icdDict.page("", false, 1, 5).getCode(), "检索与既有 /icd10 一样，登录即可");
     }
+
+    /** 第三轮反驳者二/三：GBK/ANSI 文件按 UTF-8 解码出替换符，此前能把乱码名称"成功"导入；现整批 5901 */
+    @Test
+    void nonUtf8CsvRejectedAsWholeBatch() {
+        String garbled = "code,name,pinyin\nR76GBK1,\uFFFD\uFFFD\uFFFD,CPHY\n";
+        var r = icdDict.importCsv(garbled);
+        assertEquals(5901, r.getCode());
+        assertEquals(0, jdbc.queryForObject("select count(*) from md_icd10 where code = 'R76GBK1'", Integer.class));
+    }
+
+    /** 第三轮反驳者三：医生站检索小写编码搜不到（维护页已大写化、医生站没有） */
+    @Test
+    void doctorStationSearchIsCaseInsensitiveOnCode() {
+        icdDict.importCsv("code,name,pinyin\nR76LC1,复核小写检索,FHXXJS\n");
+        var hit = masterData.icd10("r76lc").getData();
+        assertTrue(hit.stream().anyMatch(i -> "R76LC1".equals(i.getCode())), "小写编码关键字须命中");
+        var hit2 = masterData.icd10("fhxx").getData();
+        assertTrue(hit2.stream().anyMatch(i -> "R76LC1".equals(i.getCode())), "小写拼音关键字须命中");
+    }
 }

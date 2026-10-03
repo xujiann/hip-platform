@@ -226,7 +226,8 @@ public class MasterDataController {
 
     @GetMapping("/icd10")
     public R<List<Icd10>> icd10(@RequestParam(defaultValue = "") String keyword) {
-        return R.ok(icd10Repository.search(keyword, PageRequest.of(0, 20)));
+        // v76 复核：编码与拼音自 V172 起统一大写落库、按前缀走索引，关键字也得大写化——否则小写 j06 搜不到；名称含匹配不受影响
+        return R.ok(icd10Repository.search(keyword == null ? "" : keyword.trim().toUpperCase(), PageRequest.of(0, 20)));
     }
 
     // ==================== v44 车道G：开单资料提示（偏离表 1001★/1002★，兼 1003★ 的库存数据） ====================

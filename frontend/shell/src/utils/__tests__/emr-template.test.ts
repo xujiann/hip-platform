@@ -217,7 +217,7 @@ describe('applyTemplate：覆盖确认与超长警示', () => {
   })
 })
 
-describe('outpTemplatesOnly：下拉只列 OUTP 或空 record_type', () => {
+describe('outpTemplatesOnly：下拉只剔 INP（record_type 是开放集合，结构化模板带其他值须保留）', () => {
   it('OUTP、空串、null、缺键都保留；INP 等剔除；兼容 recordType 驼峰键与大小写', () => {
     const list = [
       { id: 1, record_type: 'OUTP' },
@@ -229,7 +229,7 @@ describe('outpTemplatesOnly：下拉只列 OUTP 或空 record_type', () => {
       { id: 7, recordType: 'INP' },
       { id: 8, record_type: 'DISCHARGE' },
     ]
-    expect(outpTemplatesOnly(list).map((t) => t.id)).toEqual([1, 2, 3, 4, 6])
+    expect(outpTemplatesOnly(list).map((t) => t.id)).toEqual([1, 2, 3, 4, 6, 8])
   })
 })
 
@@ -245,5 +245,21 @@ describe('未知标签段（维护页骨架「辅助检查/初步诊断」）', 
     const r = splitTemplateContent('主诉：咳嗽\n初步诊断：\n')
     expect(r.skipped).toEqual([])
     expect(r.parts.chiefComplaint).toBe('咳嗽')
+  })
+})
+
+describe('段内「xx：」续行不是标签（第三轮反驳者一/三实测形态）', () => {
+  it('现病史里的「体温：」「伴随症状：」归现病史，不被扣掉', () => {
+    const r = splitTemplateContent('主诉：咳嗽\n现病史：咳嗽 3 天\n体温：38.5℃\n伴随症状：无咳嗽\n处理意见：休息\n注意事项：复诊')
+    expect(r.parts.presentIllness).toBe('咳嗽 3 天\n体温：38.5℃\n伴随症状：无咳嗽')
+    expect(r.parts.advice).toBe('休息\n注意事项：复诊')
+    expect(r.skipped).toEqual([])
+  })
+})
+
+describe('outpTemplatesOnly 只剔住院模板', () => {
+  it('record_type 为其他值（结构化模板）或空均保留，只有 INP 被剔', () => {
+    const list = [{ id: 1, record_type: 'INP' }, { id: 2, record_type: 'OUTP' }, { id: 3, record_type: 'E2E43717' }, { id: 4 }]
+    expect(outpTemplatesOnly(list).map((x) => x.id)).toEqual([2, 3, 4])
   })
 })

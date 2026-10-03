@@ -51,10 +51,10 @@ assert r3['imported'] == 1 and r3['errorCount'] == 0, r3
 hit = ok(call('GET', '/masterdata/icd10?keyword=' + q('产品化验证诊断'), token=t), '医生站诊断检索')
 assert any(d['code'] == 'E2EP1I1' for d in hit), hit
 assert set(hit[0].keys()) == {'code', 'name', 'pinyin'}, f'医生站检索返回体键不得变: {hit[0].keys()}'
-bad = call('POST', '/masterdata/icd-dict/import', token=t, text="code,name,pinyin\nE2EP1I2,缺拼音\nX1\n")
+bad = call('POST', '/masterdata/icd-dict/import', token=t, text="code,name,pinyin\nE2EP1I3,坏批里的合法行,HPLDHFH\nE2EP1I2,缺拼音\nX1\n")
 assert bad['code'] == 5901 and bad['data']['errorCount'] >= 2, bad
-miss = ok(call('GET', '/masterdata/icd10?keyword=E2EP1I2', token=t), '坏批检索')
-assert not any(d['code'] == 'E2EP1I2' for d in miss), '坏批里的合法行也不得落库（整批原子）'
+miss = ok(call('GET', '/masterdata/icd10?keyword=E2EP1I3', token=t), '坏批检索')
+assert not any(d['code'] == 'E2EP1I3' for d in miss), '坏批里的合法行也不得落库（整批原子）'
 ok(call('PUT', '/masterdata/icd-dict/E2EP1I1/enabled?enabled=false', token=t), '停用诊断')
 gone = ok(call('GET', '/masterdata/icd10?keyword=E2EP1I1', token=t), '停用后医生站检索')
 assert not any(d['code'] == 'E2EP1I1' for d in gone), '停用的诊断不得进医生站下拉'
