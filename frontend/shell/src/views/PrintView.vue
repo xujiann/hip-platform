@@ -1,5 +1,5 @@
 <template>
-  <div class="print-page">
+  <div class="print-page" :class="{ 'paper-a5': isA5 }">
     <div v-if="data" class="ticket" :class="{ sheet: isSheet, wide: isTempSheet }">
       <!-- 五种日常单据每张纸自带页眉（一次就诊可能出好几张，页眉必须跟着纸走），故这里不出全局页眉 -->
       <h2 v-if="!isClinicalDoc">{{ hospitalName }}</h2>
@@ -167,7 +167,7 @@
           <!-- 处方笺：Rp. + 逐条用法用量 + 医师/药师/核对/发药 四签名栏 -->
           <template v-if="type === 'prescription'">
             <!-- v74 复核（1026★ 第三轮自查）：allergyText = 档案文本 + 结构化过敏记录，皆空才印「无」 -->
-            <div class="doc-line">过敏史：{{ data.allergyText || '无' }}</div>
+            <div class="doc-line">过敏史：{{ allergyLine(data.allergyText) }}</div>
             <div class="rp">Rp.</div>
             <ol class="rx">
               <li v-for="(r, i) in g.rows" :key="i">
@@ -183,7 +183,7 @@
               </li>
             </ol>
             <p class="rx-end">—— 以下空白 ——</p>
-            <div class="doc-line">药品金额：¥{{ Number(g.total ?? 0).toFixed(2) }}</div>
+            <div class="doc-line">药品金额：¥{{ money2(g.total) }}</div>
             <div class="sign-bar">
               <span>医师：{{ docDoctor(g) || '' }}</span>
               <span>药师（审核）：</span>
@@ -335,6 +335,11 @@ import { useRoute } from 'vue-router'
 import client from '../api/client'
 import { fmtDate, fmtDateTime } from '../utils/date'
 import TempSheetSvg from '../components/TempSheetSvg.vue'
+// v75 车道C：纯拼装逻辑抽到 utils/print-format.ts（vitest 锁定）；此处同名变量/函数的用别名导入，模板用法不变
+import {
+  ageText as ageTextOf, allergyLine, briefHistory as briefHistoryOf, docDoctor as docDoctorOf,
+  docDoctorSuffix as docDoctorSuffixOf, firstOf, formatDiagnoses, guideStatusOf, money2,
+} from '../utils/print-format'
 
 const route = useRoute()
 const type = String(route.query.type ?? 'registration')
@@ -389,66 +394,13 @@ const docSheets = computed<DocSheet[]>(() => {
   return (data.value.groups as DocSheet[]) ?? []
 })
 
-/** v74 复核修：单头级字段从组内各行取第一个非空值（v44 字段挂在行上，纸面上只印一次） */
-function firstOf(g: { rows?: Array<Record<string, unknown>> }, key: string): string {
-  for (const r of g.rows ?? []) {
-    const v = r[key]
-    if (v != null && String(v).trim() !== '') return String(v)
-  }
-  return ''
-}
-// v74 复核（1026★ 第二轮反驳者三 + 第三轮自查）：诊断要连前缀/后缀/疑诊标记一起印——
-// 「疑似 急性上呼吸道感染(J06.900)（疑诊）」，否则疑诊在处方笺上就成了确诊。
-// 自定义描述与标准名**并存**（医生站占位符与 V135 注释口径：不替代标准名），作括注跟在标准名后。
-const diagText = computed(() => ((data.value?.diagnoses as Record<string, unknown>[]) ?? [])
-  .map((d) => {
-    const s = (v: unknown) => (v == null ? '' : String(v).trim())
-    const name = s(d.icd_name) || s(d.custom_name)
-    const custom = s(d.icd_name) && s(d.custom_name) ? '［' + s(d.custom_name) + '］' : ''
-    const core = `${s(d.prefix) ? s(d.prefix) + ' ' : ''}${name}${custom}${s(d.suffix) ? ' ' + s(d.suffix) : ''}`
-    const code = d.icd_code ? '(' + d.icd_code + ')' : ''
-    const cert = s(d.certainty) === 'SUSPECTED' ? '（疑诊）' : ''
-    // diag_system='TCM' 为中医诊断（V135：icd_code 留空串），与西医诊断混排时加标识；历史行 null 按西医解释
-    const sys = s(d.diag_system) === 'TCM' ? '[中医]' : ''
-    return sys + core + code + cert
-  }).join('；'))
+// 诊断拼接 / 年龄文案 / 署名与职称 / 病史摘要 / 导诊单状态的口径与注释见 utils/print-format.ts
+const diagText = computed(() => formatDiagnoses(data.value?.diagnoses as Record<string, unknown>[] | undefined))
 const emrInfo = computed(() => (data.value?.emr as Record<string, unknown>) ?? {})
-// v74 复核（1026★ 第三轮审计者）：现病史里由医生站写入的「【结构化记录】…【结构化记录结束】」是渲染块的内部标记，
-// 不能原样上纸；只剥标记、保留块内正文（与 DoctorStationService.BLOCK_BEGIN/END 同一对字面量）。
-const stripBlockMarks = (v: unknown) => String(v ?? '').replace(/【结构化记录结束】|【结构化记录】/g, '').trim()
-const briefHistory = computed(() => {
-  const cc = stripBlockMarks(emrInfo.value.chief_complaint)
-  const pi = stripBlockMarks(emrInfo.value.present_illness)
-  return [cc, pi].filter(Boolean).join('；') || '—'
-})
-const docTitleSuffix = computed(() => (data.value?.doctor_title ? `（${data.value.doctor_title}）` : ''))
-/**
- * v74 复核修（1026★ 三方复核反驳者三）：四种临床单据的"申请/开单医师"此前印的是**挂号排班医生**
- * （页眉 doctor_name 来自挂号记录），而接诊队列不校验接诊人须等于排班医生——代班/转接时纸上署错人。
- * 行上的 order_doctor_name 才是"这行医嘱是谁开的"，后端一直在返回、此前从未使用。
- * 取不到（历史行无开单人）时回落接诊医生；职称后缀只在两者是同一人时才印，别把排班医生的职称安到开单人头上。
- */
-function docDoctor(g: { rows?: Array<Record<string, unknown>> }): string {
-  return firstOf(g, 'order_doctor_name') || String(data.value?.doctor_name ?? '')
-}
-function docDoctorSuffix(g: { rows?: Array<Record<string, unknown>> }): string {
-  const od = firstOf(g, 'order_doctor_name')
-  return !od || od === String(data.value?.doctor_name ?? '') ? docTitleSuffix.value : ''
-}
-/** 出生日期缺失或晚于就诊日时纸面留「—」而不是「—岁」/「0 岁」；婴幼儿按后端 ageText 印日、月龄，基准为就诊日 */
-const ageText = computed(() => String(data.value?.ageText ?? '—'))
-/**
- * 导诊单状态列：药品未缴费=待缴费、已缴费=待取药；
- * v74 复核（1026★ 第三轮自查）：检验已采样、检查已到检后医嘱仍是 CHARGED，此前一律印「待执行」。
- * 按标本/检查记录细分：检验 待采样→已采样；检查 待检查→检查中；治疗 待执行。
- */
-function guideStatusOf(r: Record<string, unknown>): string {
-  if (r.status === 'CREATED') return '待缴费'
-  if (r.order_type === 'DRUG') return '待取药'
-  if (r.order_type === 'LAB') return r.sample_status ? '已采样' : '待采样'
-  if (r.order_type === 'EXAM') return r.exam_status && r.exam_status !== 'REGISTERED' ? '检查中' : '待检查'
-  return '待执行'
-}
+const briefHistory = computed(() => briefHistoryOf(emrInfo.value))
+const docDoctor = (g: { rows?: Array<Record<string, unknown>> }) => docDoctorOf(g, data.value)
+const docDoctorSuffix = (g: { rows?: Array<Record<string, unknown>> }) => docDoctorSuffixOf(g, data.value)
+const ageText = computed(() => ageTextOf(data.value?.ageText))
 
 // 住院单据用较宽版式（A5 清单/小结），门诊凭条保持窄条
 const isSheet = computed(() => type === 'inp-daily-fee' || type === 'inp-discharge-summary'
@@ -456,6 +408,9 @@ const isSheet = computed(() => type === 'inp-daily-fee' || type === 'inp-dischar
   || isClinicalDoc.value)      // v43：处方笺与三种申请单/导诊单均为 A5 纸面
 // 体温单是坐标格点版式（横向 7 天 × 6 时点），既不是窄条也不是 A5 文字流：自成一档宽版
 const isTempSheet = computed(() => type === 'temp-sheet')
+// v75 车道C：?paper=A5 → 根容器加 paper-a5 类（窄版 + 命名 @page）；缺省 A4 逐字不变。
+// 只对文字流单据（isSheet）生效：挂号凭条/收费票据是窄条小票，体温单是坐标格点，都不是 A5 纸面。
+const isA5 = computed(() => String(route.query.paper ?? '').toUpperCase() === 'A5' && isSheet.value)
 const sexName = computed(() => ({ M: '男', F: '女' } as Record<string, string>)[String(data.value?.sex)] ?? '')
 
 /** 页脚声明：法定文书写"病历组成部分"，日常单据各按用途声明，其余沿用原文案不变 */
@@ -596,8 +551,28 @@ h2, h3 { text-align: center; margin: 4px 0; }
 .sign-bar { display: flex; flex-wrap: wrap; gap: 10px 12px; margin-top: 14px; }
 .sign-bar span { flex: 1 1 42%; border-bottom: 1px solid #999; padding-bottom: 16px; font-size: 12px; }
 .tip { color: #666; font-size: 12px; margin-top: 10px; }
+/*
+ * v75 车道C：A5 版式（?paper=A5）。@page 不能嵌套进选择器，故在顶层声明命名页 a5，
+ * 再由 .paper-a5 下的元素用 page: a5 引用——只有 A5 请求才会引用，缺省 A4 的打印行为与此前逐字相同
+ * （不声明无名 @page，A4 沿用浏览器默认纸张与页边距）。
+ * Chrome 85+ 支持 page 属性与命名 @page 的 size；不支持的浏览器忽略 size，仍得到窄版字号/边距，纸张由打印对话框选。
+ */
+@page a5 { size: A5; margin: 8mm; }
+.paper-a5 .ticket.sheet, .paper-a5 .doc-sheet { page: a5; }
+/* 屏幕预览：宽度 = A5 148mm 减两侧 8mm 页边距，字号整体降一级 */
+.paper-a5 .ticket { font-size: 12px; }
+.paper-a5 .ticket.sheet { width: 132mm; }
+.paper-a5 .doc-sheet { padding: 8px 10px; }
+.paper-a5 .doc-line.small, .paper-a5 .sign-bar span, .paper-a5 .tip { font-size: 11px; }
+.paper-a5 .foot, .paper-a5 .rx-end, .paper-a5 .barcode-slot { font-size: 10px; }
+.paper-a5 .rp { font-size: 18px; }
+.paper-a5 .big { font-size: 16px; }
+.paper-a5 .barcode-slot { width: 130px; }
 @media print {
   .no-print { display: none; }
+  /* A5：页边距已由 @page a5 给定，容器自身的 24px 留白与固定宽度让位 */
+  .print-page.paper-a5 { padding: 0; }
+  .paper-a5 .ticket.sheet { width: auto; } .paper-a5 .doc-sheet { padding: 0; }
   /* 一张单据一页纸：边框交给真实单据纸，最后一张不再多空一页 */
   .doc-sheet { border: none; padding: 0; page-break-after: always; }
   .doc-sheet:last-child { page-break-after: auto; }

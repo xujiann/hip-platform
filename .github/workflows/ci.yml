@@ -92,6 +92,8 @@ jobs:
         run: |
           npm ci
           npm run build
+          # v75 车道C：打印单据纯拼装逻辑（utils/print-format.ts）的 vitest 锁定
+          npm test
 
       # v75：「定义了从未调用」扫描。v74 的 loadEmrTemplates 自 v45 起定义了没人调，
       # 结构化模板栏在门诊站从没加载过数据，vue-tsc / vite 都不报，近三十轮后才被手点发现。
