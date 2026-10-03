@@ -30,4 +30,9 @@ public class R<T> {
     public static <T> R<T> fail(int code, String message) {
         return new R<>(code, message, null);
     }
+
+    /** 失败但需随码带回结构化明细（如 v76 诊断字典 CSV 导入 5901 的行级错误汇总） */
+    public static <T> R<T> fail(int code, String message, T data) {
+        return new R<>(code, message, data);
+    }
 }

@@ -11,9 +11,10 @@ import java.util.List;
 public interface Icd10Repository extends JpaRepository<Icd10, String> {
 
     @Query("""
-            from Icd10 i where i.name like concat('%', :kw, '%')
-              or i.code like concat(:kw, '%')
-              or upper(i.pinyin) like upper(concat(:kw, '%'))
+            from Icd10 i where i.enabled
+              and (i.name like concat('%', :kw, '%')
+                   or i.code like concat(:kw, '%')
+                   or upper(i.pinyin) like upper(concat(:kw, '%')))
             order by i.code
             """)
     List<Icd10> search(@Param("kw") String keyword, Pageable pageable);

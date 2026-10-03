@@ -103,6 +103,7 @@ def main():
     dicts = cfg.get('dictionaries', {})
     for label, path_key, endpoint in [('药品', 'drugsCsv', '/masterdata/drugs/import'),
                                       ('收费项目', 'chargeItemsCsv', '/masterdata/charge-items/import'),
+                                      ('诊断字典', 'icdCsv', '/masterdata/icd-dict/import'),
                                       ('医保对照', 'ybCatalogCsv', '/insurance/catalog/import')]:
         p = dicts.get(path_key)
         if not p:

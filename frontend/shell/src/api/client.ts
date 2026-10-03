@@ -22,6 +22,8 @@ declare module 'axios' {
 /** 拦截器 reject 时附带的业务码（对应后端 R.code），调用方可据此分流处理 */
 export interface BizError extends Error {
   bizCode?: number
+  /** 业务失败时后端随码带回的 R.data（如 5901 诊断字典 CSV 导入的行级错误汇总）；多数码没有 */
+  data?: unknown
 }
 
 /**
@@ -101,6 +103,7 @@ export function createHipClient(opts: HipClientOptions): AxiosInstance {
         if (!silent) ElMessage.error(r.message || '操作失败')
         const err = new Error(r.message) as BizError
         err.bizCode = r.code
+        err.data = r.data
         return Promise.reject(err)
       }
       return resp

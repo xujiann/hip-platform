@@ -27,6 +27,7 @@
   "dictionaries": {
     "drugsCsv": "drugs.example.csv",
     "chargeItemsCsv": "charge-items.example.csv",
+    "icdCsv": "icd10.example.csv",
     "ybCatalogCsv": "../migrate-templates/yb-catalog.csv"
   }
 }
