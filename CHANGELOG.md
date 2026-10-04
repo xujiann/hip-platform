@@ -2,6 +2,30 @@
 
 版本纪律：语义化版本；平台迁移段 V1–V999，实施段 V10000+；升级 = 停服→备份→换产物→自动前滚→回归抽查（多医院部署操作指南 §三）。
 
+## 1.7.3（2026-10-04）
+
+v77 一轮：**1016★「根据流向自动获取执行科室」两句"尚未提供"一次补齐**——检验申请按流向规则动态确定执行科室、开单界面即时展示摘要与诊断。
+**新迁移 V174、V175**（V174 `outp_order.exec_dept_id` 可空不回填 + 新表 `lab_route_rule` + 配置键 `lab.route.enabled=1`；V175 菜单 185「检验流向规则」挂基础数据、授 ADMIN/TECHNICIAN）、
+**新错误码 5910–5914**（规则不存在 / 执行科室不存在或已停用 / 项目不存在或非检验类 / 同键重复 / 开单科室不存在）、**新配置键 1 个**（99→100）。
+交付实测：**1146 测试**（较 1.7.2 的 1135 净增 11）、**47 套 E2E**（新增 `e2e-v77-labroute`；全新库 `hip_ci_v77` 按 CI 顺序 47/47 全绿）、
+前端 vitest 67 例不变、错误码速查表 544→549、页面 105→107（含 v76 的诊断字典页）。
+
+**车道 A · 后端**：`LabRouteService.resolve`（三键匹配：项目 > 标本类型 > 开单科室的具体度 → `priority` → id；规则指向已停用科室跳过；无命中回落 `md_charge_item.exec_dept_id`；
+`lab.route.enabled=0` 直接回落；**纯读、捕获一切异常，绝不打断开单**）+ `LabRouteRuleController`（CRUD / 启停 / `resolve` 试算，写权 ADMIN·TECHNICIAN）。
+- `createOrders` 只在 LAB 行取到收费项目后落 `exec_dept_id`（**落值即快照**，改规则不回改）并回显瞬态 `execDeptName`；EXAM/TREAT 不动。
+- 三条共享读路径（打印 `DOC_ORDER_SQL`、`/lis/pending`、`/lis/samples`）统一 `coalesce(o.exec_dept_id, ci.exec_dept_id)`，输出列名不变；两队列加可选 `deptId` 与 `exec_dept_id/exec_dept_name` 两列，不传时行集与此前逐行相同。
+- `/auth/me` 加 `deptId/deptName`（LIS 默认按登录人科室分流）。
+- 用例 `V77LabRouteTest` 9 例先红后绿，红出两处真缺陷：JPA 写 / jdbc 读同事务不 flush 导致"刚停用仍见启用"（改 saveAndFlush）；编辑先改托管实体再查重，被拒的编辑把半套值留在实体上（改为校验前置于写）。
+  `V44OrderFieldsTest` 的序列化键集按契约加 `execDeptId`；`V43PrintDocsTest`/`V74ChargeItemExecDeptTest` 一字未改仍绿。`ReachabilityTest` 在前端接入前恰好红两例、点名就是新控制器——可达性守卫再次起作用。
+
+**车道 B · 前端**：`LabRouteRuleView.vue`（规则表按匹配顺序、新增/编辑、启停/删除、**规则试算**三档文案、页头口径说明）；`LisView.vue` 两页签「执行科室」下拉默认登录人科室 + 执行科室列；
+`DoctorStationView.vue` 检验/检查行即时展示当前诊断、临床摘要为空时预填「主诉：…；现病史：…」（超 500 字截断提示一次）、检验申请提交成功提示带「检验执行科室：…」。
+屏上断言登记 2 条（默认档）。
+
+**合版后补齐**：V175 菜单；错误码速查表 544→549；配置手册 `lab.route.enabled`；培训脚本「⚠ 新 v1.7.3」三处；偏离表 1016 说明回写（wave35，**不上调**——走三方复核零推翻后再定）。
+
+**仍开（交接单 v77 节）**：标本类型自由文本未字典化（规则只做规范化等值匹配）；流向只覆盖门诊检验类（EXAM/TREAT/住院不走）；演示库 tech01/admin 无科室、LIS 默认「全部」；`outp_order.exec_dept_id` 无外键（快照语义，刻意）。
+
 ## 1.7.2（2026-10-04）
 
 v76 一轮：**993★ 三个功能缺口一次补齐**（诊断字典独立维护界面 / 出院诊断与住院其他诊断字典化 / 门诊病历正文整段套用）。
