@@ -133,6 +133,24 @@ public class OutpOrder {
     @Column(length = 32)
     private String samplingSite;
 
+    // ==================== v77 车道A：执行科室快照（V174，偏离表 1016★「根据流向自动获取执行科室」） ====================
+
+    /**
+     * 医嘱级执行科室（sys_dept.id），开单时按检验流向规则定下的<b>快照</b>；此后改规则不回改已开医嘱。
+     * 可空、历史行不回填：三条读路径（打印 DOC_ORDER_SQL / LIS 两个队列）一律
+     * {@code coalesce(o.exec_dept_id, ci.exec_dept_id)} 回落收费项目字典。本轮只对 LAB 类医嘱落值。
+     */
+    private Long execDeptId;
+
+    /**
+     * 执行科室名称，<b>仅本次开单返回体回显</b>（医生站「申请信息」摘要要当场看见去哪儿做），不入库；
+     * 列表/打印/队列各自 join sys_dept 取名。无值不出现（{@code @JsonInclude(NON_NULL)}），
+     * 故未命中规则且字典无执行科室时返回体与 v76 逐字相同——沿用 {@code stockWarnAvailable} 瞬态字段先例。
+     */
+    @Transient
+    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+    private String execDeptName;
+
     /**
      * 库存预警（阻塞6，非持久化）：开药嘱时若药品当前库存低于本次开量则置为当前库存值，
      * 否则为 null。开单不因此拦截（医生可能有临时进药安排），仅在返回结果里带出，

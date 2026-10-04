@@ -41,6 +41,8 @@ public class DoctorStationService {
     private final DuplicateRxService duplicateRxService;
     private final PopulationRuleService populationRuleService;
     private final RouteRuleService routeRuleService;
+    /** v77 车道A：检验流向规则——createOrders 对 LAB 行调 resolve 落执行科室快照（纯读、不抛） */
+    private final cn.hip.platform.masterdata.service.LabRouteService labRouteService;
     private final cn.hip.platform.core.service.ConfigReader configReader;
     private final org.springframework.jdbc.core.JdbcTemplate jdbc;
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
@@ -827,6 +829,14 @@ public class DoctorStationService {
                 o.setItemName(item.getName());
                 o.setUnit(item.getUnit());
                 o.setUnitPrice(item.getPrice());
+                // v77 车道A（1016★）：检验申请按流向规则定执行科室，落医嘱级快照 exec_dept_id。
+                // 只对 LAB 落值（EXAM/TREAT 不动，读路径 coalesce 自然回落字典）；resolve 纯读、捕获一切异常回落字典，
+                // 绝不打断开单。execDeptName 是瞬态回显，仅随本次返回体下发。
+                if ("LAB".equals(line.orderType())) {
+                    var routed = labRouteService.resolve(item, line.specimenType(), reg.getDeptId());
+                    o.setExecDeptId(routed.execDeptId());
+                    o.setExecDeptName(routed.execDeptName());
+                }
             }
             o.setAmount(o.getUnitPrice().multiply(BigDecimal.valueOf(o.getQty())));
             OutpOrder saved = orderRepository.save(o);

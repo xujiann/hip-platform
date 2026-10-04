@@ -26,6 +26,8 @@ public class AuthController {
     private final AuthenticationManager authenticationManager;
     private final JwtService jwtService;
     private final SysUserRepository userRepository;
+    /** v77：/me 回 deptName 用 */
+    private final cn.hip.platform.core.repository.SysDeptRepository deptRepository;
     private final ModuleGate moduleGate;
     private final org.springframework.security.crypto.password.PasswordEncoder passwordEncoder;
 
@@ -136,13 +138,19 @@ public class AuthController {
                         "perm", m.getPerm() == null ? "" : m.getPerm(),
                         "icon", m.getIcon() == null ? "" : m.getIcon()))
                 .toList();
-        return R.ok(Map.of(
-                "id", user.getId(),
-                "username", user.getUsername(),
-                "realName", user.getRealName(),
-                "roles", user.getRoles().stream().map(r -> r.getCode()).toList(),
-                // 前端刷新页面后仍需知道是否处于强制改密态（login 响应不落地）
-                "mustChangePassword", user.getMustChangePassword(),
-                "menus", menus));
+        // v77 车道A：加 deptId / deptName（LIS 队列按登录人科室默认过滤要用）。无科室为 null——
+        // Map.of 不接受 null 值，改 LinkedHashMap；既有键名、顺序、取值一字不变。
+        Map<String, Object> body = new java.util.LinkedHashMap<>();
+        body.put("id", user.getId());
+        body.put("username", user.getUsername());
+        body.put("realName", user.getRealName());
+        body.put("roles", user.getRoles().stream().map(r -> r.getCode()).toList());
+        // 前端刷新页面后仍需知道是否处于强制改密态（login 响应不落地）
+        body.put("mustChangePassword", user.getMustChangePassword());
+        body.put("menus", menus);
+        body.put("deptId", user.getDeptId());
+        body.put("deptName", user.getDeptId() == null ? null
+                : deptRepository.findById(user.getDeptId()).map(d -> d.getName()).orElse(null));
+        return R.ok(body);
     }
 }
