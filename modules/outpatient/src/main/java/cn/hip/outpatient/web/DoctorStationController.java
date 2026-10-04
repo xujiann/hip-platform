@@ -33,6 +33,7 @@ public class DoctorStationController {
     private final PatientRepository patientRepository;
     private final CurrentUserService currentUserService;
     private final cn.hip.platform.core.repository.SysUserRepository userRepository;
+    private final cn.hip.platform.core.repository.SysDeptRepository deptRepository;
 
     /** 接诊队列日期区间跨度上限（天）。跨度不设限等于放任全表扫描——与住院侧「不给条件就拒」同口径。 */
     static final int MAX_RANGE_DAYS = 92;
@@ -140,7 +141,16 @@ public class DoctorStationController {
                 : userRepository.findById(emr.getDoctorId())
                         .map(cn.hip.platform.core.entity.SysUser::getRealName).orElse(null));
         m.put("diagnoses", diagnosisRepository.findByRegistrationIdOrderByPrimaryDiagDescIdAsc(registrationId));
-        m.put("orders", orderRepository.findByRegistrationIdOrderByIdAsc(registrationId));
+        var orders = orderRepository.findByRegistrationIdOrderByIdAsc(registrationId);
+        // v77 第二轮复核（1016★）：开单落下的执行科室快照只有 id，页面「已开医嘱」要印名字——
+        // 一次取齐本次就诊涉及的科室，回填瞬态 execDeptName（@JsonInclude(NON_NULL)，无值行键不出现，老契约不变）。
+        var deptIds = orders.stream().map(o -> o.getExecDeptId()).filter(java.util.Objects::nonNull).distinct().toList();
+        if (!deptIds.isEmpty()) {
+            var names = new java.util.HashMap<Long, String>();
+            deptRepository.findAllById(deptIds).forEach(d -> names.put(d.getId(), d.getName()));
+            orders.forEach(o -> { if (o.getExecDeptId() != null) o.setExecDeptName(names.get(o.getExecDeptId())); });
+        }
+        m.put("orders", orders);
         return R.ok(m);
     }
 

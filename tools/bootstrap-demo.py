@@ -69,7 +69,7 @@ else:
 # v75 车道B：演示科室「检验科」「影像科」——种子里没有这两个科室，检验/检查类收费项目的执行科室无处可配，
 # 申请单/导诊单"前往科室"恒印"—"。走产品自己的 /system/depts 写入口（同「系统管理 → 科室管理」新增）。
 # 幂等：按 code 判重，已有（含已停用的）一律不再建。type=MEDTECH 与门诊药房同类（医技科室）。
-DEMO_DEPTS = [('LAB', '检验科'), ('RIS', '影像科')]
+DEMO_DEPTS = [('LAB', '检验科'), ('RIS', '影像科'), ('LAB_ER', '急诊检验室')]   # LAB_ER：v77 分流演示用第二检验科室
 dept_rows = call('GET', '/system/depts', t=t).get('data') or []
 n_dept = 0
 for code, name in DEMO_DEPTS:
@@ -78,7 +78,7 @@ for code, name in DEMO_DEPTS:
     r = call('POST', '/system/depts', {'name': name, 'code': code, 'type': 'MEDTECH', 'sortNo': 90}, t)
     assert r['code'] == 0, f'建科室 {code} 失败: {r}'
     n_dept += 1
-print(f'演示科室：新建 {n_dept} 个（检验科 LAB / 影像科 RIS；已有则跳过）')
+print(f'演示科室：新建 {n_dept} 个（检验科 LAB / 影像科 RIS / 急诊检验室 LAB_ER；已有则跳过）')
 
 # v74 审阅修补（1026★）：收费项目执行科室——治疗单/导诊单"前往科室"取自 md_charge_item.exec_dept_id，
 # 此前种子全空、产品内无写入路径，单据上恒印"—"。现在走产品自己的写入口（attrs 接口，同管理员在
@@ -163,6 +163,37 @@ for username, real_name, roles, *rest in DEMO_USERS:
         r2 = call('POST', '/auth/change-password', {'oldPassword': 'Demo1234a', 'newPassword': 'Demo1234'}, ut)
         assert r1['code'] == 0 and r2['code'] == 0, f'{username} 改密闭环失败: {r1} / {r2}'
 print(f'演示账号：新建 {created} 个（统一密码 Demo1234，含医生/护士/收费/药师/医技/质控/运营）')
+
+# v77 第二轮复核（1016★ 反驳者二）：演示库此前只有一个检验科室、5 个检验项目全指检验科、tech01 无科室——
+# LIS「按执行科室分流」只能演出"过滤"演不出"分流"。前置三件（全部幂等、走产品接口）：
+# ① tech01 挂检验科（LIS 下拉默认登录人科室）；② 第二检验科室「急诊检验室」（上面 DEMO_DEPTS 已建）；
+# ③ 一条规则「血常规 + 全血 → 急诊检验室」——doctor01 开血常规填标本"全血"即分流到急诊检验室，其余检验仍回落字典到检验科。
+dept_rows = call('GET', '/system/depts', t=t).get('data') or []
+lab_dept = next((d for d in dept_rows if d.get('code') == 'LAB'), None)
+er_dept = next((d for d in dept_rows if d.get('code') == 'LAB_ER'), None)
+users_now = {u['username']: u for u in call('GET', '/system/users?page=0&size=100', t=t)['data']['records']}
+tech = users_now.get('tech01')
+if tech and lab_dept and tech.get('deptId') is None:
+    r0 = call('PUT', f"/system/users/{tech['id']}",
+              {'username': 'tech01', 'realName': tech.get('realName') or '演示医技', 'deptId': lab_dept['id'],
+               'roleCodes': ['TECHNICIAN']}, t)
+    assert r0['code'] == 0, f'tech01 补科室失败: {r0}'
+    print(f"  tech01: 已挂检验科 #{lab_dept['id']}（LIS 分流下拉默认本科）")
+RULE_NAME = '演示：血常规·全血→急诊检验室'
+rules = call('GET', '/masterdata/lab-route-rules?includeDisabled=true', t=t).get('data') or []
+if er_dept and not any(r.get('name') == RULE_NAME for r in rules):
+    cbc = next((i for i in (call('GET', '/masterdata/charge-items?keyword=血常规&category=LAB', t=t).get('data') or [])
+                if i.get('code') == 'C0001'), None)
+    if cbc:
+        r1 = call('POST', '/masterdata/lab-route-rules',
+                  {'name': RULE_NAME, 'chargeItemId': cbc['id'], 'specimenType': '全血', 'execDeptId': er_dept['id'],
+                   'priority': 100, 'remark': '演示分流：开血常规、标本填"全血"即分到急诊检验室；其余检验回落字典到检验科'}, t)
+        assert r1['code'] == 0, f'建演示流向规则失败: {r1}'
+        print(f'检验流向规则：已建「{RULE_NAME}」')
+    else:
+        print('检验流向规则：主数据无 C0001 血常规，跳过建演示规则')
+else:
+    print('检验流向规则：演示规则已有或缺急诊检验室，跳过')
 
 # =====================================================================================================
 # v75 车道B：演示前置一键就绪（全部幂等：已有的一律跳过，只新增/只补空，不改动、不删除既有数据）

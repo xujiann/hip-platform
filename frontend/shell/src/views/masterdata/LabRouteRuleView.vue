@@ -16,7 +16,7 @@
       <template #default>
         <div>匹配顺序：具体度（项目 &gt; 标本类型 &gt; 开单科室）→ 优先级小者先 → 建立顺序；下表即按此顺序排列，排在前面的先匹配。</div>
         <div>落值即快照：执行科室在开单那一刻写入医嘱，之后修改或停用规则不回改已开出的申请。</div>
-        <div>标本类型以医生开单时实际填写为准，匹配忽略大小写与空格；留空的键表示不限。</div>
+        <div>标本类型以医生开单时实际填写为准，仅与规则值完全相同时命中（忽略大小写与空白，含全角空格），含括注或简写不命中；留空的键表示不限。</div>
         <div>总开关为系统配置 lab.route.enabled：关闭后开单不查规则，执行科室只按收费项目字典带出。</div>
       </template>
     </el-alert>
@@ -168,6 +168,7 @@ type Resolve = {
   execDeptId: number | null
   execDeptName: string | null
   source: 'RULE' | 'ITEM' | 'NONE'
+  routeEnabled?: boolean | null
   ruleId: number | null
   ruleName: string | null
 }
@@ -209,6 +210,11 @@ const trialResult = ref<Resolve | null>(null)
 const trialText = computed(() => {
   const r = trialResult.value
   if (!r) return ''
+  if (r.routeEnabled === false) {
+    return r.source === 'ITEM'
+      ? `流向规则总开关已关闭（lab.route.enabled=0），未查规则，按收费项目字典 → ${r.execDeptName ?? ''}`
+      : '流向规则总开关已关闭（lab.route.enabled=0），未查规则，且该项目未配置执行科室，开单后执行科室为空（申请单印 —）'
+  }
   if (r.source === 'RULE') return `命中规则「${r.ruleName ?? ''}」→ ${r.execDeptName ?? ''}`
   if (r.source === 'ITEM') return `无规则命中，按收费项目字典 → ${r.execDeptName ?? ''}`
   return '无规则命中且该项目未配置执行科室，开单后执行科室为空（申请单印 —）'

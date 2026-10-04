@@ -58,7 +58,13 @@ public class LabRouteService {
      * 匹配结果。source：RULE 规则命中 / ITEM 回落收费项目字典 / NONE 两处都没有。
      * ruleId/ruleName 仅 RULE 时非空；execDeptName 仅有科室时非空。
      */
-    public record Resolved(Long execDeptId, String execDeptName, String source, Long ruleId, String ruleName) {}
+    /**
+     * @param routeEnabled 第二轮复核（1016★ 反驳者二/审计者 N6）：开关 lab.route.enabled 关闭时此前与"无规则命中"
+     *                     返回体完全一样，页面试算只能印"无规则命中，按收费项目字典"——与事实（根本没查规则）不符。
+     *                     现用本键区分：false = 未查规则、直接按字典。source 三档含义不变。
+     */
+    public record Resolved(Long execDeptId, String execDeptName, String source, Long ruleId, String ruleName,
+                           Boolean routeEnabled) {}
 
     // ==================== 匹配 ====================
 
@@ -72,7 +78,8 @@ public class LabRouteService {
     public Resolved resolve(ChargeItem item, String specimenType, Long orderDeptId) {
         try {
             if (!"1".equals(configReader.get(CFG_KEY, "1"))) {
-                return fallback(item);
+                Resolved f = fallback(item);
+                return new Resolved(f.execDeptId(), f.execDeptName(), f.source(), null, null, false);
             }
             String spec = normalizeSpecimen(specimenType);
             // 非空键全相等：规则键为空即通配；医嘱值为空时带该键的规则不匹配（null = x 为 unknown，自然落空）
@@ -96,7 +103,7 @@ public class LabRouteService {
                     continue;
                 }
                 return new Resolved(((Number) r.get("exec_dept_id")).longValue(), (String) r.get("dept_name"),
-                        "RULE", ((Number) r.get("id")).longValue(), (String) r.get("name"));
+                        "RULE", ((Number) r.get("id")).longValue(), (String) r.get("name"), true);
             }
             return fallback(item);
         } catch (Exception e) {
@@ -106,7 +113,7 @@ public class LabRouteService {
                 return fallback(item);
             } catch (Exception e2) {
                 Long dict = item == null ? null : item.getExecDeptId();
-                return new Resolved(dict, null, dict == null ? "NONE" : "ITEM", null, null);
+                return new Resolved(dict, null, dict == null ? "NONE" : "ITEM", null, null, true);
             }
         }
     }
@@ -115,16 +122,18 @@ public class LabRouteService {
     private Resolved fallback(ChargeItem item) {
         Long dict = item == null ? null : item.getExecDeptId();
         if (dict == null) {
-            return new Resolved(null, null, "NONE", null, null);
+            return new Resolved(null, null, "NONE", null, null, true);
         }
         List<String> names = jdbc.queryForList("select name from sys_dept where id = ?", String.class, dict);
-        return new Resolved(dict, names.isEmpty() ? null : names.get(0), "ITEM", null, null);
+        return new Resolved(dict, names.isEmpty() ? null : names.get(0), "ITEM", null, null, true);
     }
 
     /** 标本类型规范化：null/空白 → null；否则去首尾空白、去内部所有空白、大写。规则与医嘱两侧共用。 */
     public static String normalizeSpecimen(String raw) {
         if (raw == null) return null;
-        String s = raw.strip().replaceAll("\\s+", "");
+        // 第二轮复核（反驳者三实测）：\s 不含全角空格 U+3000 与 NBSP，"血　清"/"血\u00a0清" 此前不命中"血清"；
+        // 中文输入法与 Excel 复制粘贴最常带的就是这两种，用 \p{Z}（Unicode 分隔符类）一并吃掉。
+        String s = raw.strip().replaceAll("[\\s\\p{Z}]+", "");
         return s.isEmpty() ? null : s.toUpperCase();
     }
 

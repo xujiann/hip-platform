@@ -4,7 +4,7 @@
 JUnit（V77LabRouteTest）直接调控制器方法、跑在一个回滚事务里——线格式、序列化、JWT、@PreAuthorize、
 跨端点状态机一个都没走过。本套用 HTTP 把规划节「接口契约」逐条钉住：
   [1] 规则维护：POST/GET/PUT/DELETE /masterdata/lab-route-rules，五个错误码（5910–5914）在 HTTP 线上原样回；
-      specimenType 落库规范化（"全 血" → "全血"）、列表带 execDeptName/chargeItemCode；/resolve 试算与开单同口径；
+      specimenType 落库规范化（"E2E全 血" → "E2E全血"）、列表带 execDeptName/chargeItemCode；/resolve 试算与开单同口径；
   [2] 开单落值：POST /outpatient/doctor/{rid}/orders 的 LAB 行返回体带 execDeptId/execDeptName（命中规则科室），
       无规则且字典无执行科室时 execDeptId 为 null、execDeptName 键不出现（@JsonInclude(NON_NULL)）；
   [3] 三条共享读路径：/lis/pending?deptId= 与 /lis/samples?deptId= 分流可见/不可见、行多 exec_dept_id/exec_dept_name 两列；
@@ -56,6 +56,7 @@ def rows_of(doc_type, rid):
 
 
 # ---------- 前置：科室 / 项目 ----------
+# 标本用「E2E全血」而非「全血」：演示库 bootstrap 种了「血常规·全血→急诊检验室」，同键会撞 5913（全新 CI 库无此规则，但本套也要能在演示库复跑）
 depts = ok(api('GET', '/system/depts'), '科室')
 clinic = next(d for d in depts if d['type'] == 'CLINICAL' and d.get('enabled', True))
 dx = ok(api('POST', '/system/depts', {'name': '流向E2E检验甲' + uniq(''), 'code': uniq('E77X'), 'type': 'MEDTECH', 'sortNo': 99}),
@@ -75,10 +76,10 @@ for stale in ok(api('GET', '/masterdata/lab-route-rules?includeDisabled=true'), 
 
 # ---------- [1] 规则维护 + 错误码 ----------
 rid_rule = ok(api('POST', '/masterdata/lab-route-rules',
-                  {'name': 'E2E 血常规全血→甲', 'chargeItemId': lab['id'], 'specimenType': ' 全 血 ',
+                  {'name': 'E2E 血常规E2E全血→甲', 'chargeItemId': lab['id'], 'specimenType': ' E2E全 血 ',
                    'execDeptId': dx['id'], 'priority': 50, 'remark': 'e2e'}), '建规则')['id']
 fail_code(api('POST', '/masterdata/lab-route-rules',
-              {'name': '撞键', 'chargeItemId': lab['id'], 'specimenType': '全血', 'execDeptId': dy['id']}), 5913, '同键重复')
+              {'name': '撞键', 'chargeItemId': lab['id'], 'specimenType': 'E2E全血', 'execDeptId': dy['id']}), 5913, '同键重复')
 fail_code(api('POST', '/masterdata/lab-route-rules',
               {'name': 'x', 'chargeItemId': lab['id'], 'execDeptId': 987654321}), 5911, '执行科室不存在')
 fail_code(api('POST', '/masterdata/lab-route-rules',
@@ -90,7 +91,7 @@ fail_code(api('POST', '/masterdata/lab-route-rules', {'name': '', 'execDeptId': 
 
 rules = ok(api('GET', '/masterdata/lab-route-rules'), '规则列表')
 mine = next(r for r in rules if r['id'] == rid_rule)
-assert mine['specimenType'] == '全血', f'标本类型须落规范化值：{mine}'
+assert mine['specimenType'] == 'E2E全血', f'标本类型须落规范化值：{mine}'
 assert mine['execDeptName'] == dx['name'] and mine['chargeItemCode'] == lab['code'] and mine['priority'] == 50, mine
 for k in ('itemCategory', 'orderDeptId', 'orderDeptName', 'enabled', 'remark', 'updatedAt'):
     assert k in mine, f'列表缺键 {k}：{sorted(mine)}'
@@ -98,8 +99,8 @@ for k in ('itemCategory', 'orderDeptId', 'orderDeptName', 'enabled', 'remark', '
 # 通配规则（项目键，具体度 4）→ 乙；带标本的（具体度 6）→ 甲；试算须按具体度取甲
 rid_wild = ok(api('POST', '/masterdata/lab-route-rules',
                   {'name': 'E2E 血常规任意→乙', 'chargeItemId': lab['id'], 'execDeptId': dy['id']}), '建通配规则')['id']
-rs = ok(api('GET', f"/masterdata/lab-route-rules/resolve?chargeItemId={lab['id']}&specimenType=%E5%85%A8%20%E8%A1%80"
-               f"&orderDeptId={clinic['id']}"), '试算 全血')
+rs = ok(api('GET', f"/masterdata/lab-route-rules/resolve?chargeItemId={lab['id']}&specimenType=E2E%E5%85%A8%20%E8%A1%80"
+               f"&orderDeptId={clinic['id']}"), '试算 E2E全血')
 assert rs['source'] == 'RULE' and rs['execDeptId'] == dx['id'] and rs['ruleId'] == rid_rule and rs['execDeptName'] == dx['name'], rs
 rs2 = ok(api('GET', f"/masterdata/lab-route-rules/resolve?chargeItemId={lab['id']}&specimenType=%E5%B0%BF%E6%B6%B2"), '试算 尿液')
 assert rs2['source'] == 'RULE' and rs2['execDeptId'] == dy['id'] and rs2['ruleId'] == rid_wild, rs2
@@ -109,7 +110,7 @@ print(f'[1] 规则维护 OK（5910/5911/5912/5913/5914/4000 线上原样回；�
 # ---------- [2] 开单落值 ----------
 pid = new_patient(t, '流向E2E' + uniq(''), 'F')['id']
 rid = visited(pid, clinic['id'])
-o1 = lab_order(rid, lab['id'], '全血')
+o1 = lab_order(rid, lab['id'], 'E2E全血')
 assert o1.get('execDeptId') == dx['id'], f'LAB 开单返回体 execDeptId 须为规则科室：{o1}'
 assert o1.get('execDeptName') == dx['name'], f'LAB 开单返回体 execDeptName 须回显规则科室名：{o1}'
 o2 = lab_order(rid, lab['id'], '尿液')
@@ -118,7 +119,7 @@ assert o2.get('execDeptId') == dy['id'] and o2.get('execDeptName') == dy['name']
 oe = ok(api('POST', f'/outpatient/doctor/{rid}/orders',
             {'lines': [{'orderType': 'EXAM', 'itemId': exam['id'], 'qty': 1}]}), '开检查医嘱')[0]
 assert oe.get('execDeptId') is None and 'execDeptName' not in oe, f'EXAM 不落值、瞬态键不出现：{oe}'
-print(f'[2] 开单落值 OK（全血→{dx["name"]} / 尿液→{dy["name"]} / EXAM 不落值）')
+print(f'[2] 开单落值 OK（E2E全血→{dx["name"]} / 尿液→{dy["name"]} / EXAM 不落值）')
 
 # ---------- [3] 三条共享读路径 ----------
 ok(api('POST', '/outpatient/charges/settle', {'registrationId': rid, 'payMethod': 'CASH'}), '结算')
@@ -155,10 +156,10 @@ ok(api('PUT', f'/masterdata/lab-route-rules/{rid_rule}/enabled?enabled=false'), 
 ok(api('PUT', f'/masterdata/lab-route-rules/{rid_wild}/enabled?enabled=false'), '停用规则乙')
 assert rid_rule not in {r['id'] for r in ok(api('GET', '/masterdata/lab-route-rules'), '只列启用')}
 assert rid_rule in {r['id'] for r in ok(api('GET', '/masterdata/lab-route-rules?includeDisabled=true'), '含停用')}
-rs3 = ok(api('GET', f"/masterdata/lab-route-rules/resolve?chargeItemId={lab['id']}&specimenType=%E5%85%A8%E8%A1%80"), '试算 停用后')
+rs3 = ok(api('GET', f"/masterdata/lab-route-rules/resolve?chargeItemId={lab['id']}&specimenType=E2E%E5%85%A8%E8%A1%80"), '试算 停用后')
 assert rs3['source'] == ('ITEM' if dict_dept else 'NONE') and rs3['execDeptId'] == dict_dept and rs3['ruleId'] is None, rs3
 rid2 = visited(pid, clinic['id'])
-o3 = lab_order(rid2, lab['id'], '全血')
+o3 = lab_order(rid2, lab['id'], 'E2E全血')
 assert o3.get('execDeptId') == dict_dept, f'停用后回落字典（本库 {dict_dept}）：{o3}'
 if dict_dept is None:
     assert 'execDeptName' not in o3 and 'execDeptId' in o3 and o3['execDeptId'] is None, \
@@ -169,7 +170,7 @@ assert guide_again[o1['id']]['exec_dept_name'] == dx['name'], '落值即快照�
 # 启用回来再停用一条、删另一条，验证 5913 在启用路径同样守着
 ok(api('PUT', f'/masterdata/lab-route-rules/{rid_rule}/enabled?enabled=true'), '重新启用甲')
 fail_code(api('POST', '/masterdata/lab-route-rules',
-              {'name': 'E2E 同键', 'chargeItemId': lab['id'], 'specimenType': '全血', 'execDeptId': dy['id']}), 5913, '启用后同键再撞')
+              {'name': 'E2E 同键', 'chargeItemId': lab['id'], 'specimenType': 'E2E全血', 'execDeptId': dy['id']}), 5913, '启用后同键再撞')
 print('[4] 停用回落 + 落值即快照 OK')
 
 # ---------- [5] /auth/me ----------

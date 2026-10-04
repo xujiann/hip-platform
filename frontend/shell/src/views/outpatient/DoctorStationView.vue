@@ -435,6 +435,10 @@
               <template #default="{ row }">{{ typeNames[row.orderType as string] }}</template>
             </el-table-column>
             <el-table-column prop="itemName" label="项目" />
+            <!-- v77 第二轮复核（1016★）：执行科室此前只在提交成功的提示里闪一次；工作区现回填 execDeptName，逐行可见 -->
+            <el-table-column label="执行科室" width="90">
+              <template #default="{ row }">{{ row.execDeptName || '—' }}</template>
+            </el-table-column>
             <el-table-column prop="qty" label="量" width="50" />
             <el-table-column prop="amount" label="金额" width="80" />
             <el-table-column label="状态" width="80">
@@ -619,6 +623,7 @@ import { useAuthStore } from '../../stores/auth'
 import EmrRefDrawer, { useEmrPasteGuard } from '../../components/EmrRefDrawer.vue'
 import StructuredFieldForm, { type EmrTemplateField } from '../../components/StructuredFieldForm.vue'
 import { applyTemplate as applyTemplateToEmr, outpTemplatesOnly, splitTemplateContent } from '../../utils/emr-template'
+import { stripBlockMarks } from '../../utils/print-format'
 
 const categoryNames: Record<string, string> = { LAB: '检验', EXAM: '检查', TREAT: '治疗', MATERIAL: '材料' }
 const typeNames: Record<string, string> = { DRUG: '药品', LAB: '检验', EXAM: '检查', TREAT: '治疗' }
@@ -1414,8 +1419,12 @@ function prefillClinicalSummary(line: Record<string, unknown>) {
   if (line.category !== 'LAB' && line.category !== 'EXAM') return
   if (typeof line.clinicalSummary === 'string' && line.clinicalSummary.trim()) return
   const parts: string[] = []
-  if (emr.chiefComplaint.trim()) parts.push(`主诉：${emr.chiefComplaint.trim()}`)
-  if (emr.presentIllness.trim()) parts.push(`现病史：${emr.presentIllness.trim()}`)
+  // 第二轮复核（反驳者三）：结构化录入会把「【结构化记录】…【结构化记录结束】」块追加进现病史，
+  // 预填若原样带走，申请单「临床摘要」会印出内部标记，而同纸「病史摘要」是剥过的——同一处理函数剥一遍。
+  const cc = stripBlockMarks(emr.chiefComplaint)
+  const pi = stripBlockMarks(emr.presentIllness)
+  if (cc) parts.push(`主诉：${cc}`)
+  if (pi) parts.push(`现病史：${pi}`)
   if (!parts.length) return
   let text = parts.join('；')
   if (text.length > 500) {

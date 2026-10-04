@@ -146,6 +146,9 @@ class V77LabRouteTest {
         assertNull(LabRouteService.normalizeSpecimen(null));
         assertNull(LabRouteService.normalizeSpecimen("   "));
         assertEquals("全血", LabRouteService.normalizeSpecimen(" 全 血 "));
+        // 第二轮复核（反驳者三）：全角空格 U+3000 / NBSP U+00A0 此前不算空白
+        assertEquals("血清", LabRouteService.normalizeSpecimen("血\u3000清"));
+        assertEquals("血清", LabRouteService.normalizeSpecimen("血\u00a0清\u00a0"));
         assertEquals("EDTA全血", LabRouteService.normalizeSpecimen("edta 全血"));
         assertEquals("尿液", LabRouteService.normalizeSpecimen("尿\t液\n"));
     }
@@ -330,6 +333,7 @@ class V77LabRouteTest {
         configReader.evict(LabRouteService.CFG_KEY);
         Resolved r = labRouteService.resolve(item(lab), null, null);
         assertEquals("ITEM", r.source(), "开关关闭 → 不查规则，直接回落字典");
+        assertEquals(Boolean.FALSE, r.routeEnabled(), "开关关闭须在返回体上可辨（页面试算据此改口）");
         assertEquals(dict, r.execDeptId());
         assertNull(r.ruleId());
 
