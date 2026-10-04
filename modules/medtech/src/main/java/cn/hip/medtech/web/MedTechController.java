@@ -81,21 +81,37 @@ public class MedTechController {
     // ===== LIS =====
 
     /** 待采样：已收费未建标本的检验申请 */
+    /**
+     * 待采样队列：已收费、未建标本的检验申请。
+     *
+     * <p><b>v77 车道A</b>（1016★ 检验流向）：可选 {@code deptId} 按执行科室分流
+     * （{@code coalesce(o.exec_dept_id, ci.exec_dept_id) = ?}：开单落的医嘱级快照优先，历史行回落收费项目字典）；
+     * 行加 {@code exec_dept_id, exec_dept_name} 两列。不传 deptId 时行集与 v76 逐行相同、只多两列
+     * （md_charge_item / sys_dept 都是 left join，不会因字典缺行而丢队列行）。
+     * join 条件照 DOC_ORDER_SQL 带 {@code order_type <> 'DRUG'}：item_id 对 DRUG 指向 md_drug，两表主键会撞号。
+     */
     @GetMapping("/api/lis/pending")
-    public R<List<Map<String, Object>>> lisPending() {
-        return R.ok(jdbc.queryForList("""
+    public R<List<Map<String, Object>>> lisPending(@RequestParam(required = false) Long deptId) {
+        String sql = """
                 -- v44 合版补：V137 给 outp_order 加了标本类型/采样部位/加急/备注，
                 -- 但本队列是显式列清单、原先取不到——字段建了采样台却看不见，等于半截功能。
                 -- 纯补 select 列，join 与 where 一字未动。
                 select o.id as order_id, o.group_no, o.item_name, p.name as patient_name, p.sex,
-                       o.specimen_type, o.sampling_site, o.urgent, o.remark
+                       o.specimen_type, o.sampling_site, o.urgent, o.remark,
+                       coalesce(o.exec_dept_id, ci.exec_dept_id) as exec_dept_id, ed.name as exec_dept_name   -- v77
                 from outp_order o
                 join outp_registration r on r.id = o.registration_id
                 join empi_patient p on p.id = r.patient_id
+                left join md_charge_item ci on ci.id = o.item_id and o.order_type <> 'DRUG'
+                left join sys_dept ed on ed.id = coalesce(o.exec_dept_id, ci.exec_dept_id)
                 where o.order_type = 'LAB' and o.status = 'CHARGED'
                   and not exists (select 1 from lis_sample s where s.order_id = o.id)
-                order by o.id
-                """));
+                """;
+        if (deptId != null) {
+            sql += " and coalesce(o.exec_dept_id, ci.exec_dept_id) = ? ";
+        }
+        sql += " order by o.id";
+        return R.ok(deptId == null ? jdbc.queryForList(sql) : jdbc.queryForList(sql, deptId));
     }
 
     /** 采样打码（三十九期：替检参数化——lis_allow_substitute 关闭时拦截，开启时留替检人标识供分检醒目提示） */
@@ -131,20 +147,34 @@ public class MedTechController {
         return n == 0 ? R.fail(9941, "标本不存在或状态不符") : R.ok();
     }
 
-    /** 标本工作队列 */
+    /**
+     * 标本工作队列。
+     *
+     * <p><b>v77 车道A</b>（1016★ 检验流向）：与 {@link #lisPending(Long)} 同口径——可选 {@code deptId} 按
+     * {@code coalesce(o.exec_dept_id, ci.exec_dept_id)} 过滤，行加 {@code exec_dept_id, exec_dept_name} 两列；
+     * 不传 deptId 时行集与 v76 逐行相同、只多两列。
+     */
     @GetMapping("/api/lis/samples")
-    public R<List<Map<String, Object>>> samples() {
-        return R.ok(jdbc.queryForList("""
+    public R<List<Map<String, Object>>> samples(@RequestParam(required = false) Long deptId) {
+        String sql = """
                 select s.id, s.barcode, s.status, s.collected_at, s.substitute, s.substitute_name,
                        o.id as order_id, o.item_name, o.group_no,
                        o.specimen_type, o.sampling_site, o.urgent, o.remark,   -- v44 合版补
-                       p.name as patient_name
+                       p.name as patient_name,
+                       coalesce(o.exec_dept_id, ci.exec_dept_id) as exec_dept_id, ed.name as exec_dept_name   -- v77
                 from lis_sample s
                 join outp_order o on o.id = s.order_id
                 join outp_registration r on r.id = o.registration_id
                 join empi_patient p on p.id = r.patient_id
-                where s.status <> 'PUBLISHED' order by s.id
-                """));
+                left join md_charge_item ci on ci.id = o.item_id and o.order_type <> 'DRUG'
+                left join sys_dept ed on ed.id = coalesce(o.exec_dept_id, ci.exec_dept_id)
+                where s.status <> 'PUBLISHED'
+                """;
+        if (deptId != null) {
+            sql += " and coalesce(o.exec_dept_id, ci.exec_dept_id) = ? ";
+        }
+        sql += " order by s.id";
+        return R.ok(deptId == null ? jdbc.queryForList(sql) : jdbc.queryForList(sql, deptId));
     }
 
     public record ManualResult(String code, String name, String value, String unit, String refRange, String flag) {}

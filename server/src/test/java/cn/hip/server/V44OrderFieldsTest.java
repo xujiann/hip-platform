@@ -73,6 +73,13 @@ class V44OrderFieldsTest {
             "remark", "urgent", "clinicalSummary", "examPurpose", "notice",
             "specimenType", "samplingSite");
 
+    /**
+     * v77 车道 A（1016★ 检验流向）：OutpOrder 加 {@code execDeptId}（V174 列，LAB 开单落规则科室快照，其余为 null）。
+     * 另一个新键 {@code execDeptName} 是 {@code @JsonInclude(NON_NULL)} 的瞬态字段，不传规则/无字典科室时不出现，
+     * 故本用例（LAB 项目无规则、无字典科室）的返回体里只多这一个键。规划节「接口契约」明文新增，不是越界。
+     */
+    private static final Set<String> V77_KEYS = Set.of("execDeptId");
+
     private Long doctorId() {
         return jdbc.queryForObject("select id from sys_user where username = 'admin'", Long.class);
     }
@@ -131,8 +138,10 @@ class V44OrderFieldsTest {
                             + new java.util.TreeSet<>(PRE_V44_KEYS) + " 实际 " + new java.util.TreeSet<>(keys));
             var extra = new java.util.TreeSet<>(keys);
             extra.removeAll(PRE_V44_KEYS);
-            assertEquals(new java.util.TreeSet<>(V44_KEYS), extra,
-                    "本版只应新增 V137 七个字段，多出的字段属越界改动");
+            var expected = new java.util.TreeSet<>(V44_KEYS);
+            expected.addAll(V77_KEYS);   // v77：execDeptId（见常量注释）
+            assertEquals(expected, extra,
+                    "只应新增 V137 七个字段 + v77 的 execDeptId，多出的字段属越界改动");
 
             // 既有值未被新字段污染
             assertEquals("CREATED", o.getStatus());

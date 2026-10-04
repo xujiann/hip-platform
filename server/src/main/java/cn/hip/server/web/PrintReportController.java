@@ -172,6 +172,10 @@ public class PrintReportController {
      * v43 车道B 出这五种单据时这些字段还不存在，版式上只能留手填栏；现在**有值就印值、
      * 无值仍留手填栏**——历史医嘱行这七列必然为 null（V137 不回填任何猜测值），
      * 版式不能因为多了字段就把手填栏拿掉，否则老单据会变成印不出也写不了。
+     *
+     * <p><b>v77 车道A</b>（1016★）：exec_dept 改取 {@code coalesce(o.exec_dept_id, ci.exec_dept_id)}——
+     * 检验申请开单时按流向规则落的医嘱级快照优先，历史行与 EXAM/TREAT 行（本轮不落值）为 null 时回落字典，
+     * 输出列名 exec_dept_name 不变。只改这一个 join 条件。
      */
     private static final String DOC_ORDER_SQL = """
             select o.id, o.group_no, o.order_type, o.item_code, o.item_name, o.spec, o.unit, o.qty,
@@ -189,7 +193,7 @@ public class PrintReportController {
             left join sys_user du on du.id = o.doctor_id
             left join md_drug dr on dr.id = o.item_id and o.order_type = 'DRUG'
             left join md_charge_item ci on ci.id = o.item_id and o.order_type <> 'DRUG'
-            left join sys_dept ed on ed.id = ci.exec_dept_id
+            left join sys_dept ed on ed.id = coalesce(o.exec_dept_id, ci.exec_dept_id)
             left join lis_sample s on s.order_id = o.id
             where o.registration_id = ?
             """;
