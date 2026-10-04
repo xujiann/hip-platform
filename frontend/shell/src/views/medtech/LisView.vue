@@ -1,11 +1,22 @@
 <template>
   <el-card>
+    <!-- v77 车道 B（1016★ 流向动态路由）：两个队列按执行科室分流。默认选登录人科室（/auth/me 的 deptId），
+         登录人无科室或手动清空 = 全部；两列 exec_dept_id/exec_dept_name 由后端随行下发（规则落值优先、回落字典）。 -->
+    <div class="dept-bar">
+      <span class="dept-label">执行科室</span>
+      <el-select v-model="deptId" size="small" filterable clearable placeholder="全部" style="width: 200px" @change="load">
+        <el-option v-for="d in depts" :key="d.id" :label="d.name" :value="d.id" />
+      </el-select>
+    </div>
     <el-tabs v-model="tab">
       <el-tab-pane label="待采样" name="pending">
         <el-table :data="pending" size="small" border>
           <el-table-column prop="group_no" label="申请单号" width="150" />
           <el-table-column prop="patient_name" label="患者" width="90" />
           <el-table-column prop="item_name" label="项目" />
+          <el-table-column label="执行科室" width="110">
+            <template #default="{ row }">{{ row.exec_dept_name || '—' }}</template>
+          </el-table-column>
           <!-- v74 复核（1013★/1016★ 审计打回点）：加急/标本类型/采样部位/备注后端早就下发，检验科屏幕上此前一个都不显示——
                信息只在医生那张纸上，等于没到检验科。 -->
           <el-table-column label="申请信息" min-width="200">
@@ -27,6 +38,9 @@
           <el-table-column prop="barcode" label="条码" width="140" />
           <el-table-column prop="patient_name" label="患者" width="90" />
           <el-table-column prop="item_name" label="项目" />
+          <el-table-column label="执行科室" width="110">
+            <template #default="{ row }">{{ row.exec_dept_name || '—' }}</template>
+          </el-table-column>
           <el-table-column label="申请信息" min-width="200">
             <template #default="{ row }">
               <el-tag v-if="row.urgent" type="danger" size="small" style="margin-right: 4px">加急</el-tag>
@@ -81,8 +95,13 @@
 import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
+import { useAuthStore } from '../../stores/auth'
 
+const auth = useAuthStore()
 const tab = ref('pending')
+// v77：执行科室过滤。默认登录人科室；无科室为 null = 全部（不传 deptId，输出与此前逐行相同、只多两列）
+const deptId = ref<number | null>(auth.user?.deptId ?? null)
+const depts = ref<{ id: number; name: string; enabled?: boolean }[]>([])
 const statusNames: Record<string, string> = { COLLECTED: '已采样', RECEIVED: '已核收', PUBLISHED: '已发布' }
 const pending = ref<Record<string, unknown>[]>([])
 const samples = ref<Record<string, unknown>[]>([])
@@ -93,8 +112,15 @@ const busyId = ref<unknown>(null)
 const publishLoading = ref(false)
 
 async function load() {
-  pending.value = (await client.get('/lis/pending')).data.data
-  samples.value = (await client.get('/lis/samples')).data.data
+  const params = { deptId: deptId.value ?? undefined }
+  pending.value = (await client.get('/lis/pending', { params })).data.data
+  samples.value = (await client.get('/lis/samples', { params })).data.data
+}
+
+/** 科室下拉沿用系统管理的科室接口（所有登录用户可读）；停用科室不列（已开出的历史行仍按 exec_dept_name 原样显示） */
+async function loadDepts() {
+  const all = (await client.get('/system/depts')).data.data as { id: number; name: string; enabled?: boolean }[]
+  depts.value = all.filter((d) => d.enabled !== false)
 }
 
 async function collect(row: Record<string, unknown>) {
@@ -147,5 +173,12 @@ function printReport(orderId: unknown) {
   window.open(`/print?type=lab-report&id=${orderId}`, '_blank')
 }
 
-onMounted(load)
+onMounted(async () => {
+  await Promise.all([loadDepts(), load()])
+})
 </script>
+
+<style scoped>
+.dept-bar { display: flex; align-items: center; margin-bottom: 8px; }
+.dept-label { font-size: 13px; color: var(--el-text-color-secondary); margin-right: 8px; }
+</style>

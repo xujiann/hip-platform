@@ -360,6 +360,17 @@
                  检查行填检查目的/临床摘要/注意事项；加急与备注各行都有。键名与后端 OrderLine 一致，随 lines 原样上送。 -->
             <el-table-column label="申请信息" min-width="300">
               <template #default="{ row }">
+                <!-- v77 车道B（1016★ 第二句「开单界面即时展示自动带出的摘要与诊断」）：检验/检查行只读列出本次就诊
+                     当前诊断（取 diagList，与病历区同一份）；临床摘要在加入行时由主诉+现病史预填，见 prefillClinicalSummary -->
+                <div v-if="row.category === 'LAB' || row.category === 'EXAM'" class="dim" style="margin-bottom: 4px">
+                  诊断：
+                  <template v-if="diagList.length">
+                    <el-tag v-for="(d, i) in diagList" :key="i" size="small" type="info" style="margin-right: 4px">
+                      {{ d.icdName }}
+                    </el-tag>
+                  </template>
+                  <span v-else>尚未录入诊断</span>
+                </div>
                 <template v-if="row.category === 'LAB'">
                   <el-input v-model="row.specimenType" size="small" placeholder="标本类型" maxlength="32" style="width: 46%; margin-right: 4px; margin-bottom: 4px" />
                   <el-input v-model="row.samplingSite" size="small" placeholder="采样部位" maxlength="32" style="width: 46%; margin-bottom: 4px" />
@@ -976,7 +987,11 @@ async function applyTemplate(id: number | undefined) {
       warn.push(`${ln.itemName}：库存不足（余 ${ln.stock}）`)
     }
     if (ln.orderType === 'DRUG') rxLines.value.push({ ...ln })
-    else labLines.value.push({ ...ln })
+    else {
+      const line = { ...ln }
+      prefillClinicalSummary(line)   // v77：模板行同样预填临床摘要（模板自带值则不覆盖）
+      labLines.value.push(line)
+    }
   }
   tplHint.value = `已套用 ${lines.length} 行` + (warn.length ? `；${warn.length} 行需注意` : '')
   if (warn.length) ElMessage.warning(warn.join('；'))
@@ -1075,6 +1090,7 @@ async function openPatient(row: Record<string, unknown> | null) {
   tplHint.value = ''     // v44：切患者清空模板提示
   rxLines.value = []
   labLines.value = []
+  summaryTruncWarned = false   // v77：换患者后截断提示重新提示一次
   // v45：切患者清空引用抽屉与结构化录入状态（串患者是病历事故的常见来源）
   refVisible.value = false
   insertTarget.value = 'presentIllness'
@@ -1382,8 +1398,34 @@ async function searchChargeItems(kw: string) {
 function addLabLine() {
   const item = chargeItemOptions.value.find((c) => c.id === labItemId.value)
   if (!item) return
-  labLines.value.push({ orderType: item.category, itemId: item.id, itemName: item.name, category: item.category, qty: 1 })
+  const line: Record<string, unknown> = { orderType: item.category, itemId: item.id, itemName: item.name, category: item.category, qty: 1 }
+  prefillClinicalSummary(line)
+  labLines.value.push(line)
   labItemId.value = null
+}
+
+/**
+ * v77 车道B（1016★ 第二句）：检验/检查行加入时，临床摘要为空则由当前病历的主诉+现病史预填成
+ * 「主诉：…；现病史：…」。医生可改；已有值（含协定处方模板自带的）不覆盖；超 500 字（列宽）截断并提示一次。
+ * 只读本页 emr 表单（医生正在写的那份，未必已保存）——开单时病历通常就在同屏，拿已保存版会把刚写的漏掉。
+ */
+let summaryTruncWarned = false
+function prefillClinicalSummary(line: Record<string, unknown>) {
+  if (line.category !== 'LAB' && line.category !== 'EXAM') return
+  if (typeof line.clinicalSummary === 'string' && line.clinicalSummary.trim()) return
+  const parts: string[] = []
+  if (emr.chiefComplaint.trim()) parts.push(`主诉：${emr.chiefComplaint.trim()}`)
+  if (emr.presentIllness.trim()) parts.push(`现病史：${emr.presentIllness.trim()}`)
+  if (!parts.length) return
+  let text = parts.join('；')
+  if (text.length > 500) {
+    text = text.slice(0, 500)
+    if (!summaryTruncWarned) {
+      summaryTruncWarned = true
+      ElMessage.warning('临床摘要预填超过 500 字，已截断到 500 字，请酌情精简')
+    }
+  }
+  line.clinicalSummary = text
 }
 
 async function submitOrders(kind: 'rx' | 'lab') {
@@ -1392,9 +1434,15 @@ async function submitOrders(kind: 'rx' | 'lab') {
   submitting.value = true
   try {
     const resp = await client.post(`/outpatient/doctor/${current.value.registrationId}/orders`, { lines })
-    ElMessage.success(kind === 'rx' ? '处方已开立' : '申请已提交')
-    // 阻塞6：开单返回值带库存预警（stockWarnAvailable 非空即库存低于开量）
     const created = (resp.data.data ?? []) as Record<string, unknown>[]
+    // v77 车道B（1016★）：检验开单返回体订单元素带 execDeptName（@JsonInclude(NON_NULL)，无值键不存在；
+    // 只对 LAB 落值）。已开医嘱列表不展示单行执行科室，故在成功提示里去重列出、保持返回顺序。
+    const execDepts = kind === 'lab'
+      ? [...new Set(created.map((o) => o.execDeptName).filter((n): n is string => typeof n === 'string' && n !== ''))]
+      : []
+    ElMessage.success(kind === 'rx' ? '处方已开立'
+      : `申请已提交${execDepts.length ? `；检验执行科室：${execDepts.join('、')}` : ''}`)
+    // 阻塞6：开单返回值带库存预警（stockWarnAvailable 非空即库存低于开量）
     const warns = created.filter((o) => o.stockWarnAvailable !== null && o.stockWarnAvailable !== undefined)
     // v51 车道F4：CDSS 审查警告随返回体下发，挂在**每一条**订单元素上（后端 List.copyOf 同一份），
     // 故跨订单合并后按原文去重，保持后端给出的先后次序。
