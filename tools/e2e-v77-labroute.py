@@ -6,7 +6,7 @@ JUnit（V77LabRouteTest）直接调控制器方法、跑在一个回滚事务里
   [1] 规则维护：POST/GET/PUT/DELETE /masterdata/lab-route-rules，五个错误码（5910–5914）在 HTTP 线上原样回；
       specimenType 落库规范化（"全 血" → "全血"）、列表带 execDeptName/chargeItemCode；/resolve 试算与开单同口径；
   [2] 开单落值：POST /outpatient/doctor/{rid}/orders 的 LAB 行返回体带 execDeptId/execDeptName（命中规则科室），
-      无规则且字典无执行科室时两键不出现（@JsonInclude(NON_NULL)，返回体与 v76 逐字相同）；
+      无规则且字典无执行科室时 execDeptId 为 null、execDeptName 键不出现（@JsonInclude(NON_NULL)）；
   [3] 三条共享读路径：/lis/pending?deptId= 与 /lis/samples?deptId= 分流可见/不可见、行多 exec_dept_id/exec_dept_name 两列；
       /print/doc/guide-sheet 与 lab-request 行的 exec_dept_name = 规则科室（优先于字典）；
   [4] 落值即快照 + 停用回落：停用规则后再开一条同项目医嘱 → 回落收费项目字典（本库该项目无字典科室 → 键不出现），
