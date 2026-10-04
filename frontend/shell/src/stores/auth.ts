@@ -18,6 +18,9 @@ export interface UserInfo {
   roles: string[]
   menus: MenuItem[]
   mustChangePassword?: boolean
+  // v77：/auth/me 纯增两键（LIS 队列按登录人科室默认过滤要用）；登录人无科室时为 null
+  deptId?: number | null
+  deptName?: string | null
 }
 
 export const useAuthStore = defineStore('auth', {
