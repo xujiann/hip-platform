@@ -17,4 +17,4 @@
 - 改多模块必须全量 `mvn clean package`（不带 `-am` 会打进本地仓库旧模块）；旧进程占 jar 时 clean 静默失败，先杀进程。
 - 数据库在 WSL Ubuntu 的 PostgreSQL 16：JDBC 用 `127.0.0.1` 不能用 `localhost`；WSL 需保活进程（`wsl -d Ubuntu sleep infinity`）防空闲关机——测试中途连库失败先查这里。
 - 源码扫描类测试的排除路径一律用仓库相对路径（绝对路径在 worktree 下扫空恒绿）。
-- 起后端：`mvn -pl server spring-boot:run`（**不能带 `-am`**，会把 run 跑到父模块上报"找不到 main class"；先 `-pl server -am -DskipTests install` 刷新模块）。本机开发库 `hip` 的 Flyway 152–154 校验和是草稿版（见技术债交接单"环境欠账"），起服务需加 `"-Dspring-boot.run.arguments=--spring.flyway.validate-on-migrate=false"`，直到负责人决定 repair。
+- 起后端：`mvn -pl server spring-boot:run`（**不能带 `-am`**，会把 run 跑到父模块上报"找不到 main class"；先 `-pl server -am -DskipTests install` 刷新模块）。本机开发库 `hip` 的 Flyway 152–154 校验和曾是草稿版，2026-10-05 负责人确认后已 `flyway repair`（走 flyway-maven-plugin 11.7.2，未手改 `flyway_schema_history`），起服务不再需要关校验。
