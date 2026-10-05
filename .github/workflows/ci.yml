@@ -70,6 +70,8 @@ jobs:
           base=$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2>/dev/null || true)
           if [ -z "$base" ]; then echo "取不到上一个发布 tag，基线无从谈起"; exit 1; fi
           python3 tools/claim-ratchet.py --since "$base" --strict
+          # v78 车道 C：第二条腿——热区存量全部带句读文案必须已登记（"未登记" 从此 = 违规）
+          python3 tools/claim-ratchet.py --baseline "frontend/shell/src/views/medtech/pathology/*.vue" "modules/medtech/src/main/java/cn/hip/medtech/web/Path*Controller.java" frontend/shell/src/views/medtech/AnesQcView.vue modules/medtech/src/main/java/cn/hip/medtech/web/AnesQcController.java frontend/shell/src/views/masterdata/IcdDictView.vue frontend/shell/src/views/masterdata/LabRouteRuleView.vue frontend/shell/src/views/masterdata/SpecimenTypeView.vue
 
   frontend-build:
     name: 前端构建（vue-tsc + vite）
