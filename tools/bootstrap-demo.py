@@ -119,6 +119,7 @@ for category, codes, dept_code in EXEC_PLAN:
 # 门诊排班、导诊单"挂号医师"也依赖它。deptId=1 即内科门诊（V8 种子）。其余账号暂不挂科室（无依赖）。
 DEMO_USERS = [
     ('doctor01', '演示门诊医生', ['DOCTOR_OUTP'], 1),
+    ('doctor02', '演示外科医生', ['DOCTOR_OUTP'], 'OUTP_SURG'),   # v77 1073/1078 复核：他科医生，演模板授权闭环（科室按 code 解析）
     ('nurse01', '演示护士', ['NURSE']),
     ('cashier01', '演示收费员', ['CASHIER']),
     ('pharm01', '演示药师', ['PHARMACIST']),
@@ -131,6 +132,8 @@ existing = set(records)
 created = 0
 for username, real_name, roles, *rest in DEMO_USERS:
     dept_id = rest[0] if rest else None
+    if isinstance(dept_id, str):   # 以科室 code 给出的，解析成 id（V8 种子科室，缺则不挂）
+        dept_id = next((d['id'] for d in dept_rows if d.get('code') == dept_id), None)
     if username in existing:
         # v74：老库里的演示医生没有科室——补上（连同角色一并回传，更新接口按整体覆盖）
         if dept_id and records[username].get('deptId') is None:

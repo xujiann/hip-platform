@@ -169,7 +169,7 @@
               <el-select v-model="emrTemplateId" clearable placeholder="套用病历模板" style="width: 200px"
                          no-data-text="本科室暂无病历模板（在「数据中心 · 病历模板」维护）" @change="applyEmrTemplate">
                 <el-option v-for="t in emrTemplates" :key="t.id as number"
-                           :label="`${t.name}${t.dept_id ? '' : '（通用）'}`" :value="t.id as number" />
+                           :label="`${t.name}（${t.scopeName ?? (t.dept_id ? '科室' : '通用')}）`" :value="t.id as number" />
               </el-select>
             </el-form-item>
           </el-form>
@@ -436,7 +436,7 @@ const recordTypeNames: Record<string, string> = { ADMISSION: '入院记录', FIR
 const roundLevel = ref('ATTENDING')
 const superiorCorrection = ref('')
 
-// v42 病历模板：GET /emr-templates?type=EMR&deptId=当前科室（后端口径为「本科室 或 全院通用」）
+// v42 起病历模板下拉；v76 改走 GET /emr-templates/visible?type=EMR（按登录人四级可见范围，含被授权），标签按 scopeName
 const emrTemplates = ref<Record<string, unknown>[]>([])
 const emrTemplateId = ref<number | null>(null)
 

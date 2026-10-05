@@ -121,7 +121,7 @@
                        placeholder="结构化模板（按模板定义的元素录入）" style="width: 300px"
                        @change="loadStructFields">
               <el-option v-for="t in emrTemplates" :key="t.id as number"
-                         :label="`${t.name}${t.dept_id ? '' : '（通用）'}`" :value="t.id as number" />
+                         :label="`${t.name}（${t.scopeName ?? (t.dept_id ? '科室' : '通用')}）`" :value="t.id as number" />
             </el-select>
             <!-- v76（993★ ③）：整段套用模板正文。与结构化录入互不替代：结构化只读模板的元素定义，这里读模板的 content -->
             <el-button size="small" :disabled="emrSigned || !structTemplateId" @click="applyTemplateBody">套用正文</el-button>

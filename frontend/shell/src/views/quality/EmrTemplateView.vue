@@ -105,7 +105,7 @@
           </el-select>
           <span class="sub">{{ SCOPE_HINT[form.scope] }}</span>
           <!-- 1073/1078 复核：改范围/改科室会清空既有授权再按新范围自动授权，先说清，别让维护人保存后才发现授权没了 -->
-          <div v-if="form.id && (form.scope !== origScope || (form.scope === 'DEPT' && form.deptId !== origDeptId))"
+          <div v-if="form.id && (form.scope !== origScope || (form.scope === 'DEPT' && form.deptId != null && form.deptId !== origDeptId))"
                class="sub" style="color: var(--el-color-warning)">
             改作用范围或所属科室后，原有授权全部清空，并按新范围重新自动授权；需要给他人用的请保存后重新授权。
           </div>
@@ -369,8 +369,9 @@ async function save() {
   try {
     if (form.id) await client.put(`/emr-templates/${form.id}`, body)
     else await client.post('/emr-templates/scoped', body)
+    // 所属科室留空 = 后端保留原科室（EmrTemplateService.update），不算改范围（1073/1078 复核反驳者二 R3）
     const scopeChanged = !!form.id && (form.scope !== origScope.value
-      || (form.scope === 'DEPT' && form.deptId !== origDeptId.value))
+      || (form.scope === 'DEPT' && form.deptId != null && form.deptId !== origDeptId.value))
     ElMessage.success(form.id
       ? (scopeChanged ? '模板已更新；作用范围已变，原有授权已清空并按新范围重新自动授权' : '模板已更新')
       : '模板已保存（已自动授权给所属科室/创建人）')

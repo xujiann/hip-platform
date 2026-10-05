@@ -155,6 +155,38 @@ class V77TemplateLegacyGuardTest {
                 "同科室同事不再看得见这张'个人'模板");
     }
 
+    /** 反驳者三 3c：管理员把别人的科室模板改成个人模板，自动授权须落到 owner 而不是管理员自己 */
+    @Test
+    void adminChangingOthersScopeGrantsTheOwnerNotTheOperator() {
+        Long deptA = newDept();
+        TestUser owner = newUser(deptA, "DOCTOR_OUTP");
+        TestUser admin = newUser(null, "ADMIN");
+        actAs(owner.auth());
+        Long id = medTech.createScopedTemplate(
+                new TemplateReq("V77管理员改范围", "正文", "EMR", "DEPT", deptA, null), owner.auth()).getData();
+        actAs(admin.auth());
+        medTech.updateTemplate(id, new TemplateReq("V77管理员改范围", "正文", "EMR", "PERSONAL", null, null), admin.auth());
+        List<Map<String, Object>> grants = jdbc.queryForList(
+                "select grantee_type, grantee_id from emr_template_grant where template_id = ?", id);
+        assertEquals(1, grants.size());
+        assertEquals("USER", grants.get(0).get("grantee_type"));
+        assertEquals(owner.id(), ((Number) grants.get(0).get("grantee_id")).longValue(), "授权落到 owner，不是操作的管理员");
+        assertFalse(contains(medTech.visibleTemplates(null, null, null, null, false, admin.auth()).getData(), id),
+                "管理员看不到他人个人模板（改完也不能例外）");
+        actAs(owner.auth());
+        assertTrue(contains(medTech.visibleTemplates(null, null, null, null, false, owner.auth()).getData(), id),
+                "owner 自己看得见");
+
+        // owner 为空的历史科室行不能改成个人模板（否则无人可维护）
+        Long orphan = jdbc.queryForObject("""
+                insert into emr_template(dept_id, name, content, template_type, scope, enabled)
+                values (?, 'V77历史科室行', '正文', 'EMR', 'DEPT', true) returning id
+                """, Long.class, deptA);
+        actAs(admin.auth());
+        assertBiz(4066, () -> medTech.updateTemplate(orphan,
+                new TemplateReq("V77历史科室行", "正文", "EMR", "PERSONAL", null, null), admin.auth()));
+    }
+
     private static boolean contains(List<Map<String, Object>> rows, Long id) {
         return rows.stream().anyMatch(r -> id.equals(((Number) r.get("id")).longValue()));
     }

@@ -469,6 +469,12 @@ public class EmrTemplateService {
             requireScopeGrantable(scope, a);
         }
         Long deptId = resolveDeptId(scope, req.deptId() != null ? req.deptId() : t.deptId(), a);
+        // 1073/1078 复核（反驳者三 3c）：个人模板的"本人"是模板 owner，不是改范围的操作人——
+        // 管理员把别人的科室模板改成个人模板时，自动授权必须落到 owner 头上，否则 owner 自己看不见、
+        // 管理员反而看见了"他人个人模板"。owner 为空的历史行改成 PERSONAL 会成为无人可维护的孤儿，拒绝。
+        if ("PERSONAL".equals(scope) && !scope.equals(t.scope()) && t.ownerId() == null) {
+            throw new HipBizException(4066, "该模板没有创建人记录，不能改为个人模板；请停用后由本人重建");
+        }
         // 不传 templateType 就保持原值（在 Java 里取回原值，而不是在 SQL 里写 coalesce(?, ...)：
         // 未定型的 null 参数进 coalesce 会让 Postgres 报"无法确定参数类型"）
         String templateType = notBlank(req.templateType()) ? normType(req.templateType()) : t.templateType();
@@ -495,7 +501,8 @@ public class EmrTemplateService {
             // 两个科室整科仍看得见"个人"模板。改范围/改科室即清空既有授权，再按新范围写自动授权；
             // 维护页会提示"改范围后原有授权已清空，需要的请重新授权"。
             jdbc.update("delete from emr_template_grant where template_id = ?", id);
-            autoGrant(id, scope, deptId, a);
+            // 自动授权的受益人按模板 owner 算（见上）；owner 为空的 DEPT/全院行自动授权只认科室键，与 create 同
+            autoGrant(id, scope, deptId, new Actor(t.ownerId() != null ? t.ownerId() : a.userId(), a.deptId(), a.admin()));
         }
     }
 
