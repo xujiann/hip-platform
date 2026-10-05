@@ -39,11 +39,29 @@ v61 起连续四轮，同一批投标参数被复核打回，形态一轮比一�
   c. **把串挪出扫描域**：从 controller 挪进 service、从 `:title` 挪进普通文本节点，
      都能静默逃逸。挪一行代码的事，而且看起来还像好实践。
   d. 模板子树按缩进切，不是真解析 HTML。本仓格式统一所以可用；格式一乱就会漏。
+  e. （v78 起）`--baseline` 补上了「存量」这条腿，但它改变的只是**热区里「未登记」两个字的含义**：
+     v65–v77 的 `--since` 只问「这句是不是本轮动过的」，热区里一句没登记只说明「没人动过它」；
+     从 v78 基线登记之后，热区里一句没登记就是**违规**——要么是新加/改措辞没补登记，要么是有人把登记行删了。
+     它仍然抓不到 (a)(b)(c)：全量抽取用的是与 `--since` 同一套字面量抽取，普通文本节点里的句子
+     （`<span>这是一句话。</span>`）两条腿都看不见；文案没动而底下代码被改判，两条腿都看不见。
+     **切块口径的差别必须知道**：`--since` 的「一句」是 diff 里连续的 + 行；`--baseline` 没有 diff，
+     按「语句」切（Java/JS 看行尾 `+ , ( = => ? : || &&` 与行首 `+ ? : . )` 的续行；模板看标签尖括号配平、
+     引号配对）。两边对同一段字面量算的是同一个指纹（同一套 LIT 抽取 + fingerprint），所以：
+       · 整条语句被重写/新增 → `--since` 的 + 行块 == `--baseline` 的语句块 → 同一指纹，一行登记两边都认
+         （v65 登的 4d40bb885c74 / c7b11fee96ef 今天被 --baseline 原样认出，就是这个性质）；
+       · 只改语句里的一行、或 + 行块跨了两条语句 → 两个指纹，两边各要一行；
+       · **全新文件**在 `--since` 里是整文件一个「团块」指纹（cadacb5190b0 / 3006bf833646 就是这种），
+         `--baseline` 要的却是逐语句的指纹——新建热区文件时拿 `--baseline <那个文件>` 跑一遍、把它列出来的逐条登上，
+         团块那一行只是 `--since` 那条腿的记录。
+     --baseline 对热区文件的注释剥离也与 --since 一样是**逐行**的：跨行块注释内部带引号的行，两边都会当字面量抽到。
 
 用法：
     python tools/claim-ratchet.py --selftest              # 活对照组，先跑这个
     python tools/claim-ratchet.py --detect                # 循环变量规则，列出必须升 FACT 的
     python tools/claim-ratchet.py --since v1.6.4 --strict # 棘轮：本轮动过的文案必须已登记
+    python tools/claim-ratchet.py --baseline <文件|目录|glob ...>
+        # 第二条腿（v78）：不看 diff，给定文件里**现存的**每一条带句读字面量都必须已登记；
+        # 目录递归收 *.vue 与 *Controller.java；缺一条就退出码 1（不用加 --strict），路径不存在退出码 2
 """
 import argparse
 import collections
@@ -80,6 +98,12 @@ def fingerprint(s):
         n = n.replace(ch, '')
     n = re.sub(r'\s+', '', n).replace('　', '')
     return hashlib.sha1(n.encode('utf-8')).hexdigest()[:12]
+
+
+def relpath(p):
+    """报告里的文件名：仓内给仓库相对路径；夹具文件在 ROOT 之外（自检用的合成标本），relative_to 会抛——原样给绝对路径。"""
+    p = pathlib.Path(p)
+    return p.relative_to(ROOT).as_posix() if ROOT in p.resolve().parents else p.as_posix()
 
 
 # ---------------------------------------------------------------- 循环变量规则
@@ -193,14 +217,26 @@ _Q = '"' + "'" + '`'
 LIT = re.compile('|'.join('%s((?:[^%s\\\\]|\\\\.)*)%s' % (q, q, q) for q in _Q))
 
 
-def touched_claims(base, head='HEAD'):
+def claim_of(lines):
+    """一块源码行 → 一条断言 (指纹, 正文) 或 None。**两条腿共用的唯一抽取口**：
+    逐行剥注释 → 三种引号的字面量按出现顺序拼成一串 → 含句读且长度 > 12 才算「一句话」→ fingerprint。
+    --since 喂它 diff 里连续的 + 行，--baseline 喂它一条语句的行；同一段字面量两边必然同指纹。"""
+    joined = ''.join(
+        next(x for x in m.groups() if x is not None)
+        for ln in lines for m in LIT.finditer(strip_comments(ln)))
+    if SENTENCE.search(joined) and len(joined) > 12:
+        return fingerprint(joined), joined.strip()
+    return None
+
+
+def touched_claims(base, head='HEAD', root=ROOT):
     """<base>..HEAD 新增行里的带句读文案。diff 只看 + 行——改过的那一句才进棘轮。"""
     # v75：前端测试文件（vitest）里的期望字符串不是上屏文案——它们是对拍台，不是屏幕；
     # 不排除就会把 print-format.test.ts 里的用例期望当成"新改的一句话"要求登记。用 git pathspec 排除。
     paths = ['frontend/shell/src', 'modules',
              ':(glob,exclude)frontend/shell/src/**/__tests__/**', ':(glob,exclude)frontend/shell/src/**/*.test.ts']
     try:
-        diff = subprocess.run(['git', '-C', str(ROOT), 'diff', f'{base}..{head}', '--', *paths],
+        diff = subprocess.run(['git', '-C', str(root), 'diff', f'{base}..{head}', '--', *paths],
                               capture_output=True, text=True, encoding='utf-8',
                               errors='replace', check=True).stdout
     except subprocess.CalledProcessError as e:
@@ -217,11 +253,9 @@ def touched_claims(base, head='HEAD'):
     def flush(fname, lines):
         if not fname or not lines:
             return
-        joined = ''.join(
-            next(x for x in m.groups() if x is not None)
-            for ln in lines for m in LIT.finditer(strip_comments(ln)))
-        if SENTENCE.search(joined) and len(joined) > 12:
-            out.setdefault(fingerprint(joined), {'text': joined.strip(), 'file': fname})
+        c = claim_of(lines)
+        if c:
+            out.setdefault(c[0], {'text': c[1], 'file': fname})
 
     for line in diff.split('\n'):
         if line.startswith('+++ b/'):
@@ -235,6 +269,127 @@ def touched_claims(base, head='HEAD'):
             run = []
     flush(cur, run)
     return out
+
+
+# ---------------------------------------------------------------- 第二条腿：--baseline（v78，v66 前置一）
+
+# 语句续行：行尾是这些 → 下一行还是同一条语句；行首是这些 → 它接着上一行。
+# 这是给 Java / JS / TS 用的近似，不是解析器：一条跨行拼接的消息（"…，" + n + "…。"）要被当成一句话抽出来，
+# 单位对着「一句话」而不是「一行代码」——与 --since 把连续 + 行成块的理由同一个。
+CONT_END = re.compile(r'(\+|,|\(|\[|=|=>|\?|:|\|\||&&)$')
+CONT_START = re.compile(r'^(\+|\?|:|\.|\)|\|\||&&)')
+BASELINE_SUFFIXES = ('.vue', 'Controller.java')
+
+
+def statement_runs(text):
+    """把一个文件切成「语句」块：[(起始行号, [行...]), ...]。空行永远是边界。
+    <template> 段看标签尖括号配平（先要求引号配对——多行属性值里的 < > 不算；再把引号里的值抹掉再数括号，
+    `@click="() => x"` / `v-if="a > b"` 不算）；其余（script 段、Java）看 CONT_END / CONT_START 续行。"""
+    lines = text.split('\n')
+    tpl_s = tpl_e = -1
+    for i, l in enumerate(lines):
+        if tpl_s < 0 and '<template>' in l:
+            tpl_s = i
+        if '</template>' in l:
+            tpl_e = i
+    stripped = [strip_comments(l).strip() for l in lines]
+    runs, cur, start = [], [], None
+    for i, ln in enumerate(lines):
+        s = stripped[i]
+        if not s:
+            if cur:
+                runs.append((start + 1, cur))
+            cur, start = [], None
+            continue
+        if not cur:
+            start = i
+        cur.append(ln)
+        if tpl_s <= i <= tpl_e:
+            joined = ' '.join(stripped[start:i + 1])
+            if joined.count('"') % 2:
+                continue                                    # 多行属性值没闭合
+            bare = re.sub(r'"[^"]*"', '""', joined)
+            if bare.count('<') > bare.count('>'):
+                continue                                    # 标签没闭合
+        else:
+            if CONT_END.search(s):
+                continue
+            nxt = stripped[i + 1] if i + 1 < len(stripped) else ''
+            if nxt and CONT_START.match(nxt):
+                continue
+        runs.append((start + 1, cur))
+        cur, start = [], None
+    if cur:
+        runs.append((start + 1, cur))
+    return runs
+
+
+def baseline_claims(paths):
+    """给定文件里**现存的**每一条带句读字面量：{指纹: {'text','sentence','file','line','where':[file:line...]}}。
+    抽取口与 --since 完全同一个（claim_of），只是喂进去的块是语句而不是 diff 的 + 行。
+    同一句在多个文件里出现（如几个面板共用的「命中超过 N 条…」）只算一条，where 列全。"""
+    out = {}
+    for p in paths:
+        p = pathlib.Path(p)
+        text = p.read_text(encoding='utf-8', errors='replace')
+        for lineno, lines in statement_runs(text):
+            c = claim_of(lines)
+            if not c:
+                continue
+            fp, joined = c
+            # 展示用的「那句话」：块里最长的一条带句读字面量；拼接句的句读与正文可能分落两个字面量，取不到就给整串
+            lits = [next(x for x in m.groups() if x is not None)
+                    for ln in lines for m in LIT.finditer(strip_comments(ln))]
+            sent = max((l for l in lits if SENTENCE.search(l)), key=len, default=joined)
+            where = f'{relpath(p)}:{lineno}'
+            if fp in out:
+                out[fp]['where'].append(where)
+            else:
+                out[fp] = {'text': joined, 'sentence': sent.strip(), 'file': relpath(p), 'line': lineno, 'where': [where]}
+    return out
+
+
+def die(msg):
+    """用法/路径错误：退出码 2，与「有未登记」的 1 区分开——CI 日志里一眼能看出是热区清单写错了还是真有欠账。"""
+    print(msg, file=sys.stderr)
+    sys.exit(2)
+
+
+def expand_baseline_args(args):
+    """--baseline 的参数：文件 / 目录（递归收 *.vue 与 *Controller.java）/ glob（相对仓库根）。
+    一个都解析不到就响亮地失败——「热区路径写错了于是什么都没查」必须是红，不能是绿。"""
+    files = []
+    for a in args:
+        a = a.replace('\\', '/')
+        if any(ch in a for ch in '*?['):
+            hits = sorted(ROOT.glob(a))
+            if not hits:
+                die(f'--baseline：glob 「{a}」一个文件都没匹配到（相对仓库根 {ROOT}）')
+            files += [h for h in hits if h.is_file()]
+            continue
+        p = pathlib.Path(a)
+        if not p.is_absolute():
+            p = ROOT / p
+        if p.is_dir():
+            got = sorted(x for x in p.rglob('*') if x.is_file() and x.name.endswith(BASELINE_SUFFIXES))
+            if not got:
+                die(f'--baseline：目录 「{a}」里没有 *.vue / *Controller.java')
+            files += got
+        elif p.is_file():
+            files.append(p)
+        else:
+            die(f'--baseline：路径不存在 「{a}」')
+    seen, uniq = set(), []
+    for f in files:
+        k = f.resolve()
+        if k not in seen:
+            seen.add(k)
+            uniq.append(f)
+    return uniq
+
+
+def baseline_missing(claims, reg):
+    return {k: v for k, v in claims.items() if k not in reg}
 
 
 def read_registry():
@@ -319,6 +474,72 @@ def selftest():
           fingerprint('共 ${a} 天') == fingerprint('共 ${b} 天'), True)
     check('措辞改一个字 → 不同指纹',
           fingerprint('必然小于各行之和') == fingerprint('可能小于各行之和'), False)
+
+    print('【对照组五：--baseline 对登记齐全的文件绿、对未登记的句子红、与 --since 同一句同指纹（合成夹具 + 临时 git 仓，不动仓库文件）】')
+    # 夹具故意把三种形态都放进去：模板里跨行属性的 el-alert、script 里 => 与 + 续行拼成的一句、单行 ElMessage。
+    # 任何一种切不出来，条数就不是 3——这是在钉 statement_runs 的切块口径。
+    FIXTURE_BASE = (
+        '<template>\n'
+        '  <el-alert\n'
+        '    type="info"\n'
+        '    :closable="false"\n'
+        '    title="登记页：病理号与条码是两套编号，缺一不可。" />\n'
+        '  <span>{{ note }}</span>\n'
+        '</template>\n'
+        '<script setup lang="ts">\n'
+        'const note = computed(() =>\n'
+        "  '合计按整个区间算，不按某一天算；' +\n"
+        "  '只有一天时两数相等。')\n"
+        'function save() {\n'
+        "  ElMessage.warning('格式不合法直接报错，不会静默当作此刻。')\n"
+        '}\n'
+        '</script>\n')
+    NEW_SENTENCE = '保存成功；原报告一个字不会改。'
+    FIXTURE_MORE = FIXTURE_BASE.replace('}\n</script>', f"  ElMessage.success('{NEW_SENTENCE}')\n}}\n</script>")
+    import shutil
+    import tempfile
+    td = tempfile.mkdtemp()
+    try:
+        base_f = pathlib.Path(td) / 'frontend' / 'shell' / 'src' / 'Fixture.vue'
+        base_f.parent.mkdir(parents=True)
+        base_f.write_text(FIXTURE_BASE, encoding='utf-8')
+        base_claims = baseline_claims([base_f])
+        check('夹具切出 3 条（跨行属性 / 续行拼接 / 单行）', len(base_claims), 3)
+        check('续行拼接的两半被当成同一句（指纹 = 两个字面量拼起来算）',
+              fingerprint('合计按整个区间算，不按某一天算；只有一天时两数相等。') in base_claims, True)
+        reg = {k: {'tier': '默认', 'note': ''} for k in base_claims}
+        check('登记齐全的文件 → 零缺失（绿）', len(baseline_missing(base_claims, reg)), 0)
+
+        more_f = pathlib.Path(td) / 'copy' / 'Fixture.vue'      # 临时副本：多一句没登记的
+        more_f.parent.mkdir()
+        more_f.write_text(FIXTURE_MORE, encoding='utf-8')
+        more_claims = baseline_claims([more_f])
+        miss = baseline_missing(more_claims, reg)
+        check('多一句未登记 → 恰好缺那一句（红）', set(miss), {fingerprint(NEW_SENTENCE)})
+
+        # 两条腿同指纹：临时 git 仓里先提交夹具，再提交多一句的版本，--since 的抽取必须 ⊆ --baseline 的抽取
+        def git(*a):
+            subprocess.run(['git', '-c', 'core.autocrlf=false', '-c', 'user.name=selftest',
+                            '-c', 'user.email=selftest@local', *a],
+                           cwd=td, check=True, capture_output=True)
+        try:
+            git('init', '-q')
+            git('add', '-A')
+            git('commit', '-q', '-m', 'base')
+            base_f.write_text(FIXTURE_MORE, encoding='utf-8')
+            git('commit', '-q', '-am', 'more')
+            since_fps = set(touched_claims('HEAD~1', 'HEAD', root=pathlib.Path(td)))
+            check('--since 抽到的指纹集 ⊆ --baseline 抽到的（整条语句新增）',
+                  since_fps and since_fps <= set(baseline_claims([base_f])), True)
+            check('且就是那一句', since_fps, {fingerprint(NEW_SENTENCE)})
+            # 全新文件在 --since 里是整文件一个团块指纹（cadacb5190b0 那种），--baseline 按语句切——只报告，见文件头 limits (e)
+            lump = set(touched_claims('4b825dc642cb6eb9a060e54bf8d69288fbee4904', 'HEAD~1', root=pathlib.Path(td)))
+            print(f'  （报告）全新文件在 --since 里是 {len(lump)} 个团块指纹 {sorted(lump)}，'
+                  f'--baseline 对同一文件给 {len(base_claims)} 条逐语句指纹——新建热区文件要按 --baseline 的输出逐条登')
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            check(f'临时 git 仓建不起来（{e}）——两条腿一致性没验到，判红', False, True)
+    finally:
+        shutil.rmtree(td, ignore_errors=True)       # Windows 下 .git/objects 只读，删不掉就留在 temp 里
     return ok
 
 
@@ -328,6 +549,8 @@ def main():
     ap.add_argument('--strict', action='store_true', help='有未登记的本轮文案就退出码 1')
     ap.add_argument('--detect', action='store_true', help='只跑循环变量规则')
     ap.add_argument('--selftest', action='store_true', help='跑活对照组')
+    ap.add_argument('--baseline', nargs='+', metavar='PATH',
+                    help='第二条腿：给定文件/目录/glob 里现存的每条带句读文案都必须已登记；缺则退出码 1')
     a = ap.parse_args()
 
     if a.selftest:
@@ -343,8 +566,30 @@ def main():
             print('      —— 这句话被无条件说给每个对象听：请证明它对每个都成立，证不出就是假话')
         return 0
 
+    if a.baseline:
+        files = expand_baseline_args(a.baseline)
+        claims = baseline_claims(files)
+        reg = read_registry()
+        missing = baseline_missing(claims, reg)
+        print(f'--baseline：{len(files)} 个文件，现存带句读上屏文案 {len(claims)} 条，登记簿已有 {len(claims) - len(missing)} 条。\n')
+        if not missing:
+            print(f'OK - 基线 {len(claims)} 条全部已登记')
+            return 0
+        print(f'── 未登记（{len(missing)}）——热区里每一条现存文案都要在 {REGISTRY.name} 里有一行；'
+              f'这里「未登记」的含义是违规，不是「没动过」（见文件头 limits (e)）')
+        by_file = collections.defaultdict(list)
+        for k, v in missing.items():
+            by_file[v['file']].append((v['line'], k, v['sentence'], v['where']))
+        for f, items in sorted(by_file.items()):
+            print(f'\n  {f}')
+            for line, k, sent, where in sorted(items):
+                extra = f'  （另见 {"、".join(where[1:])}）' if len(where) > 1 else ''
+                print(f'    :{line:<5} {k}  {sent[:72]}{extra}')
+        print('\n--baseline：判为失败。')
+        return 1
+
     if not a.since:
-        ap.error('要么 --detect / --selftest，要么给 --since')
+        ap.error('要么 --detect / --selftest / --baseline，要么给 --since')
 
     claims = touched_claims(a.since)
     reg = read_registry()
