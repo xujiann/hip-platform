@@ -170,7 +170,7 @@ public class LabRouteService {
     private record Normalized(String name, Long chargeItemId, String specimenType, Long orderDeptId,
                               Long execDeptId, Integer priority, String remark) {}
 
-    /** 新增（默认启用）。校验顺序：字段 4000 → 执行科室 5911 → 项目 5912 → 开单科室 5914 → 同键重复 5913。 */
+    /** 新增（默认启用）。校验顺序：字段 4000 → 执行科室 5911 → 项目 5912 → 开单科室 5914 → 标本字典 5916/5917 → 同键重复 5913。 */
     public Long create(RuleReq req) {
         Normalized n = validate(req);
         checkDuplicate(n, null);
@@ -253,8 +253,30 @@ public class LabRouteService {
                 throw new HipBizException(5914, "开单科室不存在：" + req.orderDeptId());
             }
         }
+        // 标本类型：若给则规范化后须等于某条**启用**字典项名称的规范化值（v78 字典化，md_specimen_type）。
+        // 库里仍存规范化名称（列不变、匹配逻辑不变）；/resolve 与开单落值不走本校验，字典外值自然不命中。
+        // 字典名称也在 Java 侧用同一函数规范化（PG 正则不认 \p{Z}，两侧口径必须出自同一处）。
+        if (spec != null) {
+            requireSpecimenInDictionary(spec, req.specimenType());
+        }
         return new Normalized(name, req.chargeItemId(), spec, req.orderDeptId(), req.execDeptId(),
                 req.priority() == null ? 100 : req.priority(), remark);
+    }
+
+    /** 字典里无同规范化值的行 → 5916；有但全部停用 → 5917（同规范化值的行按设计只会有一条，见 SpecimenTypeController） */
+    private void requireSpecimenInDictionary(String normalized, String raw) {
+        boolean found = false;
+        for (Map<String, Object> d : jdbc.queryForList("select name, enabled from md_specimen_type")) {
+            if (normalized.equals(normalizeSpecimen((String) d.get("name")))) {
+                if (Boolean.TRUE.equals(d.get("enabled"))) return;
+                found = true;
+            }
+        }
+        String shown = raw == null ? normalized : raw.strip();
+        if (found) {
+            throw new HipBizException(5917, "标本类型「" + shown + "」已停用；请先在基础数据→标本类型里启用它，或改选其他标本");
+        }
+        throw new HipBizException(5916, "标本类型「" + shown + "」不在字典中；请从下拉选择，或先在基础数据→标本类型里建档");
     }
 
     private static void copyTo(LabRouteRule r, Normalized n) {

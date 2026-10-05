@@ -253,21 +253,27 @@ class V77LabRouteTest {
         assertEquals(dA, labRouteService.resolve(item(lab), "痰", clinic).execDeptId(), "标本不匹配 → 项目通配");
         assertEquals(dA, labRouteService.resolve(item(lab), null, clinic).execDeptId(), "医嘱无标本时带标本键的规则不匹配");
 
-        // 具体度相同（都是 5 = 项目+开单科室）时 priority 小者先：两条不同开单科室各一条，再用 jdbc 造一条同键低优先级
-        // （同键启用规则产品路径被 5913 拦，这里直写模拟历史/竞态数据，验证排序本身的确定性）
+        // 具体度相同（都是 5 = 项目+开单科室）时 priority 小者先、再 id 小者先。
+        // v78 起同键**启用**规则被 V176 唯一部分索引 uq_lab_route_rule_key 禁止（直写也进不去，见 V78SpecimenDictTest），
+        // v77 原先"直写两条同键启用行模拟历史/竞态数据"的造法已不可能；排序子句本身仍要钉住——
+        // 用同键**停用**行直写（索引谓词 where enabled 放行），在 list(true) 里看 priority → id 的排序，
+        // 同时断言停用行不参与匹配（resolve 仍取唯一的启用行 rP）。
         Long rP = rule("项目+科室 p100", lab, null, clinic, dC, 100);
         jdbc.update("""
-                insert into lab_route_rule(name, charge_item_id, order_dept_id, exec_dept_id, priority)
-                values ('项目+科室 p10 直写', ?, ?, ?, 10)
+                insert into lab_route_rule(name, charge_item_id, order_dept_id, exec_dept_id, priority, enabled)
+                values ('项目+科室 p10 直写停用', ?, ?, ?, 10, false)
                 """, lab, clinic, dA);
-        assertEquals(dA, labRouteService.resolve(item(lab), null, clinic).execDeptId(), "同具体度 → priority 小者先");
-        // id 升序：再直写一条同键同 priority 指向 dB，id 更大 → 仍取先建的 dA
         jdbc.update("""
-                insert into lab_route_rule(name, charge_item_id, order_dept_id, exec_dept_id, priority)
-                values ('项目+科室 p10 直写2', ?, ?, ?, 10)
+                insert into lab_route_rule(name, charge_item_id, order_dept_id, exec_dept_id, priority, enabled)
+                values ('项目+科室 p10 直写停用2', ?, ?, ?, 10, false)
                 """, lab, clinic, dB);
-        assertEquals(dA, labRouteService.resolve(item(lab), null, clinic).execDeptId(), "同具体度同 priority → id 小者先");
-        assertNotNull(rP);
+        assertEquals(rP, labRouteService.resolve(item(lab), null, clinic).ruleId(), "同键停用行不参与匹配");
+        assertEquals(dC, labRouteService.resolve(item(lab), null, clinic).execDeptId());
+        var sameKey = ruleController.list(true).getData().stream()
+                .filter(m -> lab.equals(m.get("chargeItemId")) && m.get("specimenType") == null && clinic.equals(m.get("orderDeptId")))
+                .map(m -> String.valueOf(m.get("name"))).toList();
+        assertEquals(List.of("项目+科室 p10 直写停用", "项目+科室 p10 直写停用2", "项目+科室 p100"), sameKey,
+                "同具体度 → priority 小者先 → id 小者先（列表排序与匹配排序同一条 order by）");
 
         // 全三键（具体度 7）压过一切
         Long d7 = newDept("T77M7", true);

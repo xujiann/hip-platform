@@ -8,6 +8,7 @@ import cn.hip.platform.masterdata.service.LabRouteService;
 import cn.hip.platform.masterdata.service.LabRouteService.Resolved;
 import cn.hip.platform.masterdata.service.LabRouteService.RuleReq;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -34,7 +35,13 @@ import java.util.Map;
  *
  * <p>错误码（5910–5914，规划节预分配）：5910 规则不存在 / 5911 执行科室不存在或已停用 /
  * 5912 收费项目不存在或不是检验类 / 5913 同键重复 / 5914 开单科室不存在；字段缺失/超长走通用 4000。
+ * v78 起 specimenType 须在标本类型字典内：5916 不存在 / 5917 已停用（校验在 service）。
  * 开单落值路径零新码（规则读失败回落字典，不抛）。
+ *
+ * <p><b>5913 的第二道腿（v78，V176 {@code uq_lab_route_rule_key}）</b>：service 的同键判定是读-判-写，两位技师同时建同键规则
+ * 会双双通过；启用行同键唯一部分索引在数据库兜底，撞索引抛出的 DataIntegrityViolationException（Spring 对 JPA flush 的翻译；
+ * DuplicateKeyException 是它的子类）在建/改/启用三处翻成同一个 5913——用户看到的仍是"同键已有启用规则"，不是 4090/4091。
+ * 撞索引时事务已 aborted，不能再读库补充对方规则名，文案只能少这一段。
  */
 @RestController
 @RequestMapping("/api/masterdata/lab-route-rules")
@@ -60,7 +67,12 @@ public class LabRouteRuleController {
     @PreAuthorize("hasAnyRole('ADMIN','TECHNICIAN')")
     @Transactional
     public R<Map<String, Object>> create(@RequestBody RuleReq req) {
-        Long id = labRouteService.create(req);
+        Long id;
+        try {
+            id = labRouteService.create(req);
+        } catch (DataIntegrityViolationException e) {
+            throw translateUniqueKey(e);
+        }
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("id", id);
         return R.ok(body);
@@ -71,7 +83,11 @@ public class LabRouteRuleController {
     @PreAuthorize("hasAnyRole('ADMIN','TECHNICIAN')")
     @Transactional
     public R<Void> update(@PathVariable Long id, @RequestBody RuleReq req) {
-        labRouteService.update(id, req);
+        try {
+            labRouteService.update(id, req);
+        } catch (DataIntegrityViolationException e) {
+            throw translateUniqueKey(e);
+        }
         return R.ok();
     }
 
@@ -80,8 +96,26 @@ public class LabRouteRuleController {
     @PreAuthorize("hasAnyRole('ADMIN','TECHNICIAN')")
     @Transactional
     public R<Void> setEnabled(@PathVariable Long id, @RequestParam boolean enabled) {
-        labRouteService.setEnabled(id, enabled);
+        try {
+            labRouteService.setEnabled(id, enabled);
+        } catch (DataIntegrityViolationException e) {
+            throw translateUniqueKey(e);
+        }
         return R.ok();
+    }
+
+    /** V176 唯一部分索引名（只翻这一个索引的冲突；别的完整性错误照旧交给全局处理器 4090/4091） */
+    static final String UNIQUE_KEY_INDEX = "uq_lab_route_rule_key";
+
+    /** 同键索引冲突 → 5913（与 service 读-判-写的 5913 同文案前缀）；其他完整性异常原样抛回 */
+    static RuntimeException translateUniqueKey(DataIntegrityViolationException e) {
+        for (Throwable t = e; t != null; t = t.getCause()) {
+            if (t.getMessage() != null && t.getMessage().contains(UNIQUE_KEY_INDEX)) {
+                return new HipBizException(5913,
+                        "相同 项目/标本类型/开单科室 已有启用规则（刚被他人同时写入）；请刷新列表后编辑该规则或先停用它");
+            }
+        }
+        return e;
     }
 
     /** 删除。不存在 → 5910。已开医嘱的执行科室是快照，不受影响。 */
