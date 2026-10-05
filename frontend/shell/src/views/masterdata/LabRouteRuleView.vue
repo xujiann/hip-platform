@@ -16,7 +16,7 @@
       <template #default>
         <div>匹配顺序：具体度（项目 &gt; 标本类型 &gt; 开单科室）→ 优先级小者先 → 建立顺序；下表即按此顺序排列，排在前面的先匹配。</div>
         <div>落值即快照：执行科室在开单那一刻写入医嘱，之后修改或停用规则不回改已开出的申请。</div>
-        <div>标本类型以医生开单时实际填写为准，仅与规则值完全相同时命中（忽略大小写与空白，含全角空格），含括注或简写不命中；留空的键表示不限。</div>
+        <div>标本类型条件取自标本类型字典；医生手工录入的字典外值不命中规则、回落收费项目字典（匹配忽略大小写与空白，含全角空格）；留空的键表示不限。</div>
         <div>总开关为系统配置 lab.route.enabled：关闭后开单不查规则，执行科室只按收费项目字典带出。</div>
       </template>
     </el-alert>
@@ -82,7 +82,11 @@
           </el-select>
         </el-form-item>
         <el-form-item label="标本类型">
-          <el-input v-model="trial.specimenType" maxlength="32" clearable placeholder="如 血清 / 尿液" style="width:160px" />
+          <!-- v78：试算允许手填字典外值（allow-create），用来演示"不命中、回落字典"；规则表单那边不允许自造 -->
+          <el-select v-model="trial.specimenType" filterable allow-create default-first-option clearable
+                     placeholder="选字典项或手填" style="width:160px">
+            <el-option v-for="s in specimenTypes" :key="s.id" :label="s.name" :value="s.name" />
+          </el-select>
         </el-form-item>
         <el-form-item label="开单科室">
           <el-select v-model="trial.orderDeptId" filterable clearable placeholder="不限" style="width:160px">
@@ -109,7 +113,10 @@
           </el-select>
         </el-form-item>
         <el-form-item label="标本类型">
-          <el-input v-model="form.specimenType" maxlength="32" clearable placeholder="如 血清 / 尿液；留空=不限" />
+          <!-- v78：只能选字典启用项，不允许自造（后端 5916/5917 兜底）；编辑时若行里存的是已停用项，先按名称种一条让它能显示 -->
+          <el-select v-model="form.specimenType" filterable clearable placeholder="选字典项；留空=不限" style="width:100%">
+            <el-option v-for="s in formSpecimenOptions" :key="s.id" :label="s.name" :value="s.name" />
+          </el-select>
         </el-form-item>
         <el-form-item label="开单科室">
           <el-select v-model="form.orderDeptId" filterable clearable placeholder="留空=不限" style="width:100%">
@@ -162,6 +169,7 @@ type Rule = {
   updatedAt: string
 }
 type Dept = { id: number; name: string; enabled?: boolean }
+type SpecimenType = { id: number; name: string }
 /** /masterdata/charge-items 返回 ChargeItem 实体（id/code/name/category/...），这里只用到四个键 */
 type ItemOption = { id: number; code: string; name: string; category: string }
 type Resolve = {
@@ -184,6 +192,8 @@ const rows = ref<Rule[]>([])
 const loading = ref(false)
 const includeDisabled = ref(false)
 const depts = ref<Dept[]>([])
+/** v78：标本类型字典启用项（契约 GET /masterdata/specimen-types 默认只返启用项）；规则表单与试算区共用，值取名称字符串 */
+const specimenTypes = ref<SpecimenType[]>([])
 
 const dialogVisible = ref(false)
 const editing = ref(false)
@@ -197,6 +207,15 @@ const form = reactive({
   execDeptId: null as number | null,
   priority: 100,
   remark: '',
+})
+/**
+ * 规则表单下拉选项：字典启用项，外加「编辑时行里已存、但已不在启用项里」的那个值（种一条 id=0 的影子项）——
+ * 否则 el-select 只能显示裸字符串、看不出它是停用项；保存时后端照旧按 5917 拒绝，这里不替它放行。
+ */
+const formSpecimenOptions = computed<SpecimenType[]>(() => {
+  const cur = form.specimenType
+  if (!cur || specimenTypes.value.some((s) => s.name === cur)) return specimenTypes.value
+  return [{ id: 0, name: cur }, ...specimenTypes.value]
 })
 // 表单与试算区各自一份选项：共用一份会在另一边检索时把已选项挤出下拉，el-select 就只剩一个裸 id 可显示
 const formItemOptions = ref<ItemOption[]>([])
@@ -235,6 +254,10 @@ async function load() {
 async function loadDepts() {
   const all = (await client.get('/system/depts')).data.data as Dept[]
   depts.value = all.filter((d) => d.enabled !== false)
+}
+
+async function loadSpecimenTypes() {
+  specimenTypes.value = (await client.get('/masterdata/specimen-types')).data.data
 }
 
 /**
@@ -310,7 +333,7 @@ async function save() {
     const body = {
       name: form.name.trim(),
       chargeItemId: form.chargeItemId || null,
-      specimenType: form.specimenType.trim() || null,
+      specimenType: String(form.specimenType ?? '').trim() || null,   // el-select 清空后可能是 undefined
       orderDeptId: form.orderDeptId || null,
       execDeptId: form.execDeptId,
       priority: form.priority ?? 100,
@@ -354,7 +377,7 @@ async function runTrial() {
     trialResult.value = (await client.get('/masterdata/lab-route-rules/resolve', {
       params: {
         chargeItemId: trial.chargeItemId,
-        specimenType: trial.specimenType.trim() || undefined,
+        specimenType: String(trial.specimenType ?? '').trim() || undefined,
         orderDeptId: trial.orderDeptId || undefined,
       },
     })).data.data
@@ -364,7 +387,7 @@ async function runTrial() {
 }
 
 onMounted(async () => {
-  await Promise.all([loadDepts(), load()])
+  await Promise.all([loadDepts(), loadSpecimenTypes(), load()])
 })
 </script>
 

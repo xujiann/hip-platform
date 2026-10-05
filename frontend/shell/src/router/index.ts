@@ -92,6 +92,8 @@ const router = createRouter({
         { path: 'masterdata/icd-dict', component: () => import('../views/masterdata/IcdDictView.vue') },
         // v77 车道 B：检验流向规则维护。菜单 185 由合版的 V175 登记（本车道不插 sys_menu）
         { path: 'masterdata/lab-route', component: () => import('../views/masterdata/LabRouteRuleView.vue') },
+        // v78 车道 B：标本类型字典维护。菜单 186 由合版的 V177 登记（本车道不插 sys_menu）
+        { path: 'masterdata/specimen-types', component: () => import('../views/masterdata/SpecimenTypeView.vue') },
         { path: 'finance/fee-report', component: () => import('../views/finance/FeeReportView.vue') },
         { path: 'emr-template', component: () => import('../views/quality/EmrTemplateView.vue') },
         { path: 'ops', component: () => import('../views/ops/OpsView.vue') },

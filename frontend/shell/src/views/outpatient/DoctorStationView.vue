@@ -372,7 +372,12 @@
                   <span v-else>尚未录入诊断</span>
                 </div>
                 <template v-if="row.category === 'LAB'">
-                  <el-input v-model="row.specimenType" size="small" placeholder="标本类型" maxlength="32" style="width: 46%; margin-right: 4px; margin-bottom: 4px" />
+                  <!-- v78 车道B（1016★ 第二轮复核：标本类型字典化）：从字典选、允许手填字典外值（allow-create）；值仍是名称字符串，
+                       row.specimenType 键名与后端 OrderLine 不变。字典外值后端照收，只是不参与流向匹配、按收费项目字典带出执行科室 -->
+                  <el-select v-model="row.specimenType" size="small" filterable allow-create default-first-option clearable
+                             placeholder="标本类型（可手填）" style="width: 46%; margin-right: 4px; margin-bottom: 4px">
+                    <el-option v-for="s in specimenTypeOptions" :key="s.id" :label="s.name" :value="s.name" />
+                  </el-select>
                   <el-input v-model="row.samplingSite" size="small" placeholder="采样部位" maxlength="32" style="width: 46%; margin-bottom: 4px" />
                   <!-- v74 复核（1026★ 第三轮反驳者二）：检验申请单印"临床摘要/注意事项"两栏，此前检验行没有录入框，纸上永远是空线 -->
                   <el-input v-model="row.clinicalSummary" size="small" placeholder="临床摘要" maxlength="500" style="width: 100%; margin-bottom: 4px" />
@@ -1400,6 +1405,16 @@ async function searchChargeItems(kw: string) {
   chargeItemOptions.value = resp.data.data
 }
 
+/** v78 车道B：标本类型字典（契约 GET /masterdata/specimen-types，默认只返启用项）。进页拉一次缓存在 ref，检验行下拉共用 */
+const specimenTypeOptions = ref<{ id: number; name: string }[]>([])
+async function loadSpecimenTypes() {
+  try {
+    specimenTypeOptions.value = (await client.get('/masterdata/specimen-types')).data.data
+  } catch {
+    specimenTypeOptions.value = []   // 字典拉不到（拦截器已弹红字）不拖垮医生站：下拉为空、仍可手填
+  }
+}
+
 function addLabLine() {
   const item = chargeItemOptions.value.find((c) => c.id === labItemId.value)
   if (!item) return
@@ -1506,6 +1521,7 @@ onMounted(async () => {
   // v74 复核（993★）：loadEmrTemplates 自 v45 起定义了却从未被调用——结构化模板那一栏（989★/1075★）在门诊
   // 医生站从来渲染不出来。进页拉一次可见范围内的病历模板，与处方模板同口径。
   await loadEmrTemplates()
+  await loadSpecimenTypes()   // v78：检验行标本类型下拉的字典项，进页一次
 })
 </script>
 
