@@ -12,7 +12,7 @@ JUnit（V77LabRouteTest）直接调控制器方法、跑在一个回滚事务里
   [4] 落值即快照 + 停用回落：停用规则后再开一条同项目医嘱 → 回落收费项目字典（本库该项目无字典科室 → 键不出现），
       而此前开出的那条医嘱 exec_dept_name 仍是规则科室；
   [5] /auth/me 带 deptId/deptName 两键（admin 无科室 → null）。
-自成一体：建自己的患者、自己的两个 MEDTECH 科室、自己的规则；收尾删规则、停用科室（科室无 DELETE 端点）。
+自成一体：建自己的患者、自己的两个 MEDTECH 科室、自己的标本字典项（v78：规则标本须在字典内）、自己的规则；收尾删规则、删字典项、停用科室（科室无 DELETE 端点）。
 时间一律从 e2elib.today_bj() 取，不写墙钟字面量。
 """
 import time
@@ -55,9 +55,20 @@ def rows_of(doc_type, rid):
     return ok(api('GET', f'/print/doc/{doc_type}/{rid}'), doc_type)['rows']
 
 
-# ---------- 前置：科室 / 项目 ----------
-# 标本用「E2E全血」而非「全血」：演示库 bootstrap 种了「血常规·全血→急诊检验室」，同键会撞 5913（全新 CI 库无此规则，但本套也要能在演示库复跑）
+# ---------- 前置：科室 / 项目 / 标本字典项 ----------
+# 标本用「E2E全血」而非「全血」：演示库 bootstrap 种了「血常规·全血→急诊检验室」，同键会撞 5913（全新 CI 库无此规则，但本套也要能在演示库复跑）。
+# v78 起规则的标本类型须在字典（md_specimen_type）内，否则 5916——故先经字典端点建「E2E全血」（结尾删掉）；
+# 残留自净：上次中途失败留下的同名/同码项直接复用并确保启用。
 depts = ok(api('GET', '/system/depts'), '科室')
+SPEC_CODE, SPEC_NAME = 'E2EWB', 'E2E全血'
+spec_rows = ok(api('GET', '/masterdata/specimen-types?all=true'), '标本字典')
+spec = next((r for r in spec_rows if r['code'] == SPEC_CODE or r['name'] == SPEC_NAME), None)
+if spec is None:
+    spec_id = ok(api('POST', '/masterdata/specimen-types', {'code': SPEC_CODE, 'name': SPEC_NAME, 'sortNo': 900}), '建字典项 E2E全血')['id']
+else:
+    spec_id = spec['id']
+    if not spec['enabled']:
+        ok(api('PUT', f'/masterdata/specimen-types/{spec_id}/enabled?enabled=true'), '启用残留字典项')
 clinic = next(d for d in depts if d['type'] == 'CLINICAL' and d.get('enabled', True))
 dx = ok(api('POST', '/system/depts', {'name': '流向E2E检验甲' + uniq(''), 'code': uniq('E77X'), 'type': 'MEDTECH', 'sortNo': 99}),
         '建执行科室甲')
@@ -182,6 +193,7 @@ print(f"[5] /auth/me OK（deptId={me['deptId']} deptName={me['deptName']}）")
 for rule_id in (rid_rule, rid_wild):
     ok(api('DELETE', f'/masterdata/lab-route-rules/{rule_id}'), '删规则')
 fail_code(api('DELETE', f'/masterdata/lab-route-rules/{rid_rule}'), 5910, '删过的再删')
+ok(api('DELETE', f'/masterdata/specimen-types/{spec_id}'), '删字典项 E2E全血（规则已删，不再被引用）')
 for d in (dx, dy):
     ok(api('PUT', f"/system/depts/{d['id']}/enabled?enabled=false"), '停用 E2E 科室')
 print('\ne2e-v77-labroute 全部通过 ✅')
