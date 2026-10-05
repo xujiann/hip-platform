@@ -104,6 +104,11 @@
                        :disabled="!actor.grantableScopes.includes(s.value)" />
           </el-select>
           <span class="sub">{{ SCOPE_HINT[form.scope] }}</span>
+          <!-- 1073/1078 复核：改范围/改科室会清空既有授权再按新范围自动授权，先说清，别让维护人保存后才发现授权没了 -->
+          <div v-if="form.id && (form.scope !== origScope || (form.scope === 'DEPT' && form.deptId !== origDeptId))"
+               class="sub" style="color: var(--el-color-warning)">
+            改作用范围或所属科室后，原有授权全部清空，并按新范围重新自动授权；需要给他人用的请保存后重新授权。
+          </div>
         </el-form-item>
         <el-form-item v-if="form.scope === 'DEPT'" label="所属科室" required>
           <el-select v-model="form.deptId" clearable filterable placeholder="留空＝本人所在科室" style="width: 200px">
@@ -250,6 +255,8 @@ const keyword = ref('')
 const includeDisabled = ref(false)
 const dialogVisible = ref(false)
 const dialogTitle = ref('新增模板')
+const origScope = ref<string>('PERSONAL')   // 编辑前的范围/科室，用来提示"改范围清授权"
+const origDeptId = ref<number | null>(null)
 const saving = ref(false)
 const previewVisible = ref(false)
 const previewRow = ref<Tpl | null>(null)
@@ -321,6 +328,8 @@ function openEdit(row: Tpl) {
     recordType: row.record_type ?? null,
     content: row.content ?? '',
   })
+  origScope.value = row.scope ?? 'PERSONAL'
+  origDeptId.value = row.dept_id ?? null
   dialogTitle.value = `编辑 #${row.id}《${row.name}》`
   dialogVisible.value = true
 }
@@ -360,7 +369,11 @@ async function save() {
   try {
     if (form.id) await client.put(`/emr-templates/${form.id}`, body)
     else await client.post('/emr-templates/scoped', body)
-    ElMessage.success(form.id ? '模板已更新' : '模板已保存（已自动授权给所属科室/创建人）')
+    const scopeChanged = !!form.id && (form.scope !== origScope.value
+      || (form.scope === 'DEPT' && form.deptId !== origDeptId.value))
+    ElMessage.success(form.id
+      ? (scopeChanged ? '模板已更新；作用范围已变，原有授权已清空并按新范围重新自动授权' : '模板已更新')
+      : '模板已保存（已自动授权给所属科室/创建人）')
     dialogVisible.value = false
     // 把筛选切到刚保存的这一条上，否则"保存成功但列表里找不到"会让维护人重复建模板
     filterType.value = form.templateType

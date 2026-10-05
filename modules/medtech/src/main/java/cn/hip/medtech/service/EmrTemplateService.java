@@ -114,8 +114,18 @@ public class EmrTemplateService {
     public record Actor(Long userId, Long deptId, boolean admin) {}
 
     public Actor actorOf(Long userId) {
+        return actorOf(userId, false);
+    }
+
+    /**
+     * 1073/1078 复核（审计者 N1/N2）：老通道 {@code POST/GET /api/emr-templates} 的调用方拿不到
+     * Authentication 形参（签名被单测按 1 参/2 参写死），只能从 SecurityContext 取；
+     * 单测的 {@code @WithMockUser} 在 sys_user 里没有行，此时 {@code adminRole} 取自 Authentication 的
+     * 权限串（ROLE_ADMIN）——否则老通道一加判定，三个历史用例就全部 4066。真实登录永远有行，走库态。
+     */
+    public Actor actorOf(Long userId, boolean adminRole) {
         if (userId == null) {
-            return new Actor(null, null, false);
+            return new Actor(null, null, adminRole);
         }
         List<Long> depts = jdbc.queryForList("select dept_id from sys_user where id = ?", Long.class, userId);
         Long deptId = depts.isEmpty() ? null : depts.get(0);
@@ -123,7 +133,45 @@ public class EmrTemplateService {
                 select r.code from sys_user_role ur join sys_role r on r.id = ur.role_id
                 where ur.user_id = ?
                 """, String.class, userId);
-        return new Actor(userId, deptId, roles.contains("ADMIN"));
+        return new Actor(userId, deptId, roles.contains("ADMIN") || adminRole);
+    }
+
+    /**
+     * 老通道建模板的范围守卫（1073★/1078★ 复核审计者 N1：此前 doctor01 能经老通道建全院模板、
+     * 给他科建科室模板并成为 owner）。口径与 {@link #create} 逐条相同：全院模板只能管理员建；
+     * 科室模板非管理员只能建本科室的。错误码沿用 4066，不另造。
+     */
+    public void requireLegacyCreateAllowed(Actor a, Long deptId) {
+        if (deptId == null) {
+            requireScopeGrantable("HOSPITAL", a);
+            return;
+        }
+        if (!a.admin() && (a.deptId() == null || !deptId.equals(a.deptId()))) {
+            throw new HipBizException(4066, "只能维护本科室的科室模板");
+        }
+    }
+
+    /**
+     * 老通道列表（1073★/1078★ 复核审计者 N2：此前 {@code GET /api/emr-templates?type=EMR} 把所有人的
+     * 个人模板连正文一起返回）。取数口径照旧——{@code select *}、enabled、dept 过滤（本科室或全院通用）、
+     * type 过滤、{@code order by id}——只多套一层与 {@link #listVisible} 同一份的可见性谓词：
+     * 全局/全院人人可见；科室模板本科室 + 管理员 + 被授权科室；个人模板本人 + 被授权个人。
+     * 返回体键集不变（V45TemplateScopeTest §① 逐键钉死）。
+     */
+    public List<Map<String, Object>> legacyList(Actor a, Long deptId, String templateType) {
+        StringBuilder sql = new StringBuilder("select t.* from emr_template t where t.enabled ");
+        List<Object> args = new ArrayList<>();
+        if (deptId != null) {
+            sql.append(" and (t.dept_id = ? or t.dept_id is null) ");
+            args.add(deptId);
+        }
+        if (notBlank(templateType)) {
+            sql.append(" and t.template_type = ? ");
+            args.add(templateType);
+        }
+        visibleWhere(a, sql, args);
+        sql.append(" order by t.id");
+        return jdbc.queryForList(sql.toString(), args.toArray());
     }
 
     /** 前端建模板对话框要据此决定"哪些作用范围可选、科室默认填谁"，避免摆一排点了就报错的死选项 */
@@ -442,7 +490,11 @@ public class EmrTemplateService {
             // 改了科室/病历类型撞上别人的默认位（上面已先让位，这里只剩并发那一种）
             throw defaultConflict();
         }
-        if (!scope.equals(t.scope())) {
+        if (!scope.equals(t.scope()) || !java.util.Objects.equals(deptId, t.deptId())) {
+            // 1073/1078 复核（审计者 N3）：此前改范围只补新授权、不清旧授权——一张科室模板改成个人模板后，
+            // 两个科室整科仍看得见"个人"模板。改范围/改科室即清空既有授权，再按新范围写自动授权；
+            // 维护页会提示"改范围后原有授权已清空，需要的请重新授权"。
+            jdbc.update("delete from emr_template_grant where template_id = ?", id);
             autoGrant(id, scope, deptId, a);
         }
     }

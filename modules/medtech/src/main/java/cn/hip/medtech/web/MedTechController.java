@@ -486,8 +486,11 @@ public class MedTechController {
      *       （HOSPITAL）</b>，这正是下面 GET 的过滤口径，推定结果与旧行为完全一致；</li>
      *   <li>DEPT 的模板顺手写一条自动授权（1078 参数原话「新建的时候自动完成授权给构建科室」）。</li>
      * </ul>
-     * <b>刻意不加范围权限判定</b>：本端点历来允许任何持有本控制器权限的角色建全院可见的模板，
-     * 加判定就是改契约。带判定的通道是新端点 {@code POST /api/emr-templates/scoped}。
+     * <p><b>1073★/1078★ 复核（审计者 N1）补范围守卫</b>：此前本端点"刻意不加范围权限判定"，结果
+     * doctor01 能经它建全院模板（全员可见、自己还停不了）、给检验科建科室模板并成为 owner——
+     * 说明里"依据登录人所在科室与授权收窄"在 API 层为假。现与 {@code /scoped} 同口径：
+     * 全院模板只能管理员建、科室模板非管理员只能建本科室的（4066）。请求体/返回体/校验口径其余照旧；
+     * 三个历史用例与两条 E2E 都以管理员调用，行为不变。
      */
     @PostMapping("/api/emr-templates")
     @PreAuthorize(EMR_TPL_ROLES)
@@ -496,6 +499,8 @@ public class MedTechController {
         var ctxAuth = org.springframework.security.core.context.SecurityContextHolder
                 .getContext().getAuthentication();
         Long uid = ctxAuth == null ? null : currentUserService.idOf(ctxAuth);
+        emrTemplateService.requireLegacyCreateAllowed(
+                emrTemplateService.actorOf(uid, hasAdminAuthority(ctxAuth)), req.deptId());
         String scope = req.deptId() == null ? "HOSPITAL" : "DEPT";
         Long id = jdbc.queryForObject("""
                 insert into emr_template(dept_id, name, content, template_type, scope, owner_id, created_by)
@@ -530,17 +535,20 @@ public class MedTechController {
     @PreAuthorize(EMR_TPL_ROLES)
     public R<List<Map<String, Object>>> templates(@RequestParam(required = false) Long deptId,
                                                   @RequestParam(required = false) String type) {
-        var where = new StringBuilder(" where enabled ");
-        var args = new java.util.ArrayList<Object>();
-        if (deptId != null) {
-            where.append(" and (dept_id = ? or dept_id is null) ");
-            args.add(deptId);
-        }
-        if (type != null && !type.isBlank()) {
-            where.append(" and template_type = ? ");
-            args.add(type);
-        }
-        return R.ok(jdbc.queryForList("select * from emr_template" + where + " order by id", args.toArray()));
+        // 1073★/1078★ 复核（审计者 N2）：此前这里不认登录人，tech01 能取到 doctor01 的个人模板连正文。
+        // 取数口径与返回体键集照旧，只套一层与 /visible 同一份的可见性谓词（EmrTemplateService.legacyList）。
+        var ctxAuth = org.springframework.security.core.context.SecurityContextHolder
+                .getContext().getAuthentication();
+        Long uid = ctxAuth == null ? null : currentUserService.idOf(ctxAuth);
+        return R.ok(emrTemplateService.legacyList(
+                emrTemplateService.actorOf(uid, hasAdminAuthority(ctxAuth)), deptId,
+                type == null || type.isBlank() ? null : type));
+    }
+
+    /** 老通道取不到 Authentication 形参时，从权限串判管理员（单测 @WithMockUser 无库态行，见 actorOf 注释） */
+    private static boolean hasAdminAuthority(org.springframework.security.core.Authentication auth) {
+        return auth != null && auth.getAuthorities().stream()
+                .anyMatch(ga -> "ROLE_ADMIN".equals(ga.getAuthority()));
     }
 
     // ---------- v45 新通道：作用范围 / 授权 / 编辑停用 / 默认模板 / 存为模板 ----------
