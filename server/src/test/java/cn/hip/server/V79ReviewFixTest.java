@@ -219,6 +219,75 @@ class V79ReviewFixTest {
         assertEquals(txNow.toInstant(), savedAt.toInstant(), "正文版本时刻取数据库 now()，不是应用服务器时钟");
     }
 
+    // ==================== ③ 甲 D5：五段列宽逐段校验 ====================
+
+    @Test
+    void overlongSegmentIsRejectedWith4000NamingTheSegmentAndLeavesNoTrace() {
+        Long docId = userId("admin");
+        Long rid = visitFor(newPatient("长"), docId);
+        String[][] cases = {
+                {"chiefComplaint", "主诉", "512"},
+                {"presentIllness", "现病史", "2000"},
+                {"pastHistory", "既往史", "1000"},
+                {"physicalExam", "体格检查", "1000"},
+                {"advice", "处理意见", "1000"},
+        };
+        for (String[] c : cases) {
+            int max = Integer.parseInt(c[2]);
+            OutpEmr e = emr("咳嗽", "起病三天");
+            String over = "字".repeat(max + 1);
+            switch (c[0]) {
+                case "chiefComplaint" -> e.setChiefComplaint(over);
+                case "presentIllness" -> e.setPresentIllness(over);
+                case "pastHistory" -> e.setPastHistory(over);
+                case "physicalExam" -> e.setPhysicalExam(over);
+                default -> e.setAdvice(over);
+            }
+            var ex = assertThrows(HipBizException.class,
+                    () -> doctorStationService.saveEmr(rid, e, List.of(diag("J06.9", "上感")), docId, null, null), c[0]);
+            assertEquals(4000, ex.code, c[0] + "：" + ex.getMessage());
+            assertEquals("请求参数不正确：" + c[1] + "超过 " + max + " 字（当前 " + (max + 1) + " 字）", ex.getMessage());
+        }
+        em.flush();
+        assertEquals(0, count("select count(*) from outp_emr where registration_id = ?", rid), "零副作用：不落病历");
+        assertEquals(0, count("select count(*) from outp_diagnosis where registration_id = ?", rid), "零副作用：不落诊断");
+        assertEquals(0, count("select count(*) from outp_diagnosis_version where registration_id = ?", rid));
+    }
+
+    @Test
+    void overlongSecondSaveLeavesExistingBodyAndVersionsUntouched() {
+        Long docId = userId("admin");
+        Long rid = visitFor(newPatient("留"), docId);
+        OutpEmr first = doctorStationService.saveEmr(rid, emr("咳嗽", "起病三天"), List.of(), docId, null, null);
+        em.flush();
+        em.clear();
+
+        var ex = assertThrows(HipBizException.class, () -> doctorStationService.saveEmr(rid,
+                emr("咳嗽", "起病三天" + "引".repeat(2000)), List.of(), docId, null, null));
+        assertEquals(4000, ex.code);
+        assertTrue(ex.getMessage().contains("现病史超过 2000 字（当前 2004 字）"), ex.getMessage());
+        em.flush();
+        em.clear();
+        assertEquals("起病三天", jdbc.queryForObject(
+                "select present_illness from outp_emr where registration_id = ?", String.class, rid));
+        assertEquals(1, count("select count(*) from emr_version where emr_type = 'OUTP' and emr_id = ?", first.getId()));
+    }
+
+    @Test
+    void exactlyAtLimitPassesAndSurrogatePairCountsAsOneChar() {
+        Long docId = userId("admin");
+        Long rid = visitFor(newPatient("顶"), docId);
+        String rare = new String(Character.toChars(0x20000));   // 𠀀：UTF-16 两个 char，一个码点
+        OutpEmr e = emr("字".repeat(511) + rare, rare.repeat(2000));
+        e.setPastHistory("史".repeat(1000));
+        e.setPhysicalExam("查".repeat(1000));
+        e.setAdvice("嘱".repeat(1000));
+        doctorStationService.saveEmr(rid, e, List.of(), docId, null, null);
+        em.flush();
+        assertEquals(2000, count("select char_length(present_illness) from outp_emr where registration_id = ?", rid));
+        assertEquals(512, count("select char_length(chief_complaint) from outp_emr where registration_id = ?", rid));
+    }
+
     private static Path repoRoot() {
         Path p = Path.of(System.getProperty("user.dir")).toAbsolutePath();
         for (int i = 0; i < 6 && p != null; i++, p = p.getParent()) {

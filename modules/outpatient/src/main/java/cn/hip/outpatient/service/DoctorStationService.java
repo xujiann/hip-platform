@@ -121,6 +121,11 @@ public class DoctorStationService {
         // 既有 icdCode/icdName/primaryDiag 一概不校验：md_icd10 只有几十条种子，
         // 给 icdCode 加"字典必须存在"会当场打断 V43PrintDocsTest（用的 J00 就不在种子里）与实施期数据。
         validateDiagnoses(diagnoses);
+        // v79 审阅修补（甲组 D5）：五段正文列宽——**纯只读预检，放在任何 setter 与 save 之前**（零副作用：
+        // 已有病历是受管实体，先 set 再抛，@Transactional 测试里不回滚的脏实体会在后续 flush 时被写进去）。
+        // 此前「引用资料」整段插入可轻易超过现病史 2000 字，存盘时撞库列宽只报通用 4091、不说是哪一段；
+        // 现按 OutpEmr 实体 @Column(length) 逐段核（列宽取自注解，同 checkOrderLineLengths），超长报 4000 并点名。
+        checkEmrLengths(data);
         emr.setChiefComplaint(data.getChiefComplaint());
         emr.setPresentIllness(data.getPresentIllness());
         emr.setPastHistory(data.getPastHistory());
@@ -205,6 +210,51 @@ public class DoctorStationService {
 
     /** outp_emr.present_illness 的列宽（V5:7 varchar(2000)）——渲染后超限返 4029，绝不静默截断正文 */
     private static final int PRESENT_ILLNESS_MAX = 2000;
+
+    /** v79 审阅修补（甲组 D5）：门诊病历五段的中文段名（与版本页 EmrVersionService.LABELS 同名） */
+    private static final java.util.Map<String, String> EMR_TEXT_LABELS = new java.util.LinkedHashMap<>();
+    static {
+        EMR_TEXT_LABELS.put("chiefComplaint", "主诉");
+        EMR_TEXT_LABELS.put("presentIllness", "现病史");
+        EMR_TEXT_LABELS.put("pastHistory", "既往史");
+        EMR_TEXT_LABELS.put("physicalExam", "体格检查");
+        EMR_TEXT_LABELS.put("advice", "处理意见");
+    }
+
+    /** 五段列宽，取自 {@link OutpEmr} 的 {@code @Column(length)}——实体改列宽这里自动跟上 */
+    static final java.util.Map<String, Integer> EMR_TEXT_MAX;
+    static {
+        var m = new java.util.LinkedHashMap<String, Integer>();
+        for (String f : EMR_TEXT_LABELS.keySet()) {
+            try {
+                m.put(f, OutpEmr.class.getDeclaredField(f)
+                        .getAnnotation(jakarta.persistence.Column.class).length());
+            } catch (NoSuchFieldException e) {
+                throw new IllegalStateException("OutpEmr 缺字段 " + f, e);
+            }
+        }
+        EMR_TEXT_MAX = java.util.Collections.unmodifiableMap(m);
+    }
+
+    /**
+     * 逐段核长度。字数按 Unicode 码点计（与 PostgreSQL varchar(n) 的字符口径一致，同 checkOrderLineLengths），
+     * 第一个超长段即抛 4000「〈段名〉超过 M 字（当前 K 字）」。
+     */
+    private static void checkEmrLengths(OutpEmr data) {
+        String[] values = {data.getChiefComplaint(), data.getPresentIllness(), data.getPastHistory(),
+                data.getPhysicalExam(), data.getAdvice()};
+        int k = 0;
+        for (var e : EMR_TEXT_LABELS.entrySet()) {
+            String v = values[k++];
+            if (v == null) continue;
+            int len = v.codePointCount(0, v.length());
+            int max = EMR_TEXT_MAX.get(e.getKey());
+            if (len > max) {
+                throw new BizException(4000, "请求参数不正确：" + e.getValue()
+                        + "超过 " + max + " 字（当前 " + len + " 字）");
+            }
+        }
+    }
 
     /**
      * 结构化元素的定义装载、校验、渲染与序列化。
