@@ -147,10 +147,11 @@ class V45EmrRefTest {
                 """, orderId, item, value, abnormalFlag);
     }
 
+    /** v79 审阅修补（甲组 D3）起引用只取已审核报告，夹具随之落 VERIFIED（未审核不取由 V79ReviewFixTest 钉） */
     private void risExam(Long orderId, String findings, String impression) {
         jdbc.update("""
-                insert into ris_exam(order_id, status, findings, impression, reported_at)
-                values (?, 'REPORTED', ?, ?, now())
+                insert into ris_exam(order_id, status, findings, impression, reported_at, verified_at)
+                values (?, 'VERIFIED', ?, ?, now(), now())
                 """, orderId, findings, impression);
     }
 

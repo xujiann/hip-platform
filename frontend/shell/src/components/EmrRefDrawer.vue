@@ -247,7 +247,10 @@ const items = computed(() => (seg.value?.items ?? []) as Record<string, unknown>
 const emptyText = computed(() => ({
   BASIC: '该就诊无可引用的基本资料',
   LAB: '该患者暂无可引用的检验结果',
-  EXAM: '该患者暂无可引用的检查报告',
+  // v79 审阅修补（甲组 D3）：只列已审核的检查报告（后端 ris_exam.status='VERIFIED'），空态如实说出口径
+  EXAM: range.value
+    ? '该患者在所选区间内无已审核的检查报告'
+    : '该患者暂无已审核的检查报告（只列已审核的检查报告，未出报告或未审核的不在引用范围内）',
   HISTORY: '该患者暂无既往病历（本次就诊自身不计入）',
   // v79：空态如实说出取数口径——未发布的微生物结果、未签发的病理报告本来就不在引用范围内
   MICRO: range.value

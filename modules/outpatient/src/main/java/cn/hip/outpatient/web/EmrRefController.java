@@ -48,6 +48,8 @@ import java.util.Set;
  *       <b>只外键到 {@code outp_order}</b>——全仓不存在挂在 {@code inp_order} 上的结果表。
  *       因此住院患者查 LAB/EXAM 引用，拿到的是<b>该患者门诊侧</b>的结果；住院医嘱开出的
  *       检验检查在本平台<b>尚无结果落地表</b>，引用不到就是引用不到，此处不编造空壳条目。</li>
+ *   <li><b>EXAM（v79 审阅修补）</b>：RIS 报告<b>只取已审核（{@code ris_exam.status='VERIFIED'}）的</b>——
+ *       没出报告与未审核的不给临床引用；医技站文本结果 {@code outp_order_report} 一支口径未动。</li>
  *   <li><b>MICRO（v79）</b>：{@code lab_micro_result} + {@code lab_micro_ast}，经 {@code order_id → outp_order →
  *       outp_registration} 归到患者，<b>只取标本已发布（{@code lis_sample.published_at} 非空）的</b>——
  *       微生物结果在标本核收后录入、随标本审核发布，未发布的是检验科尚未放行的结果，不给临床引用。
@@ -426,6 +428,13 @@ public class EmrRefController {
     private Map<String, Object> exam(Encounter enc, Window w) {
         List<Entry> entries = new ArrayList<>();
 
+        // v79 审阅修补（甲组 D3）：此前 where 子句不看 status——REGISTERED（没出报告，正文只剩医嘱名）
+        // 与 REPORTED（写了报告未审核）都以「检查报告」之名可插入法定病历。现只取 VERIFIED，与同仓
+        // 患者端 PortalController#myExamReports、检查互认 MedTechController#recentExams、报告分享
+        // ReportShareController 同一口径；同控制器 MICRO 只取已发布、PATH 只取已签发，是同一条纪律。
+        // 连带：病理医嘱也是 EXAM 类型，RIS 队列 GET 会把已收费的病理医嘱自动登记成 REGISTERED，
+        // 此前在本页签以光秃秃的医嘱名与 PATH 页签的真报告重复出现；只取 VERIFIED 后随之消失
+        // （V79ReviewFixTest#pathologyOrderAutoRegisteredByRisQueueNoLongerDuplicatesInExam）。
         for (var r : jdbc.queryForList("""
                 select e.id, e.status, e.modality, e.findings, e.impression, e.critical_flag,
                        e.critical_note, e.reported_at, e.created_at, o.id as order_id,
@@ -433,7 +442,7 @@ public class EmrRefController {
                 from ris_exam e
                 join outp_order o on o.id = e.order_id
                 join outp_registration reg on reg.id = o.registration_id
-                where reg.patient_id = ?""" + dateClause("reg.visit_date", w) + "\n" + """
+                where reg.patient_id = ? and e.status = 'VERIFIED'""" + dateClause("reg.visit_date", w) + "\n" + """
                 order by coalesce(e.reported_at, e.created_at) desc, e.id desc
                 limit ?
                 """, labArgs(enc, w))) {
