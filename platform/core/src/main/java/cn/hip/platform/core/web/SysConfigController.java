@@ -65,10 +65,16 @@ public class SysConfigController {
                     ? null : "须为非负数字";
         }
         // v79 复核（乙组审计者 D6）：三态 gate 键此前不校验，空串与 "xyz" 都能写库、读出时静默回落 warn——
-        // 管理员以为改成了"拒绝"，实际仍是"确认"。emr.copy.* / emr.gate.* 只认 off / warn / block（读取端大小写不敏感，这里同口径）。
-        if (key.startsWith("emr.copy.") || key.startsWith("emr.gate.")) {
-            return Set.of("off", "warn", "block").contains(value.strip().toLowerCase())
-                    ? null : "取值只能是 off（放行）/ warn（提示）/ block（拦截）";
+        // 管理员以为改成了"拒绝"，实际仍是"确认"。emr.copy.* / emr.gate.* 只认 off / warn / block。
+        // v79 审阅修补（三）（乙组反驳 B3-5b / 甲组 A3-2e）：此前先 strip 再转小写后比对、却把原值写库——
+        // 而 12 个 gate 键里一半的读取端是直比型（"block".equals(cfg)，ConfigReader 不 trim），
+        // 「BLOCK」「 block」过了校验、读出来全是 warn；全角空格「　block」连归一型读取端（trim 不去 U+3000）也读成 warn。
+        // 现改为**原值精确匹配小写三档**，不 strip、不转小写：凡是能写进库的，所有读取端都读得出同一档。
+        // emr.version.gate（正文留痕 trim+小写、诊断留痕 equalsIgnoreCase 不 trim，两块读取端不同口）一并纳入。
+        // 历史上没有任何三态键接受过三档以外的值（种子、迁移、E2E、文档全是小写），收紧不挡合法配置。
+        if (key.startsWith("emr.copy.") || key.startsWith("emr.gate.") || key.equals("emr.version.gate")) {
+            return Set.of("off", "warn", "block").contains(value)
+                    ? null : "取值只能是小写 off（放行）/ warn（提示）/ block（拦截），前后不能带空格";
         }
         if (key.startsWith("billno_prefix_")) {
             return value.matches("[A-Za-z0-9]{1,8}") ? null : "单号前缀须为 1–8 位字母数字";
