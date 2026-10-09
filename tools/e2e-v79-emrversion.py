@@ -10,6 +10,7 @@ JUnit（V79EmrVersionReadTest）跑在回滚事务里、用 MockMvc 冒充登录
   [4] 挂号不存在 4001、id 非法 4000；
   [5] 住院医生站入口的目标有数据：新建住院记录 → GET /emr/versions/INP/{记录id} 至少一版（MANUAL），签名后多一版（SUBMIT）；
       收尾出院释放床位。
+  [7] （v79 审阅修补，甲组 D4）[1] 第 1 次保存落下的正文版本与诊断版本时刻相等（同取数据库事务时钟）。
 自成一体：自建患者、排班、挂号、入院；时间一律从 e2elib.today_bj() 取，不写墙钟字面量。
 """
 from e2elib import call, discharge_cleanup, find_free_bed, login, new_patient, ok, today_bj  # noqa: E402
@@ -104,4 +105,23 @@ try:
 finally:
     discharge_cleanup(t, aid, 'CASH')
 
-print('\n=== v79 病历留痕读出 E2E（诊断版本读出 + 空态 + 住院入口目标）全部通过 ===')
+# ============ [7] v79 审阅修补（甲组 D4）：同一次保存的正文版本与诊断版本同一时钟 ============
+import re  # noqa: E402
+from datetime import datetime  # noqa: E402
+
+
+def ts(s):
+    """ISO-8601 → aware datetime。小数秒补足 6 位（Python 3.10 的 fromisoformat 只认 0/3/6 位）。"""
+    s = s.replace('Z', '+00:00')
+    s = re.sub(r'\.(\d{1,6})\d*', lambda m: '.' + m.group(1).ljust(6, '0'), s, count=1)
+    return datetime.fromisoformat(s)
+
+
+body_v1 = next(i for i in ok(api('GET', f'/emr/versions/OUTP/{emr_id}?limit=200'), '正文版本')['items']
+               if i['versionNo'] == 1)
+assert ts(body_v1['savedAt']) == ts(v1['changedAt']), \
+    f"第 1 次保存的正文版本 {body_v1['savedAt']} 与诊断版本 {v1['changedAt']} 须同一时刻（数据库事务时钟）"
+assert ts(body_v1['savedAt']) <= ts(v2['changedAt']), '第 1 次保存的正文版本不得晚于第 2 次保存的诊断版本'
+print(f"[7] 同一次保存：正文版本与诊断版本时刻相等（{body_v1['savedAt']}）OK")
+
+print('\n=== v79 病历留痕读出 E2E（诊断版本读出 + 空态 + 住院入口目标 + 同源时钟）全部通过 ===')

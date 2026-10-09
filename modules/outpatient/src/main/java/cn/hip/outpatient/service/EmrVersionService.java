@@ -425,11 +425,16 @@ public class EmrVersionService {
                         insert into emr_version
                             (emr_type, emr_id, version_no, source, content, content_len, content_hash,
                              saved_by, saved_at, saved_on)
-                        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?::date)
+                        values (?, ?, ?, ?, ?, ?, ?, ?, now(), ?::date)
                         returning id
                         """, Long.class,
                         emrType, emrId, no, source, content, len, hash, userId,
-                        java.sql.Timestamp.from(nowMicros()),
+                        // v79 审阅修补（甲组 D4）：saved_at 此前取应用服务器的 Instant.now()，而同一次保存落的诊断版本
+                        // （outp_diagnosis_version.changed_at）取数据库默认 now()——应用与数据库不在同一台机器时两边
+                        // 时钟会偏（本机实测偏 2–4 秒），版本页上「第 3 次保存的诊断版本早于第 1 次保存的正文版本」。
+                        // 现改取数据库 now()（事务时刻，本身就是微秒粒度），与诊断版本同源；同一次保存的两块逐微秒相等
+                        // （V79ReviewFixTest#bodyVersionAndDiagnosisVersionOfOneSaveShareTheDatabaseClock）。
+                        // 口径同 PathologyRegistryController#dbNow 的注释。
                         // saved_on 走 ?::date 传 ISO 串：**绕开 java.sql.Date 的时区往返**。
                         // 业务日必须是 BusinessDates.today()（Asia/Shanghai），不是 date(saved_at)——
                         // DB 会话时区与业务时区是两套口径，跨 00:00–08:00 的夜班两者差一天（1.1.9 已付学费）。

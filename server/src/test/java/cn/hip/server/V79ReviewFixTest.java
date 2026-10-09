@@ -192,6 +192,33 @@ class V79ReviewFixTest {
         assertTrue(texts(ref(rid, "PATH", doc)).contains("慢性浅表性胃炎"), "病理页签照常取到已签发报告");
     }
 
+    // ==================== ② 甲 D4：正文版本与诊断版本同一时钟 ====================
+
+    @Test
+    void bodyVersionAndDiagnosisVersionOfOneSaveShareTheDatabaseClock() {
+        Long docId = userId("admin");
+        Long rid = visitFor(newPatient("钟"), docId);
+        Timestamp txNow = jdbc.queryForObject("select now()", Timestamp.class);
+
+        OutpEmr saved = doctorStationService.saveEmr(rid, emr("咳嗽", "起病三天"),
+                List.of(diag("J06.9", "急性上呼吸道感染")), docId, null, null);
+        em.flush();
+
+        Timestamp savedAt = jdbc.queryForObject(
+                "select saved_at from emr_version where emr_type = 'OUTP' and emr_id = ? and version_no = 1",
+                Timestamp.class, saved.getId());
+        Timestamp changedAt = jdbc.queryForObject(
+                "select changed_at from outp_diagnosis_version where registration_id = ? and version_no = 1",
+                Timestamp.class, rid);
+        assertNotNull(savedAt);
+        assertNotNull(changedAt);
+        assertFalse(savedAt.toInstant().isAfter(changedAt.toInstant()),
+                "同一次保存：正文版本 " + savedAt.toInstant() + " 不得晚于诊断版本 " + changedAt.toInstant()
+                        + "——两块用了两个时钟，版本页会倒序");
+        assertEquals(changedAt.toInstant(), savedAt.toInstant(), "两侧都取数据库事务时刻，应逐微秒相等");
+        assertEquals(txNow.toInstant(), savedAt.toInstant(), "正文版本时刻取数据库 now()，不是应用服务器时钟");
+    }
+
     private static Path repoRoot() {
         Path p = Path.of(System.getProperty("user.dir")).toAbsolutePath();
         for (int i = 0; i < 6 && p != null; i++, p = p.getParent()) {
