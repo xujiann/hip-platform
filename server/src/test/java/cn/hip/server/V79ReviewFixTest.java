@@ -8,13 +8,17 @@ import cn.hip.outpatient.entity.OutpSchedule;
 import cn.hip.outpatient.repository.OutpScheduleRepository;
 import cn.hip.outpatient.service.DoctorStationService;
 import cn.hip.outpatient.service.RegistrationService;
+import cn.hip.outpatient.web.DoctorStationController;
 import cn.hip.outpatient.web.EmrRefController;
 import cn.hip.outpatient.web.EmrVersionController;
 import cn.hip.platform.core.common.HipBizException;
 import cn.hip.platform.core.config.BusinessDates;
+import cn.hip.platform.core.service.ConfigReader;
+import cn.hip.platform.core.web.SysConfigController;
 import cn.hip.platform.empi.entity.Patient;
 import cn.hip.platform.empi.service.PatientService;
 import jakarta.persistence.EntityManager;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -67,6 +71,15 @@ class V79ReviewFixTest {
     @Autowired OutpScheduleRepository scheduleRepository;
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager em;
+    @Autowired SysConfigController sysConfigController;
+    @Autowired ConfigReader configReader;
+    @Autowired DoctorStationController doctorStationController;
+
+    /** 测试方法论 ⑤：经配置端点改过的键，事务回滚后缓存里不能留着测试里的值 */
+    @AfterEach
+    void evictConfigCache() {
+        configReader.evictAll();
+    }
 
     // ==================== 夹具 ====================
 
@@ -465,6 +478,182 @@ class V79ReviewFixTest {
                 "版本页正文区须挂复制来源登记并带该页患者");
         String inp = read("frontend/shell/src/views/inpatient/InpDoctorView.vue");
         assertTrue(inp.contains("client.put(") && inp.contains("startEdit"), "住院时间线须有走 PUT 的「修改」入口");
+    }
+
+    // ==================== ⑥ 审阅修补（三）：七条三方反驳材料点名的修补 ====================
+
+    /**
+     * B3-2：「提交」先暂存会把书写医师改成提交人（saveEmr 落的 doctorId 即书写人，v43 起的既定口径），
+     * 于是他人打开别人的草稿点提交就签成了。后端 4023 对「直接签他人病历」照拦（这里钉住）；
+     * 前端提交路径只在「工作区无病历 / 书写医师就是本人」时才先暂存，否则直签、让后端回 4023（源码扫描）。
+     */
+    @Test
+    void nonAuthorSignStill4023AndSubmitPresavesOnlyOwnDraft() {
+        Authentication author = doctorAuth("v79fix3_author");
+        Authentication other = doctorAuth("v79fix3_other");
+        Long rid = visitFor(newPatient("签他"), userId("v79fix3_author"));
+        assertEquals(0, doctorStationController.saveEmr(rid,
+                new DoctorStationController.SaveEmrRequest(emr("胸闷", "两天"), List.of()), author).getCode());
+        em.flush();
+
+        var r = doctorStationController.signEmr(rid, other);
+        assertEquals(4023, r.getCode(), "非书写医师直接签名须 4023");
+        em.flush();
+        em.clear();
+        var row = jdbc.queryForMap("select signature, doctor_id from outp_emr where registration_id = ?", rid);
+        assertNull(row.get("signature"));
+        assertEquals(userId("v79fix3_author"), ((Number) row.get("doctor_id")).longValue(), "被拒的签名不改书写医师");
+
+        String sign = signEmrSource();
+        assertTrue(sign.contains("presaveBeforeSign("), "提交前先暂存须先判书写医师是不是本人：\n" + sign);
+        String util = read("frontend/shell/src/utils/emr-submit.ts");
+        assertTrue(util.contains("export function presaveBeforeSign"), "判定抽成纯函数（有 vitest）");
+    }
+
+    /** B3-3：自动套用的默认模板一字未改，提交须拦下（修前有 4009 兜底，先暂存后没了） */
+    @Test
+    void submitRejectsUntouchedAutoTemplateAndDisablesButtonBeforePresave() {
+        String sign = signEmrSource();
+        assertTrue(sign.contains("untouchedDefaultTemplate("), "未改动的自动套用模板不得一键签名：\n" + sign);
+        assertTrue(read("frontend/shell/src/utils/default-template.ts").contains("export function untouchedDefaultTemplate"));
+        // B3 记录项：签名按钮的 loading 要在先暂存之前就置上，往返期间不能再点一次
+        int busy = sign.indexOf("signing.value = true");
+        int save = sign.indexOf("saveEmr()");
+        assertTrue(busy >= 0 && save >= 0 && busy < save, "signing 须在暂存之前置真：\n" + sign);
+    }
+
+    /** B3-1 / A3-2e：三态键取值精确匹配小写 off|warn|block，与直比型读取端同口径；emr.version.gate 纳入 */
+    @Test
+    void triStateConfigKeysAcceptOnlyExactLowercase() {
+        for (String key : List.of("emr.copy.cross_patient", "emr.gate.discharge", "emr.version.gate")) {
+            for (String bad : List.of("BLOCK", "Block", " block", "block ", "　block", "", "xyz")) {
+                assertEquals(1402, sysConfigController.update(key, bad).getCode(),
+                        key + "=[" + bad + "] 须拒绝（直比型读取端会把它读成 warn）");
+            }
+            for (String good : List.of("off", "warn", "block")) {
+                assertEquals(0, sysConfigController.update(key, good).getCode(), key + "=" + good);
+                assertEquals(good, jdbc.queryForObject("select cfg_value from sys_config where cfg_key = ?",
+                        String.class, key), "原样写库");
+            }
+        }
+    }
+
+    /** A3-1c：医技执行站对检查医嘱的文本结果没有审核环节，条目标题如实标出；取数不收紧 */
+    @Test
+    void execStationExamTextIsMarkedUnreviewed() {
+        Authentication doc = doctorAuth("v79fix3_exec");
+        Long rid = visitFor(newPatient("执"), userId("v79fix3_exec"));
+        Long orderId = order(rid, "EXAM", "常规心电图", "EXECUTED");
+        jdbc.update("insert into outp_order_report(order_id, result_text) values (?, ?)", orderId, "窦性心律，大致正常心电图");
+
+        var seg = ref(rid, "EXAM", doc);
+        assertEquals(1, seg.get("count"), "执行站文本照常列出（不改既有可见性）");
+        var it = items(seg).get(0);
+        assertTrue(String.valueOf(it.get("title")).contains("（执行站录入，未经审核）"), String.valueOf(it.get("title")));
+        assertTrue(String.valueOf(it.get("text")).contains("窦性心律"));
+        String drawer = read("frontend/shell/src/components/EmrRefDrawer.vue");
+        assertTrue(drawer.contains("后者无审核环节"), "检查页签空态须如实说出执行站一支无审核");
+        assertFalse(drawer.contains("未出报告或未审核的不在引用范围内"), "旧空态与执行站一支相反");
+    }
+
+    /** A3-2g：「当前正文与最后一版不一致」只在确实不一致时附；原因补上 warn 档的留痕写入失败 */
+    @Test
+    void compareCurrentNoticeSaysMismatchOnlyWhenCurrentDiffersFromLastVersion() {
+        Long docId = userId("admin");
+        Long rid = visitFor(newPatient("比"), docId);
+        Long emrId = doctorStationService.saveEmr(rid, emr("咳嗽", "起病三天"), List.of(), docId, null, null).getId();
+        em.flush();
+        doctorStationService.saveEmr(rid, emr("咳嗽", "起病五天"), List.of(), docId, null, null);
+        em.flush();
+
+        var same = emrVersionController.compareCurrent("OUTP", emrId, 2);
+        assertEquals(0, same.getCode(), same.getMessage());
+        assertEquals(Boolean.TRUE, summaryOf(same.getData()).get("identical"));
+        assertFalse(String.valueOf(same.getData().get("notice")).contains("不一致"),
+                "两侧逐字段一致时不得同屏说「不一致」：" + same.getData().get("notice"));
+
+        var fromV1 = emrVersionController.compareCurrent("OUTP", emrId, 1);
+        assertEquals(Boolean.FALSE, summaryOf(fromV1.getData()).get("identical"), "v1 与当前（= v2）确有差异");
+        assertFalse(String.valueOf(fromV1.getData().get("notice")).contains("不一致"),
+                "当前正文与最后一版（v2）一致，左侧是更早的版本——差异是留痕里有记录的修改，不是接缝外改动");
+
+        jdbc.update("update outp_emr set advice = '接缝外的改动' where id = ?", emrId);
+        var drift = emrVersionController.compareCurrent("OUTP", emrId, 2);
+        String notice = String.valueOf(drift.getData().get("notice"));
+        assertTrue(notice.contains("不一致"), notice);
+        assertTrue(notice.contains("留痕写入失败"), "原因须含 warn 档的写入失败：" + notice);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> summaryOf(Map<String, Object> body) {
+        return (Map<String, Object>) body.get("summary");
+    }
+
+    /** A3-2f / A2：住院空版本提示补上「签名前修改」这一写入动作 */
+    @Test
+    void inpEmptyNoticeNamesEditBeforeSign() {
+        var none = emrVersionController.list("INP", 987654321L, null, null, false);
+        assertEquals(0, none.getCode());
+        String notice = String.valueOf(none.getData().get("notice"));
+        assertTrue(notice.contains("签名前修改"), notice);
+    }
+
+    /** A3-2b：saved_on 与 saved_at 同取数据库时钟（上海日），同一行不再两个钟 */
+    @Test
+    void savedOnComesFromTheSameDatabaseClockAsSavedAt() {
+        Long docId = userId("admin");
+        Long rid = visitFor(newPatient("日"), docId);
+        Long emrId = doctorStationService.saveEmr(rid, emr("咳嗽", "起病三天"), List.of(), docId, null, null).getId();
+        em.flush();
+        assertEquals(Boolean.TRUE, jdbc.queryForObject("""
+                select saved_on = (saved_at at time zone 'Asia/Shanghai')::date from emr_version
+                where emr_type = 'OUTP' and emr_id = ? and version_no = 1
+                """, Boolean.class, emrId), "业务日须是 saved_at 那一刻的上海日");
+        String svc = read("modules/outpatient/src/main/java/cn/hip/outpatient/service/EmrVersionService.java");
+        assertTrue(svc.contains("(now() at time zone 'Asia/Shanghai')::date"),
+                "saved_on 在 SQL 里取库时钟的上海日（应用时钟与库时钟可偏数秒，午夜前后两列会差一天）");
+        String view = read("frontend/shell/src/views/outpatient/emr-version/EmrVersionView.vue");
+        assertTrue(view.contains("sourceLabel("), "版本页来源列显示中文");
+    }
+
+    /** A2-U3：接诊队列跨日期模式要能区分不同日期的同名就诊——返回体追加 visitDate */
+    @Test
+    void worklistRowsCarryVisitDate() {
+        Long rid = visitFor(newPatient("队"), userId("admin"));
+        LocalDate today = BusinessDates.today();
+        for (var r : List.of(doctorStationController.worklist(today, null, null, null, null, null),
+                doctorStationController.worklist(null, today, today, null, null, null))) {
+            assertEquals(0, r.getCode(), r.getMessage());
+            var row = r.getData().stream().filter(m -> rid.equals(m.get("registrationId"))).findFirst().orElseThrow();
+            assertEquals(today.toString(), String.valueOf(row.get("visitDate")));
+        }
+        String ds = read("frontend/shell/src/views/outpatient/DoctorStationView.vue");
+        assertTrue(ds.contains("label=\"就诊日期\""), "跨日期勾选时显示就诊日期列");
+    }
+
+    /** B1-E1/E2、B2：住院放行档显示档位；医生站两个抽屉里复制的本患者资料登记来源 */
+    @Test
+    void inpShowsOffTierAndDoctorStationDrawersRegisterCopySource() {
+        String inp = read("frontend/shell/src/views/inpatient/InpDoctorView.vue");
+        assertFalse(inp.contains("v-if=\"copyMode !== 'off'\""), "住院放行档也须显示档位");
+        assertTrue(inp.contains("'放行'"), "住院三档标签与门诊同");
+        String ds = read("frontend/shell/src/views/outpatient/DoctorStationView.vue");
+        int h = ds.indexOf("title=\"历史就诊\"");
+        int hEnd = ds.indexOf("</el-drawer>", h);
+        assertTrue(h > 0 && ds.substring(h, hEnd).contains("@copy=\"onCopy\""), "「历史就诊」抽屉正文须登记复制来源");
+        int d = ds.indexOf("<EmrRefDrawer");
+        assertTrue(d > 0 && ds.substring(d, ds.indexOf("/>", d)).contains("@copy=\"onCopy\""), "引用抽屉须把复制事件交给 onCopy");
+        String drawer = read("frontend/shell/src/components/EmrRefDrawer.vue");
+        assertTrue(drawer.contains("emit('copy'") && drawer.contains("tab.value === 'HISTORY'"),
+                "引用抽屉「历史病历」页签正文复制时上抛");
+    }
+
+    private static String signEmrSource() {
+        String ds = read("frontend/shell/src/views/outpatient/DoctorStationView.vue");
+        int a = ds.indexOf("async function signEmr()");
+        int b = ds.indexOf("function warnIfLeavingUnsigned", a);
+        assertTrue(a > 0 && b > a, "找不到 signEmr");
+        return ds.substring(a, b);
     }
 
     private static Path repoRoot() {

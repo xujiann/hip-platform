@@ -1,5 +1,5 @@
 <template>
-  <div class="doctor-page">
+  <div class="doctor-page" :class="{ 'range-mode': rangeMode }">
     <el-card class="worklist">
       <template #header>
         接诊队列
@@ -19,6 +19,8 @@
       </template>
       <el-table :data="worklist" highlight-current-row height="calc(100vh - 220px)" @current-change="openPatient">
         <el-table-column prop="regNo" label="号" width="50" />
+        <!-- v79 审阅修补（三）（甲组反驳 A2-U3）：跨日期时同一患者不同日的就诊要分得清（后端 worklist 追加 visitDate 键） -->
+        <el-table-column v-if="rangeMode" prop="visitDate" label="就诊日期" width="96" />
         <el-table-column prop="patientName" label="姓名" width="80" />
         <el-table-column label="性别/年龄" width="76">
           <template #default="{ row }">
@@ -489,7 +491,10 @@
     <!-- v37 历史就诊抽屉：近 50 次就诊（剔退号）+ 各次诊断/主诉/处理意见 -->
     <el-drawer v-model="historyVisible" title="历史就诊" size="480px">
       <el-empty v-if="!history.length" description="无历史就诊" :image-size="60" />
-      <el-timeline v-else>
+      <!-- v79 审阅修补（三）（乙组反驳 B1-E2/B2-4c，1082★）：抽屉不在编辑区复制容器里，copy 冒不到那一层；
+           这里列的是当前所看患者的历次就诊，复制时登记来源患者即当前患者（onCopy 按 current 取） -->
+      <div v-else @copy="onCopy" @cut="onCopy">
+      <el-timeline>
         <el-timeline-item v-for="h in history" :key="h.registrationId as number"
                           :timestamp="`${h.visitDate}${h.signed ? ' · 已签名' : ''}`">
           <div v-if="(h.diagnoses as Record<string, unknown>[])?.length" style="margin-bottom:4px">
@@ -502,6 +507,7 @@
           <p v-if="h.advice" class="hist-line">处理：{{ h.advice }}</p>
         </el-timeline-item>
       </el-timeline>
+      </div>
     </el-drawer>
 
     <!-- v44 诊断助手（979）：历史 / 常用 / 高频 三源，点一下带入诊断表 -->
@@ -633,8 +639,9 @@
     <el-empty v-if="!priorLoading && !priorRecords.length" description="该患者暂无既往病历" />
   </el-dialog>
 
+  <!-- v79 审阅修补（三）（乙组反驳 B1-E2①）：引用抽屉「历史病历」页签正文的复制上抛到这里登记来源（当前患者） -->
   <EmrRefDrawer v-model="refVisible" :registration-id="(current?.registrationId as number) ?? null"
-                  :disabled="emrSigned" @insert="insertText" />
+                  :disabled="emrSigned" @insert="insertText" @copy="onCopy" />
   </div>
 </template>
 
@@ -648,8 +655,9 @@ import EmrRefDrawer, { useEmrPasteGuard } from '../../components/EmrRefDrawer.vu
 import StructuredFieldForm, { type EmrTemplateField } from '../../components/StructuredFieldForm.vue'
 import { applyTemplate as applyTemplateToEmr, outpTemplatesOnly, splitTemplateContent,
   type EmrFields, type EmrParts } from '../../utils/emr-template'
-import { editedSinceApplied, eligibleForDefaultTemplate, emrEquals, pickDefaultTemplate, planDefaultTemplate,
-  revertDefaultTemplate, type DefaultTemplate } from '../../utils/default-template'
+import { editedSinceApplied, eligibleForDefaultTemplate, pickDefaultTemplate, planDefaultTemplate,
+  revertDefaultTemplate, untouchedDefaultTemplate, type DefaultTemplate } from '../../utils/default-template'
+import { presaveBeforeSign } from '../../utils/emr-submit'
 import { stripBlockMarks } from '../../utils/print-format'
 
 const categoryNames: Record<string, string> = { LAB: '检验', EXAM: '检查', TREAT: '治疗', MATERIAL: '材料' }
@@ -914,6 +922,11 @@ const emrStatusText = computed(
  * 病历尚未保存时为 null：此时一版都没有，按钮不出现。
  */
 const currentEmrId = ref<number | null>(null)
+/**
+ * v79 审阅修补（三）（乙组反驳 B3-2e）：病历行上的书写医师（outp_emr.doctor_id，workspace 的 emr 实体直出）。
+ * 提交前要不要先暂存看它是不是本人——先暂存会把书写医师改成提交人，4023 就被架空（utils/emr-submit.ts）。
+ */
+const emrAuthorId = ref<number | null>(null)
 const auth = useAuthStore()
 /** 与 router 守卫同一判据：菜单未知不拦；已知则须持有 /emr-version（V162 已授 DOCTOR_OUTP），否则点进去会被踢回首页 */
 const canOpenEmrVersion = computed(() => {
@@ -1163,6 +1176,7 @@ async function openPatient(row: Record<string, unknown> | null) {
   const resp = await client.get(`/outpatient/doctor/${row.registrationId}/workspace`)
   const ws = resp.data.data
   currentEmrId.value = typeof ws.emr?.id === 'number' ? ws.emr.id : null   // v55：版本留痕按钮的唯一数据来源之一
+  emrAuthorId.value = typeof ws.emr?.doctorId === 'number' ? ws.emr.doctorId : null
   Object.assign(emr, {
     chiefComplaint: ws.emr?.chiefComplaint ?? '', presentIllness: ws.emr?.presentIllness ?? '',
     pastHistory: ws.emr?.pastHistory ?? '', physicalExam: ws.emr?.physicalExam ?? '', advice: ws.emr?.advice ?? '',
@@ -1316,6 +1330,7 @@ async function saveEmr(): Promise<boolean> {
     }
     ElMessage.success('病历已暂存（未签名，仍可修改）')
     if (typeof resp.data.data?.id === 'number') currentEmrId.value = resp.data.data.id   // v55：首次保存后按钮即出现
+    emrAuthorId.value = typeof resp.data.data?.doctorId === 'number' ? resp.data.data.doctorId : null   // 暂存人即书写人
     autoTpl.value = null   // v79：默认模板已随暂存落库，黄条使命结束（撤销只对未落库的套用有意义）
     await loadCdssTips()
     return true
@@ -1445,18 +1460,31 @@ async function signEmr() {
     ElMessage.warning('病历内容为空，请先书写并暂存后再提交（签名）')
     return
   }
+  // v79 审阅修补（三）（乙组反驳 B3-1f）：自动套用的默认模板一字未改——修前有后端 4009 兜底，先暂存后没了
+  if (untouchedDefaultTemplate(autoTpl.value, emr)) {
+    ElMessage.warning('自动套用的模板尚未修改，请书写后再提交')
+    return
+  }
+  // 审阅修补（三）（乙组反驳 B3-2e）：书写医师是别人时不先暂存（暂存会把书写医师改成自己、架空 4023），
+  // 直接调签名端点，由后端回「仅病历书写医师本人可签名」；确认框按实际要做的事说
+  const presave = presaveBeforeSign({
+    hasEmr: currentEmrId.value != null, authorId: emrAuthorId.value, meId: auth.user?.id ?? null,
+  })
   try {
-    await ElMessageBox.confirm(
-      '签名即提交：将先暂存屏上当前内容，再以此签名；签名后本次病历原文即冻结，不能再修改，只能追加补正记录。确认提交？', '提交病历（签名）',
-      { type: 'warning', confirmButtonText: '确认提交（签名）', cancelButtonText: '再改改' })
+    await ElMessageBox.confirm(presave
+      ? '签名即提交：将先暂存屏上当前内容，再以此签名；签名后本次病历原文即冻结，不能再修改，只能追加补正记录。确认提交？'
+      : '签名即提交：这份病历的书写医师不是当前登录人，不会先暂存屏上内容，按已暂存的内容签名；签名后原文即冻结，只能追加补正记录。确认提交？',
+    '提交病历（签名）',
+    { type: 'warning', confirmButtonText: '确认提交（签名）', cancelButtonText: '再改改' })
   } catch {
     return   // 医生取消，不做任何事
   }
   // v79 复核（乙组审计者 D1）：签名端点签的是库里最后一次暂存的稿；此前若医生改完没点「暂存」直接提交，
-  // 签进去的是旧稿，签完重载还会把屏上未暂存的改动悄悄冲掉。提交前一律先把屏上内容暂存，暂存失败就不签。
-  if (!(await saveEmr())) return
+  // 签进去的是旧稿，签完重载还会把屏上未暂存的改动悄悄冲掉。提交前先把屏上内容暂存，暂存失败就不签。
+  // 审阅修补（三）（乙组反驳 B3）：按钮 loading 在暂存之前就置上，往返期间不能再点一次（再弹一次确认框）。
   signing.value = true
   try {
+    if (presave && !(await saveEmr())) return
     const resp = await client.post(`/outpatient/doctor/${current.value.registrationId}/emr/sign`)
     if (resp.data.code !== 0) {
       ElMessage.error(resp.data.message)
@@ -1478,7 +1506,7 @@ function warnIfLeavingUnsigned(next: Record<string, unknown> | null) {
   const prev = current.value
   if (!prev || emrSigned.value || !emrHasContent()) return
   // v79：只有自动套用的默认模板、医生一字未动——那不是「已书写」，不提示
-  if (autoTpl.value && emrEquals(emr, autoTpl.value.after)) return
+  if (untouchedDefaultTemplate(autoTpl.value, emr)) return
   if (next && (next.registrationId as number) === (prev.registrationId as number)) return
   ElMessage({
     type: 'warning',
@@ -1669,6 +1697,8 @@ onMounted(async () => {
   grid-template-columns: 360px 1fr;
   gap: 12px;
 }
+/* v79 审阅修补（三）：跨日期时队列多一列「就诊日期」，加宽同量，仍不横向滚 */
+.doctor-page.range-mode { grid-template-columns: 456px 1fr; }
 .queue-filter { display: flex; align-items: center; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
 .dim { color: var(--el-text-color-placeholder); }
 .emr-status {

@@ -29,7 +29,9 @@
 
     <el-alert v-if="error" type="warning" show-icon :closable="false" :title="error" style="margin-bottom: 8px" />
 
-    <div v-loading="loading">
+    <!-- v79 审阅修补（三）（乙组反驳 B1-E2①/B2-4c，1082★）：抽屉不在病历编辑区的复制容器里，copy 冒不到那一层。
+         「历史病历」页签的正文复制时把事件交给父组件（useEmrPasteGuard 的 onCopy，来源患者 = 当前所看患者）。 -->
+    <div v-loading="loading" @copy="onTextCopy" @cut="onTextCopy">
       <div v-if="seg" class="ref-bar">
         <span class="ref-count">共 {{ seg.count }} 条</span>
         <el-button size="small" type="primary" :disabled="disabled || !seg.count"
@@ -233,6 +235,8 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   (e: 'update:modelValue', v: boolean): void
   (e: 'insert', text: string): void
+  /** v79 审阅修补（三）：「历史病历」页签正文被复制/剪切（父组件据此登记复制来源患者） */
+  (e: 'copy', ev: ClipboardEvent): void
 }>()
 
 const tab = ref('BASIC')
@@ -247,10 +251,12 @@ const items = computed(() => (seg.value?.items ?? []) as Record<string, unknown>
 const emptyText = computed(() => ({
   BASIC: '该就诊无可引用的基本资料',
   LAB: '该患者暂无可引用的检验结果',
-  // v79 审阅修补（甲组 D3）：只列已审核的检查报告（后端 ris_exam.status='VERIFIED'），空态如实说出口径
+  // v79 审阅修补（甲组 D3）：RIS 报告只列已审核的（后端 ris_exam.status='VERIFIED'）。
+  // 审阅修补（三）（甲组反驳 A3-1c）：同页签另一支是医技执行站对检查医嘱录入的执行结果（outp_order_report），
+  // 没有审核环节、取数照旧——空态如实说出两支，不再说成「只列已审核的」
   EXAM: range.value
-    ? '该患者在所选区间内无已审核的检查报告'
-    : '该患者暂无已审核的检查报告（只列已审核的检查报告，未出报告或未审核的不在引用范围内）',
+    ? '该患者在所选区间内无可引用的检查结果（已审核的影像检查报告与医技执行站录入的执行结果都没有）'
+    : '该患者暂无可引用的检查结果（只列已审核的影像检查报告与医技执行站录入的执行结果，后者无审核环节）',
   HISTORY: '该患者暂无既往病历（本次就诊自身不计入）',
   // v79：空态如实说出取数口径——未发布的微生物结果、未签发的病理报告本来就不在引用范围内
   MICRO: range.value
@@ -294,6 +300,11 @@ function onTabChange(name: unknown) {
 function insert(text: string) {
   if (!text.trim()) return
   emit('insert', text)
+}
+
+/** 只上抛「历史病历」页签：那是病历正文；检验检查等结果类资料不在 1082 的「复制病历」口径里，保持修前行为 */
+function onTextCopy(ev: ClipboardEvent) {
+  if (tab.value === 'HISTORY') emit('copy', ev)
 }
 
 // 切患者时清空，避免上一位的资料留在抽屉里（切患者串号是病历事故的常见来源）

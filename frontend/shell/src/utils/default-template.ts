@@ -113,3 +113,12 @@ export function revertDefaultTemplate(emr: EmrFields, before: EmrFields, written
 export function emrEquals(emr: EmrFields, snap: EmrFields): boolean {
   return EMR_SECTION_DEFS.every((d) => emr[d.key] === snap[d.key])
 }
+
+/**
+ * v79 审阅修补（三）（乙组反驳 B3-1f）：自动套用的默认模板还在、且五段与套用后的快照逐字相同——医生一个字没写。
+ * 「提交（签名）」先暂存后，修前那道 4009「病历不存在，请先书写保存」兜底没了，一次点击就能签下一份纯模板骨架；
+ * 提交前用本判定拦下。套用后点过「暂存」（autoTpl 已清）即视为医生认可了这份内容，不再拦。
+ */
+export function untouchedDefaultTemplate(applied: { after: EmrFields } | null | undefined, emr: EmrFields): boolean {
+  return !!applied && emrEquals(emr, applied.after)
+}

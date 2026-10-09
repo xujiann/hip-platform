@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { applyTemplate, type EmrFields } from '../emr-template'
 import {
   editedSinceApplied, eligibleForDefaultTemplate, emrAllBlank, emrEquals, pickDefaultTemplate,
-  planDefaultTemplate, revertDefaultTemplate,
+  planDefaultTemplate, revertDefaultTemplate, untouchedDefaultTemplate,
 } from '../default-template'
 
 /**
@@ -123,5 +123,21 @@ describe('撤销与「是否动过」', () => {
   it('emrEquals 逐段逐字', () => {
     expect(emrEquals(blank(), blank())).toBe(true)
     expect(emrEquals({ ...blank(), advice: ' ' }, blank())).toBe(false)
+  })
+})
+
+/** v79 审阅修补（三）（乙组反驳 B3-1f）：自动套用的模板一字未改不得一键提交 */
+describe('untouchedDefaultTemplate：套用后一字未动才拦', () => {
+  const after = { ...blank(), chiefComplaint: '咳嗽_天', physicalExam: 'T  ℃' }
+  it('没有自动套用 → 不拦', () => {
+    expect(untouchedDefaultTemplate(null, { ...after })).toBe(false)
+    expect(untouchedDefaultTemplate(undefined, { ...after })).toBe(false)
+  })
+  it('套用后逐字未改 → 拦', () => {
+    expect(untouchedDefaultTemplate({ after }, { ...after })).toBe(true)
+  })
+  it('改了任意一段（哪怕只加一个空格）→ 不拦', () => {
+    expect(untouchedDefaultTemplate({ after }, { ...after, chiefComplaint: '咳嗽3天' })).toBe(false)
+    expect(untouchedDefaultTemplate({ after }, { ...after, advice: ' ' })).toBe(false)
   })
 })

@@ -177,9 +177,10 @@
                只识别本系统内复制的片段）。挂在编辑区与时间线的外层容器上：copy/cut/paste 从内部冒泡上来，
                时间线里复制的既往记录也会记下来源患者。**纯前端行为，住院病历保存端点一行未改。** -->
           <div @copy="onCopy" @cut="onCopy" @paste="onPaste">
-          <el-tag v-if="copyMode !== 'off'" size="small" :type="copyMode === 'block' ? 'danger' : 'warning'"
+          <!-- v79 审阅修补（三）（乙组反驳 B1-E1/B2-1b）：放行档也显示，与门诊 DoctorStationView 三档同写法 -->
+          <el-tag size="small" :type="copyMode === 'block' ? 'danger' : copyMode === 'warn' ? 'warning' : 'info'"
                   style="margin-bottom: 6px">
-            跨患者粘贴：{{ copyMode === 'block' ? '禁止' : '需确认' }}
+            跨患者粘贴：{{ copyMode === 'block' ? '禁止' : copyMode === 'warn' ? '需确认' : '放行' }}
           </el-tag>
           <el-input v-model="recordContent" type="textarea" :rows="4"
                     :placeholder="recordType === 'ROUND' ? '查房意见' : '病历内容'" />
