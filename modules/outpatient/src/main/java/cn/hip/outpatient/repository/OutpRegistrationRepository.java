@@ -20,6 +20,9 @@ public interface OutpRegistrationRepository extends JpaRepository<OutpRegistrati
 
     List<OutpRegistration> findTop50ByPatientIdOrderByIdDesc(Long patientId);
 
+    /** v80 审阅修补（D1）：本人名下有没有该患者未退号的挂号——患者级既往资料（历史诊断、历次就诊）的对象级判据。 */
+    boolean existsByPatientIdAndDoctorIdAndStatusNot(Long patientId, Long doctorId, String status);
+
     Optional<OutpRegistration> findByScheduleIdAndPatientIdAndStatus(Long scheduleId, Long patientId, String status);
 
     /** 抢占叫号：并发叫号器只有一方拿到该患者 */

@@ -518,7 +518,8 @@
       </el-input>
       <el-tabs v-model="assistTab">
         <el-tab-pane :label="`历史诊断(${assist.history.length})`" name="history">
-          <el-empty v-if="!assist.history.length" description="该患者无历史诊断" :image-size="60" />
+          <el-empty v-if="!assist.history.length" :image-size="60"
+                    :description="assistHistoryDenied ? '本人名下无该患者的有效挂号，不显示其历史诊断' : '该患者无历史诊断'" />
           <div v-for="(e, i) in assist.history" :key="'h' + i" class="assist-row">
             <span class="assist-name" @click="addDiagFrom(e)">{{ e.icdName }}
               <span v-if="e.icdCode" class="dim">({{ e.icdCode }})</span></span>
@@ -649,7 +650,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { fmtDateTime, todayLocal } from '../../utils/date'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import client from '../../api/client'
+import client, { type BizError } from '../../api/client'
 import { useAuthStore } from '../../stores/auth'
 import EmrRefDrawer, { useEmrPasteGuard } from '../../components/EmrRefDrawer.vue'
 import StructuredFieldForm, { type EmrTemplateField } from '../../components/StructuredFieldForm.vue'
@@ -1062,6 +1063,8 @@ type AssistEntry = { id?: number; icdCode?: string | null; icdName: string; diag
 const assistVisible = ref(false)
 const assistTab = ref('history')
 const assistKeyword = ref('')
+/** v80 审阅修补（D1）：历史段被 4036 拒时为真——抽屉历史页签换一句说明，不说成「该患者无历史诊断」 */
+const assistHistoryDenied = ref(false)
 const assist = ref<{ history: AssistEntry[]; favorite: AssistEntry[]; frequent: AssistEntry[] }>(
   { history: [], favorite: [], frequent: [] })
 
@@ -1381,10 +1384,20 @@ async function openAssist() {
 async function loadAssist() {
   if (!current.value) return
   // patientId 可空：没有患者上下文时 history 段自然为空，常用与高频仍可用
-  const resp = await client.get('/outpatient/doctor/diagnosis-assist', {
-    params: { patientId: current.value.patientId, keyword: assistKeyword.value || undefined },
-  })
-  assist.value = resp.data.data
+  const keyword = assistKeyword.value || undefined
+  assistHistoryDenied.value = false
+  try {
+    const resp = await client.get('/outpatient/doctor/diagnosis-assist', {
+      params: { patientId: current.value.patientId, keyword }, __silentCodes: [4036],
+    })
+    assist.value = resp.data.data
+  } catch (e) {
+    if ((e as BizError).bizCode !== 4036) throw e
+    // v80 审阅修补（D1）：本人名下无该患者有效挂号时后端不给历史诊断（4036）；常用与高频不是患者数据，照常取
+    assistHistoryDenied.value = true
+    const resp = await client.get('/outpatient/doctor/diagnosis-assist', { params: { keyword } })
+    assist.value = resp.data.data
+  }
 }
 
 /** 加星到个人常用诊断（保存病历时本就会自动累加，这里是医生主动收藏） */

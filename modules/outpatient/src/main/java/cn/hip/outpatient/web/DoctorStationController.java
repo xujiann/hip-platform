@@ -11,6 +11,7 @@ import cn.hip.platform.empi.repository.PatientRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
@@ -258,7 +259,30 @@ public class DoctorStationController {
     public R<Map<String, Object>> diagnosisAssist(@RequestParam(required = false) Long patientId,
                                                   @RequestParam(required = false) String keyword,
                                                   Authentication auth) {
+        // v80 审阅修补（D1）：历史段是该患者的诊断，按患者判对象级权限；只传 keyword 的常用 / 高频不是患者数据，不判
+        if (patientId != null && !mayReadPatient(patientId, auth)) {
+            return R.fail(4036, "无权查阅该患者的历史诊断（本人名下无该患者的有效挂号）");
+        }
         return R.ok(doctorStationService.diagnosisAssist(patientId, keyword, currentUserService.idOf(auth)));
+    }
+
+    /**
+     * v80 审阅修补（D1，v80 复核·方案三审计）：患者级既往资料（诊断助手历史段、患者历次就诊）的对象级校验。
+     * 此前只有类级角色门槛，任意门诊医生按 patientId 能读任意患者的历史诊断与历次主诉、处理意见。
+     * 口径与 v80 版本端点（{@code EmrVersionController#denyIfNotOwner}）、引用抽屉（{@code EmrRefController#canRead}）一致：
+     * ADMIN / QUALITY 全看；其余须本人名下至少有一条该患者<b>未退号</b>的挂号（{@code outp_registration.doctor_id = 我}）。
+     * 这里是患者级而非就诊级，故没有「归属为空放行」——那会让任何挂过科室号的患者对全院医生敞开。
+     * {@code auth} 为空（方法签名本无该形参的端点）时从安全上下文取；认不出是谁则拒。
+     */
+    private boolean mayReadPatient(Long patientId, Authentication auth) {
+        if (auth == null) auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null) return false;
+        if (auth.getAuthorities().stream()
+                .anyMatch(a -> "ROLE_ADMIN".equals(a.getAuthority()) || "ROLE_QUALITY".equals(a.getAuthority()))) {
+            return true;
+        }
+        Long me = currentUserService.idOf(auth);
+        return me != null && registrationRepository.existsByPatientIdAndDoctorIdAndStatusNot(patientId, me, "CANCELLED");
     }
 
     public record FavoriteRequest(String icdCode, String icdName, String diagSystem) {}
@@ -327,6 +351,10 @@ public class DoctorStationController {
      */
     @GetMapping("/patient/{patientId}/history")
     public R<List<Map<String, Object>>> patientHistory(@PathVariable Long patientId) {
+        // v80 审阅修补（D1）：登录人从安全上下文取——方法签名被既有用例直接调用，不加 Authentication 形参
+        if (!mayReadPatient(patientId, null)) {
+            return R.fail(4036, "无权查阅该患者的历次就诊（本人名下无该患者的有效挂号）");
+        }
         var regs = registrationRepository.findTop50ByPatientIdOrderByIdDesc(patientId).stream()
                 .filter(r -> !"CANCELLED".equals(r.getStatus()))
                 .toList();
