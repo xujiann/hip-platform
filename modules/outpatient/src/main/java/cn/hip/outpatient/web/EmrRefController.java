@@ -49,7 +49,8 @@ import java.util.Set;
  *       因此住院患者查 LAB/EXAM 引用，拿到的是<b>该患者门诊侧</b>的结果；住院医嘱开出的
  *       检验检查在本平台<b>尚无结果落地表</b>，引用不到就是引用不到，此处不编造空壳条目。</li>
  *   <li><b>EXAM（v79 审阅修补）</b>：RIS 报告<b>只取已审核（{@code ris_exam.status='VERIFIED'}）的</b>——
- *       没出报告与未审核的不给临床引用；医技站文本结果 {@code outp_order_report} 一支口径未动。</li>
+ *       没出报告与未审核的不给临床引用；医技站文本结果 {@code outp_order_report} 一支口径未动——
+ *       它没有审核环节，条目标题标「（执行站录入，未经审核）」（审阅修补（三））。</li>
  *   <li><b>MICRO（v79）</b>：{@code lab_micro_result} + {@code lab_micro_ast}，经 {@code order_id → outp_order →
  *       outp_registration} 归到患者，<b>只取标本已发布（{@code lis_sample.published_at} 非空）的</b>——
  *       微生物结果在标本核收后录入、随标本审核发布，未发布的是检验科尚未放行的结果，不给临床引用。
@@ -471,8 +472,12 @@ public class EmrRefController {
                 order by rep.executed_at desc, rep.id desc
                 limit ?
                 """, labArgs(enc, w))) {
+            // v79 审阅修补（三）（甲组反驳 A3-1c / A1）：这一支是医技执行站对检查医嘱「一步执行 + 录入结果」的自由文本
+            // （ExecStationController#execute），没有报告/审核两道环节——与上面只取 VERIFIED 的 RIS 报告不是一回事。
+            // 取数不收紧（不改变既有可见性），但条目标题如实标出，别让它顶着「已审核的检查报告」的名义被引用。
             var it = item("EXAM-REPORT-" + str(r.get("id")),
-                    str(r.get("order_name")) + " · " + dateText(r.get("visit_date"), r.get("executed_at")),
+                    str(r.get("order_name")) + "（执行站录入，未经审核） · "
+                            + dateText(r.get("visit_date"), r.get("executed_at")),
                     str(r.get("order_name")) + "：" + str(r.get("result_text")), r);
             it.put("critical", false);
             it.put("currentVisit", sameRegistration(enc, r.get("registration_id")));

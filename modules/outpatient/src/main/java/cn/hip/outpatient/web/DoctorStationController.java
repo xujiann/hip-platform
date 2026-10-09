@@ -112,6 +112,9 @@ public class DoctorStationController {
                         m.put("age", cn.hip.platform.empi.service.PatientService.ageOf(p.getBirthDate()));
                         m.put("allergyHistory", p.getAllergyHistory());
                     });
+                    // v79 审阅修补（三）（甲组反驳 A2-U3）：跨日期模式下同一患者不同日的两次就诊肉眼无法区分，
+                    // 只追加这一个键供前端加「就诊日期」列；既有键与顺序不动。
+                    m.put("visitDate", r.getVisitDate());
                     return (Map<String, Object>) m;
                 }).toList());
     }
