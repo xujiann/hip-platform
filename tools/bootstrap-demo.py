@@ -518,7 +518,12 @@ def ensure_emr_ref_demo():
     if reg is None:
         return
     rid = reg['id']
-    if step('接诊', call('POST', f'/outpatient/doctor/{rid}/start', {}, t)) is None:
+    # v79 复核（甲组反驳者二）：由 doctor01 接诊并写病历——此前 admin 接诊，评委勾「跨日期」时这一行点进去被 4036 拒
+    dt = login_as('doctor01', 'Demo1234')
+    if not dt:
+        print('引用演示：doctor01 登录失败，跳过')
+        return
+    if step('接诊', call('POST', f'/outpatient/doctor/{rid}/start', {}, dt)) is None:
         return
 
     # 2) 开单（检验 + 病理一次开）→ 收费
@@ -539,11 +544,11 @@ def ensure_emr_ref_demo():
                         'presentIllness': '3 天前无明显诱因出现尿频、尿急、尿痛，伴发热，体温最高 38.6℃，无腰痛。',
                         'pastHistory': '既往体健', 'physicalExam': 'T 38.2℃，双肾区无叩痛，耻骨上轻压痛',
                         'advice': '留中段尿培养，经验性抗感染，3 天后复诊'},
-                'diagnoses': [{'icdCode': 'N39.0', 'icdName': '泌尿道感染'}]}, t)) is not None:
+                'diagnoses': [{'icdCode': 'N39.0', 'icdName': '泌尿道感染'}]}, dt)) is not None:
             print('引用演示·历史病历：张三往次就诊已写一份门诊病历（泌尿道感染）')
     if not lines:
         return
-    orders = step('开单', call('POST', f'/outpatient/doctor/{rid}/orders', {'lines': lines}, t))
+    orders = step('开单', call('POST', f'/outpatient/doctor/{rid}/orders', {'lines': lines}, dt))
     if orders is None:
         return
     if step('收费', call('POST', '/outpatient/charges/settle', {'registrationId': rid, 'payMethod': 'CASH'}, t)) is None:
@@ -585,10 +590,6 @@ def ensure_emr_ref_demo():
 
     # 4) 病理：登记 → 核收 → 诊断 → 初签（admin）→ 复签（doctor01）→ 签发
     if need_path:
-        dt = login_as('doctor01', 'Demo1234')
-        if not dt:
-            print('引用演示·病理：doctor01 登录失败（复签须另一人），停在开单收费之后')
-            return
         fixed_at = (datetime.datetime.now(datetime.timezone.utc)
                     - datetime.timedelta(minutes=30)).isoformat().replace('+00:00', 'Z')
         sp = step('病理登记', call('POST', '/pathology/registry/specimens', {

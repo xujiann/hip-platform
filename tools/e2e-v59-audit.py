@@ -392,11 +392,13 @@ FLAT2 = '再改一次的自由描述 ' + uniq('O')
 rv = ok(api('PUT', f'/pathology/process/grossing/{s2}/fields', {'grossText': FLAT2}), 'off 档去结构化修订')
 assert rv['warnings'] == [], f'off 不判、warnings 键仍在：{rv}'
 
-# 坏配置回落 warn 而非 off（把笔误当成静默关闭校验是更坏的默认）
-set_grossfield_gate('BLOKC')
-FLAT3 = '坏配置下的自由描述 ' + uniq('B')
-rv = ok(api('PUT', f'/pathology/process/grossing/{s2}/fields', {'grossText': FLAT3}), '坏配置档去结构化修订')
-assert len(rv['warnings']) == 1, f'坏配置回落 warn 而非 off：{rv}'
+# 坏配置不得被当成静默关闭。v79 起笔误在**写入口**就被拒（SysConfigController 三态键只认小写 off/warn/block → 1402），
+# 比读取端"回落 warn"更早拦住；读取端回落只对绕过接口直写库的值有意义（JUnit 覆盖）。这里断言写入被拒、档位不变。
+bad = api('PUT', f'/config/{GROSS_FIELD_GATE}?value={q("BLOKC")}')
+assert bad['code'] == 1402, f'笔误档位须在写入口被拒（1402），不得落库：{bad}'
+FLAT3 = '坏配置被拒后的自由描述 ' + uniq('B')
+rv = ok(api('PUT', f'/pathology/process/grossing/{s2}/fields', {'grossText': FLAT3}), '笔误被拒后仍按 off 档')
+assert rv['warnings'] == [], f'笔误被拒、档位仍是 off：{rv}'
 set_grossfield_gate('warn')   # 还原出厂档位，不给后面的用例留脏配置
 
 # (f) 旧端点 POST /pathology/specimens：描述缺失 / 空白 → 4554 且零行（修复前描述可空、旧页写死「手术切除标本」落库）
