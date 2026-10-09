@@ -142,7 +142,7 @@
                       : `病历完整性预检：还缺 ${(integrity.missing || []).length} 项 —— ${(integrity.missing || []).join('、')}`" />
           <el-form inline>
             <el-form-item>
-              <el-select v-model="recordType" style="width: 130px">
+              <el-select v-model="recordType" style="width: 130px" :disabled="!!editingRecord">
                 <el-option label="入院记录" value="ADMISSION" />
                 <el-option label="首次病程" value="FIRST_PROGRESS" />
                 <el-option label="病程记录" value="PROGRESS" />
@@ -154,7 +154,7 @@
               </el-select>
             </el-form-item>
             <el-form-item v-if="recordType === 'ROUND'">
-              <el-select v-model="roundLevel" style="width: 120px">
+              <el-select v-model="roundLevel" style="width: 120px" :disabled="!!editingRecord">
                 <el-option label="主任查房" value="CHIEF" />
                 <el-option label="主治查房" value="ATTENDING" />
                 <el-option label="住院医查房" value="RESIDENT" />
@@ -185,15 +185,26 @@
                     :placeholder="recordType === 'ROUND' ? '查房意见' : '病历内容'" />
           <el-input v-if="recordType === 'ROUND'" v-model="superiorCorrection" type="textarea" :rows="2"
                     placeholder="上级修正意见（可空）" style="margin-top: 6px" />
-          <!-- v79（2457★ 住院侧）：不新增状态列——未签名即「暂存」、已签名即「已提交」，端点一个未改 -->
-          <el-button type="primary" style="margin-top: 8px" @click="addRecord">暂存记录</el-button>
-          <span class="sign-tip">暂存后在下方记录旁点「提交（签名）」；签名后原文冻结，如需更正只能追加补正</span>
+          <!-- v79（2457★ 住院侧）：不新增状态列——未签名即「暂存」、已签名即「已提交」。
+               v79 审阅修补（乙组 D2/N10）：暂存记录此前写好就改不了；现时间线未签名记录有「修改」，
+               回填到本编辑区，保存走 PUT /records/{id}（每次保存多一版留痕）。 -->
+          <template v-if="editingRecord">
+            <el-button type="primary" style="margin-top: 8px" :loading="savingEdit" @click="saveEdit">保存修改</el-button>
+            <el-button style="margin-top: 8px" @click="cancelEdit">取消修改</el-button>
+            <span class="sign-tip">正在修改暂存记录《{{ editingRecord.title }}》；保存后仍为暂存（未签名），并多一版留痕</span>
+          </template>
+          <template v-else>
+            <el-button type="primary" style="margin-top: 8px" @click="addRecord">暂存记录</el-button>
+            <span class="sign-tip">暂存后可在下方记录旁点「修改」续写，写完点「提交（签名）」；签名后原文冻结，如需更正只能追加补正</span>
+          </template>
           <el-timeline style="margin-top: 16px">
             <el-timeline-item v-for="r in records" :key="r.id as number"
                               :timestamp="`${fmtDateTime(r.createdAt)} · ${recordTypeNames[r.recordType as string]}`">
               <b>{{ r.title }}</b>
               <el-tag v-if="r.signature" size="small" type="success" style="margin-left: 6px">已提交（已签名）</el-tag>
               <el-tag v-else size="small" type="info" style="margin-left: 6px">暂存（未签名）</el-tag>
+              <el-button v-if="canEditInpRecord(r)" size="small" link type="primary" style="margin-left: 6px"
+                         @click="startEdit(r)">修改</el-button>
               <el-button v-if="!r.signature" size="small" link type="primary" style="margin-left: 6px"
                          @click="signRecord(r)">提交（签名）</el-button>
               <!-- 阻塞4：签名冻结病历只能追加补正，不能改原文 -->
@@ -397,6 +408,7 @@ import { fmtDateTime } from '../../utils/date'
 import VitalsChart from '../../components/VitalsChart.vue'
 import { useEmrPasteGuard } from '../../components/EmrRefDrawer.vue'
 import { useAuthStore } from '../../stores/auth'
+import { canEditInpRecord, inpEditFormOf, inpUpdatePayload } from '../../utils/inp-record-edit'
 
 /** v42：体温单打印（周次由打印页自行翻页，此处固定从第 1 住院周进） */
 function printTempSheet() {
@@ -449,6 +461,9 @@ const vitals = ref<Record<string, unknown>[]>([])
 const recordType = ref('PROGRESS')
 const recordTitle = ref('')
 const recordContent = ref('')
+/** v79 审阅修补（乙组 D2/N10）：正在编辑区修改的暂存记录；null = 编辑区用于新建 */
+const editingRecord = ref<Record<string, unknown> | null>(null)
+const savingEdit = ref(false)
 // v42：PREOP 补入中文名——此前 EmrIntegrityService 判「缺术前小结」，而列表里 PREOP 行显示为 undefined
 const recordTypeNames: Record<string, string> = { ADMISSION: '入院记录', FIRST_PROGRESS: '首次病程', PROGRESS: '病程记录', ROUND: '三级查房', PREOP: '术前小结', DISCHARGE: '出院小结' }
 const roundLevel = ref('ATTENDING')
@@ -662,7 +677,11 @@ async function applyEmrTemplate() {
 async function open(row: Record<string, unknown> | null) {
   // v74 复核（1006★ 第二轮审计者）：备注/注意事项/加急是页面级值，换患者必须清空，
   // 否则给 A 填了没开立、切到 B 再点开药，备注会落到 B 的医嘱上。同一患者刷新（开立/停嘱后）不清。
-  if (row?.id !== current.value?.id) resetExtras()
+  if (row?.id !== current.value?.id) {
+    resetExtras()
+    // v79 审阅修补：换患者时撤掉进行中的修改，不把 A 的记录 id 带到 B 的路径上
+    if (editingRecord.value) clearEditor()
+  }
   current.value = row
   account.value = null
   emrTemplateId.value = null
@@ -755,6 +774,62 @@ async function addRecord() {
   await open(current.value)
 }
 
+/* ---------- v79 审阅修补（乙组 D2/N10，2457★）：修改未签名（暂存）记录 ---------- */
+function clearEditor() {
+  editingRecord.value = null
+  recordContent.value = ''
+  recordTitle.value = ''
+  superiorCorrection.value = ''
+  emrTemplateId.value = null
+}
+
+async function startEdit(r: Record<string, unknown>) {
+  if (!canEditInpRecord(r)) return
+  // 编辑区里有尚未暂存的新内容时先确认，别一声不响地覆盖掉
+  if (!editingRecord.value && recordContent.value.trim()) {
+    const ok = await ElMessageBox.confirm('编辑区里尚未暂存的内容将被该记录的正文替换，是否继续？', '修改暂存记录',
+      { type: 'warning' }).then(() => true).catch(() => false)
+    if (!ok) return
+  }
+  const f = inpEditFormOf(r)
+  editingRecord.value = r
+  recordType.value = f.recordType
+  recordTitle.value = f.title
+  recordContent.value = f.content
+  superiorCorrection.value = f.superiorCorrection
+  if (f.roundLevel) roundLevel.value = f.roundLevel
+  emrTemplateId.value = null
+}
+
+function cancelEdit() {
+  clearEditor()
+}
+
+async function saveEdit() {
+  if (!current.value || !editingRecord.value) return
+  if (!recordContent.value.trim()) {
+    ElMessage.warning(recordType.value === 'ROUND' ? '请填写查房意见' : '请填写病历内容')
+    return
+  }
+  savingEdit.value = true
+  try {
+    await client.put(`/inpatient/admissions/${current.value.id}/records/${editingRecord.value.id}`,
+      inpUpdatePayload({
+        recordType: recordType.value,
+        title: recordTitle.value,
+        content: recordContent.value,
+        superiorCorrection: superiorCorrection.value,
+      }))
+    ElMessage.success('已保存修改（仍为暂存，未签名）')
+    clearEditor()
+    await open(current.value)
+  } catch {
+    /* 拦截器已弹错（如 9103 已被签名）：编辑区内容保留，医生可复制后另行处理 */
+  } finally {
+    savingEdit.value = false
+  }
+}
+
 /**
  * v79（1082★/2458）：住院病历跨患者复制粘贴管控，与门诊共用 useEmrPasteGuard（导出签名未改）。
  * 档位取自 GET /outpatient/emr-ref/copy-policy（sys_config emr.copy.cross_patient，经系统配置接口设置、无独立界面），
@@ -781,6 +856,11 @@ function openEmrVersions(r: Record<string, unknown>) {
 // 1.0.4：病历 CA 签名（签名后冻结标识）
 async function signRecord(r: Record<string, unknown>) {
   if (!current.value) return
+  // v79 审阅修补：正在编辑区修改的这条若直接签名，签的是库里的旧正文、屏上改动随之作废——先保存或取消
+  if (editingRecord.value && editingRecord.value.id === r.id) {
+    ElMessage.warning('这条记录正在修改中：请先「保存修改」或「取消修改」，再提交（签名）')
+    return
+  }
   await client.post(`/inpatient/admissions/${current.value.id}/records/${r.id}/sign`)
   ElMessage.success('已提交（已签名）')
   await open(current.value)

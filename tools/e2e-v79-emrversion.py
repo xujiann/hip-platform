@@ -10,6 +10,8 @@ JUnit（V79EmrVersionReadTest）跑在回滚事务里、用 MockMvc 冒充登录
   [4] 挂号不存在 4001、id 非法 4000；
   [5] 住院医生站入口的目标有数据：新建住院记录 → GET /emr/versions/INP/{记录id} 至少一版（MANUAL），签名后多一版（SUBMIT）；
       收尾出院释放床位。
+  [6] （v79 审阅修补，乙组 D2/N10）住院暂存记录可修改：未签名点补正 9108 指向「修改」→ PUT 修改 → 版本数 +1（MANUAL，
+      保存人为本次登录人）→ 签名后再改 9103（指向补正）→ 经别的住院路径改 9102；
   [7] （v79 审阅修补，甲组 D4）[1] 第 1 次保存落下的正文版本与诊断版本时刻相等（同取数据库事务时钟）。
 自成一体：自建患者、排班、挂号、入院；时间一律从 e2elib.today_bj() 取，不写墙钟字面量。
 """
@@ -105,6 +107,33 @@ try:
 finally:
     discharge_cleanup(t, aid, 'CASH')
 
+# ============ [6] v79 审阅修补（乙组 D2/N10）：住院暂存记录可修改，每改一次多一版 ============
+pc = new_patient(t, 'V79住院修改', sex='F')
+bed = find_free_bed(t)
+aid2 = ok(api('POST', '/inpatient/admissions', {'patientId': pc['id'], 'deptId': 1, 'bedId': bed['id'],
+                                                 'deposit': 1000, 'payMethod': 'CASH'}), '入院2')['id']
+try:
+    rec2 = ok(api('POST', f'/inpatient/admissions/{aid2}/records',
+                  {'recordType': 'PROGRESS', 'title': '病程记录', 'content': 'V79 病程：发热，待查。'}), '新建暂存记录')
+    r = api('POST', f"/inpatient/admissions/{aid2}/records/{rec2['id']}/amend", {'amendText': 'x', 'reason': 'y'})
+    assert r['code'] == 9108 and '「修改」' in r['message'], f'未签名点补正须指向真实存在的「修改」: {r}'
+    before = ok(api('GET', f"/emr/versions/INP/{rec2['id']}"), '修改前版本列表')
+    upd = ok(api('PUT', f"/inpatient/admissions/{aid2}/records/{rec2['id']}",
+                 {'content': 'V79 病程：发热，待查。今日体温 37.2℃，咳嗽减轻。'}), 'PUT 修改暂存记录')
+    assert upd['content'].endswith('咳嗽减轻。') and upd['title'] == '病程记录' and not upd.get('signature'), upd
+    after = ok(api('GET', f"/emr/versions/INP/{rec2['id']}"), '修改后版本列表')
+    assert after['total'] == before['total'] + 1, f'修改一次版本数应 +1: {before["total"]} → {after["total"]}'
+    assert after['items'][0]['source'] == 'MANUAL' and after['items'][0]['savedBy'] == me['id'], after['items'][0]
+    ok(api('POST', f"/inpatient/admissions/{aid2}/records/{rec2['id']}/sign", {}), '签名')
+    r = api('PUT', f"/inpatient/admissions/{aid2}/records/{rec2['id']}", {'content': '签名后再改'})
+    assert r['code'] == 9103 and '补正' in r['message'], f'已签名不可直接修改（9103，指向补正）: {r}'
+    r = api('PUT', f"/inpatient/admissions/{aid}/records/{rec2['id']}", {'content': '经别人的住院路径改'})
+    assert r['code'] == 9102, f'记录不属于路径里的住院应 9102: {r}'
+    print(f"[6] 住院暂存记录 #{rec2['id']} PUT 修改：版本 {before['total']} → {after['total']}（MANUAL），"
+          f"签名后再改 9103、跨住院 9102、未签名补正 9108 指向「修改」 OK")
+finally:
+    discharge_cleanup(t, aid2, 'CASH')
+
 # ============ [7] v79 审阅修补（甲组 D4）：同一次保存的正文版本与诊断版本同一时钟 ============
 import re  # noqa: E402
 from datetime import datetime  # noqa: E402
@@ -124,4 +153,4 @@ assert ts(body_v1['savedAt']) == ts(v1['changedAt']), \
 assert ts(body_v1['savedAt']) <= ts(v2['changedAt']), '第 1 次保存的正文版本不得晚于第 2 次保存的诊断版本'
 print(f"[7] 同一次保存：正文版本与诊断版本时刻相等（{body_v1['savedAt']}）OK")
 
-print('\n=== v79 病历留痕读出 E2E（诊断版本读出 + 空态 + 住院入口目标 + 同源时钟）全部通过 ===')
+print('\n=== v79 病历留痕读出 E2E（诊断版本读出 + 空态 + 住院入口目标 + 暂存记录修改 + 同源时钟）全部通过 ===')

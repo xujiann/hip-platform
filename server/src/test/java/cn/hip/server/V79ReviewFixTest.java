@@ -288,6 +288,142 @@ class V79ReviewFixTest {
         assertEquals(512, count("select char_length(chief_complaint) from outp_emr where registration_id = ?", rid));
     }
 
+    // ==================== ④ 乙 D2/N10：住院未签名记录可修改 ====================
+
+    private Long admit(String tag) {
+        Long pid = newPatient(tag);
+        Long bedId = jdbc.queryForObject("select id from inp_bed where status = 'FREE' order by id limit 1", Long.class);
+        assertNotNull(bedId, "测试库需要至少一张空床");
+        Long id = inpatientService.admit(pid, 1L, bedId, null, "J18.9", "肺炎",
+                new BigDecimal("1000"), "CASH", null).getId();
+        em.flush();
+        return id;
+    }
+
+    private int inpVersions(Long recordId) {
+        return (int) count("select count(*) from emr_version where emr_type = 'INP' and emr_id = ?", recordId);
+    }
+
+    @Test
+    void unsignedInpRecordCanBeEditedAndEachEditLeavesAManualVersion() {
+        Authentication doc = doctorAuth("v79fix_inp_a");
+        Long admId = admit("改");
+        var saved = inpEmrController.addRecord(admId,
+                new InpEmrController.SaveRecordRequest("PROGRESS", "病程记录", "患者今日体温37.5℃"), doc);
+        assertEquals(0, saved.getCode(), saved.getMessage());
+        Long recordId = saved.getData().getId();
+        em.flush();
+        assertEquals(1, inpVersions(recordId));
+
+        Authentication editor = doctorAuth("v79fix_inp_b");
+        var r = inpEmrController.updateRecord(admId, recordId,
+                new InpEmrController.UpdateRecordRequest(null, "患者今日体温37.5℃，咳嗽较前减轻，继续抗感染治疗。", null),
+                editor);
+        assertEquals(0, r.getCode(), r.getMessage());
+        em.flush();
+        em.clear();
+
+        assertEquals("患者今日体温37.5℃，咳嗽较前减轻，继续抗感染治疗。", jdbc.queryForObject(
+                "select content from inp_medical_record where id = ?", String.class, recordId));
+        assertEquals("病程记录", jdbc.queryForObject(
+                "select title from inp_medical_record where id = ?", String.class, recordId), "标题不传则不动");
+        assertEquals(2, inpVersions(recordId), "修改未签名记录要多落一版");
+        var v2 = jdbc.queryForMap("""
+                select source, saved_by, content from emr_version
+                where emr_type = 'INP' and emr_id = ? and version_no = 2
+                """, recordId);
+        assertEquals("MANUAL", v2.get("source"), "修改即一次手动保存，沿用既有 MANUAL");
+        assertEquals(userId("v79fix_inp_b"), ((Number) v2.get("saved_by")).longValue(), "版本记修改人");
+        assertTrue(String.valueOf(v2.get("content")).contains("继续抗感染治疗"));
+
+        // 同内容再改一次：去重开着，不刷出一版一模一样的版本
+        assertEquals(0, inpEmrController.updateRecord(admId, recordId,
+                new InpEmrController.UpdateRecordRequest(null, "患者今日体温37.5℃，咳嗽较前减轻，继续抗感染治疗。", null),
+                editor).getCode());
+        em.flush();
+        assertEquals(2, inpVersions(recordId));
+    }
+
+    @Test
+    void roundRecordEditKeepsOpinionAndContentInStep() {
+        Authentication doc = doctorAuth("v79fix_inp_r");
+        Long admId = admit("房");
+        Long recordId = inpEmrController.addRound(admId,
+                new InpEmrController.RoundRequest("ATTENDING", "查房意见：继续观察", null, null), doc).getData().getId();
+        em.flush();
+        var r = inpEmrController.updateRecord(admId, recordId,
+                new InpEmrController.UpdateRecordRequest("主治查房（改）", "查房意见：加用雾化", "同意"), doc);
+        assertEquals(0, r.getCode(), r.getMessage());
+        em.flush();
+        em.clear();
+        var row = jdbc.queryForMap("select title, content, round_opinion, superior_correction "
+                + "from inp_medical_record where id = ?", recordId);
+        assertEquals("主治查房（改）", row.get("title"));
+        assertEquals("查房意见：加用雾化", row.get("content"));
+        assertEquals("查房意见：加用雾化", row.get("round_opinion"), "查房记录正文即查房意见，两列须同步");
+        assertEquals("同意", row.get("superior_correction"));
+        assertEquals(2, inpVersions(recordId));
+    }
+
+    @Test
+    void signedInpRecordCannotBeEditedAndPointsToAmendment() {
+        Authentication doc = doctorAuth("v79fix_inp_s");
+        Long admId = admit("签");
+        Long recordId = inpEmrController.addRecord(admId,
+                new InpEmrController.SaveRecordRequest("PROGRESS", "病程记录", "原文"), doc).getData().getId();
+        em.flush();
+        assertEquals(0, inpEmrController.signRecord(admId, recordId, doc).getCode());
+        em.flush();
+
+        var r = inpEmrController.updateRecord(admId, recordId,
+                new InpEmrController.UpdateRecordRequest(null, "改后的原文", null), doc);
+        assertEquals(9103, r.getCode(), "已签名冻结沿用既有 9103");
+        assertTrue(r.getMessage().contains("补正"), "提示须指向补正：" + r.getMessage());
+        em.flush();
+        em.clear();
+        assertEquals("原文", jdbc.queryForObject("select content from inp_medical_record where id = ?",
+                String.class, recordId));
+        assertEquals(2, inpVersions(recordId), "被拒的修改不落版本（新建一版 + 签名一版）");
+    }
+
+    @Test
+    void editIsScopedToTheAdmissionInThePathAndRejectsBlankContent() {
+        Authentication doc = doctorAuth("v79fix_inp_x");
+        Long admA = admit("甲");
+        Long admB = admit("乙");
+        Long recA = inpEmrController.addRecord(admA,
+                new InpEmrController.SaveRecordRequest("PROGRESS", "病程记录", "甲的原文"), doc).getData().getId();
+        em.flush();
+
+        var cross = inpEmrController.updateRecord(admB, recA,
+                new InpEmrController.UpdateRecordRequest(null, "串改", null), doc);
+        assertEquals(9102, cross.getCode(), "经乙的住院路径改甲的记录 = 记录不存在（沿用 9102）");
+        assertEquals(9102, inpEmrController.updateRecord(admA, -1L,
+                new InpEmrController.UpdateRecordRequest(null, "x", null), doc).getCode());
+        assertEquals(9101, inpEmrController.updateRecord(admA, recA,
+                new InpEmrController.UpdateRecordRequest(null, "  ", null), doc).getCode());
+        assertEquals(4000, inpEmrController.updateRecord(admA, recA,
+                new InpEmrController.UpdateRecordRequest("题".repeat(101), "正文", null), doc).getCode(),
+                "标题超列宽 100 → 4000，不撞库");
+        em.flush();
+        em.clear();
+        assertEquals("甲的原文", jdbc.queryForObject("select content from inp_medical_record where id = ?",
+                String.class, recA));
+        assertEquals(1, inpVersions(recA));
+    }
+
+    @Test
+    void amendOnUnsignedRecordPointsToTheRealEditEntry() {
+        Authentication doc = doctorAuth("v79fix_inp_m");
+        Long admId = admit("补");
+        Long recordId = inpEmrController.addRecord(admId,
+                new InpEmrController.SaveRecordRequest("PROGRESS", "病程记录", "原文"), doc).getData().getId();
+        em.flush();
+        var r = inpEmrController.amendRecord(admId, recordId, new InpEmrController.AmendRequest("补", "因"), doc);
+        assertEquals(9108, r.getCode());
+        assertTrue(r.getMessage().contains("「修改」"), "9108 须指向时间线上真实存在的「修改」：" + r.getMessage());
+    }
+
     private static Path repoRoot() {
         Path p = Path.of(System.getProperty("user.dir")).toAbsolutePath();
         for (int i = 0; i < 6 && p != null; i++, p = p.getParent()) {

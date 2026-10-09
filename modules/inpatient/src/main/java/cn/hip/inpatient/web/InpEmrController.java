@@ -29,6 +29,8 @@ public class InpEmrController {
     private final cn.hip.platform.integration.signature.SignatureAdapter signatureAdapter;
     private final org.springframework.jdbc.core.JdbcTemplate jdbc;
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
+    /** v79 审阅修补：修改端点条件更新后刷新受管实体用 */
+    private final jakarta.persistence.EntityManager entityManager;
 
     @GetMapping("/records")
     public R<List<InpMedicalRecord>> records(@PathVariable Long admissionId) {
@@ -172,12 +174,97 @@ public class InpEmrController {
         return R.ok(java.util.Map.of("signature", r.getSignature(), "signedAt", r.getSignedAt()));
     }
 
+    /**
+     * 修改未签名住院病历记录的请求体。{@code title} 不传（null/空白）则不动；
+     * {@code superiorCorrection} 只对三级查房记录生效（其余类型忽略），不传则不动。
+     */
+    public record UpdateRecordRequest(String title, String content, String superiorCorrection) {}
+
+    /** {@code inp_medical_record.title} 的列宽，取自实体 {@code @Column(length)}，超长 4000 点名而不撞库 */
+    private static final int TITLE_MAX = columnLength("title");
+    /** 三级查房的查房意见/上级修正意见列宽（varchar(2000)） */
+    private static final int ROUND_TEXT_MAX = columnLength("roundOpinion");
+
+    private static int columnLength(String field) {
+        try {
+            return InpMedicalRecord.class.getDeclaredField(field)
+                    .getAnnotation(jakarta.persistence.Column.class).length();
+        } catch (NoSuchFieldException e) {
+            throw new IllegalStateException("InpMedicalRecord 缺字段 " + field, e);
+        }
+    }
+
+    /**
+     * v79 审阅修补（乙组 D2 / N10，偏离表 2457★）：修改<b>未签名</b>的住院病历记录正文。
+     *
+     * <p>此前本控制器只有新建、签名、补正，<b>没有任何修改既有记录正文的端点</b>——住院「暂存」是一条写好就
+     * 改不了的未签名记录，未签名点补正又被 9108 以「请直接修改」拒回，而直接修改的路并不存在。
+     * 本端点补上这条路：未签名即暂存，可反复修改；签名即提交，冻结后只能补正（9103，沿用签名端点的既有冻结码）。
+     *
+     * <p><b>留痕</b>：与新建同一个接缝 {@link #recordInpVersion}，来源 MANUAL（修改即一次手动保存，与门诊
+     * 暂存后再保存同口径，不新增来源枚举）；去重开着时同内容不落新版。保存人记<b>本次修改人</b>，不回填书写人。
+     * <p><b>不改的</b>：记录类型、书写人 doctor_id、结构化侧车 content_json（保留新建时的值，不反解正文回填）。
+     * 三级查房记录的正文即查房意见（新建时 content = roundOpinion），两列同步改，避免同一记录两处说法不一。
+     *
+     * <p>错误码全部复用：记录不存在或不属于路径里的住院 9102（同签名端点）、已签名 9103、正文空 9101、
+     * 标题/查房意见超列宽 4000。
+     */
+    @PutMapping("/records/{recordId}")
+    @org.springframework.transaction.annotation.Transactional
+    public R<InpMedicalRecord> updateRecord(@PathVariable Long admissionId, @PathVariable Long recordId,
+                                            @RequestBody UpdateRecordRequest req, Authentication auth) {
+        InpMedicalRecord r = recordRepo.findById(recordId)
+                .filter(x -> x.getAdmissionId().equals(admissionId)).orElse(null);
+        if (r == null) return R.fail(9102, "病历不存在");
+        if (r.getSignature() != null) {
+            return R.fail(9103, "病历已签名（已提交），原文冻结不可直接修改；如需更正请点「补正」追加补正记录");
+        }
+        String content = req == null ? null : req.content();
+        if (content == null || content.isBlank()) return R.fail(9101, "病历内容不能为空");
+        String title = req.title() == null || req.title().isBlank() ? null : req.title().trim();
+        if (title != null && title.codePointCount(0, title.length()) > TITLE_MAX) {
+            return R.fail(4000, "请求参数不正确：标题超过 " + TITLE_MAX + " 字（当前 "
+                    + title.codePointCount(0, title.length()) + " 字）");
+        }
+        boolean round = "ROUND".equals(r.getRecordType());
+        if (round) {
+            for (String[] f : new String[][]{{"查房意见", content}, {"上级修正意见", req.superiorCorrection()}}) {
+                if (f[1] != null && f[1].codePointCount(0, f[1].length()) > ROUND_TEXT_MAX) {
+                    return R.fail(4000, "请求参数不正确：" + f[0] + "超过 " + ROUND_TEXT_MAX + " 字（当前 "
+                            + f[1].codePointCount(0, f[1].length()) + " 字）");
+                }
+            }
+        }
+
+        // 条件更新而非整实体 save：`signature is null` 写在 where 里，按影响行数判定——
+        // 读到「未签名」与写入之间若被别人签了名，这里 0 行、如实回 9103，不会把签名列一并覆盖回 null。
+        String sc = req.superiorCorrection();
+        int n = jdbc.update("""
+                update inp_medical_record
+                   set title = coalesce(?, title), content = ?,
+                       round_opinion = case when record_type = 'ROUND' then ? else round_opinion end,
+                       superior_correction = case when record_type = 'ROUND' and ?::boolean
+                                                  then ? else superior_correction end
+                 where id = ? and admission_id = ? and signature is null
+                """, title, content, content, sc != null, sc == null || sc.isBlank() ? null : sc,
+                recordId, admissionId);
+        if (n == 0) {
+            return R.fail(9103, "病历已签名（已提交），原文冻结不可直接修改；如需更正请点「补正」追加补正记录");
+        }
+        // 开头 findById 已把旧值读进持久化上下文：刷新为库内现值（同时重置脏检查快照，提交时不会把旧值写回），
+        // 留痕快照与返回体都取改后的正文
+        entityManager.refresh(r);
+        InpMedicalRecord saved = r;
+        recordInpVersion(saved, cn.hip.outpatient.service.EmrVersionService.MANUAL, currentUserService.idOf(auth));
+        return R.ok(saved);
+    }
+
     public record AmendRequest(String amendText, String reason) {}
 
     /**
      * 1.2.13 阻塞4：住院病历补正——签名冻结的病历不放开编辑，只能追加法定留痕补正记录
      * （原文快照 + 补正内容 + 补正人 + 补正时间 + 补正原因）。
-     * 签名前应走 POST /records 或直接维护，签名后才走补正。
+     * 签名前走 PUT /records/{recordId} 直接修改（v79 审阅修补补上，此前该路径不存在），签名后才走补正。
      */
     @PostMapping("/records/{recordId}/amend")
     public R<Void> amendRecord(@PathVariable Long admissionId, @PathVariable Long recordId,
@@ -185,7 +272,10 @@ public class InpEmrController {
         InpMedicalRecord r = recordRepo.findById(recordId)
                 .filter(x -> x.getAdmissionId().equals(admissionId)).orElse(null);
         if (r == null) return R.fail(9107, "病历不存在");
-        if (r.getSignature() == null) return R.fail(9108, "病历未签名冻结，请直接修改，无需补正");
+        // v79 审阅修补（乙组 N10）：原文「请直接修改」指向一条不存在的路；现修改端点已补，文案指向时间线上真实的入口
+        if (r.getSignature() == null) {
+            return R.fail(9108, "病历尚未签名，无需补正：请在病历时间线点该记录的「修改」直接修改正文");
+        }
         if (req.amendText() == null || req.amendText().isBlank()) return R.fail(9109, "补正内容不能为空");
         if (req.reason() == null || req.reason().isBlank()) return R.fail(9109, "补正原因不能为空");
         jdbc.update("""
