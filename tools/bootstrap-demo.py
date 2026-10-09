@@ -416,6 +416,32 @@ def ensure_demo_outp_template():
 
 ensure_demo_outp_template()
 
+# v79 复核（乙组审计者 D8 / 988★）：门诊「自动套科室默认模板」要演得出来，挂号科室得真有一张启用的门诊默认模板——
+# 全新库唯一的演示模板是全院范围，设不成科室默认。给内科门诊建一张科室模板并设为默认；已有默认就跳过（不抢别人设好的默认位）。
+def ensure_dept_default_template():
+    dept = next((d for d in (call('GET', '/system/depts', t=t).get('data') or []) if d.get('code') == 'OUTP_IM'), None)
+    if not dept:
+        print('  科室默认模板：未找到内科门诊，跳过'); return
+    cur = call('GET', f"/emr-templates/default?deptId={dept['id']}&recordType=OUTP", t=t)
+    if cur.get('code') == 0 and cur.get('data'):
+        print(f"  科室默认模板：内科门诊已有默认「{cur['data'].get('name')}」，跳过"); return
+    name = '内科门诊默认病历模板'
+    content = ('主诉：\n'
+               '现病史：\n'
+               '既往史：否认高血压、糖尿病等慢性病史\n'
+               '体格检查：T  ℃  P  次/分  R  次/分  BP  /  mmHg；神志清，精神可\n'
+               '处理意见：')
+    r = call('POST', '/emr-templates/scoped', {'name': name, 'content': content, 'templateType': 'EMR',
+                                                'scope': 'DEPT', 'deptId': dept['id'], 'recordType': 'OUTP'}, t)
+    if r.get('code') != 0:
+        print(f"  科室默认模板：创建失败 {r.get('code')} {r.get('message')}"); return
+    r2 = call('PUT', f"/emr-templates/{r['data']}/default", t=t)
+    if r2.get('code') != 0:
+        print(f"  科室默认模板：设默认失败 {r2.get('code')} {r2.get('message')}"); return
+    print(f'  科室默认模板：已给内科门诊建「{name}」并设为默认（新挂号的门诊病历进页自动套用）')
+
+ensure_dept_default_template()
+
 # =====================================================================================================
 # v79 车道A（992★ 复核打回点「零种子库引用抽屉页签为空」）：给张三补一条**已发布的微生物结果**与一份
 # **已签发的病理报告**，另种一张全院 RIS 报告模板。全部走产品接口、全部幂等、任何一步失败只打印原因并停在那一步
@@ -446,8 +472,11 @@ def ensure_emr_ref_demo():
         return (r.get('data') or {}).get('count', 0) if r.get('code') == 0 else 0
 
     need_micro, need_path = ref_count('MICRO') == 0, ref_count('PATH') == 0
-    if not need_micro and not need_path:
-        print('引用演示（微生物/病理）：张三已有已发布微生物结果与已签发病理报告，跳过')
+    # v79 复核（甲组审计者 D2）：全新库首日「检查」「历史病历」两个页签仍为空——五张单据那次的检查没出报告，
+    # 张三也没有往次病历。同一次往次就诊里再补一份病历、一项走到「已审核」的检查报告（引用只认已审核）。
+    need_exam, need_hist = ref_count('EXAM') == 0, ref_count('HISTORY') == 0
+    if not (need_micro or need_path or need_exam or need_hist):
+        print('引用演示（微生物/病理/检查/历史病历）：张三四类引用资料都已有，跳过')
         return
 
     def charge_item(category, code, name_part):
@@ -457,13 +486,17 @@ def ensure_emr_ref_demo():
 
     lab = charge_item('LAB', 'C0002', '尿常规') if need_micro else None
     path_item = charge_item('EXAM', 'C0301', '病理') if need_path else None
+    exam_item = charge_item('EXAM', 'C0101', '胸部') if need_exam else None
+    if need_exam and not exam_item:
+        print('引用演示·检查：主数据无「胸部DR」检查项目，跳过检查')
+        need_exam = False
     if need_micro and not lab:
         print('引用演示·微生物：主数据无「尿常规」检验项目，跳过微生物')
         need_micro = False
     if need_path and not path_item:
         print('引用演示·病理：主数据无病理收费项目，跳过病理')
         need_path = False
-    if not need_micro and not need_path:
+    if not (need_micro or need_path or need_exam or need_hist):
         return
 
     def step(name, r):
@@ -472,11 +505,12 @@ def ensure_emr_ref_demo():
             return None
         return r.get('data') if r.get('data') is not None else {}
 
-    # 1) 就诊：排班（不挂医生）→ 挂号 → admin 接诊
-    #    v79 合版：挂外科门诊而不是内科——接诊队列按科室列（不按接诊人），挂内科会让 doctor01 的队列里出现两个张三，
-    #    评委照培训脚本「点张三」会点到这次检验/病理就诊。引用资料按患者跨就诊取数，挂哪个科室都引得到。
-    surg = next((d['id'] for d in (call('GET', '/system/depts', t=t).get('data') or []) if d.get('code') == 'OUTP_SURG'), 1)
-    sch = step('排班', call('POST', '/outpatient/schedules', {'deptId': surg, 'scheduleDate': TODAY, 'fee': 0,
+    # 1) 就诊：排班（不挂医生）→ 挂号 → admin 接诊。**挂在前一天**：接诊队列按就诊日期列出当天全部挂号
+    #    （不按科室、不按接诊人，见 DoctorStationController#worklist），挂今天会让 doctor01 的队列里出现两个张三，
+    #    而这次是 admin 接诊、doctor01 点进去还会被 4036 拒。引用资料按患者跨就诊取数、默认不限时间，往次就诊照样引得到。
+    #    （v79 合版曾误以为队列按科室列、改挂外科门诊，没修掉——甲组审计者实测纠正。）
+    yday = (datetime.date.fromisoformat(TODAY) - datetime.timedelta(days=1)).isoformat()
+    sch = step('排班', call('POST', '/outpatient/schedules', {'deptId': 1, 'scheduleDate': yday, 'fee': 0,
                                                              'capacity': 5}, t))
     if sch is None:
         return
@@ -495,12 +529,41 @@ def ensure_emr_ref_demo():
     if need_path:
         lines.append({'orderType': 'EXAM', 'itemId': path_item['id'], 'qty': 1,
                       'clinicalSummary': '胃镜见胃窦黏膜粗糙、红白相间', 'examPurpose': '明确胃窦病变性质'})
+    if need_exam:
+        lines.append({'orderType': 'EXAM', 'itemId': exam_item['id'], 'qty': 1,
+                      'clinicalSummary': '咳嗽咳痰 1 周，发热', 'examPurpose': '排除肺部感染'})
+    # 历史病历：往次就诊写一份门诊病历（admin 即本次接诊人），今天的就诊在「历史病历」页签里就能引到它
+    if need_hist:
+        if step('往次病历', call('PUT', f'/outpatient/doctor/{rid}/emr', {
+                'emr': {'chiefComplaint': '尿频、尿急、尿痛 3 天，伴发热',
+                        'presentIllness': '3 天前无明显诱因出现尿频、尿急、尿痛，伴发热，体温最高 38.6℃，无腰痛。',
+                        'pastHistory': '既往体健', 'physicalExam': 'T 38.2℃，双肾区无叩痛，耻骨上轻压痛',
+                        'advice': '留中段尿培养，经验性抗感染，3 天后复诊'},
+                'diagnoses': [{'icdCode': 'N39.0', 'icdName': '泌尿道感染'}]}, t)) is not None:
+            print('引用演示·历史病历：张三往次就诊已写一份门诊病历（泌尿道感染）')
+    if not lines:
+        return
     orders = step('开单', call('POST', f'/outpatient/doctor/{rid}/orders', {'lines': lines}, t))
     if orders is None:
         return
     if step('收费', call('POST', '/outpatient/charges/settle', {'registrationId': rid, 'payMethod': 'CASH'}, t)) is None:
         return
-    oid = {o['orderType']: o['id'] for o in orders}
+    oid = {o['orderType']: o['id'] for o in orders if not (o['orderType'] == 'EXAM' and exam_item
+                                                            and o.get('itemId') == exam_item['id'])}
+    exam_group = next((o['groupNo'] for o in orders if exam_item and o.get('itemId') == exam_item['id']), None)
+
+    # 3') 检查：RIS 队列（已收费即自动登记）→ tech01 写报告 → admin 审核（审核人不得为报告人）——引用只认已审核
+    if need_exam and exam_group:
+        tech = login_as('tech01', 'Demo1234')
+        wl = call('GET', '/ris/worklist', t=t).get('data') or []
+        ex = next((w for w in wl if w.get('group_no') == exam_group), None)   # 队列返回体无 order_id，按申请单号对
+        if not tech or not ex:
+            print('引用演示·检查：tech01 登录失败或 RIS 队列未见该检查，跳过')
+        elif (step('检查报告', call('PUT', f"/ris/exams/{ex['id']}/report", {
+                'findings': '双肺纹理增粗，右下肺野见斑片状模糊影，心影大小正常，双膈面光整。',
+                'impression': '右下肺炎症，建议抗感染治疗后复查'}, tech)) is not None
+              and step('检查审核', call('PUT', f"/ris/exams/{ex['id']}/verify", {}, t)) is not None):
+            print('引用演示·检查：张三往次就诊的胸部 DR 报告已书写并审核')
 
     # 3) 微生物：采样 → 核收 → 录培养+药敏 → 审核发布（发布才进引用范围）
     if need_micro:
