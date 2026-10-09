@@ -172,6 +172,9 @@
                 title="本次就诊暂无诊断版本记录（这是查询结果，不是查询失败）">
         <div class="pre-line">{{ diagBody.notice }}</div>
       </el-alert>
+      <!-- v79 审阅修补（乙组 D4）：本页展示的诊断、正文、快照被复制时记下来源患者（版本列表随体带回），
+           再粘进另一患者的病历时跨患者粘贴管控才认得出来。只登记来源、不拦复制。 -->
+      <div @copy="onCopy" @cut="onCopy">
       <el-table v-if="diagBody.items.length" :data="diagBody.items" size="small" border max-height="420">
         <el-table-column label="版本" width="70">
           <template #default="{ row }"><b>v{{ row.versionNo }}</b></template>
@@ -202,6 +205,7 @@
           </template>
         </el-table-column>
       </el-table>
+      </div>
       <div class="gap-top">
         <div v-for="(n, i) in diagBody.notes" :key="i" class="note-line muted">· {{ n }}</div>
       </div>
@@ -232,13 +236,16 @@
     <el-alert type="info" :closable="false" class="gap"
               title="下拉里只列出当前页的版本；要比更早的版本请先翻页。「左侧 ↔ 当前正文」比的是数据库里的现有正文，不写库、不生成版本行。" />
 
-    <EmrVersionDiff v-if="compareBody" :body="compareBody" />
+    <div v-if="compareBody" @copy="onCopy" @cut="onCopy">
+      <EmrVersionDiff :body="compareBody" />
+    </div>
     <el-empty v-else :image-size="60" description="选择左右两版后点击对比" />
   </el-card>
 
   <!-- ============ 单版查看 ============ -->
   <el-drawer v-model="drawer" size="60%" :title="detail ? `第 ${detail.versionNo} 版 · 当时的完整内容` : '单版查看'">
-    <template v-if="detail">
+    <!-- 抽屉挂在 body 下（teleport），复制事件冒不到页面容器，须单独登记 -->
+    <div v-if="detail" @copy="onCopy" @cut="onCopy">
       <el-descriptions :column="2" border size="small" class="gap">
         <el-descriptions-item label="版本号">v{{ detail.versionNo }}</el-descriptions-item>
         <el-descriptions-item label="来源">{{ detail.source }}</el-descriptions-item>
@@ -265,7 +272,7 @@
           <div class="text">{{ detail.content }}</div>
         </el-collapse-item>
       </el-collapse>
-    </template>
+    </div>
     <el-empty v-else-if="!detailLoading" :image-size="60" description="未加载到该版本" />
   </el-drawer>
 </template>
@@ -280,6 +287,8 @@ import type {
   CompareBody, VersionDetailBody, VersionListBody, VersionMeta, VersionSettings,
 } from './types'
 import { fieldLabel, fmtTime } from './types'
+import { useEmrPasteGuard } from '../../../components/EmrRefDrawer.vue'
+import { versionListCopySource } from '../../../utils/emr-copy-source'
 
 /**
  * 开了 withChangedFields 时的每页上限。
@@ -350,6 +359,12 @@ const arrivedTitle = computed(() => {
 
 const settings = ref<VersionSettings | null>(null)
 const listBody = ref<VersionListBody | null>(null)
+/**
+ * v79 审阅修补（乙组 D4，1082★/2458）：在本页复制的病历内容记为这份病历所属患者（列表随体带回的
+ * patientId/patientName；病历行不存在时为 null，管控对 null 侧放行、不猜）。本页只读，不挂粘贴管控、不读档位。
+ */
+const { onCopy } = useEmrPasteGuard(() => versionListCopySource(
+  listBody.value as (VersionListBody & { patientId?: number | null; patientName?: string | null }) | null))
 const loading = ref(false)
 
 const page = ref(1)

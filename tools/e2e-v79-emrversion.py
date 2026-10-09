@@ -11,7 +11,7 @@ JUnit（V79EmrVersionReadTest）跑在回滚事务里、用 MockMvc 冒充登录
   [5] 住院医生站入口的目标有数据：新建住院记录 → GET /emr/versions/INP/{记录id} 至少一版（MANUAL），签名后多一版（SUBMIT）；
       收尾出院释放床位。
   [6] （v79 审阅修补，乙组 D2/N10）住院暂存记录可修改：未签名点补正 9108 指向「修改」→ PUT 修改 → 版本数 +1（MANUAL，
-      保存人为本次登录人）→ 签名后再改 9103（指向补正）→ 经别的住院路径改 9102；
+      保存人为本次登录人）、列表带回患者（复制来源用）→ 签名后再改 9103（指向补正）→ 经别的住院路径改 9102；
   [7] （v79 审阅修补，甲组 D4）[1] 第 1 次保存落下的正文版本与诊断版本时刻相等（同取数据库事务时钟）。
 自成一体：自建患者、排班、挂号、入院；时间一律从 e2elib.today_bj() 取，不写墙钟字面量。
 """
@@ -118,6 +118,7 @@ try:
     r = api('POST', f"/inpatient/admissions/{aid2}/records/{rec2['id']}/amend", {'amendText': 'x', 'reason': 'y'})
     assert r['code'] == 9108 and '「修改」' in r['message'], f'未签名点补正须指向真实存在的「修改」: {r}'
     before = ok(api('GET', f"/emr/versions/INP/{rec2['id']}"), '修改前版本列表')
+    assert before['patientId'] == pc['id'] and before['patientName'], f'版本列表须带回患者（复制来源用）: {before}'
     upd = ok(api('PUT', f"/inpatient/admissions/{aid2}/records/{rec2['id']}",
                  {'content': 'V79 病程：发热，待查。今日体温 37.2℃，咳嗽减轻。'}), 'PUT 修改暂存记录')
     assert upd['content'].endswith('咳嗽减轻。') and upd['title'] == '病程记录' and not upd.get('signature'), upd

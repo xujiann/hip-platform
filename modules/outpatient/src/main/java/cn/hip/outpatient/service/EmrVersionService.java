@@ -610,6 +610,28 @@ public class EmrVersionService {
         return new Result(code, message, null);
     }
 
+    /**
+     * 病历所属患者（{@code id}/{@code name}）。门诊经 outp_emr → outp_registration，住院经
+     * inp_medical_record → inp_admission，均落到 empi_patient；病历行不存在返回 null。
+     */
+    private Map<String, Object> patientOf(String emrType, Long emrId) {
+        String sql = OUTP.equals(emrType)
+                ? """
+                  select p.id, p.name from outp_emr e
+                  join outp_registration reg on reg.id = e.registration_id
+                  join empi_patient p on p.id = reg.patient_id
+                  where e.id = ?
+                  """
+                : """
+                  select p.id, p.name from inp_medical_record r
+                  join inp_admission a on a.id = r.admission_id
+                  join empi_patient p on p.id = a.patient_id
+                  where r.id = ?
+                  """;
+        var rows = jdbc.queryForList(sql, emrId);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
     /** 版本行的元信息（<b>不含 content</b>）。 */
     public record VersionMeta(Long id, int versionNo, String source, int contentLen, String contentHash,
                               Long savedBy, String savedByName, Instant savedAt, String savedOn) {}
@@ -710,6 +732,11 @@ public class EmrVersionService {
             body.put("registrationId", jdbc.query("select registration_id from outp_emr where id = ?",
                     rs -> rs.next() ? rs.getLong(1) : null, emrId));
         }
+        // v79 审阅修补（乙组 D4，1082★/2458）：带回这份病历的患者 id/姓名，版本页据此把在本页复制的正文片段
+        // 记为该患者来源（跨患者粘贴管控只认本地伴随状态里的来源患者）。病历行不存在时两键为 null——不猜。
+        var patient = patientOf(emrType, emrId);
+        body.put("patientId", patient == null ? null : patient.get("id"));
+        body.put("patientName", patient == null ? null : patient.get("name"));
         body.put("total", cnt);
         body.put("limit", lim);
         body.put("offset", off);

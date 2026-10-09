@@ -68,7 +68,9 @@
     </el-card>
 
     <el-dialog v-model="docVisible" :title="String(viewing?.title ?? '')" width="560px">
-      <pre class="doc-json">{{ prettyContent }}</pre>
+      <!-- v79 审阅修补（乙组 D4，1082★/2458）：在本页复制的病历正文记下来源患者（取所查看文档的 patientId），
+           再粘进另一患者的病历时，跨患者粘贴管控才认得出来。只登记来源、不拦复制。 -->
+      <pre class="doc-json" @copy="onCopy" @cut="onCopy">{{ prettyContent }}</pre>
       <template #footer>
         <!-- v69 包 A（2466★）：标准文档（XML）导出。端点限 ADMIN/QUALITY，
              不持有该角色的人不显示按钮——不摆一个点了必然 403 的死入口。 -->
@@ -86,6 +88,8 @@ import { ElMessage } from 'element-plus'
 import client from '../../api/client'
 import { fmtDateTime } from '../../utils/date'
 import { useAuthStore } from '../../stores/auth'
+import { useEmrPasteGuard } from '../../components/EmrRefDrawer.vue'
+import { cdrDocCopySource } from '../../utils/emr-copy-source'
 
 const keyword = ref('')
 const patients = ref<Record<string, unknown>[]>([])
@@ -95,6 +99,9 @@ const docType = ref('')
 const docVisible = ref(false)
 const viewing = ref<Record<string, unknown> | null>(null)
 const syncing = ref(false)
+
+/** v79 审阅修补（乙组 D4）：只用复制来源登记（onCopy）；本页无病历编辑区，不挂粘贴管控、不读档位 */
+const { onCopy } = useEmrPasteGuard(() => cdrDocCopySource(viewing.value, current.value))
 
 /* ===================== v69 包 A：全文检索 / 标准文档导出 =====================
  * 两个端点后端早已齐备（检索由本轮新增的 JUnit 锁定契约，导出另有含脱敏两档的 JUnit），

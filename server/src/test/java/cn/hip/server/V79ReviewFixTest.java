@@ -424,6 +424,49 @@ class V79ReviewFixTest {
         assertTrue(r.getMessage().contains("「修改」"), "9108 须指向时间线上真实存在的「修改」：" + r.getMessage());
     }
 
+    // ==================== ⑤ 乙 D4：版本页带患者上下文、只读页登记复制来源 ====================
+
+    @Test
+    void versionListCarriesPatientForCopySource() {
+        Long docId = userId("admin");
+        Long pid = newPatient("源");
+        Long rid = visitFor(pid, docId);
+        OutpEmr saved = doctorStationService.saveEmr(rid, emr("咳嗽", "起病三天"), List.of(), docId, null, null);
+        em.flush();
+        String name = jdbc.queryForObject("select name from empi_patient where id = ?", String.class, pid);
+
+        var outp = emrVersionController.list("OUTP", saved.getId(), null, null, false);
+        assertEquals(0, outp.getCode(), outp.getMessage());
+        assertEquals(pid, ((Number) outp.getData().get("patientId")).longValue());
+        assertEquals(name, outp.getData().get("patientName"));
+
+        Authentication doc = doctorAuth("v79fix_src");
+        Long admId = admit("源住");
+        Long inpPid = jdbc.queryForObject("select patient_id from inp_admission where id = ?", Long.class, admId);
+        Long recordId = inpEmrController.addRecord(admId,
+                new InpEmrController.SaveRecordRequest("PROGRESS", "病程记录", "住院原文"), doc).getData().getId();
+        em.flush();
+        var inp = emrVersionController.list("INP", recordId, null, null, false);
+        assertEquals(inpPid, ((Number) inp.getData().get("patientId")).longValue());
+        assertNotNull(inp.getData().get("patientName"));
+
+        var none = emrVersionController.list("OUTP", 987654321L, null, null, false);
+        assertEquals(0, none.getCode());
+        assertNull(none.getData().get("patientId"), "病历行不存在：患者为 null，不猜");
+    }
+
+    @Test
+    void readOnlyEmrPagesRegisterCopySourceAndInpTimelineHasEditEntry() {
+        String p360 = read("frontend/shell/src/views/cdr/Patient360View.vue");
+        assertTrue(p360.contains("useEmrPasteGuard") && p360.contains("@copy=\"onCopy\""),
+                "患者 360 正文区须挂复制来源登记");
+        String ver = read("frontend/shell/src/views/outpatient/emr-version/EmrVersionView.vue");
+        assertTrue(ver.contains("useEmrPasteGuard") && ver.contains("@copy=\"onCopy\"") && ver.contains("patientId"),
+                "版本页正文区须挂复制来源登记并带该页患者");
+        String inp = read("frontend/shell/src/views/inpatient/InpDoctorView.vue");
+        assertTrue(inp.contains("client.put(") && inp.contains("startEdit"), "住院时间线须有走 PUT 的「修改」入口");
+    }
+
     private static Path repoRoot() {
         Path p = Path.of(System.getProperty("user.dir")).toAbsolutePath();
         for (int i = 0; i < 6 && p != null; i++, p = p.getParent()) {
