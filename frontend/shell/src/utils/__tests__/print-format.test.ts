@@ -1,13 +1,35 @@
 import { describe, expect, it } from 'vitest'
 import {
   ageText, allergyLine, briefHistory, docDoctor, docDoctorSuffix, docTitleSuffix,
-  firstOf, formatDiagnoses, guideStatusOf, money2, stripBlockMarks, printedAt } from '../print-format'
+  firstOf, formatDiagnoses, formatHistoryDiagnosis, guideStatusOf, money2, stripBlockMarks, printedAt } from '../print-format'
 
 /**
  * v75 车道C：PrintView 纯拼装逻辑的锁定测试。
  * 每一组用例对应 v74 三轮复核（1026★）点名过的纸面事故——这些口径此前只靠人眼核纸，
  * 现在改一个字符就会红。用例期望值取自 v74 定版时 PrintView.vue 的实际输出。
  */
+
+/** v80 审阅修补（D8）：历史就诊抽屉按 1026★ 打印口径拼诊断（camelCase 键），不印编码 */
+describe('formatHistoryDiagnosis：历史就诊抽屉的一条诊断', () => {
+  it('前缀、名称［自定义］、后缀、（疑诊）齐印，编码不印', () => {
+    expect(formatHistoryDiagnosis({
+      icdCode: 'J02.900', icdName: '急性咽炎', prefix: '复发性', suffix: '伴发热',
+      certainty: 'SUSPECTED', customName: '咽痛待查', diagSystem: 'ICD10', primaryDiag: true,
+    })).toBe('复发性 急性咽炎［咽痛待查］ 伴发热（疑诊）')
+  })
+  it('中医诊断加 [中医]；确诊与未标都不加标记', () => {
+    expect(formatHistoryDiagnosis({ icdCode: '', icdName: '感冒（风寒束表证）', diagSystem: 'TCM', certainty: 'CONFIRMED' }))
+      .toBe('[中医]感冒（风寒束表证）')
+    expect(formatHistoryDiagnosis({ icdCode: 'J00', icdName: '急性鼻咽炎', certainty: null })).toBe('急性鼻咽炎')
+  })
+  it('v80 前的旧接口形态（只有三键）照旧只印名称', () => {
+    expect(formatHistoryDiagnosis({ icdCode: 'J06.900', icdName: '急性上呼吸道感染', primaryDiag: false }))
+      .toBe('急性上呼吸道感染')
+  })
+  it('名称与自定义描述都空时回落为编码（与修前抽屉 icdName || icdCode 同）', () => {
+    expect(formatHistoryDiagnosis({ icdCode: 'R50.900', icdName: '' })).toBe('R50.900')
+  })
+})
 
 describe('formatDiagnoses：诊断拼接', () => {
   it('标准名 + 编码：名称(编码)', () => {

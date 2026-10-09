@@ -39,6 +39,21 @@ export function formatDiagnoses(rows: Row[] | null | undefined): string {
 }
 
 /**
+ * v80 审阅修补（D8，v80 复核·方案三审计）：门诊医生站「历史就诊」抽屉的一条诊断。
+ * 接口 /outpatient/doctor/patient/{id}/history 回 camelCase 键（icdName/customName/prefix/suffix/certainty/diagSystem），
+ * 这里换成打印数据集的列名后交给 {@link formatDiagnoses}——前缀、名称［自定义描述］、后缀、（疑诊）、[中医] 与 1026★ 纸面同一口径，
+ * 此前抽屉只印标准名，疑诊在这里读作确诊。抽屉历来不印编码：只有名称与自定义描述都空时才回落为编码。
+ */
+export function formatHistoryDiagnosis(d: Row): string {
+  const s = (v: unknown) => (v == null ? '' : String(v).trim())
+  if (!s(d.icdName) && !s(d.customName)) return s(d.icdCode)
+  return formatDiagnoses([{
+    icd_name: d.icdName, custom_name: d.customName, prefix: d.prefix, suffix: d.suffix,
+    certainty: d.certainty, diag_system: d.diagSystem,
+  }])
+}
+
+/**
  * 出生日期缺失或晚于就诊日时纸面留「—」而不是「—岁」/「0 岁」；婴幼儿按后端 ageText 印日、月龄，基准为就诊日。
  * 口径全在后端，前端只兜底字段缺失。
  */

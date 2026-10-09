@@ -207,6 +207,58 @@ class V80ReviewFixTest {
         assertEquals(0, getAs(assistUrl, b, "DOCTOR_OUTP").get("code").asInt());
     }
 
+    // ==================== D8：患者历次就诊带出前缀 / 后缀 / 疑诊 / 自定义描述 / 体系 ====================
+
+    @Test
+    void d8_patientHistoryAppendsQualifierKeysAndKeepsTheOldThree() throws Exception {
+        String a = newDoctor("G");
+        Long pid = newPatient();
+        OutpDiagnosis west = diag("J02.900", "急性咽炎");
+        west.setPrimaryDiag(true);
+        west.setPrefix("复发性");
+        west.setSuffix("伴发热");
+        west.setCertainty(OutpDiagnosis.CERTAINTY_SUSPECTED);
+        west.setCustomName("咽痛待查");
+        west.setDiagSystem(OutpDiagnosis.SYSTEM_ICD10);
+        OutpDiagnosis tcm = diag("", "感冒（风寒束表证）");
+        tcm.setDiagSystem(OutpDiagnosis.SYSTEM_TCM);
+        visitBy(pid, a, List.of(west, tcm));
+
+        JsonNode r = getAs("/api/outpatient/doctor/patient/" + pid + "/history", a, "DOCTOR_OUTP");
+        assertEquals(0, r.get("code").asInt(), r.toString());
+        JsonNode diags = r.at("/data/0/diagnoses");
+        assertEquals(2, diags.size(), diags.toString());
+        JsonNode w = null, t = null;
+        for (JsonNode d : diags) {
+            if ("J02.900".equals(d.get("icdCode").asText())) w = d; else t = d;
+        }
+        assertNotNull(w, diags.toString());
+        assertNotNull(t, diags.toString());
+        // 既有三键原样
+        assertEquals("急性咽炎", w.get("icdName").asText());
+        assertTrue(w.get("primaryDiag").asBoolean());
+        assertEquals("", t.get("icdCode").asText(), "中医诊断编码仍回空串（既有口径）");
+        // 追加五键
+        assertEquals("复发性", w.path("prefix").asText(null), diags.toString());
+        assertEquals("伴发热", w.path("suffix").asText(null));
+        assertEquals("SUSPECTED", w.path("certainty").asText(null));
+        assertEquals("咽痛待查", w.path("customName").asText(null));
+        assertEquals("ICD10", w.path("diagSystem").asText(null));
+        assertEquals("TCM", t.path("diagSystem").asText(null));
+        assertTrue(t.has("certainty") && t.get("certainty").isNull(), "未标确诊/疑诊的回 null，不默认确诊：" + t);
+    }
+
+    @Test
+    void d8_historyDrawerFormatsDiagnosesWithThePrintHelper() {
+        String ds = read("frontend/shell/src/views/outpatient/DoctorStationView.vue");
+        int a = ds.indexOf("<el-drawer v-model=\"historyVisible\"");
+        int b = ds.indexOf("</el-drawer>", a);
+        assertTrue(a > 0 && b > a, "找不到历史就诊抽屉");
+        String drawer = ds.substring(a, b);
+        assertTrue(drawer.contains("formatHistoryDiagnosis("), "历史就诊抽屉须按打印口径拼诊断（前缀/后缀/疑诊/中医）：\n" + drawer);
+        assertFalse(drawer.contains("{{ d.icdName || d.icdCode }}"), "不得再只印标准名");
+    }
+
     // ---------------- 源码读取（仓库相对路径；worktree 下同样有效） ----------------
 
     private static Path repoRoot() {

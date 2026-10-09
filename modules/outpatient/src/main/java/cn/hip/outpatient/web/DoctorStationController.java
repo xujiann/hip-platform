@@ -375,10 +375,20 @@ public class DoctorStationController {
                 m.put("advice", emr.getAdvice());
                 m.put("signed", emr.getSignature() != null);
             }
-            m.put("diagnoses", diagByReg.getOrDefault(r.getId(), List.of()).stream().map(d -> Map.of(
-                    "icdCode", d.getIcdCode() == null ? "" : d.getIcdCode(),
-                    "icdName", d.getIcdName() == null ? "" : d.getIcdName(),
-                    "primaryDiag", Boolean.TRUE.equals(d.getPrimaryDiag()))).toList());
+            m.put("diagnoses", diagByReg.getOrDefault(r.getId(), List.of()).stream().map(d -> {
+                var dm = new LinkedHashMap<String, Object>();
+                dm.put("icdCode", d.getIcdCode() == null ? "" : d.getIcdCode());
+                dm.put("icdName", d.getIcdName() == null ? "" : d.getIcdName());
+                dm.put("primaryDiag", Boolean.TRUE.equals(d.getPrimaryDiag()));
+                // v80 审阅修补（D8）：只追加、既有三键不动——抽屉按 1026★ 打印口径拼前缀 / 名称［自定义］/ 后缀 /（疑诊）/ [中医]，
+                // 此前只回标准名，疑诊在历史抽屉里读作确诊。未填的回 null（certainty 为 null 即「未标」，不默认确诊）
+                dm.put("prefix", d.getPrefix());
+                dm.put("suffix", d.getSuffix());
+                dm.put("certainty", d.getCertainty());
+                dm.put("customName", d.getCustomName());
+                dm.put("diagSystem", d.getDiagSystem());
+                return (Map<String, Object>) dm;
+            }).toList());
             return (Map<String, Object>) m;
         }).toList());
     }

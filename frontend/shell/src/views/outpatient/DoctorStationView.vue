@@ -500,7 +500,8 @@
           <div v-if="(h.diagnoses as Record<string, unknown>[])?.length" style="margin-bottom:4px">
             <el-tag v-for="(d, i) in (h.diagnoses as Record<string, unknown>[])" :key="i"
                     :type="d.primaryDiag ? 'danger' : 'info'" size="small" style="margin-right:4px">
-              {{ d.icdName || d.icdCode }}
+              <!-- v80 审阅修补（D8）：按 1026★ 打印口径拼前缀 / 名称［自定义］/ 后缀 /（疑诊）/ [中医]，此前疑诊在这里读作确诊 -->
+              {{ formatHistoryDiagnosis(d) }}
             </el-tag>
           </div>
           <p v-if="h.chiefComplaint" class="hist-line">主诉：{{ h.chiefComplaint }}</p>
@@ -659,7 +660,7 @@ import { applyTemplate as applyTemplateToEmr, outpTemplatesOnly, splitTemplateCo
 import { editedSinceApplied, eligibleForDefaultTemplate, pickDefaultTemplate, planDefaultTemplate,
   revertDefaultTemplate, untouchedDefaultTemplate, type DefaultTemplate } from '../../utils/default-template'
 import { presaveBeforeSign } from '../../utils/emr-submit'
-import { stripBlockMarks } from '../../utils/print-format'
+import { formatHistoryDiagnosis, stripBlockMarks } from '../../utils/print-format'
 
 const categoryNames: Record<string, string> = { LAB: '检验', EXAM: '检查', TREAT: '治疗', MATERIAL: '材料' }
 const typeNames: Record<string, string> = { DRUG: '药品', LAB: '检验', EXAM: '检查', TREAT: '治疗' }

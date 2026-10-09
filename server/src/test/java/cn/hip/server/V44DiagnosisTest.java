@@ -526,8 +526,12 @@ class V44DiagnosisTest {
         @SuppressWarnings("unchecked")
         var diags = (List<Map<String, Object>>) history.get(0).get("diagnoses");
         assertEquals(1, diags.size());
-        assertEquals(Set.of("icdCode", "icdName", "primaryDiag"), diags.get(0).keySet(),
-                "历史调阅的诊断三键形状不得因加列而变");
+        assertTrue(diags.get(0).keySet().containsAll(Set.of("icdCode", "icdName", "primaryDiag")),
+                "历史调阅的诊断三键不得因加列而变");
+        // v80 审阅修补（D8）：只追加五键（前缀/后缀/确诊疑诊/自定义描述/体系），供历史抽屉按打印口径拼诊断；既有三键原样
+        assertEquals(Set.of("icdCode", "icdName", "primaryDiag", "prefix", "suffix", "certainty", "customName", "diagSystem"),
+                diags.get(0).keySet(), "历史调阅的诊断键 = 既有三键 + v80 追加五键");
+        assertEquals("CONFIRMED", diags.get(0).get("certainty"));
         assertEquals("E11.900", diags.get(0).get("icdCode"));
     }
 }
