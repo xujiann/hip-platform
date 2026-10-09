@@ -64,6 +64,12 @@ public class SysConfigController {
             return numericIn(value, java.math.BigDecimal.ZERO, new java.math.BigDecimal("100000000"))
                     ? null : "须为非负数字";
         }
+        // v79 复核（乙组审计者 D6）：三态 gate 键此前不校验，空串与 "xyz" 都能写库、读出时静默回落 warn——
+        // 管理员以为改成了"拒绝"，实际仍是"确认"。emr.copy.* / emr.gate.* 只认 off / warn / block（读取端大小写不敏感，这里同口径）。
+        if (key.startsWith("emr.copy.") || key.startsWith("emr.gate.")) {
+            return Set.of("off", "warn", "block").contains(value.strip().toLowerCase())
+                    ? null : "取值只能是 off（放行）/ warn（提示）/ block（拦截）";
+        }
         if (key.startsWith("billno_prefix_")) {
             return value.matches("[A-Za-z0-9]{1,8}") ? null : "单号前缀须为 1–8 位字母数字";
         }

@@ -117,8 +117,9 @@
                  本轮不新增任何写病历路径（端点 javadoc 里的硬约束）。 -->
             <el-button size="small" :disabled="emrSigned" @click="openPriorRecords">按既往病历新建</el-button>
             <!-- 档位常驻可见：医生该知道院里此刻是"需确认"还是"禁止"，而不是粘贴时才被弹一脸 -->
-            <el-tag v-if="copyMode !== 'off'" size="small" :type="copyMode === 'block' ? 'danger' : 'warning'">
-              跨患者粘贴：{{ copyMode === 'block' ? '禁止' : '需确认' }}
+            <!-- v79 复核（D5）：放行档也显示，评委切到 off 时能看到档位确实变了 -->
+            <el-tag size="small" :type="copyMode === 'block' ? 'danger' : copyMode === 'warn' ? 'warning' : 'info'">
+              跨患者粘贴：{{ copyMode === 'block' ? '禁止' : copyMode === 'warn' ? '需确认' : '放行' }}
             </el-tag>
           </div>
           <el-alert v-if="prefilledNote" type="info" show-icon style="margin-bottom: 10px"
@@ -1288,8 +1289,8 @@ async function searchIcd(kw: string) {
   resp.data.data.forEach((i: { code: string; name: string }) => knownIcd.set(i.code, i.name))
 }
 
-async function saveEmr() {
-  if (!current.value) return
+async function saveEmr(): Promise<boolean> {
+  if (!current.value) return false
   savingEmr.value = true
   try {
     // v45：只有真的填了结构化元素才上送 templateId/fields——不传时后端整段短路，
@@ -1311,12 +1312,13 @@ async function saveEmr() {
     })
     if (resp.data.code !== 0) {
       ElMessage.error(resp.data.message)
-      return
+      return false
     }
     ElMessage.success('病历已暂存（未签名，仍可修改）')
     if (typeof resp.data.data?.id === 'number') currentEmrId.value = resp.data.data.id   // v55：首次保存后按钮即出现
     autoTpl.value = null   // v79：默认模板已随暂存落库，黄条使命结束（撤销只对未落库的套用有意义）
     await loadCdssTips()
+    return true
   } finally {
     savingEmr.value = false
   }
@@ -1445,11 +1447,14 @@ async function signEmr() {
   }
   try {
     await ElMessageBox.confirm(
-      '签名即提交：签名后本次病历原文即冻结，不能再修改，只能追加补正记录。确认提交？', '提交病历（签名）',
+      '签名即提交：将先暂存屏上当前内容，再以此签名；签名后本次病历原文即冻结，不能再修改，只能追加补正记录。确认提交？', '提交病历（签名）',
       { type: 'warning', confirmButtonText: '确认提交（签名）', cancelButtonText: '再改改' })
   } catch {
     return   // 医生取消，不做任何事
   }
+  // v79 复核（乙组审计者 D1）：签名端点签的是库里最后一次暂存的稿；此前若医生改完没点「暂存」直接提交，
+  // 签进去的是旧稿，签完重载还会把屏上未暂存的改动悄悄冲掉。提交前一律先把屏上内容暂存，暂存失败就不签。
+  if (!(await saveEmr())) return
   signing.value = true
   try {
     const resp = await client.post(`/outpatient/doctor/${current.value.registrationId}/emr/sign`)
@@ -1629,15 +1634,14 @@ async function cancelOrder(row: Record<string, unknown>) {
 }
 
 onMounted(async () => {
+  // v79 复核（乙组审计者 D3）：粘贴管控档位最先加载、单独兜底——排在后面时，前面任一加载抛错它就不会执行，档位停在默认
+  try { await loadCopyPolicy() } catch { /* 读不到即保持组合式函数的默认档，不影响进页 */ }
   await loadWorklist()
   await loadRxTemplates()   // v44：进页时拉一次可见模板（后端已按登录人算好可见范围，前端不再过滤）
   // v74 复核（993★）：loadEmrTemplates 自 v45 起定义了却从未被调用——结构化模板那一栏（989★/1075★）在门诊
   // 医生站从来渲染不出来。进页拉一次可见范围内的病历模板，与处方模板同口径。
   await loadEmrTemplates()
   await loadSpecimenTypes()   // v78：检验行标本类型下拉的字典项，进页一次
-  // v79 合版（车道 C 查出）：loadCopyPolicy 自 v45 起解构了却从未调用——门诊粘贴管控档位永远停在
-  // 组合式函数的默认值，系统配置 emr.copy.cross_patient 配成 off/block 都不生效（1082★/2458★ 的说法因此为假）。
-  await loadCopyPolicy()
 })
 </script>
 
