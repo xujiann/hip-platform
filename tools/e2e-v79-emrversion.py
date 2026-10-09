@@ -15,7 +15,7 @@ JUnit（V79EmrVersionReadTest）跑在回滚事务里、用 MockMvc 冒充登录
   [7] （v79 审阅修补，甲组 D4）[1] 第 1 次保存落下的正文版本与诊断版本时刻相等（同取数据库事务时钟）。
 自成一体：自建患者、排班、挂号、入院；时间一律从 e2elib.today_bj() 取，不写墙钟字面量。
 """
-from e2elib import call, discharge_cleanup, find_free_bed, login, new_patient, ok, today_bj  # noqa: E402
+from e2elib import call, discharge_cleanup, find_free_bed, login, new_patient, ok, provision_user, today_bj  # noqa: E402
 
 t = login()
 today = today_bj().isoformat()
@@ -153,5 +153,26 @@ assert ts(body_v1['savedAt']) == ts(v1['changedAt']), \
     f"第 1 次保存的正文版本 {body_v1['savedAt']} 与诊断版本 {v1['changedAt']} 须同一时刻（数据库事务时钟）"
 assert ts(body_v1['savedAt']) <= ts(v2['changedAt']), '第 1 次保存的正文版本不得晚于第 2 次保存的诊断版本'
 print(f"[7] 同一次保存：正文版本与诊断版本时刻相等（{body_v1['savedAt']}）OK")
+
+# ============ [8] v80：版本读出端点对象级权限——非接诊 / 非主管医生 4036，管理员照常 ============
+other = provision_user(t, 'e2e_v80_other_doc', 'DOCTOR_OUTP', 'E2E他科医生')
+for url in (f'/emr/versions/OUTP/{emr_id}', f'/emr/versions/diagnoses/{rid}',
+            f'/emr/versions/OUTP/{emr_id}/versions/1', f'/emr/versions/OUTP/{emr_id}/compare?from=1&to=1'):
+    r = call('GET', url, None, other)
+    assert r['code'] == 4036 and not r.get('data'), f'非接诊医生读他人病历版本须 4036 且不带数据：{url} → {r}'
+    assert ok(api('GET', url), '管理员读') is not None
+pd = new_patient(t, 'V80住院权限', sex='M')
+bed3 = find_free_bed(t)
+aid3 = ok(api('POST', '/inpatient/admissions', {'patientId': pd['id'], 'deptId': 1, 'bedId': bed3['id'],
+                                                'doctorId': me['id'], 'deposit': 1000, 'payMethod': 'CASH'}), '入院（指定主管医生）')['id']
+try:
+    rec3 = ok(api('POST', f'/inpatient/admissions/{aid3}/records',
+                  {'recordType': 'PROGRESS', 'title': '病程记录', 'content': 'V80 主管医生权限。'}), '新建住院记录')
+    r = call('GET', f"/emr/versions/INP/{rec3['id']}", None, other)
+    assert r['code'] == 4036, f'非主管医生读住院病历版本须 4036：{r}'
+    ok(api('GET', f"/emr/versions/INP/{rec3['id']}"), '管理员（主管医生本人）读住院版本')
+finally:
+    discharge_cleanup(t, aid3, 'CASH')
+print('[8] 版本读出对象级权限 OK（门诊四端点与住院端点对非接诊/非主管医生 4036、不带数据；管理员照常）')
 
 print('\n=== v79 病历留痕读出 E2E（诊断版本读出 + 空态 + 住院入口目标 + 暂存记录修改 + 同源时钟）全部通过 ===')
