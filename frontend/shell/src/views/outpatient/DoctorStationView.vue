@@ -93,6 +93,15 @@
           <el-alert v-if="emrSigned" type="success" :closable="false" show-icon style="margin-bottom: 10px"
                     :title="`本次病历已签名冻结 · 签名人：${emrSignerName || '—'} · 签名时间：${emrSignedAtText || '—'}`" />
 
+          <!-- v79 车道B（2457★ 门诊侧）：暂存/提交状态。不新增状态列——未签名即「暂存」、已签名即「已提交」；
+               判据只有 workspace 的 emr.signature（emrSigned）与 emr.id（currentEmrId），签名人/时间取既有
+               emrSignerName / emr.signedAt。病历还没存过（无 id）时不说「暂存」：那时库里一个字都没有。 -->
+          <div class="emr-status no-print">
+            <el-tag v-if="emrSigned" type="success" size="small">{{ emrStatusText }}</el-tag>
+            <el-tag v-else-if="currentEmrId" type="warning" size="small">暂存（未签名）</el-tag>
+            <el-tag v-else type="info" size="small">新病历（尚未暂存）</el-tag>
+          </div>
+
           <!-- v45 车道J：1092★ 新建病历自动带出 + 992★ 引用抽屉入口 + 1082★ 跨患者粘贴管控档位 -->
           <div class="ref-bar no-print">
             <span v-if="basicBrought" class="ref-auto" :title="basicBrought">已自动带出：{{ basicBrought }}</span>
@@ -114,6 +123,14 @@
           </div>
           <el-alert v-if="prefilledNote" type="info" show-icon style="margin-bottom: 10px"
                     :title="prefilledNote" @close="prefilledNote = ''" />
+          <!-- v79 车道B（988★）：新病历自动套用科室默认模板后的黄条。只改本页表单，点「暂存」才落库；撤销恢复为套用前 -->
+          <el-alert v-if="autoTpl" type="warning" :closable="false" show-icon style="margin-bottom: 10px"
+                    :title="`已自动套用科室默认模板《${autoTpl.name}》，点「暂存」后生效；不需要可点「撤销」恢复为套用前。`">
+            <template #default>
+              <div v-if="autoTpl.notes.length" class="dim">{{ autoTpl.notes.join('；') }}</div>
+              <el-button size="small" style="margin-top: 4px" @click="undoAutoTemplate">撤销</el-button>
+            </template>
+          </el-alert>
 
           <!-- 989★/1075★ 结构化录入：只有当院里真的维护了病历模板时才出现这一行，不留死入口 -->
           <div v-if="emrTemplates.length" class="ref-bar no-print">
@@ -230,9 +247,10 @@
                         :closable="false" style="margin-bottom: 4px" />
             </el-form-item>
             <el-form-item label="处理意见"><el-input v-model="emr.advice" type="textarea" :rows="2" :disabled="emrSigned" /></el-form-item>
-            <el-button type="primary" :loading="savingEmr" :disabled="emrSigned" @click="saveEmr">保存病历</el-button>
+            <!-- v79 车道B（2457★）：文案改「暂存」「提交（签名）」，端点不变（PUT /emr 与 POST /emr/sign） -->
+            <el-button type="primary" :loading="savingEmr" :disabled="emrSigned" @click="saveEmr">暂存</el-button>
             <!-- v43：门诊病历签名入口（此前端点齐备但界面无按钮，签名与补正在正常路径上都走不到） -->
-            <el-button v-if="!emrSigned" type="warning" :loading="signing" @click="signEmr">签 名</el-button>
+            <el-button v-if="!emrSigned" type="warning" :loading="signing" @click="signEmr">提交（签名）</el-button>
             <!-- v55 车道R2（994）：版本留痕直达。此前版本页唯一入口是手填 outp_emr.id，而全系统没有任何页面显示这个 id
                  ——功能在、医生进不去。workspace 与保存返回体本就带 id，这里只是把它接到按钮上。
                  新标签打开：不丢医生手上尚未保存的正文；病历未保存（无 id）或本人不持有该菜单时不出现，不摆死按钮。 -->
@@ -240,7 +258,7 @@
             <!-- v69 包 A（1095★）：一键存为模板。同样是端点齐备而界面无入口。
                  需要已保存的病历才有 id 可存，故与「版本留痕」同条件出现，不摆死按钮。 -->
             <el-button v-if="currentEmrId" plain :loading="savingTpl" @click="saveAsTemplate">存为模板</el-button>
-            <span v-if="!emrSigned" class="sign-tip">签名后原文冻结，如需更正只能追加补正记录</span>
+            <span v-if="!emrSigned" class="sign-tip">签名即提交：提交后原文冻结，如需更正只能追加补正记录</span>
           </el-form>
           </div>
 
@@ -502,7 +520,7 @@
           </div>
         </el-tab-pane>
         <el-tab-pane :label="`常用诊断(${assist.favorite.length})`" name="favorite">
-          <el-empty v-if="!assist.favorite.length" description="尚无常用诊断（保存病历时自动累积）" :image-size="60" />
+          <el-empty v-if="!assist.favorite.length" description="尚无常用诊断（暂存病历时自动累积）" :image-size="60" />
           <div v-for="e in assist.favorite" :key="'f' + e.id" class="assist-row">
             <span class="assist-name" @click="addDiagFrom(e)">{{ e.icdName }}
               <span v-if="e.icdCode" class="dim">({{ e.icdCode }})</span></span>
@@ -592,7 +610,7 @@
     <!-- v69 包 A：既往病历清单。只读挑选，选中即取正文插入当前病历的选定段。 -->
   <el-dialog v-model="priorVisible" title="按既往病历新建（取正文插入当前病历）" width="720px">
     <el-alert type="info" :closable="false" show-icon style="margin-bottom: 8px"
-              :title="`选中一条即把它的正文插入「${sectionLabel}」；原病历只读不改，改完仍点「保存病历」写入本次就诊。`" />
+              :title="`选中一条即把它的正文插入「${sectionLabel}」；原病历只读不改，改完仍点「暂存」写入本次就诊。`" />
     <el-table :data="priorRecords" height="360" v-loading="priorLoading">
       <el-table-column label="来源" width="80">
         <template #default="{ row }">{{ row.source === 'INP' ? '住院' : '门诊' }}</template>
@@ -627,7 +645,10 @@ import client from '../../api/client'
 import { useAuthStore } from '../../stores/auth'
 import EmrRefDrawer, { useEmrPasteGuard } from '../../components/EmrRefDrawer.vue'
 import StructuredFieldForm, { type EmrTemplateField } from '../../components/StructuredFieldForm.vue'
-import { applyTemplate as applyTemplateToEmr, outpTemplatesOnly, splitTemplateContent } from '../../utils/emr-template'
+import { applyTemplate as applyTemplateToEmr, outpTemplatesOnly, splitTemplateContent,
+  type EmrFields, type EmrParts } from '../../utils/emr-template'
+import { editedSinceApplied, eligibleForDefaultTemplate, emrEquals, pickDefaultTemplate, planDefaultTemplate,
+  revertDefaultTemplate, type DefaultTemplate } from '../../utils/default-template'
 import { stripBlockMarks } from '../../utils/print-format'
 
 const categoryNames: Record<string, string> = { LAB: '检验', EXAM: '检查', TREAT: '治疗', MATERIAL: '材料' }
@@ -775,7 +796,7 @@ async function applyTemplateBody() {
       .then(() => true, () => false),
   })
   if (r.cancelled) return
-  ElMessage.success(`已套用模板「${t.name}」到：${r.applied.map((k) => EMR_SECTIONS.find((x) => x.key === k)?.label).join('、')}；点「保存病历」后生效`)
+  ElMessage.success(`已套用模板「${t.name}」到：${r.applied.map((k) => EMR_SECTIONS.find((x) => x.key === k)?.label).join('、')}；点「暂存」后生效`)
   if (split.skipped.length) {
     const labels = split.skipped.map((x) => x.label)
     ElMessage.info(`模板里的「${labels.join('、')}」不属于病历正文五段，未套用${labels.some((l) => l.includes('诊断')) ? '；诊断请在下方诊断区录入' : ''}`)
@@ -783,6 +804,82 @@ async function applyTemplateBody() {
   if (r.overLimit.length) {
     ElMessage.warning(`${r.overLimit.map((o) => `${o.label}${o.length}字（上限 ${o.limit}）`).join('、')}，超出部分保存时可能失败，请先精简`)
   }
+}
+
+/* ===================== v79 车道B（988★）：新病历自动套用科室默认模板 =====================
+ * 口径（v79 规划节，主控定）：只在「工作区无病历、未签名、五段正文全空、本科室有启用的默认模板」时套；
+ * 已有正文 / 已签名 / 无默认模板 / 接口失败一律什么都不做、不提示。判定在 utils/default-template.ts（有 vitest）。
+ * 取数：GET /api/emr-templates/default?deptId=<挂号科室>&recordType=OUTP——无默认返 data=null；
+ * 默认模板对本人不可见返 4066，按「无默认」静默处理。只改本页表单，仍须点「暂存」落库；不新增写路径。
+ */
+interface AutoTplState {
+  regId: number
+  name: string
+  /** 套用前的五段（新病历为空；系统若已预填过敏史则含那一句）——撤销即恢复到它 */
+  before: EmrFields
+  /** 套用时写入的段值 */
+  written: EmrParts
+  /** 套用刚完成时的五段：医生一字未动就离开，不提示「已书写未签名」 */
+  after: EmrFields
+  /** 黄条附注（未套用的非正文段、超列宽） */
+  notes: string[]
+}
+const autoTpl = ref<AutoTplState | null>(null)
+/** 本页会话里医生对哪些就诊点过「撤销」：开单/作废后同一就诊重新进页，不再自动套回去 */
+const declinedAutoTpl = new Set<number>()
+
+async function fetchDefaultTemplate(row: Record<string, unknown>): Promise<DefaultTemplate | null> {
+  const deptId = row.deptId
+  if (typeof deptId !== 'number') return null
+  try {
+    const resp = await client.get('/emr-templates/default',
+      { params: { deptId, recordType: 'OUTP' }, __silentCodes: [4066, 4067] })
+    const t = pickDefaultTemplate(resp.data.data)
+    if (t && t.content === undefined && t.id !== null) {
+      t.content = (await client.get(`/emr-templates/${t.id}`, { __silentCodes: [4066] })).data.data?.content as
+        string | null | undefined
+    }
+    return t
+  } catch {
+    return null   // 自动套用是锦上添花：取不到就当没有默认模板，不打断接诊
+  }
+}
+
+async function autoApplyDefaultTemplate(row: Record<string, unknown>, t: DefaultTemplate) {
+  const regId = row.registrationId as number
+  // 请求在途时医生已切到别的患者 / 已签名：不套
+  if ((current.value?.registrationId as number | undefined) !== regId || emrSigned.value) return
+  const before: EmrFields = { ...emr }
+  const plan = planDefaultTemplate(t.content, before)
+  if (!plan) return
+  // plan 里某段若原有值，已合并成「原值 + 换行 + 模板值」，覆盖无损，故覆盖确认直接放行
+  const r = await applyTemplateToEmr(emr, plan.parts, { confirmOverwrite: () => Promise.resolve(true) })
+  if (r.cancelled) return
+  const notes: string[] = []
+  if (plan.skipped.length) {
+    notes.push(`模板里的「${plan.skipped.map((x) => x.label).join('、')}」不属于病历正文五段，未套用`)
+  }
+  if (r.overLimit.length) {
+    notes.push(`${r.overLimit.map((o) => `${o.label}${o.length}字（上限 ${o.limit}）`).join('、')}，超出部分暂存时可能失败，请先精简`)
+  }
+  autoTpl.value = { regId, name: t.name, before, written: plan.parts, after: { ...emr }, notes }
+}
+
+async function undoAutoTemplate() {
+  const s = autoTpl.value
+  if (!s) return
+  const edited = editedSinceApplied(emr, s.written)
+  if (edited.length) {
+    const labels = EMR_SECTIONS.filter((x) => edited.includes(x.key)).map((x) => x.label)
+    const ok = await ElMessageBox.confirm(
+      `「${labels.join('、')}」在套用后已被修改，撤销会连同这些修改一起恢复为套用前的内容，是否继续？`,
+      '撤销默认模板', { type: 'warning' }).then(() => true, () => false)
+    if (!ok) return
+  }
+  revertDefaultTemplate(emr, s.before, s.written)
+  declinedAutoTpl.add(s.regId)
+  autoTpl.value = null
+  ElMessage.success('已撤销自动套用的科室默认模板')
 }
 
 /** 取模板的结构化字段定义（车道 I：GET /api/emr/templates/{id}/fields，只回启用中的） */
@@ -806,6 +903,9 @@ async function loadStructFields() {
 const emrSigned = ref(false)
 const emrSignerName = ref('')
 const emrSignedAtText = ref('')
+/** v79（2457★）：已签名即「已提交」，签名人与时间与上方冻结条同源 */
+const emrStatusText = computed(
+  () => `已提交（已签名 · ${emrSignerName.value || '—'} · ${emrSignedAtText.value || '—'}）`)
 
 /**
  * v55 车道R2（994）：当前病历的 outp_emr.id。
@@ -1057,6 +1157,7 @@ async function openPatient(row: Record<string, unknown> | null) {
   warnIfLeavingUnsigned(row)
   current.value = row
   currentEmrId.value = null   // v55：切患者先清，别让上一位的 id 挂在这一位的按钮上
+  autoTpl.value = null        // v79：默认模板黄条只属于套用它的那一次进页
   if (!row) return
   const resp = await client.get(`/outpatient/doctor/${row.registrationId}/workspace`)
   const ws = resp.data.data
@@ -1108,7 +1209,16 @@ async function openPatient(row: Record<string, unknown> | null) {
   structFields.value = []
   structValues.value = {}
   structHint.value = ''
-  await loadBasicRef(!ws.emr)   // 1092★：带出放在正文赋值之后，才知道既往史是不是空的
+  // v79（988★）：是否自动套默认模板按 workspace 原样判（新病历、未签、五段全空），必须在 1092★ 预填过敏史之前判；
+  // 取模板与带出并行，带出先落、模板后套，planDefaultTemplate 把预填的过敏史与模板既往史合并，一字不丢。
+  const tplEligible = eligibleForDefaultTemplate({
+    hasEmr: !!ws.emr, signed: emrSigned.value, emr, declined: declinedAutoTpl.has(row.registrationId as number),
+  })
+  const [, defaultTpl] = await Promise.all([
+    loadBasicRef(!ws.emr),   // 1092★：带出放在正文赋值之后，才知道既往史是不是空的
+    tplEligible ? fetchDefaultTemplate(row) : Promise.resolve(null),
+  ])
+  if (defaultTpl) await autoApplyDefaultTemplate(row, defaultTpl)
 }
 
 /** v74 复核补入口：检验报告单（既有 PrintView 契约 ?type=lab-report&id=<orderId>，后端 /api/print/lab-report/{orderId}） */
@@ -1203,8 +1313,9 @@ async function saveEmr() {
       ElMessage.error(resp.data.message)
       return
     }
-    ElMessage.success('病历已保存')
+    ElMessage.success('病历已暂存（未签名，仍可修改）')
     if (typeof resp.data.data?.id === 'number') currentEmrId.value = resp.data.data.id   // v55：首次保存后按钮即出现
+    autoTpl.value = null   // v79：默认模板已随暂存落库，黄条使命结束（撤销只对未落库的套用有意义）
     await loadCdssTips()
   } finally {
     savingEmr.value = false
@@ -1329,13 +1440,13 @@ function emrHasContent() {
 async function signEmr() {
   if (!current.value) return
   if (!emrHasContent()) {
-    ElMessage.warning('病历内容为空，请先书写并保存病历后再签名')
+    ElMessage.warning('病历内容为空，请先书写并暂存后再提交（签名）')
     return
   }
   try {
     await ElMessageBox.confirm(
-      '签名后本次病历原文即冻结，不能再修改，只能追加补正记录。确认签名？', '病历签名',
-      { type: 'warning', confirmButtonText: '确认签名', cancelButtonText: '再改改' })
+      '签名即提交：签名后本次病历原文即冻结，不能再修改，只能追加补正记录。确认提交？', '提交病历（签名）',
+      { type: 'warning', confirmButtonText: '确认提交（签名）', cancelButtonText: '再改改' })
   } catch {
     return   // 医生取消，不做任何事
   }
@@ -1346,7 +1457,7 @@ async function signEmr() {
       ElMessage.error(resp.data.message)
       return
     }
-    ElMessage.success('病历已签名')
+    ElMessage.success('病历已提交（已签名）')
     await openPatient(current.value)
     await loadWorklist()
   } finally {
@@ -1361,6 +1472,8 @@ async function signEmr() {
 function warnIfLeavingUnsigned(next: Record<string, unknown> | null) {
   const prev = current.value
   if (!prev || emrSigned.value || !emrHasContent()) return
+  // v79：只有自动套用的默认模板、医生一字未动——那不是「已书写」，不提示
+  if (autoTpl.value && emrEquals(emr, autoTpl.value.after)) return
   if (next && (next.registrationId as number) === (prev.registrationId as number)) return
   ElMessage({
     type: 'warning',
@@ -1551,6 +1664,13 @@ onMounted(async () => {
 }
 .queue-filter { display: flex; align-items: center; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
 .dim { color: var(--el-text-color-placeholder); }
+.emr-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
 .sign-tip {
   margin-left: 10px;
   font-size: 12px;

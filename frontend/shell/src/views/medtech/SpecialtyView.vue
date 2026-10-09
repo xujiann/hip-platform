@@ -212,6 +212,28 @@
       </el-table-column>
     </el-table>
   </el-dialog>
+
+  <!-- v79 车道B（1101★）：留观病情观察记录。原为 ElMessageBox.prompt（单行框，挂不了模板下拉），改成对话框；
+       模板取 /emr-templates/visible?type=EMR（按登录人可见范围与授权过滤），无可见模板时下拉不渲染。
+       落库仍走既有 POST /er-observation/{id}/notes，端点一行未改。 -->
+  <el-dialog v-model="erNoteDialog" :title="`病情观察 - ${erNoteTarget?.patient_name ?? ''}`" width="600px">
+    <el-form size="small" label-width="80px">
+      <el-form-item v-if="erTemplates.length" label="病历模板">
+        <el-select v-model="erTplId" clearable filterable placeholder="选模板，整段插入观察记录" style="width: 100%"
+                   @change="applyErTemplate">
+          <el-option v-for="t in erTemplates" :key="t.id as number"
+                     :label="`${t.name}（${t.scopeName ?? (t.dept_id ? '科室' : '通用')}）`" :value="t.id as number" />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="观察情况">
+        <el-input v-model="erNoteText" type="textarea" :rows="6" :maxlength="ER_NOTE_MAX" show-word-limit />
+      </el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button @click="erNoteDialog = false">取消</el-button>
+      <el-button type="primary" :loading="erNoteSaving" @click="saveErNote">记录</el-button>
+    </template>
+  </el-dialog>
 </template>
 
 <script setup lang="ts">
@@ -220,6 +242,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
 import { fmtDateTime } from '../../utils/date'
+import { outpTemplatesOnly } from '../../utils/emr-template'
 
 const router = useRouter()
 const tab = ref('ecg')
@@ -333,15 +356,89 @@ async function startEr() {
     await loadEr()
   } finally { startErLoading.value = false }
 }
+// v79 车道B（1101★）：留观观察记录接病历模板。原 prompt 的预填句原样保留为初值；
+// 它被视为「未书写」——选模板时不为它弹覆盖确认，医生改过一个字才确认。
+const ER_NOTE_DEFAULT = '神志清，生命体征平稳'
+/** er_observation_note.note 列宽 varchar(1000)（V21）；超长前端先拦，免得落到库层报通用错 */
+const ER_NOTE_MAX = 1000
+/** 查询串编码后长度上限：给请求行 8KB 默认上限留出路径与其余头的余量 */
+const ER_NOTE_URL_MAX = 6400
+const erNoteDialog = ref(false)
+const erNoteTarget = ref<Record<string, unknown> | null>(null)
+const erNoteText = ref('')
+const erNoteSaving = ref(false)
+const erTemplates = ref<Record<string, unknown>[]>([])
+const erTplId = ref<number | null>(null)
+let erTemplatesLoaded = false
+
+/** 可见的病历模板（与门诊医生站同一端点、同一过滤：只剔明确标为住院 INP 的）。取不到就不出下拉，不打断记录 */
+async function loadErTemplates() {
+  if (erTemplatesLoaded) return
+  try {
+    erTemplates.value = outpTemplatesOnly(
+      ((await client.get('/emr-templates/visible', { params: { type: 'EMR' } })).data.data ?? []) as Record<string, unknown>[])
+    erTemplatesLoaded = true
+  } catch {
+    erTemplates.value = []
+  }
+}
+
 async function addErNote(row: Record<string, unknown>) {
-  const res = await ElMessageBox.prompt('观察情况', '病情观察', { inputValue: '神志清，生命体征平稳' }).catch(() => null)
-  if (!res) return
-  const { value } = res
+  erNoteTarget.value = row
+  erNoteText.value = ER_NOTE_DEFAULT
+  erTplId.value = null
+  erNoteDialog.value = true
+  await loadErTemplates()
+}
+
+async function applyErTemplate(id: number | undefined) {
+  if (!id) return
+  const t = erTemplates.value.find((x) => x.id === id)
+  if (!t) return
+  let content = t.content as string | null | undefined
+  if (content === undefined) {
+    // 列表行不带正文时按 id 取一次（只读端点；不可见/已停用 4066 由拦截器提示）
+    content = (await client.get(`/emr-templates/${t.id}`)).data.data?.content as string | null | undefined
+  }
+  const text = (content ?? '').trim()
+  if (!text) {
+    ElMessage.warning(`模板「${t.name}」没有正文可插入`)
+    erTplId.value = null
+    return
+  }
+  const cur = erNoteText.value.trim()
+  if (cur && cur !== ER_NOTE_DEFAULT) {
+    const ok = await ElMessageBox.confirm('观察情况已有内容，套用模板将覆盖它，是否继续？', '套用模板',
+      { type: 'warning' }).then(() => true, () => false)
+    if (!ok) { erTplId.value = null; return }
+  }
+  erNoteText.value = text
+}
+
+async function saveErNote() {
+  const row = erNoteTarget.value
+  if (!row) return
+  const note = erNoteText.value.trim()
+  if (!note) { ElMessage.warning('请填写观察情况'); return }
+  if ([...note].length > ER_NOTE_MAX) {
+    ElMessage.warning(`观察情况 ${[...note].length} 字，超过 ${ER_NOTE_MAX} 字上限，请先精简`)
+    return
+  }
+  // 既有端点把 note 放在查询串里（@RequestParam），整段模板正文编码后可能撑破请求行上限（nginx / Tomcat 默认 8KB）
+  if (encodeURIComponent(note).length > ER_NOTE_URL_MAX) {
+    ElMessage.warning('观察情况过长，超出单次提交上限（约 700 个汉字），请精简或分两次记录')
+    return
+  }
+  erNoteSaving.value = true
   busyId.value = row.id
   try {
-    await client.post(`/outpatient/er-observation/${row.id}/notes`, null, { params: { note: value } })
+    await client.post(`/outpatient/er-observation/${row.id}/notes`, null, { params: { note } })
+    erNoteDialog.value = false
     await loadEr()
-  } finally { busyId.value = null }
+  } finally {
+    erNoteSaving.value = false
+    busyId.value = null
+  }
 }
 async function endEr(row: Record<string, unknown>, outcome: string) {
   busyId.value = row.id
