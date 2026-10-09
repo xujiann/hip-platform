@@ -117,6 +117,15 @@ public class PathologyRegistryController {
     /** 时钟容差：前端与服务器差几分钟不该把合法登记判成「未来时间」（同 v47 4825 的 5 分钟口径） */
     private static final long CLOCK_SKEW_SECONDS = 300;
 
+    /**
+     * 数据库当前时刻（PG now()，已是微秒粒度）。病理轨迹 path_process 的节点时刻大多由 SQL 里的 now() 写入，
+     * 凡是 Java 侧要给"默认就是现在"的时刻，一律取它而不是 Instant.now()——应用与数据库不在同一台机器时
+     * 两边时钟会偏，混用就会把同一条轨迹的先后顺序弄乱（v79 合版实测本机偏 4 秒）。
+     */
+    private Timestamp dbNow() {
+        return jdbc.queryForObject("select now()", Timestamp.class);
+    }
+
     // ==================================================================================
     // 一、双来源待办
     // ==================================================================================
@@ -339,8 +348,7 @@ public class PathologyRegistryController {
                 nullIfBlank(req.clinicalDiagnosis()), nullIfBlank(req.fixative()), fixedAt,
                 Boolean.TRUE.equals(req.urgent()),
                 manual ? "RECEIVED" : "COLLECTED",
-                manual ? Timestamp.from(Instant.now()
-                        .truncatedTo(java.time.temporal.ChronoUnit.MICROS)) : null);
+                manual ? dbNow() : null);
 
         if (manual) {
             jdbc.update("""
@@ -396,11 +404,13 @@ public class PathologyRegistryController {
             return R.fail(5208, "标本状态不允许核收（当前 " + row.get("status") + "）");
         }
 
-        // **截断到微秒**：collected_at 由 PG 的 now()/入库时被舍入到微秒（可能变大），
-        // 而这里的 Instant.now() 是 100ns 粒度。不截断就会出现「接收/拒收时刻比取材时刻早
-        // 100 纳秒」的假越界，让一条刚登记就核收的标本撞 5210。
-        // 同 v47 修 SurgeryService 时间点、本轮修 InpEmrController 体征——同一个根因的第三、四处。
-        Instant received = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+        // 历史：此处原用 Instant.now() 并截断到微秒，以免与 PG 微秒舍入后的 collected_at 比出「早 100 纳秒」的假越界
+        // （同 v47 SurgeryService、InpEmrController 体征同一根因）。v79 起默认时刻直接取 PG now()，本身就是微秒、与取材同源。
+        // v79 合版（e2e-v58-audit 在本机 4 秒时钟偏差下抓出）：默认接收时刻此前取应用服务器的 Instant.now()，
+        // 而轨迹其余节点（取材/切片/特检等）一律用数据库 now()——两台机器时钟一偏，核收节点就排到轨迹末尾，
+        // "最后一个节点"、各节点间隔小时数全部算错。默认值改取数据库时钟，与其余节点同源；
+        // 显式传入的接收时刻仍按下方规则校验（不晚于当前 + 容差、不早于取材）。
+        Instant received = dbNow().toInstant();
         if (req != null && !trim(req.receivedAt()).isEmpty()) {
             Instant t = parseInstant(req.receivedAt());
             if (t == null) return R.fail(5210, "接收时刻格式非法（ISO-8601，如 2026-09-06T09:30）");
@@ -451,11 +461,9 @@ public class PathologyRegistryController {
         if (row.get("rejected_at") != null) return R.fail(5208, "标本已拒收，不能重复拒收");
         if ("DIAGNOSED".equals(row.get("status"))) return R.fail(5208, "已出诊断的标本不能拒收");
 
-        // **截断到微秒**：collected_at 由 PG 的 now()/入库时被舍入到微秒（可能变大），
-        // 而这里的 Instant.now() 是 100ns 粒度。不截断就会出现「接收/拒收时刻比取材时刻早
-        // 100 纳秒」的假越界，让一条刚登记就核收的标本撞 5210。
-        // 同 v47 修 SurgeryService 时间点、本轮修 InpEmrController 体征——同一个根因的第三、四处。
-        Instant rejected = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+        // 历史：此处原用 Instant.now() 并截断到微秒，以免与 PG 微秒舍入后的 collected_at 比出「早 100 纳秒」的假越界
+        // （同 v47 SurgeryService、InpEmrController 体征同一根因）。v79 起默认时刻直接取 PG now()，本身就是微秒、与取材同源。
+        Instant rejected = dbNow().toInstant();   // 同 receiveCheck：默认时刻取数据库时钟，与轨迹其余节点同源
         if (!trim(req.rejectedAt()).isEmpty()) {
             Instant t = parseInstant(req.rejectedAt());
             if (t == null) return R.fail(5210, "拒收时刻格式非法（ISO-8601，如 2026-09-06T09:30）");
