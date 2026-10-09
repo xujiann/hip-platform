@@ -681,7 +681,7 @@ public class EmrRefController {
         if (!blank(str(r.get("diagnosis")))) sb.append("　病理诊断：").append(str(r.get("diagnosis")));
         if (!blank(str(r.get("supplements")))) sb.append("　").append(str(r.get("supplements")));
         var it = item("PATH-" + str(r.get("id")),
-                name + " · 签发 " + dateText(null, r.get("report_issued_at"))
+                name + " · 签发 " + minuteText(r.get("report_issued_at"))
                         + ("INP".equals(r.get("source")) ? " · 住院" : ""),
                 sb.toString(), r);
         it.put("source", r.get("source"));
@@ -758,6 +758,12 @@ public class EmrRefController {
         if (visitDate != null) return String.valueOf(visitDate);
         if (at == null) return "";
         return String.valueOf(at).replace('T', ' ');
+    }
+
+    /** 时间戳截到分钟（标题用；JDBC 原样字符串带微秒，印在抽屉条目标题上是噪声） */
+    private static String minuteText(Object at) {
+        String s = dateText(null, at);
+        return s.length() > 16 ? s.substring(0, 16) : s;
     }
 
     private static String suffix(String sep, String v) {
