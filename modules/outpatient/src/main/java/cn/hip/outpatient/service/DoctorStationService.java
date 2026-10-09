@@ -697,6 +697,66 @@ public class DoctorStationService {
      */
     static final List<String> ORDER_TYPES = List.of("DRUG", "LAB", "EXAM", "TREAT", "MATERIAL");
 
+    /**
+     * v79 车道A：开单行里医生可自由填写的文本字段 → 屏上叫法（与医生站开单区的列名/占位一致）。
+     * 顺序即报错时的检查顺序；列宽不写在这里，由 {@link #ORDER_TEXT_MAX} 从实体注解读出。
+     */
+    private static final java.util.LinkedHashMap<String, String> ORDER_TEXT_LABELS = new java.util.LinkedHashMap<>();
+    static {
+        ORDER_TEXT_LABELS.put("usageRoute", "用法");
+        ORDER_TEXT_LABELS.put("frequency", "频次");
+        ORDER_TEXT_LABELS.put("dosePerTime", "单次量");
+        ORDER_TEXT_LABELS.put("remark", "备注");
+        ORDER_TEXT_LABELS.put("clinicalSummary", "临床摘要");
+        ORDER_TEXT_LABELS.put("examPurpose", "检查目的");
+        ORDER_TEXT_LABELS.put("notice", "注意事项");
+        ORDER_TEXT_LABELS.put("specimenType", "标本类型");
+        ORDER_TEXT_LABELS.put("samplingSite", "采样部位");
+    }
+
+    /** 各字段列宽，取自 {@link OutpOrder} 的 {@code @Column(length)}——实体改列宽这里自动跟上 */
+    static final java.util.Map<String, Integer> ORDER_TEXT_MAX;
+    static {
+        var m = new java.util.LinkedHashMap<String, Integer>();
+        for (String f : ORDER_TEXT_LABELS.keySet()) {
+            try {
+                m.put(f, OutpOrder.class.getDeclaredField(f)
+                        .getAnnotation(jakarta.persistence.Column.class).length());
+            } catch (NoSuchFieldException e) {
+                throw new IllegalStateException("OutpOrder 缺字段 " + f, e);
+            }
+        }
+        ORDER_TEXT_MAX = java.util.Collections.unmodifiableMap(m);
+    }
+
+    /** 只在 DRUG 行落库的三列（下方落库段只在药品分支 set）——非药品行带了也被丢弃，不核 */
+    private static final java.util.Set<String> DRUG_ONLY_TEXT = java.util.Set.of("usageRoute", "frequency", "dosePerTime");
+
+    /**
+     * 逐行逐字段核长度。字数按 Unicode 码点计（与 PostgreSQL varchar(n) 的字符口径一致，
+     * 生僻字/emoji 不会被 UTF-16 代理对算成两个字）。第一个超长项即抛，行号从 1 起。
+     * 只核<b>会落库</b>的字段：用法/频次/单次量只在药品行落库，非药品行不核（不因被丢弃的输入拒单）。
+     */
+    private static void checkOrderLineLengths(List<OrderLine> lines) {
+        for (int i = 0; i < lines.size(); i++) {
+            OrderLine l = lines.get(i);
+            String[] values = {l.usageRoute(), l.frequency(), l.dosePerTime(), l.remark(),
+                    l.clinicalSummary(), l.examPurpose(), l.notice(), l.specimenType(), l.samplingSite()};
+            boolean drug = "DRUG".equals(l.orderType());
+            int k = 0;
+            for (var e : ORDER_TEXT_LABELS.entrySet()) {
+                String v = values[k++];
+                if (v == null || (!drug && DRUG_ONLY_TEXT.contains(e.getKey()))) continue;
+                int len = v.codePointCount(0, v.length());
+                int max = ORDER_TEXT_MAX.get(e.getKey());
+                if (len > max) {
+                    throw new BizException(4000, "请求参数不正确：第 " + (i + 1) + " 行" + e.getValue()
+                            + "超过 " + max + " 字（当前 " + len + " 字）");
+                }
+            }
+        }
+    }
+
     /** 开立一组医嘱（药品成一张处方，检查检验各自成申请单） */
     @Transactional
     public List<OutpOrder> createOrders(Long registrationId, List<OrderLine> lines, Long doctorId) {
@@ -715,6 +775,10 @@ public class DoctorStationService {
                         + "」不合法，须为 " + String.join(" / ", ORDER_TYPES) + " 之一");
             }
         }
+        // v79 车道A：自由文本列长度——**纯只读预检，同上放在一切落库与 nextGroupSeq() 之前**（零副作用）。
+        // 此前超长要到 flush 时撞库列宽，报通用 4091 不说是哪一行哪个字段；现按 OutpOrder 实体的
+        // @Column(length) 逐列核（列宽取自实体注解，不在这里另抄一份数字），超长报通用 4000 并点名。
+        checkOrderLineLengths(lines);
         // v43 车道C（8016）：停用药品不可开单。**本方法唯一的新增判断，且是纯只读预检**——
         // 刻意放在 nextGroupSeq() 之前：那是 nextval，事务回滚也退不回去，
         // 拒绝一张不该开的单不该消耗掉一个处方组号。失败时零副作用（无序列、无订单、无库存变动）。

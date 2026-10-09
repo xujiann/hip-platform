@@ -22,6 +22,9 @@
       <el-tab-pane label="检验" name="LAB" />
       <el-tab-pane label="检查" name="EXAM" />
       <el-tab-pane label="历史病历" name="HISTORY" />
+      <!-- v79 车道A（992★）：微生物培养与药敏（只取标本已发布的）、病理报告（只取已签发的） -->
+      <el-tab-pane label="微生物" name="MICRO" />
+      <el-tab-pane label="病理" name="PATH" />
     </el-tabs>
 
     <el-alert v-if="error" type="warning" show-icon :closable="false" :title="error" style="margin-bottom: 8px" />
@@ -39,9 +42,12 @@
                 :title="`命中超过 ${seg.limit} 条，仅显示前 ${seg.limit} 条——请从更近的资料里挑，本抽屉不提供翻页`" />
 
       <!-- 诚实边界：住院医嘱的检验检查在本平台尚无结果落地表，这里只能引到门诊侧的结果 -->
-      <el-alert v-if="(tab === 'LAB' || tab === 'EXAM') && !!admissionId" type="info" show-icon :closable="false"
+      <el-alert v-if="(tab === 'LAB' || tab === 'EXAM' || tab === 'MICRO') && !!admissionId" type="info" show-icon :closable="false"
                 style="margin-bottom: 8px"
                 title="本平台的检验结果与检查报告只挂在门诊医嘱上，此处引用到的是该患者门诊侧的结果；住院医嘱开出的检验检查尚无结果落地表，引用不到。" />
+      <!-- v79：病理两条来源都取，门诊按就诊日期、住院按签发日期筛（后端 EmrRefController#pathology 同口径） -->
+      <el-alert v-if="tab === 'PATH' && range" type="info" show-icon :closable="false" style="margin-bottom: 8px"
+                title="门诊病理按就诊日期筛选，住院病理按报告签发日期筛选。" />
 
       <el-empty v-if="seg && !seg.count" :image-size="60" :description="emptyText" />
 
@@ -51,6 +57,7 @@
           <el-tag v-if="it.abnormal" type="danger" size="small">异常</el-tag>
           <el-tag v-if="it.critical" type="danger" size="small">危急值</el-tag>
           <el-tag v-if="it.currentVisit" type="success" size="small">本次</el-tag>
+          <el-tag v-if="tab === 'PATH' && it.source === 'INP'" type="info" size="small">住院</el-tag>
           <el-button link type="primary" size="small" :disabled="disabled"
                      @click="insert(String(it.text))">插入正文</el-button>
         </div>
@@ -208,8 +215,9 @@ export function useEmrPasteGuard(patient: () => { patientId: number | null; pati
 <script setup lang="ts">
 /**
  * v45 车道J：临床资料引用抽屉（偏离表 992★ 引用患者基本资料/检验/检查/历史病历）。
+ * v79 车道A：加「微生物」「病理」两页签（MICRO 只取标本已发布的、PATH 只取已签发的）。
  *
- * <p>四个页签各调一次只读聚合端点 `GET /api/outpatient/emr-ref`，返回体里
+ * <p>六个页签各调一次只读聚合端点 `GET /api/outpatient/emr-ref`，返回体里
  * `items[].text` 就是<b>可直接插入正文的片段</b>，本组件不做二次拼装、不改一个字。
  * 插入动作只 `emit('insert', text)`，<b>写不写进病历由父组件决定</b>——
  * 本组件自身不调用任何写接口。
@@ -241,6 +249,13 @@ const emptyText = computed(() => ({
   LAB: '该患者暂无可引用的检验结果',
   EXAM: '该患者暂无可引用的检查报告',
   HISTORY: '该患者暂无既往病历（本次就诊自身不计入）',
+  // v79：空态如实说出取数口径——未发布的微生物结果、未签发的病理报告本来就不在引用范围内
+  MICRO: range.value
+    ? '该患者在所选区间内无已发布的微生物结果'
+    : '该患者暂无已发布的微生物结果（检验科未发布的不在引用范围内）',
+  PATH: range.value
+    ? '该患者在所选区间内无已签发的病理报告'
+    : '该患者暂无已签发的病理报告（未签发的不在引用范围内）',
 }[tab.value] ?? '暂无可引用的资料'))
 
 async function load() {

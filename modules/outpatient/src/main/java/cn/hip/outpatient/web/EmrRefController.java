@@ -33,7 +33,7 @@ import java.util.Set;
  * inp_medical_record 行数与全文逐字不变」把这条钉死。引用带出的语义就是"把已有的资料
  * 抄一段给医生看"，它<b>不能</b>顺手改病历，否则 992 就从便利功能变成了数据污染源。
  *
- * <p><b>返回体契约（四种 kind 同形）</b>：每段都返回两份——
+ * <p><b>返回体契约（六种 kind 同形；v79 加 MICRO / PATH）</b>：每段都返回两份——
  * {@code items[].text} 是<b>可直接插入病历正文的文本片段</b>（前端"插入正文"按钮用），
  * {@code items[].raw} 是<b>原始结构化数据</b>（前端要自己排版、或将来要做结构化引用时用）；
  * 段级 {@code snippet} 是全部 item 文本的合并版（"全部插入"按钮用）。
@@ -48,6 +48,14 @@ import java.util.Set;
  *       <b>只外键到 {@code outp_order}</b>——全仓不存在挂在 {@code inp_order} 上的结果表。
  *       因此住院患者查 LAB/EXAM 引用，拿到的是<b>该患者门诊侧</b>的结果；住院医嘱开出的
  *       检验检查在本平台<b>尚无结果落地表</b>，引用不到就是引用不到，此处不编造空壳条目。</li>
+ *   <li><b>MICRO（v79）</b>：{@code lab_micro_result} + {@code lab_micro_ast}，经 {@code order_id → outp_order →
+ *       outp_registration} 归到患者，<b>只取标本已发布（{@code lis_sample.published_at} 非空）的</b>——
+ *       微生物结果在标本核收后录入、随标本审核发布，未发布的是检验科尚未放行的结果，不给临床引用。
+ *       与 LAB 同理只挂门诊医嘱（{@code lis_sample.order_id} 只外键 {@code outp_order}）。</li>
+ *   <li><b>PATH（v79）</b>：{@code path_specimen} 上 <b>{@code report_issued_at} 非空且未拒收</b>的标本——
+ *       与患者端 {@code /my/exam-reports} 的 PATH 分支、院内「已签发」同一列同一口径；写完诊断未签发的
+ *       不取。病理标本门诊（{@code order_id}）与住院（{@code inp_order_id}）两条来源都取，
+ *       与 {@code PathologyReportController#prior} 同口径。补充报告（{@code path_report}，出具即签名）随正文带出。</li>
  *   <li>BASIC 段只带姓名/性别/年龄/门诊号或住院号/过敏史/血型/科室这些<b>写病历会用到</b>的项，
  *       <b>刻意不带身份证号与手机号</b>——引用带出不是患者档案导出口。</li>
  * </ul>
@@ -87,7 +95,8 @@ public class EmrRefController {
 
     private static final Set<String> GATE_MODES = Set.of("off", "warn", "block");
 
-    private static final Set<String> KINDS = Set.of("BASIC", "LAB", "EXAM", "HISTORY");
+    /** v79 车道A（992★）：加 MICRO 微生物培养与药敏、PATH 已签发病理报告 */
+    private static final Set<String> KINDS = Set.of("BASIC", "LAB", "EXAM", "HISTORY", "MICRO", "PATH");
 
     private final JdbcTemplate jdbc;
     private final ConfigReader configReader;
@@ -142,7 +151,8 @@ public class EmrRefController {
      *
      * @param registrationId 门诊挂号 id（与 admissionId 二选一）
      * @param admissionId    住院病案 id（与 registrationId 二选一）
-     * @param kind           BASIC 基本资料 / LAB 检验 / EXAM 检查 / HISTORY 历史病历
+     * @param kind           BASIC 基本资料 / LAB 检验 / EXAM 检查 / HISTORY 历史病历 /
+     *                       MICRO 微生物培养与药敏（v79）/ PATH 已签发病理报告（v79）
      */
     @GetMapping
     public R<Map<String, Object>> ref(@RequestParam(required = false) Long registrationId,
@@ -159,7 +169,7 @@ public class EmrRefController {
                                       Authentication auth) {
         String k = kind == null ? "" : kind.trim().toUpperCase(Locale.ROOT);
         if (!KINDS.contains(k)) {
-            return R.fail(4000, "请求参数不正确：kind 须为 BASIC / LAB / EXAM / HISTORY 之一");
+            return R.fail(4000, "请求参数不正确：kind 须为 BASIC / LAB / EXAM / HISTORY / MICRO / PATH 之一");
         }
         if ((registrationId == null) == (admissionId == null)) {
             return R.fail(4000, "请求参数不正确：registrationId 与 admissionId 须且只须传一个");
@@ -180,6 +190,8 @@ public class EmrRefController {
             case "BASIC" -> basic(enc);
             case "LAB" -> lab(enc, w);
             case "EXAM" -> exam(enc, w);
+            case "MICRO" -> micro(enc, w);
+            case "PATH" -> pathology(enc, w);
             default -> history(enc, w);
         });
     }
@@ -520,6 +532,162 @@ public class EmrRefController {
         return capped("HISTORY", enc, entries, HISTORY_LIMIT);
     }
 
+    // ---------- MICRO：微生物培养与药敏（v79 车道A，992★） ----------
+
+    /**
+     * 已发布的微生物培养结果 + 其药敏行。两条 SQL：先取培养结果（限 {@value #ROW_LIMIT}+1），
+     * 再按这批 id 一次取全部药敏行归组——<b>无 N+1</b>。时间窗与 LAB 同口径（就诊日期）。
+     */
+    private Map<String, Object> micro(Encounter enc, Window w) {
+        var rows = jdbc.queryForList("""
+                select m.id, m.specimen, m.organism, m.colony_count, m.gram, m.reported_at,
+                       s.barcode, s.published_at, o.id as order_id, o.item_name as order_name,
+                       o.registration_id, reg.visit_date
+                from lab_micro_result m
+                join lis_sample s on s.id = m.sample_id
+                join outp_order o on o.id = m.order_id
+                join outp_registration reg on reg.id = o.registration_id
+                where reg.patient_id = ? and s.published_at is not null""" + dateClause("reg.visit_date", w) + "\n" + """
+                order by s.published_at desc, m.id desc
+                limit ?
+                """, labArgs(enc, w));
+        var astByMicro = new java.util.HashMap<Long, List<Map<String, Object>>>();
+        if (!rows.isEmpty()) {
+            List<Object> ids = new ArrayList<>();
+            for (var r : rows) ids.add(asLong(r.get("id")));
+            for (var a : jdbc.queryForList("""
+                    select a.micro_id, a.antibiotic, a.method, a.mic_value, a.sir
+                    from lab_micro_ast a
+                    where a.micro_id in (%s)
+                    order by a.micro_id, a.id
+                    """.formatted(String.join(",", java.util.Collections.nCopies(ids.size(), "?"))),
+                    ids.toArray())) {
+                astByMicro.computeIfAbsent(asLong(a.get("micro_id")), x -> new ArrayList<>()).add(a);
+            }
+        }
+        List<Entry> entries = new ArrayList<>();
+        for (var r : rows) {
+            var ast = astByMicro.getOrDefault(asLong(r.get("id")), List.of());
+            r.put("ast", ast);
+            StringBuilder sb = new StringBuilder(str(r.get("order_name")));
+            if (!blank(str(r.get("specimen")))) sb.append("（").append(str(r.get("specimen"))).append("）");
+            sb.append("　培养：").append(str(r.get("organism")));
+            String gram = gramText(str(r.get("gram")));
+            if (!blank(gram)) sb.append("，").append(gram);
+            if (!blank(str(r.get("colony_count")))) sb.append("，菌落计数 ").append(str(r.get("colony_count")));
+            if (!ast.isEmpty()) {
+                List<String> parts = new ArrayList<>();
+                for (var a : ast) {
+                    String mic = blank(str(a.get("mic_value"))) ? ""
+                            : " " + (blank(str(a.get("method"))) ? "" : str(a.get("method")) + " ")
+                                    + str(a.get("mic_value"));
+                    parts.add(str(a.get("antibiotic")) + mic + " " + sirText(str(a.get("sir"))));
+                }
+                sb.append("　药敏：").append(String.join("；", parts));
+            }
+            var it = item("MICRO-" + str(r.get("id")),
+                    str(r.get("order_name")) + " · " + dateText(r.get("visit_date"), r.get("published_at")),
+                    sb.toString(), r);
+            it.put("currentVisit", sameRegistration(enc, r.get("registration_id")));
+            entries.add(new Entry(asInstant(r.get("published_at")), it));
+        }
+        return capped("MICRO", enc, entries, ROW_LIMIT);
+    }
+
+    private static String gramText(String g) {
+        return switch (g == null ? "" : g.trim().toUpperCase(Locale.ROOT)) {
+            case "" -> "";
+            case "POS" -> "革兰阳性";
+            case "NEG" -> "革兰阴性";
+            default -> "革兰 " + g;
+        };
+    }
+
+    private static String sirText(String sir) {
+        return switch (sir == null ? "" : sir) {
+            case "S" -> "敏感(S)";
+            case "I" -> "中介(I)";
+            case "R" -> "耐药(R)";
+            default -> sir;
+        };
+    }
+
+    // ---------- PATH：已签发病理报告（v79 车道A，992★ / 1019★ 病理项） ----------
+
+    /**
+     * 已签发的病理报告：门诊来源一条 SQL、住院来源一条 SQL（与 HISTORY 同形）。
+     * 时间窗：门诊来源按<b>就诊日期</b>（与 LAB/EXAM/MICRO 同口径）；住院来源没有就诊日期，
+     * 按<b>签发时间</b>半开区间（与 HISTORY 住院段按时间戳列同口径）。
+     * 补充报告正文用相关子查询并进同一行，不另起查询。
+     */
+    private Map<String, Object> pathology(Encounter enc, Window w) {
+        List<Entry> entries = new ArrayList<>();
+        String cols = """
+                select s.id, s.path_no, s.barcode, s.part_no, s.specimen_type, s.sampling_site,
+                       s.gross_finding, s.micro_finding, s.diagnosis, s.report_issued_at,
+                       (select string_agg('补充报告#' || rp.seq_no || '：' || rp.content, '；' order by rp.seq_no)
+                          from path_report rp where rp.specimen_id = s.id) as supplements,
+                """;
+        for (var r : jdbc.queryForList(cols + """
+                       o.id as order_id, o.item_name as order_name, o.registration_id, reg.visit_date,
+                       'OUTP' as source
+                from path_specimen s
+                join outp_order o on o.id = s.order_id
+                join outp_registration reg on reg.id = o.registration_id
+                where reg.patient_id = ? and s.report_issued_at is not null and s.rejected_at is null"""
+                + dateClause("reg.visit_date", w) + "\n" + """
+                order by s.report_issued_at desc, s.id desc
+                limit ?
+                """, labArgs(enc, w))) {
+            var it = pathItem(r);
+            it.put("currentVisit", sameRegistration(enc, r.get("registration_id")));
+            entries.add(new Entry(asInstant(r.get("report_issued_at")), it));
+        }
+        for (var r : jdbc.queryForList(cols + """
+                       io.id as order_id, io.item_name as order_name, a.id as admission_id,
+                       'INP' as source
+                from path_specimen s
+                join inp_order io on io.id = s.inp_order_id
+                join inp_admission a on a.id = io.admission_id
+                where a.patient_id = ? and s.report_issued_at is not null and s.rejected_at is null"""
+                + tsClause("s.report_issued_at", w) + "\n" + """
+                order by s.report_issued_at desc, s.id desc
+                limit ?
+                """, pathInpArgs(enc, w))) {
+            var it = pathItem(r);
+            it.put("currentVisit", sameAdmission(enc, r.get("admission_id")));
+            entries.add(new Entry(asInstant(r.get("report_issued_at")), it));
+        }
+        return capped("PATH", enc, entries, ROW_LIMIT);
+    }
+
+    /** 住院病理段实参：签发时间戳半开区间（同 histTsArgs），limit 用 ROW_LIMIT。 */
+    private static Object[] pathInpArgs(Encounter enc, Window w) {
+        List<Object> a = new ArrayList<>();
+        a.add(enc.patientId());
+        if (w.from() != null) a.add(Timestamp.valueOf(w.from().atStartOfDay()));
+        if (w.to() != null) a.add(Timestamp.valueOf(w.to().plusDays(1).atStartOfDay()));
+        a.add(ROW_LIMIT + 1);
+        return a.toArray();
+    }
+
+    private Map<String, Object> pathItem(Map<String, Object> r) {
+        String name = blank(str(r.get("order_name"))) ? "病理检查" : str(r.get("order_name"));
+        StringBuilder sb = new StringBuilder(name);
+        if (!blank(str(r.get("path_no")))) sb.append("（病理号 ").append(str(r.get("path_no"))).append("）");
+        if (!blank(str(r.get("sampling_site")))) sb.append("　取材部位：").append(str(r.get("sampling_site")));
+        if (!blank(str(r.get("gross_finding")))) sb.append("　大体所见：").append(str(r.get("gross_finding")));
+        if (!blank(str(r.get("micro_finding")))) sb.append("　镜下所见：").append(str(r.get("micro_finding")));
+        if (!blank(str(r.get("diagnosis")))) sb.append("　病理诊断：").append(str(r.get("diagnosis")));
+        if (!blank(str(r.get("supplements")))) sb.append("　").append(str(r.get("supplements")));
+        var it = item("PATH-" + str(r.get("id")),
+                name + " · 签发 " + dateText(null, r.get("report_issued_at"))
+                        + ("INP".equals(r.get("source")) ? " · 住院" : ""),
+                sb.toString(), r);
+        it.put("source", r.get("source"));
+        return it;
+    }
+
     // ---------- 组装与小工具 ----------
 
     /** 合并排序 → 截断 → 打包（truncated 语义同 mr-workqueue：命中超上限，仅返回前 N 条） */
@@ -546,7 +714,8 @@ public class EmrRefController {
     }
 
     private static final Map<String, String> KIND_TITLE = Map.of(
-            "BASIC", "基本资料", "LAB", "检验结果", "EXAM", "检查报告", "HISTORY", "既往病历");
+            "BASIC", "基本资料", "LAB", "检验结果", "EXAM", "检查报告", "HISTORY", "既往病历",
+            "MICRO", "微生物培养与药敏", "PATH", "病理报告");
 
     /** 段级"全部插入"用的合并片段；空段返回空串（不生成"【检验结果】\n"这种空壳标题） */
     private static String buildSnippet(String kind, List<Map<String, Object>> items) {
