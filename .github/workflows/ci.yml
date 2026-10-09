@@ -233,6 +233,7 @@ jobs:
           python3 tools/e2e-v60-audit.py
           python3 tools/e2e-v77-labroute.py
           python3 tools/e2e-v78-specimen.py
+          python3 tools/e2e-v79-emrversion.py
 
       - name: 失败时输出服务端日志
         if: failure()
