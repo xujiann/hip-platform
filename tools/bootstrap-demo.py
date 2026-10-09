@@ -412,3 +412,166 @@ def ensure_demo_outp_template():
     print('  门诊演示模板：已创建（全院可见）')
 
 ensure_demo_outp_template()
+
+# =====================================================================================================
+# v79 车道A（992★ 复核打回点「零种子库引用抽屉页签为空」）：给张三补一条**已发布的微生物结果**与一份
+# **已签发的病理报告**，另种一张全院 RIS 报告模板。全部走产品接口、全部幂等、任何一步失败只打印原因并停在那一步
+# （不抛异常、不影响上面已完成的各段）。
+#
+# 幂等判据直接问引用端点本身：取张三任一次门诊就诊，GET /outpatient/emr-ref?kind=MICRO / PATH 的 count>0
+# 即「已有」，整段跳过——判据与抽屉显示的是同一个口径（MICRO 只认标本已发布、PATH 只认已签发未拒收），
+# 不会出现「脚本说有、页签却空」。
+#
+# 就诊另起一条：admin 排一个不挂医生的今日内科门诊班 → 张三挂号 → **admin 接诊**（刻意不用 doctor01：
+# 上面「五张单据」按 doctor01 的今日接诊队列认领张三的挂号，这条若记在 doctor01 名下，同日重跑会被它认领走）。
+# 主数据没有「细菌培养」收费项目（种子只有 C0001–C0005 五个常规检验），微生物挂在「尿常规」标本上录入
+# （中段尿培养）——LIS 微生物录入本就对任意已核收检验标本开放，此处不新造收费项目。
+# 病理照 tools/demo-pathology.py 的接口序列取最小步数：登记 → 核收 → 写诊断 → 初签（admin）→
+# 复签（doctor01，须另一人）→ 签发；不做取材/包埋/切片（引用只读签发后的报告正文，不依赖制片环节）。
+# =====================================================================================================
+def ensure_emr_ref_demo():
+    if zs is None:
+        print('引用演示（微生物/病理）：未找到张三，跳过')
+        return
+    hist = call('GET', f"/outpatient/doctor/patient/{zs['id']}/history", t=t).get('data') or []
+    any_rid = hist[0]['registrationId'] if hist else None
+
+    def ref_count(kind):
+        if not any_rid:
+            return 0
+        r = call('GET', f'/outpatient/emr-ref?registrationId={any_rid}&kind={kind}', t=t)
+        return (r.get('data') or {}).get('count', 0) if r.get('code') == 0 else 0
+
+    need_micro, need_path = ref_count('MICRO') == 0, ref_count('PATH') == 0
+    if not need_micro and not need_path:
+        print('引用演示（微生物/病理）：张三已有已发布微生物结果与已签发病理报告，跳过')
+        return
+
+    def charge_item(category, code, name_part):
+        rows = call('GET', f'/masterdata/charge-items?category={category}&keyword={name_part}', t=t).get('data') or []
+        return next((c for c in rows if c.get('code') == code), None) \
+            or next((c for c in rows if name_part in (c.get('name') or '')), None)
+
+    lab = charge_item('LAB', 'C0002', '尿常规') if need_micro else None
+    path_item = charge_item('EXAM', 'C0301', '病理') if need_path else None
+    if need_micro and not lab:
+        print('引用演示·微生物：主数据无「尿常规」检验项目，跳过微生物')
+        need_micro = False
+    if need_path and not path_item:
+        print('引用演示·病理：主数据无病理收费项目，跳过病理')
+        need_path = False
+    if not need_micro and not need_path:
+        return
+
+    def step(name, r):
+        if r.get('code') != 0:
+            print(f"引用演示·{name}：失败 {r.get('code')} {r.get('message')}")
+            return None
+        return r.get('data') if r.get('data') is not None else {}
+
+    # 1) 就诊：排班（不挂医生）→ 挂号 → admin 接诊
+    sch = step('排班', call('POST', '/outpatient/schedules', {'deptId': 1, 'scheduleDate': TODAY, 'fee': 0,
+                                                             'capacity': 5}, t))
+    if sch is None:
+        return
+    reg = step('挂号', call('POST', '/outpatient/registrations', {'patientId': zs['id'], 'scheduleId': sch['id']}, t))
+    if reg is None:
+        return
+    rid = reg['id']
+    if step('接诊', call('POST', f'/outpatient/doctor/{rid}/start', {}, t)) is None:
+        return
+
+    # 2) 开单（检验 + 病理一次开）→ 收费
+    lines = []
+    if need_micro:
+        lines.append({'orderType': 'LAB', 'itemId': lab['id'], 'qty': 1, 'specimenType': '中段尿',
+                      'clinicalSummary': '尿频尿急尿痛 3 天，发热', 'remark': '演示：留清洁中段尿送培养+药敏'})
+    if need_path:
+        lines.append({'orderType': 'EXAM', 'itemId': path_item['id'], 'qty': 1,
+                      'clinicalSummary': '胃镜见胃窦黏膜粗糙、红白相间', 'examPurpose': '明确胃窦病变性质'})
+    orders = step('开单', call('POST', f'/outpatient/doctor/{rid}/orders', {'lines': lines}, t))
+    if orders is None:
+        return
+    if step('收费', call('POST', '/outpatient/charges/settle', {'registrationId': rid, 'payMethod': 'CASH'}, t)) is None:
+        return
+    oid = {o['orderType']: o['id'] for o in orders}
+
+    # 3) 微生物：采样 → 核收 → 录培养+药敏 → 审核发布（发布才进引用范围）
+    if need_micro:
+        s = step('采样', call('POST', f"/lis/samples?orderId={oid['LAB']}", {}, t))
+        if s is not None:
+            bc = s['barcode']
+            ok_all = step('核收', call('PUT', f'/lis/samples/{bc}/receive', None, t)) is not None
+            ok_all = ok_all and step('录微生物', call('POST', f'/lis/micro/{bc}', {
+                'specimen': '中段尿', 'organism': '大肠埃希菌', 'gram': 'NEG', 'colonyCount': '>10^5 CFU/mL',
+                'ast': [{'antibiotic': '头孢曲松', 'method': 'MIC', 'micValue': '≤1', 'sir': 'S'},
+                        {'antibiotic': '左氧氟沙星', 'method': 'MIC', 'micValue': '≥8', 'sir': 'R'},
+                        {'antibiotic': '呋喃妥因', 'method': 'MIC', 'micValue': '≤16', 'sir': 'S'}]}, t)) is not None
+            ok_all = ok_all and step('审核发布', call('POST', f'/lis/samples/{bc}/publish', {'results': [
+                {'code': 'UWBC', 'name': '尿白细胞', 'value': '3+', 'unit': '', 'refRange': '阴性', 'flag': 'H'},
+                {'code': 'UNIT', 'name': '尿亚硝酸盐', 'value': '阳性', 'unit': '', 'refRange': '阴性', 'flag': 'H'}]},
+                t)) is not None
+            if ok_all:
+                print(f'引用演示·微生物：张三已发布一条中段尿培养（大肠埃希菌 + 3 条药敏），标本 {bc}')
+
+    # 4) 病理：登记 → 核收 → 诊断 → 初签（admin）→ 复签（doctor01）→ 签发
+    if need_path:
+        dt = login_as('doctor01', 'Demo1234')
+        if not dt:
+            print('引用演示·病理：doctor01 登录失败（复签须另一人），停在开单收费之后')
+            return
+        fixed_at = (datetime.datetime.now(datetime.timezone.utc)
+                    - datetime.timedelta(minutes=30)).isoformat().replace('+00:00', 'Z')
+        sp = step('病理登记', call('POST', '/pathology/registry/specimens', {
+            'orderId': oid['EXAM'], 'partNo': 1, 'specimenType': 'ROUTINE', 'specimenDesc': '胃窦黏膜组织 2 粒',
+            'samplingSite': '胃窦', 'clinicalDiagnosis': '慢性胃炎？', 'fixative': '10%中性福尔马林',
+            'fixedAt': fixed_at, 'urgent': False}, t))
+        if sp is None:
+            return
+        sid, pbc = sp.get('id') or sp.get('specimenId'), sp.get('barcode') or sp.get('barCode')
+        for name, r in (
+                ('病理核收', lambda: call('PUT', f'/pathology/registry/specimens/{sid}/receive-check', {}, t)),
+                ('病理诊断', lambda: call('PUT', f'/pathology/specimens/{pbc}/diagnose', {
+                    'grossFinding': '灰白碎组织 2 粒，直径各约 0.2cm，全取',
+                    'microFinding': '胃窦黏膜固有层慢性炎细胞浸润，腺体轻度萎缩，局灶肠上皮化生',
+                    'diagnosis': '（胃窦）慢性萎缩性胃炎伴轻度肠上皮化生'}, t)),
+                ('初诊签名', lambda: call('PUT', f'/pathology/report/{sid}/first-sign', {}, t)),
+                ('复诊签名', lambda: call('PUT', f'/pathology/report/{sid}/second-sign', {}, dt)),
+                ('正式签发', lambda: call('PUT', f'/pathology/report/{sid}/issue', {}, t))):
+            if step(name, r()) is None:
+                return
+        print(f"引用演示·病理：张三已签发一份胃窦活检病理报告（病理号 {sp.get('pathNo') or sp.get('path_no')}）")
+
+
+# 兜底：本段只是演示前置，任何意外（接口契约变更、返回体缺键）只打印、不打断整个引导脚本
+try:
+    ensure_emr_ref_demo()
+except Exception as e:  # noqa: BLE001
+    print(f"ensure_emr_ref_demo：异常 {type(e).__name__}: {e}（已跳过，不影响其它段）")
+
+
+# v79 车道A：全新库 RIS 报告模板为零——RIS 写报告弹窗的「选择报告模板」下拉是空的。种一张全院（deptId 空 → HOSPITAL）
+# RIS 模板，内容进「所见」（RisView applyTemplate 把 content 整段放进 findings）。按名称幂等（读的是 RisView 同一个口子）。
+def ensure_demo_ris_template():
+    name = '演示超声报告模板'
+    have = call('GET', '/emr-templates?type=RIS', t=t)
+    if any(x.get('name') == name for x in (have.get('data') or [])):
+        print('  RIS 演示模板：已有，跳过')
+        return
+    content = ('肝脏：形态大小正常，包膜光滑，实质回声均匀，肝内管道结构显示清晰。\n'
+               '胆囊：大小正常，壁光滑，囊内未见明显异常回声。\n'
+               '胰腺：形态大小正常，实质回声均匀，主胰管未见扩张。\n'
+               '脾脏：形态大小正常，实质回声均匀。\n'
+               '双肾：形态大小正常，皮髓质分界清，集合系统未见分离。')
+    r = call('POST', '/emr-templates', {'name': name, 'content': content, 'templateType': 'RIS', 'deptId': None}, t)
+    if r.get('code') == 0:
+        print('  RIS 演示模板：已创建（全院可见）')
+    else:
+        print(f"  RIS 演示模板：创建失败 {r.get('code')} {r.get('message')}")
+
+
+# 兜底：本段只是演示前置，任何意外（接口契约变更、返回体缺键）只打印、不打断整个引导脚本
+try:
+    ensure_demo_ris_template()
+except Exception as e:  # noqa: BLE001
+    print(f"ensure_demo_ris_template：异常 {type(e).__name__}: {e}（已跳过，不影响其它段）")
