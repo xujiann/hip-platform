@@ -1635,6 +1635,9 @@ onMounted(async () => {
   // 医生站从来渲染不出来。进页拉一次可见范围内的病历模板，与处方模板同口径。
   await loadEmrTemplates()
   await loadSpecimenTypes()   // v78：检验行标本类型下拉的字典项，进页一次
+  // v79 合版（车道 C 查出）：loadCopyPolicy 自 v45 起解构了却从未调用——门诊粘贴管控档位永远停在
+  // 组合式函数的默认值，系统配置 emr.copy.cross_patient 配成 off/block 都不生效（1082★/2458★ 的说法因此为假）。
+  await loadCopyPolicy()
 })
 </script>
 

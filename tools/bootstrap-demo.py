@@ -231,7 +231,10 @@ else:
 def ensure_five_docs_ready():
     """admin 排今日班 → 张三挂今日号 → doctor01 接诊 → 开四类医嘱各一条 → 收费台现金结算。
     每步打印一行；任何一步前置条件不满足就说明原因并停在那一步（不抛异常，不影响后面的住院演示）。"""
-    doc = records.get('doctor01')
+    # v79 合版（车道 A 查出）：模块级 records 是在建演示账号之前取的，全新库第一遍跑时这里查不到 doctor01、
+    # 「五张单据」整段停住，要跑第二遍才就绪。进函数先重取一次。
+    fresh = {u['username']: u for u in call('GET', '/system/users?page=0&size=100', t=t)['data']['records']}
+    doc = fresh.get('doctor01')
     if not doc:
         print('五张单据·排班：未找到 doctor01，停止')
         return
