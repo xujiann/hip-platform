@@ -18,7 +18,7 @@
 
     <!-- v55 车道R2（994）：带参直达的来源说明——医生不需要知道 id 是什么、从哪来 -->
     <el-alert v-if="arrivedFrom" type="success" show-icon :closable="false" class="gap" :title="arrivedTitle">
-      <div>要看另一份病历，可在上方改类型与 id 后再查；医生请回到门诊医生站选中患者后点「版本留痕」。</div>
+      <div>要看另一份病历，可在上方改类型与 id 后再查；医生请回到门诊或住院医生站，在病历处点「版本留痕」。</div>
     </el-alert>
 
     <!-- ============ 留痕开关与运行状况：gate 能静默关掉法定留痕，必须摆在最上面 ============ -->
@@ -155,7 +155,58 @@
     </template>
 
     <el-empty v-else-if="!loading" :image-size="60"
-              description="医生：门诊医生站 → 选中患者 → 「病历」页签 → 「版本留痕」按钮，会自动带入病历 id 进来。质控/病案：在上方选类型、输入 id 直查。" />
+              description="医生：门诊医生站 → 选中患者 → 「病历」页签 → 「版本留痕」按钮；住院医生站 → 「病历」页签 → 某条记录旁的「版本留痕」，都会自动带入病历 id。质控/病案：在上方选类型、输入 id 直查。" />
+  </el-card>
+
+  <!-- ============ v79（994①）诊断变更：门诊诊断按挂号留痕（outp_diagnosis_version），只读 ============ -->
+  <el-card v-if="listBody && applied?.emrType === 'OUTP'" class="gap-top">
+    <template #header>
+      <span style="font-weight: 600">诊断变更</span>
+      <el-tag type="info" size="small" style="margin-left: 10px">只读 · 按版本倒序</el-tag>
+      <span v-if="diagBody" class="hint-inline">本次就诊（挂号 #{{ diagBody.registrationId }}）共 {{ diagBody.total }} 版</span>
+    </template>
+    <el-alert v-if="regId == null" type="info" show-icon :closable="false"
+              title="没有查到这份门诊病历的主记录，无法按挂号读取诊断变更" />
+    <template v-else-if="diagBody">
+      <el-alert v-if="diagBody.notice" type="warning" show-icon :closable="false" class="gap"
+                title="本次就诊暂无诊断版本记录（这是查询结果，不是查询失败）">
+        <div class="pre-line">{{ diagBody.notice }}</div>
+      </el-alert>
+      <el-table v-if="diagBody.items.length" :data="diagBody.items" size="small" border max-height="420">
+        <el-table-column label="版本" width="70">
+          <template #default="{ row }"><b>v{{ row.versionNo }}</b></template>
+        </el-table-column>
+        <el-table-column label="操作人" width="150">
+          <template #default="{ row }">{{ diagByText(row) }}</template>
+        </el-table-column>
+        <el-table-column label="时间（本地时区）" width="170">
+          <template #default="{ row }">{{ fmtTime(row.changedAt) }}</template>
+        </el-table-column>
+        <el-table-column label="该版诊断（第一条为主诊断）" min-width="280">
+          <template #default="{ row }">
+            <div v-for="d in row.diagnoses" :key="d.seq" class="diag-line">
+              <el-tag v-if="d.primary" size="small" type="primary" class="chip-l">主</el-tag>
+              <span :class="{ 'diag-new': isAdded(row, d.display) }">{{ d.display }}</span>
+            </div>
+            <span v-if="!row.diagnoses.length" class="muted">（本版无诊断：诊断被全部删除）</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="较上一版" min-width="240">
+          <template #default="{ row }">
+            <span v-if="!row.changes" class="muted">首版，无上一版</span>
+            <template v-else>
+              <div v-for="(t, i) in row.changes.added" :key="'a' + i" class="up">＋ {{ t }}</div>
+              <div v-for="(t, i) in row.changes.removed" :key="'r' + i" class="down">－ {{ t }}</div>
+              <el-tag v-if="row.changes.primaryChanged" size="small" type="warning">主诊断已更换</el-tag>
+            </template>
+          </template>
+        </el-table-column>
+      </el-table>
+      <div class="gap-top">
+        <div v-for="(n, i) in diagBody.notes" :key="i" class="note-line muted">· {{ n }}</div>
+      </div>
+    </template>
+    <el-empty v-else-if="!diagLoading" :image-size="50" description="诊断变更未能读取" />
   </el-card>
 
   <!-- ============ 任意两版对比：按字段并排，改动字段显著标出 ============ -->
@@ -292,9 +343,9 @@ const arrivedTitle = computed(() => {
   const t = applied.value?.emrType ?? emrType.value
   const id = applied.value?.emrId ?? emrId.value
   const label = `${TYPE_LABEL[t] ?? t} #${id}`
-  return arrivedFrom.value === 'doctor'
-    ? `已从门诊医生站直达：${label} 的版本已自动查询，无需手填 id`
-    : `已按地址栏参数自动查询：${label}`
+  if (arrivedFrom.value === 'doctor') return `已从门诊医生站直达：${label} 的版本已自动查询，无需手填 id`
+  if (arrivedFrom.value === 'inp-doctor') return `已从住院医生站直达：${label} 的版本已自动查询，无需手填 id`
+  return `已按地址栏参数自动查询：${label}`
 })
 
 const settings = ref<VersionSettings | null>(null)
@@ -349,6 +400,7 @@ async function load(reset: boolean) {
     if (my !== reqSeq) return   // 已有更新的请求发出，这份旧响应作废
     listBody.value = resp.data.data
     applied.value = target
+    if (reset || switched) void loadDiag(my)   // 翻页不重读诊断变更：它按挂号读、与正文分页无关
     if (switched) {
       // 换了病历：上一份的对比结果与选中版本不再属于当前列表，清掉而不是留在屏幕上
       compareBody.value = null
@@ -357,7 +409,10 @@ async function load(reset: boolean) {
       detail.value = null
     }
   } catch {
-    if (my === reqSeq) listBody.value = null   // 不留上一份病历的数据在屏幕上冒充本次查询结果
+    if (my === reqSeq) {
+      listBody.value = null   // 不留上一份病历的数据在屏幕上冒充本次查询结果
+      diagBody.value = null
+    }
   } finally {
     if (my === reqSeq) loading.value = false
   }
@@ -377,6 +432,59 @@ watch(withChangedFields, (on) => {
   page.value = 1
   if (applied.value) load(true)
 })
+
+/* ---------------- v79（994①）诊断变更 ---------------- */
+interface DiagSnap {
+  seq: number
+  primary: boolean
+  display: string
+}
+interface DiagVersion {
+  versionNo: number
+  changedBy: number | null
+  changedByName: string | null
+  changedAt: string
+  diagnoses: DiagSnap[]
+  changes: { added: string[]; removed: string[]; primaryChanged: boolean } | null
+}
+interface DiagBody {
+  registrationId: number
+  total: number
+  items: DiagVersion[]
+  notice?: string
+  notes: string[]
+}
+const diagBody = ref<DiagBody | null>(null)
+/** 门诊列表随体带回的挂号 id（后端 v79 起加的键；types.ts 的 VersionListBody 不动，这里就地收窄） */
+const regId = computed<number | null>(() =>
+  (listBody.value as (VersionListBody & { registrationId?: number | null }) | null)?.registrationId ?? null)
+const diagLoading = ref(false)
+
+/** 门诊病历才有诊断变更（诊断按挂号留痕）；挂号 id 由正文版本列表随体带回，不另猜 */
+async function loadDiag(seq: number) {
+  diagBody.value = null
+  const rid = regId.value
+  if (applied.value?.emrType !== 'OUTP' || rid == null) return
+  diagLoading.value = true
+  try {
+    const body = (await client.get(`/emr/versions/diagnoses/${rid}`)).data.data
+    if (seq === reqSeq) diagBody.value = body
+  } catch {
+    if (seq === reqSeq) diagBody.value = null
+  } finally {
+    if (seq === reqSeq) diagLoading.value = false
+  }
+}
+
+function diagByText(v: DiagVersion): string {
+  if (v.changedBy === null || v.changedBy === undefined) return '未记录（本次保存无登录上下文）'
+  return v.changedByName ?? `用户 #${v.changedBy}（姓名未查到）`
+}
+
+/** 相邻版本差异高亮：本版里「较上一版新增」的那几条 */
+function isAdded(v: DiagVersion, display: string): boolean {
+  return !!v.changes && v.changes.added.includes(display)
+}
 
 /* ---------------- 单版查看 ---------------- */
 const drawer = ref(false)
@@ -500,6 +608,21 @@ watch(() => [route.query.emrType, route.query.emrId], () => {
 }
 .muted {
   color: var(--el-text-color-secondary);
+}
+.hint-inline {
+  margin-left: 12px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.diag-line {
+  line-height: 1.8;
+}
+.chip-l {
+  margin-right: 4px;
+}
+.diag-new {
+  background: var(--el-color-success-light-9);
+  font-weight: 600;
 }
 .bad {
   color: var(--el-color-danger);

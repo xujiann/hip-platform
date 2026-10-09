@@ -173,24 +173,40 @@
               </el-select>
             </el-form-item>
           </el-form>
+          <!-- v79（1082★/2458）：跨患者复制粘贴管控，口径与门诊同（off 放行 / warn 确认 / block 拒绝，
+               只识别本系统内复制的片段）。挂在编辑区与时间线的外层容器上：copy/cut/paste 从内部冒泡上来，
+               时间线里复制的既往记录也会记下来源患者。**纯前端行为，住院病历保存端点一行未改。** -->
+          <div @copy="onCopy" @cut="onCopy" @paste="onPaste">
+          <el-tag v-if="copyMode !== 'off'" size="small" :type="copyMode === 'block' ? 'danger' : 'warning'"
+                  style="margin-bottom: 6px">
+            跨患者粘贴：{{ copyMode === 'block' ? '禁止' : '需确认' }}
+          </el-tag>
           <el-input v-model="recordContent" type="textarea" :rows="4"
                     :placeholder="recordType === 'ROUND' ? '查房意见' : '病历内容'" />
           <el-input v-if="recordType === 'ROUND'" v-model="superiorCorrection" type="textarea" :rows="2"
                     placeholder="上级修正意见（可空）" style="margin-top: 6px" />
-          <el-button type="primary" style="margin-top: 8px" @click="addRecord">保存记录</el-button>
+          <!-- v79（2457★ 住院侧）：不新增状态列——未签名即「暂存」、已签名即「已提交」，端点一个未改 -->
+          <el-button type="primary" style="margin-top: 8px" @click="addRecord">暂存记录</el-button>
+          <span class="sign-tip">暂存后在下方记录旁点「提交（签名）」；签名后原文冻结，如需更正只能追加补正</span>
           <el-timeline style="margin-top: 16px">
             <el-timeline-item v-for="r in records" :key="r.id as number"
                               :timestamp="`${fmtDateTime(r.createdAt)} · ${recordTypeNames[r.recordType as string]}`">
               <b>{{ r.title }}</b>
-              <el-tag v-if="r.signature" size="small" type="success" style="margin-left: 6px">已签名</el-tag>
-              <el-button v-else size="small" link type="primary" style="margin-left: 6px"
-                         @click="signRecord(r)">签名</el-button>
+              <el-tag v-if="r.signature" size="small" type="success" style="margin-left: 6px">已提交（已签名）</el-tag>
+              <el-tag v-else size="small" type="info" style="margin-left: 6px">暂存（未签名）</el-tag>
+              <el-button v-if="!r.signature" size="small" link type="primary" style="margin-left: 6px"
+                         @click="signRecord(r)">提交（签名）</el-button>
               <!-- 阻塞4：签名冻结病历只能追加补正，不能改原文 -->
               <el-button v-if="r.signature" size="small" link type="warning" style="margin-left: 6px"
                          @click="openAmend(r)">补正</el-button>
+              <!-- v79（994★③）：版本留痕直达，带 INP 与本条记录 id。新标签打开：不丢编辑区里尚未暂存的正文；
+                   本人不持有 /emr-version 菜单时不出现，不摆死按钮（与门诊医生站同一判据）。 -->
+              <el-button v-if="canOpenEmrVersion" size="small" link style="margin-left: 6px"
+                         @click="openEmrVersions(r)">版本留痕</el-button>
               <p class="record-content">{{ r.content }}</p>
             </el-timeline-item>
           </el-timeline>
+          </div>
         </el-tab-pane>
 
         <el-tab-pane label="体征" name="vitals">
@@ -379,6 +395,8 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
 import { fmtDateTime } from '../../utils/date'
 import VitalsChart from '../../components/VitalsChart.vue'
+import { useEmrPasteGuard } from '../../components/EmrRefDrawer.vue'
+import { useAuthStore } from '../../stores/auth'
 
 /** v42：体温单打印（周次由打印页自行翻页，此处固定从第 1 住院周进） */
 function printTempSheet() {
@@ -730,18 +748,41 @@ async function addRecord() {
       content: recordContent.value,
     })
   }
-  ElMessage.success('病历已保存')
+  ElMessage.success('已暂存（未签名）')
   recordContent.value = ''
   recordTitle.value = ''
   emrTemplateId.value = null
   await open(current.value)
 }
 
+/**
+ * v79（1082★/2458）：住院病历跨患者复制粘贴管控，与门诊共用 useEmrPasteGuard（导出签名未改）。
+ * 档位取自 GET /outpatient/emr-ref/copy-policy（sys_config emr.copy.cross_patient，经系统配置接口设置、无独立界面），
+ * 读不到时维持默认 warn。**只在前端**：block 档也只是拒绝这一次粘贴动作，服务端不做任何拦截。
+ */
+const { mode: copyMode, loadPolicy: loadCopyPolicy, onCopy, onPaste } = useEmrPasteGuard(() => ({
+  patientId: (current.value?.patientId as number | undefined) ?? null,
+  patientName: String(current.value?.patientName ?? ''),
+}))
+
+/* v79（994★③）：住院病历版本留痕入口。此前只能去 /emr-version 手选 INP、手填 inp_medical_record.id。 */
+const auth = useAuthStore()
+/** 与 router 守卫同一判据：菜单未知不拦；已知则须持有 /emr-version，否则点进去会被踢回首页 */
+const canOpenEmrVersion = computed(() => {
+  const menus = auth.user?.menus ?? []
+  return menus.length === 0 || menus.some((m) => m.path === '/emr-version')
+})
+function openEmrVersions(r: Record<string, unknown>) {
+  if (!r.id) return
+  const q = new URLSearchParams({ emrType: 'INP', emrId: String(r.id), from: 'inp-doctor' })
+  window.open(`/emr-version?${q.toString()}`, '_blank')
+}
+
 // 1.0.4：病历 CA 签名（签名后冻结标识）
 async function signRecord(r: Record<string, unknown>) {
   if (!current.value) return
   await client.post(`/inpatient/admissions/${current.value.id}/records/${r.id}/sign`)
-  ElMessage.success('已签名')
+  ElMessage.success('已提交（已签名）')
   await open(current.value)
 }
 
@@ -831,6 +872,7 @@ async function addItem() {
 }
 
 onMounted(async () => {
+  void loadCopyPolicy()
   depts.value = (await client.get('/system/depts')).data.data
   await loadDoctorOptions()
   await loadList()
@@ -846,4 +888,5 @@ onMounted(async () => {
 .fees { float: right; color: #909399; font-size: 13px; }
 .owed { color: #d03050; font-weight: 700; }
 .record-content { white-space: pre-wrap; color: #555; margin: 4px 0 0; }
+.sign-tip { margin-left: 10px; font-size: 12px; color: #909399; }
 </style>
