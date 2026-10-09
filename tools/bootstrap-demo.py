@@ -473,7 +473,10 @@ def ensure_emr_ref_demo():
         return r.get('data') if r.get('data') is not None else {}
 
     # 1) 就诊：排班（不挂医生）→ 挂号 → admin 接诊
-    sch = step('排班', call('POST', '/outpatient/schedules', {'deptId': 1, 'scheduleDate': TODAY, 'fee': 0,
+    #    v79 合版：挂外科门诊而不是内科——接诊队列按科室列（不按接诊人），挂内科会让 doctor01 的队列里出现两个张三，
+    #    评委照培训脚本「点张三」会点到这次检验/病理就诊。引用资料按患者跨就诊取数，挂哪个科室都引得到。
+    surg = next((d['id'] for d in (call('GET', '/system/depts', t=t).get('data') or []) if d.get('code') == 'OUTP_SURG'), 1)
+    sch = step('排班', call('POST', '/outpatient/schedules', {'deptId': surg, 'scheduleDate': TODAY, 'fee': 0,
                                                              'capacity': 5}, t))
     if sch is None:
         return
