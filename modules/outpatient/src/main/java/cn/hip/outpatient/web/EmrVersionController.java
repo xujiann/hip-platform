@@ -3,6 +3,10 @@ package cn.hip.outpatient.web;
 import cn.hip.outpatient.service.DiagnosisVersionService;
 import cn.hip.outpatient.service.EmrVersionService;
 import cn.hip.platform.core.common.R;
+import cn.hip.platform.core.security.CurrentUserService;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -51,6 +55,41 @@ public class EmrVersionController {
 
     private final EmrVersionService emrVersionService;
     private final DiagnosisVersionService diagnosisVersionService;
+    private final JdbcTemplate jdbc;
+    private final CurrentUserService currentUserService;
+
+    /**
+     * v80 对象级校验（v79 甲组审计 R3）：此前只有类级角色门槛，门诊医生能读任何患者的病历全文与诊断历史，
+     * 版本列表还带回患者姓名；引用抽屉对同类数据是 4036。口径与 {@code EmrRefController#canRead} 相同：
+     * ADMIN / QUALITY 全看；就诊归属（门诊接诊医生 / 住院主管医生）为空放行；其余须是本人。
+     * 登录人从安全上下文取——五个端点的方法签名被既有用例直接调用，不加 Authentication 形参。
+     * 病历 / 挂号不存在时不在这里判（交给原逻辑，返回体与 v79 一致），只在查到归属且非本人时拒。
+     */
+    private R<Map<String, Object>> denyIfNotOwner(String emrType, Long emrId, Long registrationId) {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth != null && auth.getAuthorities().stream()
+                .anyMatch(a -> "ROLE_ADMIN".equals(a.getAuthority()) || "ROLE_QUALITY".equals(a.getAuthority()))) {
+            return null;
+        }
+        java.util.List<Long> owners;
+        if (registrationId != null) {
+            owners = jdbc.queryForList("select doctor_id from outp_registration where id = ?", Long.class, registrationId);
+        } else if (EmrVersionService.OUTP.equalsIgnoreCase(emrType)) {
+            owners = jdbc.queryForList(
+                    "select r.doctor_id from outp_emr e join outp_registration r on r.id = e.registration_id where e.id = ?",
+                    Long.class, emrId);
+        } else if (EmrVersionService.INP.equalsIgnoreCase(emrType)) {
+            owners = jdbc.queryForList(
+                    "select a.doctor_id from inp_medical_record m join inp_admission a on a.id = m.admission_id where m.id = ?",
+                    Long.class, emrId);
+        } else {
+            return null;   // 类型非法交给原逻辑报 5700
+        }
+        if (owners.isEmpty() || owners.get(0) == null) return null;
+        Long me = auth == null ? null : currentUserService.idOf(auth);
+        return owners.get(0).equals(me) ? null
+                : R.fail(4036, "无权查阅该病历的版本留痕（非本人接诊/主管的就诊）");
+    }
 
     /**
      * 当前生效的配置与运行计数。
@@ -83,6 +122,8 @@ public class EmrVersionController {
                                        @RequestParam(required = false) Integer limit,
                                        @RequestParam(required = false) Integer offset,
                                        @RequestParam(defaultValue = "false") boolean withChangedFields) {
+        var deny = denyIfNotOwner(emrType, emrId, null);
+        if (deny != null) return deny;
         var r = emrVersionService.list(emrType, emrId, limit, offset, withChangedFields);
         return r.ok() ? R.ok(r.body()) : R.fail(r.code(), r.message());
     }
@@ -96,6 +137,8 @@ public class EmrVersionController {
      */
     @GetMapping("/diagnoses/{registrationId}")
     public R<Map<String, Object>> diagnoses(@PathVariable Long registrationId) {
+        var deny = denyIfNotOwner(null, null, registrationId);
+        if (deny != null) return deny;
         var r = diagnosisVersionService.list(registrationId);
         return r.ok() ? R.ok(r.body()) : R.fail(r.code(), r.message());
     }
@@ -110,6 +153,8 @@ public class EmrVersionController {
     public R<Map<String, Object>> one(@PathVariable String emrType,
                                       @PathVariable Long emrId,
                                       @PathVariable Integer versionNo) {
+        var deny = denyIfNotOwner(emrType, emrId, null);
+        if (deny != null) return deny;
         var r = emrVersionService.get(emrType, emrId, versionNo);
         return r.ok() ? R.ok(r.body()) : R.fail(r.code(), r.message());
     }
@@ -125,6 +170,8 @@ public class EmrVersionController {
                                           @PathVariable Long emrId,
                                           @RequestParam("from") Integer fromNo,
                                           @RequestParam("to") Integer toNo) {
+        var deny = denyIfNotOwner(emrType, emrId, null);
+        if (deny != null) return deny;
         var r = emrVersionService.compare(emrType, emrId, fromNo, toNo);
         return r.ok() ? R.ok(r.body()) : R.fail(r.code(), r.message());
     }
@@ -144,6 +191,8 @@ public class EmrVersionController {
     public R<Map<String, Object>> compareCurrent(@PathVariable String emrType,
                                                  @PathVariable Long emrId,
                                                  @RequestParam("from") Integer fromNo) {
+        var deny = denyIfNotOwner(emrType, emrId, null);
+        if (deny != null) return deny;
         var r = emrVersionService.compareWithCurrent(emrType, emrId, fromNo);
         return r.ok() ? R.ok(r.body()) : R.fail(r.code(), r.message());
     }

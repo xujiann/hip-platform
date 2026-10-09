@@ -587,6 +587,8 @@ public class DoctorStationService {
      * keyword 为空时不加过滤条件（不写 {@code ? = '' or ...}：PG 对该形态推不出参数类型，
      * 1.1 期已经踩过一次）。
      */
+    // v80（993★ 第三轮遗留 / 979★）：三个推荐列表排除字典中已停用的编码——此前停用只挡检索下拉，
+    // 医生仍能从常用 / 高频 / 历史页签一键再选回停用诊断。无编码的自定义 / 中医诊断（icd_code 为空）不受影响。
     public java.util.Map<String, Object> diagnosisAssist(Long patientId, String keyword, Long doctorId) {
         String kw = blankToNull(keyword);
         String like = kw == null ? null : "%" + kw + "%";
@@ -600,6 +602,7 @@ public class DoctorStationService {
                     from outp_diagnosis d
                     join outp_registration r on r.id = d.registration_id
                     where r.patient_id = ? and r.status <> 'CANCELLED'
+                      and not exists (select 1 from md_icd10 i where i.code = d.icd_code and not i.enabled)
                     """);
             args.add(patientId);
             if (like != null) {
@@ -618,7 +621,8 @@ public class DoctorStationService {
             var sql = new StringBuilder("""
                     select id, icd_code as "icdCode", icd_name as "icdName",
                            diag_system as "diagSystem", use_count as "useCount"
-                    from outp_diagnosis_favorite where user_id = ?
+                    from outp_diagnosis_favorite f where user_id = ?
+                      and not exists (select 1 from md_icd10 i where i.code = f.icd_code and not i.enabled)
                     """);
             args.add(doctorId);
             if (like != null) {
@@ -636,6 +640,7 @@ public class DoctorStationService {
                 from outp_diagnosis d
                 join outp_registration r on r.id = d.registration_id
                 where r.visit_date >= ? and r.status <> 'CANCELLED' and coalesce(d.icd_name, '') <> ''
+                  and not exists (select 1 from md_icd10 i where i.code = d.icd_code and not i.enabled)
                 """);
         freqArgs.add(java.sql.Date.valueOf(BusinessDates.today().minusDays(FREQUENT_WINDOW_DAYS)));
         if (like != null) {
