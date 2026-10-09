@@ -41,8 +41,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * <h2>四条纪律（写死在代码结构里，不是口号）</h2>
  * <ol>
  *   <li><b>不伪造初版。</b>本类<b>没有任何</b>「拿当前内容补一条 version_no=1」的路径，
- *       V157 迁移里也一条回填都没有。历史病历查版本列表就是返回空数组 + 一句
- *       「本份病历在版本留痕上线前书写，没有采集到历史版本」——这句话是真的，可以拿去举证。
+ *       V157 迁移里也一条回填都没有。零版本的病历查版本列表就是返回空数组 + 一句只陈述事实的说明
+ *       （「暂无版本记录」+ 哪些动作会写入版本 + 此刻 gate 是否 off）——<b>不断言为什么没有</b>：
+ *       上线前书写、gate=off 时保存、留痕写入失败都会零版本，读路径分不出是哪一种（v68 复核打回点，v79 收口）。
  *       伪造一条从未真实存在过的版本，比没有留痕更糟。</li>
  *   <li><b>只回看不回滚。</b>本类没有 restore/rollback 方法，将来也不该加：
  *       A 写了 v3、B 一键回滚到 v1 之后，「当前正文的责任人是谁」就说不清了。
@@ -698,6 +699,12 @@ public class EmrVersionService {
         var body = new LinkedHashMap<String, Object>();
         body.put("emrType", emrType);
         body.put("emrId", emrId);
+        if (OUTP.equals(emrType)) {
+            // v79（994①）：门诊病历带回挂号 id，版本页据此接着读本次就诊的诊断变更（诊断按挂号留痕）。
+            // 病历行不存在时为 null——不猜。
+            body.put("registrationId", jdbc.query("select registration_id from outp_emr where id = ?",
+                    rs -> rs.next() ? rs.getLong(1) : null, emrId));
+        }
         body.put("total", cnt);
         body.put("limit", lim);
         body.put("offset", off);
@@ -705,15 +712,37 @@ public class EmrVersionService {
         body.put("dedup", dedup());
         body.put("items", items);
         if (cnt == 0) {
-            // 这句话是真的，可以拿去举证。**没有任何代码路径会去伪造一条初版把它填上。**
-            body.put("notice", "本份病历没有任何版本记录：版本留痕上线之前书写的病历本就没有采集到历史版本。"
-                    + "本版不回填、不伪造初版——伪造一条从未真实存在过的版本，比没有留痕更糟。");
+            // v79（994②，v68 复核打回点）：此前这里写死「版本留痕上线之前书写的病历本就没有采集到历史版本」，
+            // 而触发条件只是 cnt==0——gate=off 时今天新写的病历、留痕写入失败的病历同样零版本，那句话在这两个
+            // 可达库态下为假。**只陈述事实与可求值的条件，不断言原因。** 没有任何代码路径会去伪造一条初版把它填上。
+            body.put("notice", emptyNotice(emrType, gate(), dedup()));
         }
         body.put("notes", List.of(
                 "只回看不回滚：本模块不提供「恢复到某一版」，回滚会让「当前正文的责任人是谁」变得不清楚",
                 "版本不可篡改：本模块没有任何修改/删除版本的端点",
                 "saved_by 为 null 表示这次保存没有登录上下文，查询侧如实回 null，不做任何回填猜测"));
         return new Result(0, "success", body);
+    }
+
+    /**
+     * 零版本时的说明。每一句都必须在任何零版本库态下成立：
+     * 「暂无」是查询结果本身；写入动作照接缝实际挂点（门诊 saveEmr MANUAL / signEmr SUBMIT，
+     * 住院 InpEmrController 新建记录与三级查房 MANUAL、签名 SUBMIT；补正写 emr_amendment，不进版本表）；
+     * gate=off 与去重开关是此刻可求值的事实，只在为真时说。
+     */
+    static String emptyNotice(String emrType, String gate, boolean dedup) {
+        var sb = new StringBuilder("本份病历暂无版本记录。");
+        if ("off".equals(gate)) {
+            sb.append("当前留痕档位 ").append(GATE_KEY).append("=off：此刻保存、签名都不会写入版本。");
+        }
+        sb.append(INP.equals(emrType)
+                ? "住院病历在新建记录（含三级查房）与签名时各写入一版；"
+                : dedup ? "门诊病历在保存与签名时各写入一版（同内容的重复保存不另记）；"
+                        : "门诊病历在保存与签名时各写入一版；");
+        sb.append("签名后的补正记在补正记录里，不进本列表。")
+                .append("病历存在而没有版本的情形不止一种（例如留痕档位为 off 时保存、留痕写入失败），本页不断言是哪一种。")
+                .append("本版不回填、不伪造初版——伪造一条从未真实存在过的版本，比没有留痕更糟。");
+        return sb.toString();
     }
 
     private static Integer prevContentLen(List<VersionMeta> page, int versionNo) {

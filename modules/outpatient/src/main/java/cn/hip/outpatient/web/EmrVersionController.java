@@ -1,5 +1,6 @@
 package cn.hip.outpatient.web;
 
+import cn.hip.outpatient.service.DiagnosisVersionService;
 import cn.hip.outpatient.service.EmrVersionService;
 import cn.hip.platform.core.common.R;
 import lombok.RequiredArgsConstructor;
@@ -49,6 +50,7 @@ import java.util.Map;
 public class EmrVersionController {
 
     private final EmrVersionService emrVersionService;
+    private final DiagnosisVersionService diagnosisVersionService;
 
     /**
      * 当前生效的配置与运行计数。
@@ -66,9 +68,10 @@ public class EmrVersionController {
      * 版本列表（倒序，分页）。<b>不返回 content 全文</b>——一页 50 版 × 住院病历几千字，
      * 返了每次翻页都要从 TOAST 里拉几 MB。要看内容请调单版查看端点。
      *
-     * <p>没有任何版本记录时返回空 {@code items} 并带一句 {@code notice}：
-     * 「本份病历在版本留痕上线前书写，没有采集到历史版本」。<b>这句话是真的</b>，
-     * 系统不会拿当前内容伪造一条初版把列表填满。
+     * <p>没有任何版本记录时返回空 {@code items} 并带一句 {@code notice}：只陈述「暂无版本记录」、
+     * 哪些动作会写入版本、此刻 gate 是否 off——<b>不断言为什么没有</b>（v79 收口 v68 复核打回点：
+     * 上线前书写、gate=off 时保存、留痕写入失败都会零版本，读路径分不出是哪一种）。
+     * 系统不会拿当前内容伪造一条初版把列表填满。门诊病历另带 {@code registrationId}，供版本页接着读诊断变更。
      *
      * @param emrType           OUTP（{@code outp_emr.id}）/ INP（{@code inp_medical_record.id}）
      * @param withChangedFields 额外算出每一版相对上一版「改了哪几个字段」（<b>只回字段名，不回正文</b>）。
@@ -81,6 +84,19 @@ public class EmrVersionController {
                                        @RequestParam(required = false) Integer offset,
                                        @RequestParam(defaultValue = "false") boolean withChangedFields) {
         var r = emrVersionService.list(emrType, emrId, limit, offset, withChangedFields);
+        return r.ok() ? R.ok(r.body()) : R.fail(r.code(), r.message());
+    }
+
+    /**
+     * v79（994①）：某次门诊就诊的<b>诊断</b>历次版本（{@code outp_diagnosis_version}，v74 起写入、此前无读出路径）。
+     *
+     * <p>按版本倒序；每版给版本序、操作人姓名、时间、该版诊断明细（照写入时的快照）与较上一版的增删。
+     * 路径里的字面段 {@code diagnoses} 比 {@code /{emrType}/{emrId}} 更具体，Spring 优先匹配本映射。
+     * 错误码复用：id 非法 4000、挂号不存在 4001。权限随类级注解，与正文版本端点一致。
+     */
+    @GetMapping("/diagnoses/{registrationId}")
+    public R<Map<String, Object>> diagnoses(@PathVariable Long registrationId) {
+        var r = diagnosisVersionService.list(registrationId);
         return r.ok() ? R.ok(r.body()) : R.fail(r.code(), r.message());
     }
 
