@@ -158,6 +158,24 @@ export function fieldLabel(field: string): string {
   return FIELD_LABELS[field] ?? field
 }
 
+/**
+ * 版本来源中文名 —— 与 `EmrVersionService.MANUAL / AUTO / SUBMIT` 三个常量逐键同源
+ * （doRecord 只接受这三个值，其余一律 5702 拒写）。
+ * v79 审阅修补（三）（甲组反驳 A1-A13 / A2-V4）：版本页来源列此前直接显示 MANUAL/SUBMIT 英文枚举。
+ * 门诊暂存、住院新建记录与签名前修改都记 MANUAL，签名记 SUBMIT；AUTO 是自动保存（目前没有写入方）。
+ * 未登记的值原样显示，不猜也不隐藏。
+ */
+export const SOURCE_LABELS: Record<string, string> = {
+  MANUAL: '保存/修改',
+  AUTO: '自动保存',
+  SUBMIT: '签名提交',
+}
+
+export function sourceLabel(source: string | null | undefined): string {
+  if (source == null) return '—'
+  return SOURCE_LABELS[source] ?? source
+}
+
 /** ISO-8601（UTC）转本地时间显示。直接 slice 会把 UTC 当北京时间，差 8 小时。 */
 export function fmtTime(v: string | null | undefined): string {
   if (!v) return '—'

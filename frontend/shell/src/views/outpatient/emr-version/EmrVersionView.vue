@@ -99,7 +99,9 @@
             <el-tag v-if="row.firstVersion" size="small" type="info" class="chip">初版</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="source" label="来源" width="86" />
+        <el-table-column label="来源" width="86">
+          <template #default="{ row }">{{ sourceLabel(row.source) }}</template>
+        </el-table-column>
         <el-table-column label="保存人" min-width="160">
           <template #default="{ row }">{{ savedByText(row) }}</template>
         </el-table-column>
@@ -248,7 +250,7 @@
     <div v-if="detail" @copy="onCopy" @cut="onCopy">
       <el-descriptions :column="2" border size="small" class="gap">
         <el-descriptions-item label="版本号">v{{ detail.versionNo }}</el-descriptions-item>
-        <el-descriptions-item label="来源">{{ detail.source }}</el-descriptions-item>
+        <el-descriptions-item label="来源">{{ sourceLabel(detail.source) }}</el-descriptions-item>
         <el-descriptions-item label="保存人">{{ savedByText(detail) }}</el-descriptions-item>
         <el-descriptions-item label="保存时间（本地时区）">{{ fmtTime(detail.savedAt) }}</el-descriptions-item>
         <el-descriptions-item label="业务日">{{ detail.savedOn ?? '—' }}</el-descriptions-item>
@@ -286,7 +288,7 @@ import EmrVersionDiff from './EmrVersionDiff.vue'
 import type {
   CompareBody, VersionDetailBody, VersionListBody, VersionMeta, VersionSettings,
 } from './types'
-import { fieldLabel, fmtTime } from './types'
+import { fieldLabel, fmtTime, sourceLabel } from './types'
 import { useEmrPasteGuard } from '../../../components/EmrRefDrawer.vue'
 import { versionListCopySource } from '../../../utils/emr-copy-source'
 

@@ -2,7 +2,6 @@ package cn.hip.outpatient.service;
 
 import cn.hip.outpatient.entity.OutpEmr;
 import cn.hip.platform.core.common.HipBizException;
-import cn.hip.platform.core.config.BusinessDates;
 import cn.hip.platform.core.service.ConfigReader;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -425,20 +424,21 @@ public class EmrVersionService {
                         insert into emr_version
                             (emr_type, emr_id, version_no, source, content, content_len, content_hash,
                              saved_by, saved_at, saved_on)
-                        values (?, ?, ?, ?, ?, ?, ?, ?, now(), ?::date)
+                        values (?, ?, ?, ?, ?, ?, ?, ?, now(), (now() at time zone 'Asia/Shanghai')::date)
                         returning id
                         """, Long.class,
-                        emrType, emrId, no, source, content, len, hash, userId,
                         // v79 审阅修补（甲组 D4）：saved_at 此前取应用服务器的 Instant.now()，而同一次保存落的诊断版本
                         // （outp_diagnosis_version.changed_at）取数据库默认 now()——应用与数据库不在同一台机器时两边
                         // 时钟会偏（本机实测偏 2–4 秒），版本页上「第 3 次保存的诊断版本早于第 1 次保存的正文版本」。
                         // 现改取数据库 now()（事务时刻，本身就是微秒粒度），与诊断版本同源；同一次保存的两块逐微秒相等
                         // （V79ReviewFixTest#bodyVersionAndDiagnosisVersionOfOneSaveShareTheDatabaseClock）。
                         // 口径同 PathologyRegistryController#dbNow 的注释。
-                        // saved_on 走 ?::date 传 ISO 串：**绕开 java.sql.Date 的时区往返**。
-                        // 业务日必须是 BusinessDates.today()（Asia/Shanghai），不是 date(saved_at)——
-                        // DB 会话时区与业务时区是两套口径，跨 00:00–08:00 的夜班两者差一天（1.1.9 已付学费）。
-                        BusinessDates.today().toString());
+                        // v79 审阅修补（三）（甲组反驳 A3-2b）：saved_on 此前仍取应用时钟的 BusinessDates.today()，
+                        // 同一行两列两个钟——库时钟 23:59:58 的保存会显示成「保存时间 10-09 23:59:58，业务日 10-10」。
+                        // 现与 saved_at 同取库 now()，换算成**上海日**：`now() at time zone 'Asia/Shanghai'` 与会话时区无关
+                        // （now() 是 timestamptz），仍是业务时区的日，不是 date(saved_at) 按会话时区切的那一天
+                        // ——跨 00:00–08:00 的夜班两者差一天（1.1.9 已付学费）。
+                        emrType, emrId, no, source, content, len, hash, userId);
 
                 if (tx) {
                     jdbc.execute("release savepoint " + sp);
@@ -759,7 +759,8 @@ public class EmrVersionService {
     /**
      * 零版本时的说明。每一句都必须在任何零版本库态下成立：
      * 「暂无」是查询结果本身；写入动作照接缝实际挂点（门诊 saveEmr MANUAL / signEmr SUBMIT，
-     * 住院 InpEmrController 新建记录与三级查房 MANUAL、签名 SUBMIT；补正写 emr_amendment，不进版本表）；
+     * 住院 InpEmrController 新建记录与三级查房 MANUAL、签名前修改（PUT）MANUAL、签名 SUBMIT；
+     * 补正写 emr_amendment，不进版本表）；
      * gate=off 与去重开关是此刻可求值的事实，只在为真时说。
      */
     static String emptyNotice(String emrType, String gate, boolean dedup) {
@@ -767,8 +768,10 @@ public class EmrVersionService {
         if ("off".equals(gate)) {
             sb.append("当前留痕档位 ").append(GATE_KEY).append("=off：此刻保存、签名都不会写入版本。");
         }
+        // v79 审阅修补（三）（甲组反驳 A3-2f）：6770519 起住院未签名记录可直接修改（PUT，落 MANUAL），句子跟上这个写入点
         sb.append(INP.equals(emrType)
-                ? "住院病历在新建记录（含三级查房）与签名时各写入一版；"
+                ? dedup ? "住院病历在新建记录（含三级查房）、签名前修改与签名时各写入一版（同内容的重复修改不另记）；"
+                        : "住院病历在新建记录（含三级查房）、签名前修改与签名时各写入一版；"
                 : dedup ? "门诊病历在保存与签名时各写入一版（同内容的重复保存不另记）；"
                         : "门诊病历在保存与签名时各写入一版；");
         sb.append("签名后的补正记在补正记录里，不进本列表。")
@@ -917,9 +920,31 @@ public class EmrVersionService {
         var meta = new VersionMeta(null, 0, "CURRENT", json.length(), sha256Hex(json), null, null, null, null);
         var b = new Snapshot(meta, json, live, "CURRENT");
         var body = diffBody(emrType, emrId, a, b);
-        body.put("notice", "右侧是数据库里的当前正文，不是一个版本记录——本次对比不写库、不生成版本行。"
-                + "当前正文与最后一版不一致，说明这次修改发生在留痕接缝之外（或 gate 曾开在 off）。");
+        // v79 审阅修补（三）（甲组反驳 A3-2g）：「当前正文与最后一版不一致」此前无条件附上——两侧完全一致时，
+        // 同一屏上方说「不一致」、下方绿条说「逐字段完全一致」，自相矛盾。现只在**当前正文确与最后一版不同**时附
+        // （左侧未必是最后一版：左 v1、右当前 = v2 时有差异是留痕里记着的修改，不是接缝外改动），
+        // 原因并列三种、不断言是哪一种，补上 warn 档的「留痕写入失败」这一可达库态。
+        var sb = new StringBuilder("右侧是数据库里的当前正文，不是一个版本记录——本次对比不写库、不生成版本行。");
+        var last = latestMeta(emrType, emrId);
+        if (last != null && !currentMatches(emrType, emrId, last.versionNo(), fromNo, body, live)) {
+            sb.append("当前正文与最后一版（第 ").append(last.versionNo()).append(" 版）不一致：这次修改没有留下版本，")
+                    .append("可能发生在留痕接缝之外、留痕档位曾为 off，或留痕写入失败（warn 档放行）；本页不断言是哪一种。");
+        }
+        body.put("notice", sb.toString());
         return new Result(0, "success", body);
+    }
+
+    /**
+     * 当前正文与最后一版是否逐字段一致（口径与对比页 {@code summary.identical} 同一个 {@link #diff}）。
+     * 左侧就是最后一版时直接用本次对比的结论，否则另取最后一版比一次；最后一版读不出来时不下「不一致」的结论。
+     */
+    private boolean currentMatches(String emrType, Long emrId, int lastNo, int fromNo,
+                                   Map<String, Object> body, Map<String, String> live) {
+        if (lastNo == fromNo) {
+            return body.get("summary") instanceof Map<?, ?> s && Boolean.TRUE.equals(s.get("identical"));
+        }
+        var last = loadSnapshot(emrType, emrId, lastNo);
+        return last == null || diff(emrType, last.fields(), live).stream().allMatch(d -> D_UNCHANGED.equals(d.status()));
     }
 
     private Map<String, String> liveFields(String emrType, Long emrId) {

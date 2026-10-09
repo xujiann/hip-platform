@@ -1,6 +1,6 @@
 <template>
   <div>
-    <!-- compare-current 的 notice：右侧不是版本记录、不一致意味着改动发生在留痕接缝之外。
+    <!-- compare-current 的 notice：右侧不是版本记录；当前正文与最后一版不一致时（只在此时）后端并列三种可能原因。
          这句话是后端专门写来给人看的，原样上屏，不改写不摘要。 -->
     <el-alert v-if="body.notice" type="warning" show-icon :closable="false" class="gap"
               title="本次对比的口径说明（后端原文）">
@@ -96,7 +96,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { CompareBody, DiffStatus, FieldDiff, VersionSnapshot } from './types'
-import { fieldLabel, fmtTime } from './types'
+import { fieldLabel, fmtTime, sourceLabel } from './types'
 
 const props = defineProps<{ body: CompareBody }>()
 
@@ -211,7 +211,7 @@ function sideDesc(s: VersionSnapshot): string {
     ? '保存人：未记录（本次保存没有登录上下文，后端如实回 null，不回填猜测）'
     : `保存人：${s.savedByName ?? `用户 #${s.savedBy}（姓名未查到）`}`
   return `${who}\n保存时间：${fmtTime(s.savedAt)}　业务日：${s.savedOn ?? '—'}\n`
-    + `来源：${s.source}　${s.contentLen} 字　摘要：${s.contentHash}`
+    + `来源：${sourceLabel(s.source)}　${s.contentLen} 字　摘要：${s.contentHash}`
 }
 
 function lenText(v: number | null): string {

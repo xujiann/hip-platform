@@ -137,8 +137,8 @@ public class EmrVersionController {
      * {@code label} 为 {@code CURRENT}，<b>本端点不写库、不生成版本行</b>：
      * 把当前内容记成一版，就是伪造了一次并不存在的保存动作。
      *
-     * <p>结果不一致有两种可能，返回体的 {@code notice} 里都说了：修改发生在留痕接缝之外，
-     * 或者 gate 曾经开在 off。两种都是需要运维知道的事实。
+     * <p>当前正文与<b>最后一版</b>不一致时（只在此时），返回体的 {@code notice} 并列三种可能、不断言是哪一种：
+     * 修改发生在留痕接缝之外、gate 曾经开在 off、或 warn 档下留痕写入失败（审阅修补（三））。
      */
     @GetMapping("/{emrType}/{emrId}/compare-current")
     public R<Map<String, Object>> compareCurrent(@PathVariable String emrType,
