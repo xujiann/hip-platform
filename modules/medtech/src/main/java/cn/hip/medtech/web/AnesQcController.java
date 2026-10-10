@@ -122,7 +122,7 @@ public class AnesQcController {
             + "排台/建单时间，保证历史手术不被漏统计；但这类行的「手术当日」是排台日而非真实开台日。";
 
     static final String STANDARD_NOTE =
-            "指标口径按《麻醉专业医疗质量控制指标（2022 年版）》硬编码。本版不提供指标定义可配置编辑器"
+            "指标口径由平台内置（硬编码），各指标的计算方法见各自口径说明。本版不提供指标定义可配置编辑器"
             + "（1421★ 的「上线前结合医院实际调整指标口径」属实施期工作，已在 v46 计划中列为范围外，此处不留假入口）。";
 
     static final String DEATH_NOTE =
@@ -138,8 +138,8 @@ public class AnesQcController {
      */
     static final String DEATH_GRANULARITY_NOTE =
             "【口径已修正（本版）】死亡率的分子分母由「台次」改为「患者」。修正前 deaths 与 death_rate_pct 都是台次口径："
-            + "一名患者一次住院做 3 台手术后死亡会被记成 3 例死亡、分母也记 3 台，与《2022 版》"
-            + "「各 ASA 分级患者麻醉死亡率」的患者口径不符，死亡数被放大。"
+            + "一名患者一次住院做 3 台手术后死亡会被记成 3 例死亡、分母也记 3 台，与"
+            + "「各 ASA 分级患者麻醉死亡率」应有的患者口径不符，死亡数被放大。"
             + "现 cases（麻醉例次/台次）保留不动，新增 patients 为去重后的麻醉患者数，"
             + "deaths 改为去重后的死亡患者数，death_rate_pct = deaths / patients。"
             + "去重键取 admission_id（同一次住院的多台手术算一人次，同一患者跨多次住院算多人次）："
@@ -237,7 +237,7 @@ public class AnesQcController {
     static final String DELAY_VOLUME_NOTE =
             " 【延迟开台量（v81 新增）】delayed_minutes_total 是判为延迟的首台「实开 − 排台」分钟之和，"
             + "avg_delay_minutes 是其均值（分母为延迟台数，无延迟台次时为空）；"
-            + "elective_delayed_minutes_total / elective_avg_delay_minutes 是同一算法的择期国标口径。"
+            + "elective_delayed_minutes_total / elective_avg_delay_minutes 是同一算法的择期首台口径。"
             + "延迟量从排台时间起算（不扣阈值），判不判延迟用的是与准点率同一个阈值。"
             + "【口径已修正（v81），会改变明细数值】穿透明细的 delay_minutes 原为「实开 − 排台」的有符号偏移，"
             + "准点台次也是正数、提前开台是负数，逐台加总得不出延迟量；本版起它只在判为延迟时取值，"
@@ -795,8 +795,9 @@ public class AnesQcController {
             case "1424" -> "首台 = 同一手术间、同一自然日内入室（缺则开台）时间最早的一台。准点 = 开台时间不晚于"
                     + "排台时间 + 阈值（阈值走 sys_config 键 anes.qc.ontime_minutes，不硬编码）。"
                     + "准点率的分母只含「排台时间与开台时间都录了」的首台，判不了的单列 unjudgeable，不并进分母。"
-                    + "另给一组 elective_* 是《2022 版》国标口径（只算择期手术首台）：两套口径并排给、不二选一——"
-                    + "只给国标口径会让 surgery_kind 未录的历史手术整片消失，只给全量口径又与国标对不上。"
+                    + "另给一组 elective_* 是择期首台口径（只算择期手术首台）：两套口径并排给、不二选一——"
+                    + "只给择期口径会让 surgery_kind 未录的历史手术整片消失。"
+                    + "平台以开台时间判定准点与延迟（未记录麻醉开始时间）。"
                     + DELAY_VOLUME_NOTE;
             case "1425" -> TURNOVER_NOTE + " 手术时长 = 结束 − 开台，只统计两点都录了的台次。" + IN_ROOM_NOTE;
             case "1426" -> CANCEL_DAY_NOTE
@@ -1201,7 +1202,9 @@ public class AnesQcController {
                            count(*)                                                       as cases,
                            count(*) filter (where start_at is not null and end_at is not null
                                               and end_at > start_at)                       as timed_cases,
-                           coalesce(sum(extract(epoch from (end_at - start_at)) / 60)
+                           -- v81 审阅修补（D3）：逐台先舍入到 0.1 分钟再求和，与明细 op_minutes 同一表达式，
+                           -- 「明细逐台加总 == 汇总 total_op_minutes」逐位成立（此前汇总按秒累加、明细取整到分钟）
+                           coalesce(sum(round((extract(epoch from (end_at - start_at)) / 60)::numeric, 1))
                                     filter (where start_at is not null and end_at is not null
                                               and end_at > start_at), 0)                   as op_minutes,
                            min(in_room_at)                                                 as first_in_room_at,
@@ -1377,6 +1380,43 @@ public class AnesQcController {
                     from inp_surgery s
                     where {alive} and {window}
                     """), w.args());
+            // v81 审阅修补（D9）：1425★ 区间合计——与按日汇总同一段 SQL（同一 {alive}/{window}、同一 {turnSeq}、
+            // 逐台 / 逐对先舍入再求和），故区间合计 == 按日各行之和逐位成立；接台不跨日（lag 按手术间 × 锚点日分区）。
+            // first_in_room_at 是区间内最早入室时刻（按日行里是当日最早）
+            case "1425" -> one(q("""
+                    with base as (
+                        select s.id, s.room_no, s.in_room_at, s.out_room_at, s.start_at, s.end_at,
+                               {anchor}::date as op_day
+                        from inp_surgery s
+                        where {alive} and {window}
+                    ), seq as (
+                        {turnSeq}
+                    ), ops as (
+                        select count(*)                                                   as cases,
+                               count(*) filter (where start_at is not null and end_at is not null
+                                                  and end_at > start_at)                   as timed_cases,
+                               coalesce(sum(round((extract(epoch from (end_at - start_at)) / 60)::numeric, 1))
+                                        filter (where start_at is not null and end_at is not null
+                                                  and end_at > start_at), 0)               as op_minutes,
+                               min(in_room_at)                                             as first_in_room_at,
+                               count(in_room_at)                                           as in_room_recorded
+                        from base
+                    ), turn as (
+                        select count(*) as turnovers, coalesce(sum({turnMin}), 0) as turn_minutes
+                        from seq q
+                        where q.prev_out is not null and q.in_room_at >= q.prev_out
+                    )
+                    select o.cases,
+                           o.timed_cases,
+                           round(o.op_minutes::numeric, 1)                                 as total_op_minutes,
+                           round((o.op_minutes / nullif(o.timed_cases, 0))::numeric, 1)     as avg_op_minutes,
+                           t.turnovers,
+                           round(t.turn_minutes::numeric, 1)                               as total_turnover_minutes,
+                           round((t.turn_minutes / nullif(t.turnovers, 0))::numeric, 1)     as avg_turnover_minutes,
+                           o.first_in_room_at,
+                           o.in_room_recorded
+                    from ops o cross join turn t
+                    """), w.f(), w.t(), w.f(), w.t());
             // v81 审阅修补（D2）：1436★ 区间合计——去重患者数（同一患者统计期内多次手术、跨住院都只算一人）与台次。
             // 同一患者两台手术若分属不同年龄段（期间过了生日），会在两格各计一人，故各格 patients 之和可能大于这里
             case "1436" -> one(q("""
@@ -1727,7 +1767,10 @@ public class AnesQcController {
                         {turnSeq}
                     )
                     select x.*,
-                           round(extract(epoch from (x.end_at - x.start_at)) / 60.0)        as op_minutes,
+                           -- v81 审阅修补（D3）：与汇总同口径——结束不晚于开台的不计（为空），逐台保留 0.1 分钟
+                           case when x.end_at > x.start_at
+                                then round((extract(epoch from (x.end_at - x.start_at)) / 60)::numeric, 1)
+                           end                                                               as op_minutes,
                            case when q.prev_out is not null and q.in_room_at >= q.prev_out
                                 then {turnMin} end                                           as turnover_minutes,
                            q.prev_id                                                         as turnover_prev_surgery_id,
@@ -2120,7 +2163,10 @@ public class AnesQcController {
             sb.append(String.join(",", cols.stream().map(c -> csv(detail ? zhDetail(c) : zhOf(d.code(), c))).toList()))
               .append('\n');
             for (var r : rows) {
-                sb.append(String.join(",", cols.stream().map(c -> csv(r.get(c))).toList())).append('\n');
+                // v81 审阅修补（D8）：明细 CSV 的码值转中文（状态、类别、取消阶段、布尔判定位）；
+                // JSON 明细仍保留编码——分桶键与既有调用方都按码取值
+                sb.append(String.join(",", cols.stream()
+                        .map(c -> csv(detail ? detailValue(c, r.get(c)) : r.get(c))).toList())).append('\n');
             }
         }
         sb.append('\n');
@@ -2148,8 +2194,43 @@ public class AnesQcController {
         return switch (col) {
             case "on_time" -> "是否准点";
             case "delayed" -> "是否延迟";
+            case "is_unplanned_reop" -> "是否非计划再次手术";
             default -> zh(col);
         };
+    }
+
+    /**
+     * v81 审阅修补（D8）：明细 CSV 的码值中文化——与手术录入页（SurgeryView）、麻醉质控页明细抽屉同一套名称。
+     * 未登记的码原样输出（不猜也不隐藏）。
+     */
+    static Object detailValue(String col, Object v) {
+        if (v == null) return null;
+        if (v instanceof Boolean b) return b ? "是" : "否";
+        String s = String.valueOf(v);
+        String zhv = switch (col) {
+            case "status" -> switch (s) {
+                case "REQUESTED" -> "已申请";
+                case "SCHEDULED" -> "已排台";
+                case "DONE" -> "已完成";
+                case "CANCELLED" -> "已取消";
+                default -> null;
+            };
+            case "surgery_kind" -> switch (s) {
+                case "ELECTIVE" -> "择期";
+                case "EMERGENCY" -> "急诊";
+                case "DAY" -> "日间";
+                default -> null;
+            };
+            case "cancel_stage" -> switch (s) {
+                case "APPLY" -> "申请阶段";
+                case "SCHEDULE" -> "排程阶段";
+                case "PRE_IN" -> "入室前";
+                case "IN_OP" -> "术中";
+                default -> null;
+            };
+            default -> null;
+        };
+        return zhv == null ? v : zhv;
     }
 
     /**
@@ -2173,10 +2254,10 @@ public class AnesQcController {
             case "delayed" -> "延迟开台数";
             case "unjudgeable" -> "无法判定数";
             case "on_time_rate_pct" -> "准点开台率(%)";
-            case "elective_first_cases" -> "择期首台量(国标口径)";
+            case "elective_first_cases" -> "择期首台量";
             case "elective_on_time" -> "择期准点开台数";
             case "elective_delayed" -> "择期延迟开台数";
-            case "elective_on_time_rate_pct" -> "择期首台准点率(%,2022国标)";
+            case "elective_on_time_rate_pct" -> "择期首台准点率(%)";
             case "first_case_depts" -> "首台科室";
             case "cases" -> "台数";
             case "timed_cases" -> "有完整手术时长的台数";

@@ -2,7 +2,6 @@
   <el-card>
     <template #header>
       <span style="font-weight: 600">麻醉与手术质控指标</span>
-      <el-tag type="info" size="small" style="margin-left: 10px">《麻醉专业医疗质量控制指标（2022 年版）》</el-tag>
       <el-date-picker v-model="range" type="daterange" size="small" unlink-panels
                       value-format="YYYY-MM-DD" range-separator="至"
                       start-placeholder="起始日" end-placeholder="截止日"
@@ -77,7 +76,13 @@
         <el-table v-if="ind.rows && ind.rows.length" :data="ind.rows" size="small" border max-height="360">
           <el-table-column v-for="c in columnsOf(ind.rows)" :key="c" :prop="c" :label="zhFor(ind.code, c)"
                            :min-width="colWidth(c)" show-overflow-tooltip>
-            <template #default="{ row }">{{ fmt(row[c]) }}</template>
+            <template #default="{ row }">{{ fmtCell(c, row[c]) }}</template>
+          </el-table-column>
+          <!-- v81 审阅修补（D5）：构成比类指标逐行「穿透」——带 bucket 参数只取该分桶的明细，抽屉顶部给出该桶汇总计数供核对 -->
+          <el-table-column v-if="BUCKET_COLS[ind.code]" label="穿透" width="70" fixed="right">
+            <template #default="{ row }">
+              <el-button link type="primary" size="small" @click="openDetail(ind, bucketOf(ind.code, row))">明细</el-button>
+            </template>
           </el-table-column>
         </el-table>
         <el-empty v-else description="该统计区间内无数据" :image-size="60" />
@@ -92,12 +97,16 @@
     <el-alert type="info" show-icon :closable="false" class="caveat"
               title="明细与汇总同时间窗、同锚点、同过滤条件——对不上账即为缺陷，请据此核对。" />
     <el-alert v-if="detailNote" type="info" :closable="false" class="caveat" :title="detailNote" />
+    <el-alert v-if="detailBucket" type="success" :closable="false" class="caveat"
+              :title="`分桶：${detailBucket}——该桶汇总计数 ${fmt(detailBucketCount)}`
+                + (detailBucketPatients != null ? `（患者数 ${fmt(detailBucketPatients)}）` : '')
+                + `，本次明细 ${detailItems.length} 行`" />
     <el-alert v-if="detailTruncated" type="warning" show-icon :closable="false" class="caveat"
               :title="`命中超过 ${detailLimit} 条，仅显示前 ${detailLimit} 条（不做翻页）；请缩小统计区间后再穿透`" />
     <el-table :data="detailItems" v-loading="detailLoading" size="small" border height="calc(100vh - 240px)">
       <el-table-column v-for="c in columnsOf(detailItems)" :key="c" :prop="c" :label="zhDetail(c)"
                        :min-width="colWidth(c)" show-overflow-tooltip>
-        <template #default="{ row }">{{ fmt(row[c]) }}</template>
+        <template #default="{ row }">{{ fmtCell(c, row[c]) }}</template>
       </el-table-column>
     </el-table>
     <el-empty v-if="!detailLoading && detailItems.length === 0" description="该统计区间内无明细" />
@@ -185,19 +194,51 @@ const detailTruncated = ref(false)
 const detailLimit = ref(200)
 const detailLoading = ref(false)
 
-async function openDetail(ind: Indicator) {
+const detailBucket = ref('')
+const detailBucketCount = ref<unknown>(null)
+const detailBucketPatients = ref<unknown>(null)
+
+/**
+ * v81 审阅修补（D5）：分桶列 —— 与后端 AnesQcController.bucketSpec() 逐指标同源（多列按「 / 」拼接）。
+ * 1437★ 的 in_use 是度量列而非维度，不在此表。
+ */
+const BUCKET_COLS: Record<string, string[]> = {
+  '1426': ['cancel_stage'],
+  '1428': ['surgery_kind'],
+  '1429': ['asa_grade'],
+  '1430': ['anesthesia_type'],
+  '1431': ['dept_name'],
+  '1436': ['age_band', 'sex'],
+  '1438': ['procedure_name', 'op_icd'],
+  '1439': ['surgery_level'],
+}
+
+function bucketOf(code: string, row: Row): string {
+  return (BUCKET_COLS[code] ?? []).map(c => String(row[c])).join(' / ')
+}
+
+async function openDetail(ind: Indicator, bucket?: string) {
   detailCode.value = ind.code
   detailName.value = ind.name
   detailItems.value = []
   detailTruncated.value = false
   detailNote.value = ''
+  detailBucket.value = bucket ?? ''
+  detailBucketCount.value = null
+  detailBucketPatients.value = null
   drawer.value = true
   detailLoading.value = true
   try {
-    const resp = await client.get('/anes-qc/detail', {
-      params: { indicator: ind.code, from: applied.value[0], to: applied.value[1] },
-    })
+    const params: Record<string, string> = { indicator: ind.code, from: applied.value[0], to: applied.value[1] }
+    if (bucket) params.bucket = bucket
+    const resp = await client.get('/anes-qc/detail', { params })
+    if (resp.data.code !== 0) {
+      ElMessage.error(resp.data.message)
+      return
+    }
     const d = resp.data.data
+    detailBucketCount.value = d.bucketSummaryCount ?? null
+    detailBucketPatients.value = d.bucketSummaryPatients ?? null
     detailItems.value = d.items ?? []
     detailTruncated.value = !!d.truncated
     detailLimit.value = d.limit ?? 200
@@ -240,6 +281,21 @@ function fmt(v: unknown): string {
   return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s) ? fmtDateTime(s) : s
 }
 
+/**
+ * v81 审阅修补（D8）：码值中文化 —— 与后端 AnesQcController.detailValue()、手术录入页 SurgeryView 同一套名称。
+ * 只译显示，不改数据（分桶键仍按原值拼接）；未登记的码原样显示。
+ */
+const CODE_ZH: Record<string, Record<string, string>> = {
+  status: { REQUESTED: '已申请', SCHEDULED: '已排台', DONE: '已完成', CANCELLED: '已取消' },
+  surgery_kind: { ELECTIVE: '择期', EMERGENCY: '急诊', DAY: '日间' },
+  cancel_stage: { APPLY: '申请阶段', SCHEDULE: '排程阶段', PRE_IN: '入室前', IN_OP: '术中' },
+}
+
+function fmtCell(col: string, v: unknown): string {
+  if (typeof v === 'string' && CODE_ZH[col]?.[v]) return CODE_ZH[col][v]
+  return fmt(v)
+}
+
 function colWidth(col: string): number {
   if (col === 'note' || col === 'description' || col === 'detail' || col === 'cancel_reason') return 220
   if (col === 'first_case_depts' || col === 'procedure_name' || col === 'patient_name') return 140
@@ -257,10 +313,10 @@ const ZH: Record<string, string> = {
   delayed: '延迟开台数',
   unjudgeable: '无法判定数',
   on_time_rate_pct: '准点开台率(%)',
-  elective_first_cases: '择期首台量(国标口径)',
+  elective_first_cases: '择期首台量',
   elective_on_time: '择期准点开台数',
   elective_delayed: '择期延迟开台数',
-  elective_on_time_rate_pct: '择期首台准点率(%,2022国标)',
+  elective_on_time_rate_pct: '择期首台准点率(%)',
   first_case_depts: '首台科室',
   cases: '台数',
   timed_cases: '有完整手术时长的台数',
@@ -403,6 +459,7 @@ function zhFor(code: string, col: string): string {
 const ZH_DETAIL: Record<string, string> = {
   on_time: '是否准点',
   delayed: '是否延迟',
+  is_unplanned_reop: '是否非计划再次手术',
 }
 
 function zhDetail(col: string): string {
