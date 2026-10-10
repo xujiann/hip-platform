@@ -121,6 +121,9 @@ public class DoctorStationService {
         // 既有 icdCode/icdName/primaryDiag 一概不校验：md_icd10 只有几十条种子，
         // 给 icdCode 加"字典必须存在"会当场打断 V43PrintDocsTest（用的 J00 就不在种子里）与实施期数据。
         validateDiagnoses(diagnoses);
+        // v80 审阅修补二（N-4）：诊断前缀 / 后缀 / 自定义描述列宽预检，同五段口径（纯只读、在任何 save 之前）。
+        // 此前超长要到诊断落库时撞列宽，整次暂存以通用 4091「编码长度超限」失败、不说是哪一条哪一栏。
+        checkDiagnosisLengths(diagnoses);
         // v79 审阅修补（甲组 D5）：五段正文列宽——**纯只读预检，放在任何 setter 与 save 之前**（零副作用：
         // 已有病历是受管实体，先 set 再抛，@Transactional 测试里不回滚的脏实体会在后续 flush 时被写进去）。
         // 此前「引用资料」整段插入可轻易超过现病史 2000 字，存盘时撞库列宽只报通用 4091、不说是哪一段；
@@ -252,6 +255,51 @@ public class DoctorStationService {
             if (len > max) {
                 throw new BizException(4000, "请求参数不正确：" + e.getValue()
                         + "超过 " + max + " 字（当前 " + len + " 字）");
+            }
+        }
+    }
+
+    /** v80 审阅修补二（N-4）：诊断行三个自由录入栏的中文名，列宽取自 {@link OutpDiagnosis} 的 {@code @Column(length)}（V135） */
+    private static final java.util.Map<String, String> DIAG_TEXT_LABELS = new java.util.LinkedHashMap<>();
+    static {
+        DIAG_TEXT_LABELS.put("prefix", "前缀");
+        DIAG_TEXT_LABELS.put("suffix", "后缀");
+        DIAG_TEXT_LABELS.put("customName", "自定义描述");
+    }
+
+    static final java.util.Map<String, Integer> DIAG_TEXT_MAX;
+    static {
+        var m = new java.util.LinkedHashMap<String, Integer>();
+        for (String f : DIAG_TEXT_LABELS.keySet()) {
+            try {
+                m.put(f, OutpDiagnosis.class.getDeclaredField(f)
+                        .getAnnotation(jakarta.persistence.Column.class).length());
+            } catch (NoSuchFieldException e) {
+                throw new IllegalStateException("OutpDiagnosis 缺字段 " + f, e);
+            }
+        }
+        DIAG_TEXT_MAX = java.util.Collections.unmodifiableMap(m);
+    }
+
+    /**
+     * 逐条逐栏核长度（码点计，同 {@link #checkEmrLengths}）。第一个超长项即抛
+     * 4000「第 N 条诊断〈栏名〉超过 M 字（当前 K 字）」，N 从 1 起、与诊断表行序一致。
+     */
+    private static void checkDiagnosisLengths(List<OutpDiagnosis> diagnoses) {
+        if (diagnoses == null) return;
+        for (int i = 0; i < diagnoses.size(); i++) {
+            OutpDiagnosis d = diagnoses.get(i);
+            String[] values = {d.getPrefix(), d.getSuffix(), d.getCustomName()};
+            int k = 0;
+            for (var e : DIAG_TEXT_LABELS.entrySet()) {
+                String v = values[k++];
+                if (v == null) continue;
+                int len = v.codePointCount(0, v.length());
+                int max = DIAG_TEXT_MAX.get(e.getKey());
+                if (len > max) {
+                    throw new BizException(4000, "请求参数不正确：第 " + (i + 1) + " 条诊断" + e.getValue()
+                            + "超过 " + max + " 字（当前 " + len + " 字）");
+                }
             }
         }
     }

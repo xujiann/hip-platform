@@ -204,9 +204,11 @@
                       </el-tag>
                     </template>
                   </el-table-column>
+                  <!-- v80 审阅修补二（N-4）：前缀 / 后缀 / 自定义描述 maxlength 与库列宽一致（V135：varchar(32) / (32) / (128)），
+                       后端 saveEmr 另有同口径预检（超长 4000 点名第几条哪一栏） -->
                   <el-table-column label="前缀" width="96">
                     <template #default="{ row }">
-                      <el-input v-model="row.prefix" size="small" :disabled="emrSigned" placeholder="如 疑似" />
+                      <el-input v-model="row.prefix" size="small" maxlength="32" :disabled="emrSigned" placeholder="如 疑似" />
                     </template>
                   </el-table-column>
                   <el-table-column label="诊断名称" min-width="180">
@@ -216,7 +218,7 @@
                   </el-table-column>
                   <el-table-column label="后缀" width="96">
                     <template #default="{ row }">
-                      <el-input v-model="row.suffix" size="small" :disabled="emrSigned" placeholder="如 术后" />
+                      <el-input v-model="row.suffix" size="small" maxlength="32" :disabled="emrSigned" placeholder="如 术后" />
                     </template>
                   </el-table-column>
                   <el-table-column label="确诊/疑诊" width="128">
@@ -230,7 +232,7 @@
                   </el-table-column>
                   <el-table-column label="自定义描述" min-width="150">
                     <template #default="{ row }">
-                      <el-input v-model="row.customName" size="small" :disabled="emrSigned"
+                      <el-input v-model="row.customName" size="small" maxlength="128" :disabled="emrSigned"
                                 placeholder="临床诊断名称描述（与标准名并存）" />
                     </template>
                   </el-table-column>
