@@ -573,6 +573,27 @@ class V80ReviewFixTest {
         assertTrue(table.contains("rxLines.splice($index, 1)"), "非锁定行可逐行移除");
     }
 
+    @Test
+    void r2_agreedTemplateWordingClaimsNoCommitteeReview() {
+        // 4064 原文「明细由药事委员会固定」——系统没有药事委员会审定流程，建档人（管理员 / 药师）建档即生效
+        String adminUser = newUser("Y", null, "ADMIN");
+        Authentication aa = new UsernamePasswordAuthenticationToken(adminUser, null, List.of());
+        Long drug = jdbc.queryForObject("select id from md_drug where enabled order by id limit 1", Long.class);
+        List<TemplateLine> lines = List.of(new TemplateLine("DRUG", drug, 1, "口服", "tid", "1片", 3, 0));
+        R<Long> c = rxTemplateController.create(new TemplateReq("V80F全院协定", "HOSPITAL", null, "AGREED", null, lines), aa);
+        assertEquals(0, c.getCode(), c.getMessage());
+        R<Void> u = rxTemplateController.update(c.getData(), new TemplateReq("V80F全院协定", null, null, null, null, lines), aa);
+        assertEquals(4064, u.getCode());
+        assertEquals("协定处方的明细建档后不可修改；如需调整请停用本模板后另建新版", u.getMessage());
+        for (String rel : List.of("frontend/shell/src/views/outpatient/RxTemplateView.vue",
+                "frontend/shell/src/views/outpatient/DoctorStationView.vue",
+                "modules/outpatient/src/main/java/cn/hip/outpatient/service/RxTemplateService.java",
+                "modules/outpatient/src/main/java/cn/hip/outpatient/web/RxTemplateController.java",
+                "tools/bootstrap-demo.py")) {
+            assertFalse(read(rel).contains("药事委员会"), rel + " 仍以「药事委员会」暗示存在审定流程");
+        }
+    }
+
     // ---------------- 源码读取（仓库相对路径；worktree 下同样有效） ----------------
 
     private static Path repoRoot() {

@@ -406,7 +406,7 @@ class V44RxTemplateTest {
         Long d1 = newDrug(true);
         Long d2 = newDrug(true);
         Long id = createOk(pharm.auth(), new TemplateReq("V44协定处方·术后镇痛", "DEPT", dept, "AGREED",
-                "药事委员会 2026 第一版", List.of(drugLine(d1, 0))));
+                "2026 第一版", List.of(drugLine(d1, 0))));
         // 前置证明：admin 对这张模板确有可改权限（改头成功），故下一步的 4064 只可能来自协定处方规则
         assertEquals(0, controller.update(id, new TemplateReq("V44协定处方·术后镇痛", null, null, null,
                 "管理员改得动头部", null), admin.auth()).getCode());

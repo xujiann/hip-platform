@@ -344,7 +344,7 @@
             </el-table-column>
             <el-table-column label="" width="60">
               <template #default="{ row, $index }">
-                <!-- v44：协定处方由药事委员会固定，要么整组用要么整组撤，不许单行删 -->
+                <!-- v44：协定处方建档后明细固定，要么整组用要么整组撤，不许单行删 -->
                 <el-button v-if="!row.locked" link type="danger" @click="rxLines.splice($index, 1)">移除</el-button>
                 <el-button v-else link type="warning" @click="dropAgreedGroup(row)">撤组</el-button>
               </template>

@@ -5,7 +5,7 @@
         <h3 style="margin:0">处方模板与协定处方</h3>
         <span class="hint">
           模板按三级范围发放：<b>个人</b>只有本人可见可改；<b>科室</b>本科室医生可见、创建者与管理员可改；
-          <b>全院</b>所有医生可见、仅管理员可改。<b>协定处方</b>（药事委员会审定的固定组合）套用时整组带入，
+          <b>全院</b>所有医生可见、仅管理员可改。<b>协定处方</b>（建档后明细固定的组合；系统不含审定流程，建档即生效）套用时整组带入，
           <b>明细任何人都不可就地修改</b>——需要调整请停用本模板后另建新版；已开出的医嘱不受模板后续修改影响。
           医生能套用的全院 / 科室协定处方由系统管理员建立；药师可建个人协定处方，仅本人可见、医生站看不到。
           <br>
@@ -101,13 +101,13 @@
         </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="form.remark" maxlength="255" style="width: 420px"
-                    placeholder="如：药事委员会 2026 年第一版" />
+                    placeholder="如：2026 年第一版" />
         </el-form-item>
 
         <el-form-item label="模板明细" required>
           <div style="width: 100%">
             <el-alert v-if="linesLocked" type="warning" :closable="false" show-icon
-                      title="协定处方的明细由药事委员会固定，不可就地修改"
+                      title="协定处方的明细建档后不可就地修改"
                       description="需要调整请先停用本模板，再按新组合另建一张。已开出的医嘱不受模板后续修改影响。" />
             <div v-else class="line-add">
               <el-select v-model="pickType" size="small" style="width: 100px">

@@ -681,7 +681,7 @@ def ensure_demo_rx_templates():
              'dosePerTime': '1袋', 'days': 3, 'sortNo': 0},
             {'orderType': 'DRUG', 'itemId': ome, 'qty': 1, 'usageRoute': '口服', 'frequency': 'qd',
              'dosePerTime': '20mg', 'days': 3, 'sortNo': 1},
-        ], '演示：药事委员会审定的固定组合，明细不可改')
+        ], '演示：全院协定处方，明细建档后不可改')
     else:
         print('  处方模板（admin）：主数据缺 D0010 蒙脱石散 / D0008 奥美拉唑肠溶胶囊，跳过协定处方')
     dt = login_as('doctor01', 'Demo1234')
