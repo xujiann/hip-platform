@@ -816,7 +816,12 @@ public class AnesQcController {
                     + "明细行数 == transfused_patients，has_auto 为真的行数 == auto_patients，"
                     + "has_non_auto 为真的行数 == non_auto_patients，两者皆真的行数 == both_patients，"
                     + "各行 surgeries 之和 == transfused_surgeries——四项都能机械核对。";
-            case "1436" -> "年龄按统计锚点日期与出生日期计算；无出生日期的归「未知」，性别取 empi_patient.sex。";
+            case "1436" -> "年龄按统计锚点日期与出生日期计算；无出生日期的归「未知」，性别取 empi_patient.sex。"
+                    + "【患者数（v81 审阅修补）】patients 是按患者去重的患者数（主口径），同一患者统计期内多次手术、"
+                    + "跨多次住院都只计一人；cases 是手术台次。同一患者的两台手术若分属不同年龄段（期间过了生日），"
+                    + "会在两格各计一人，故各格患者数之和可能大于区间合计的去重患者数。"
+                    + "穿透明细逐台给出患者 ID、出生日期、手术时年龄、年龄段与性别：某格明细行数 == 该格台次，"
+                    + "明细里去重的患者 ID 个数 == 该格患者数。";
             case "1437" -> IN_USE_NOTE;
             case "1438" -> ICD9_NOTE;
             case "1439" -> ICD9_NOTE + " unplanned_reop 列只统计**已标记**的病例："
@@ -1016,7 +1021,8 @@ public class AnesQcController {
                                     when {ageYears} < 75 then 5
                                     else 6 end                                          as band_no,
                                case p.sex when 'M' then '男' when 'F' then '女'
-                                          else '未知' end                               as sex_name
+                                          else '未知' end                               as sex_name,
+                               a.patient_id
                         from inp_surgery s
                         join inp_admission a on a.id = s.admission_id
                         join empi_patient p on p.id = a.patient_id
@@ -1027,6 +1033,9 @@ public class AnesQcController {
                                         when 5 then '60–74 岁' when 6 then '≥75 岁'
                                         else '未知（无出生日期）' end                   as age_band,
                            sex_name                                                     as sex,
+                           -- v81 审阅修补（D2）：条款要的是各年龄段「患者数量」，按患者去重为主口径；
+                           -- 台次（cases，既有键）保留在后，分桶穿透的 bucketSummaryCount 仍对台次
+                           count(distinct patient_id)                                   as patients,
                            count(*)                                                     as cases
                     from base
                     group by band_no, sex_name
@@ -1368,6 +1377,16 @@ public class AnesQcController {
                     from inp_surgery s
                     where {alive} and {window}
                     """), w.args());
+            // v81 审阅修补（D2）：1436★ 区间合计——去重患者数（同一患者统计期内多次手术、跨住院都只算一人）与台次。
+            // 同一患者两台手术若分属不同年龄段（期间过了生日），会在两格各计一人，故各格 patients 之和可能大于这里
+            case "1436" -> one(q("""
+                    select count(distinct a.patient_id)                               as patients,
+                           count(*)                                                   as cases
+                    from inp_surgery s
+                    join inp_admission a on a.id = s.admission_id
+                    join empi_patient p on p.id = a.patient_id
+                    where {alive} and {window}
+                    """), w.args());
             case "1438" -> one(q("""
                     select count(*)                                                   as cases,
                            count(distinct nullif(trim(s.procedure_name), ''))          as procedures,
@@ -1479,8 +1498,15 @@ public class AnesQcController {
         return jdbc.queryForList(q(sql.replace("{bucket}", pred)), args);
     }
 
-    /** 校验结果：{@code error} 非空即 4944；{@code summaryCount} 是该桶在汇总里的计数 */
-    private record BucketCheck(Object summaryCount, R<Map<String, Object>> error) {}
+    /**
+     * 校验结果：{@code error} 非空即 4944；{@code summaryCount} 是该桶在汇总里的计数（台次）；
+     * {@code summaryPatients} 只对 1436★ 有值，是该格的去重患者数（v81 审阅修补 D2）
+     */
+    private record BucketCheck(Object summaryCount, Object summaryPatients, R<Map<String, Object>> error) {
+        BucketCheck(Object summaryCount, R<Map<String, Object>> error) {
+            this(summaryCount, null, error);
+        }
+    }
 
     /**
      * 分桶取值校验（4944）。合法取值集合<b>取自同一时间窗的汇总行本身</b>，不另立一份值域表：
@@ -1509,6 +1535,7 @@ public class AnesQcController {
                     "分桶取值非法：" + why + "。支持分桶的指标：" + BUCKETABLE_CODES));
         }
         Object count = null;
+        Object patients = null;
         int hits = 0;
         var seen = new ArrayList<String>();
         for (var row : rowsOf(d.code(), w, by)) {
@@ -1517,6 +1544,7 @@ public class AnesQcController {
             if (key.equals(bucket)) {
                 hits++;
                 count = row.get("cases");
+                if ("1436".equals(d.code())) patients = row.get("patients");
             }
         }
         if (hits == 0) {
@@ -1533,7 +1561,7 @@ public class AnesQcController {
                     "分桶取值非法：「" + bucket + "」在本时间窗内命中 " + hits + " 行汇总"
                     + "（取值本身含拼接分隔符「" + BUCKET_SEP + "」），无法唯一穿透，请改用不带 bucket 的全量明细"));
         }
-        return new BucketCheck(count, null);
+        return new BucketCheck(count, patients, null);
     }
 
     private static String sample(List<String> values) {
@@ -1605,10 +1633,12 @@ public class AnesQcController {
         if (isEventIndicator(d.code())) body.put("windowBy", b.by());
 
         Object bucketCount = null;
+        Object bucketPatients = null;
         if (bkt != null) {
             BucketCheck bc = checkBucket(d, w.window(), b.by(), bkt);
             if (bc.error() != null) return R.fail(bc.error().getCode(), bc.error().getMessage());
             bucketCount = bc.summaryCount();
+            bucketPatients = bc.summaryPatients();
         }
         // 分桶入口是「这个指标有没有」的事实，与 bucket 传没传无关：不支持的指标一个键都不加，
         // 前端据此决定要不要画分桶下拉，不必去猜哪些指标点得开
@@ -1625,6 +1655,8 @@ public class AnesQcController {
             body.put("bucket", bkt);
             // 验收就看这一对：未截断时 bucketSummaryCount 必须等于 items 长度
             body.put("bucketSummaryCount", bucketCount);
+            // 1436★：该格患者数，== 明细里去重的 patient_id 个数（v81 审阅修补 D2）
+            if (bucketPatients != null) body.put("bucketSummaryPatients", bucketPatients);
         }
 
         if (!d.available()) {
@@ -2085,7 +2117,7 @@ public class AnesQcController {
         } else {
             var cols = new ArrayList<>(rows.get(0).keySet());
             boolean detail = DETAIL_KIND.equals(kind);
-            sb.append(String.join(",", cols.stream().map(c -> csv(detail ? zhDetail(c) : zh(c))).toList()))
+            sb.append(String.join(",", cols.stream().map(c -> csv(detail ? zhDetail(c) : zhOf(d.code(), c))).toList()))
               .append('\n');
             for (var r : rows) {
                 sb.append(String.join(",", cols.stream().map(c -> csv(r.get(c))).toList())).append('\n');
@@ -2118,6 +2150,18 @@ public class AnesQcController {
             case "delayed" -> "是否延迟";
             default -> zh(col);
         };
+    }
+
+    /**
+     * 汇总表头的逐指标覆盖（v81 审阅修补 D2）：1436★ 的 cases 是台次、patients 是去重患者数，
+     * 通用名「台数」「人数(按患者去重)」放在年龄分布表里会让人把台次读成「患者数量」。
+     */
+    private static String zhOf(String code, String col) {
+        if ("1436".equals(code)) {
+            if ("patients".equals(col)) return "患者数";
+            if ("cases".equals(col)) return "台次";
+        }
+        return zh(col);
     }
 
     /** 列名中文化（CSV 表头用；未登记的列名原样输出，不猜也不隐藏） */

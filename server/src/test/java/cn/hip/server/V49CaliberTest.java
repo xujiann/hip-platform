@@ -707,6 +707,11 @@ class V49CaliberTest {
         }
     }
 
+    /** 1436★ 明细去重患者数（v81 审阅修补 D2） */
+    private static long distinctPatients(List<Map<String, Object>> items) {
+        return items.stream().map(x -> x.get("patient_id")).distinct().count();
+    }
+
     private static long sum(List<Map<String, Object>> rows, String col) {
         return rows.stream().mapToLong(r -> num(r, col)).sum();
     }
@@ -906,12 +911,17 @@ class V49CaliberTest {
 
         // 1436★ 手术患者年龄段 × 性别分布。
         // v81 审阅修补（D4）：明细逐台带 age_band / sex（与汇总同一表达式），逐桶对账：该格 cases == 该格明细条数。
+        // v81 审阅修补（D2）：patients = 该格明细里去重的 patient_id 个数；summary 是区间合计（全量明细去重）。
         Rule r1436 = new Rule("1436")
                 .labels("age_band", "sex")
                 .count("cases", SIZE)
+                .count("patients", V49CaliberTest::distinctPatients)
                 .rowsTotal(rs -> sum(rs, "cases"));
         r1436.rowKey = row -> str(row, "age_band") + BUCKET_SEP + str(row, "sex");
         r1436.itemKey = (item, all) -> str(item, "age_band") + BUCKET_SEP + str(item, "sex");
+        r1436.summaryRule = new Rule("1436.summary")
+                .count("cases", SIZE)
+                .count("patients", V49CaliberTest::distinctPatients);
         m.put("1436", r1436);
 
         // 1437★ 每日镇痛泵新增 / 拆泵 / 在用量。

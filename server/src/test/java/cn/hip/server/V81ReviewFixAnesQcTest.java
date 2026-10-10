@@ -228,6 +228,40 @@ class V81ReviewFixAnesQcTest {
         return surgery(admB, "DONE", dayC, "V81R-R4", "08:00", "08:00", "08:10", "09:00", "09:10", "DAY");
     }
 
+    /** 【D2】「45–59 岁 / 男」格 patients = 2（主口径）、cases = 3（台次保留）；分桶穿透同给患者数；CSV 两列分名 */
+    @Test
+    void ageSexDistributionCountsPatientsNotCases() {
+        seed1436();
+        var r36 = rows("1436", dayC, dayC);
+        assertEquals(1, r36.size(), r36.toString());
+        var cell = r36.get(0);
+        assertEquals("45–59 岁", cell.get("age_band"));
+        assertEquals("男", cell.get("sex"));
+        assertEquals(2, num(cell, "patients"), "【D2】患者数按患者去重：甲两次住院两台只算一人");
+        assertEquals(3, num(cell, "cases"), "台次列保留");
+        var keys = List.copyOf(cell.keySet());
+        assertTrue(keys.indexOf("patients") < keys.indexOf("cases"), "患者数是主口径，排在台次之前：" + keys);
+
+        var s36 = summary("1436", dayC, dayC);
+        assertNotNull(s36, "1436 给区间合计：去重患者数与台次");
+        assertEquals(2, num(s36, "patients"));
+        assertEquals(3, num(s36, "cases"));
+
+        var bk = anesQc.detail("1436", dayC, dayC, null, null, "45–59 岁 / 男");
+        assertEquals(0, bk.getCode(), bk.getMessage());
+        @SuppressWarnings("unchecked")
+        var bItems = (List<Map<String, Object>>) bk.getData().get("items");
+        assertEquals(3, ((Number) bk.getData().get("bucketSummaryCount")).intValue(), "台次 == 明细行数");
+        assertEquals(3, bItems.size());
+        assertEquals(2, ((Number) bk.getData().get("bucketSummaryPatients")).intValue(),
+                "分桶穿透同口径：给出该格患者数");
+
+        String csv = anesQc.indicatorsCsv("1436", dayC, dayC);
+        String header = csv.lines().skip(3).findFirst().orElse("");
+        assertTrue(header.contains("患者数") && header.contains("台次"), "CSV 表头分列「患者数」「台次」：" + header);
+        assertFalse(header.contains("台数"), "1436 的 cases 不再叫「台数」以免读成患者数量：" + header);
+    }
+
     /** 【D4】明细逐台带出生日期、手术时年龄、年龄段、性别与患者 ID；明细与分桶明细的去重患者数 == patients */
     @Test
     void ageSexDetailShowsBirthDateAgeAndSex() {
@@ -253,8 +287,116 @@ class V81ReviewFixAnesQcTest {
 
     // ================= D3 / D9 1425 手术时长同口径 + 区间合计 =================
 
+    /**
+     * 两台各 60 分 24 秒（非整分钟）、一台结束早于开台（录错）：
+     * 汇总 120.8、明细 60.4 + 60.4（录错那台为空），明细加总 == 汇总逐位成立。
+     */
+    @Test
+    void opMinutesDetailMatchesSummaryToTheDecimal() {
+        Long adm = newAdmission("F", 40);
+        Long s1 = surgery(adm, "DONE", dayD, "V81R-R5", "08:00", "07:50", "08:00:00", "09:00:24", "09:10", "ELECTIVE");
+        Long s2 = surgery(adm, "DONE", dayD, "V81R-R5", "09:30", "09:40", "10:00:00", "11:00:24", "11:10", "ELECTIVE");
+        Long bad = surgery(adm, "DONE", dayD, "V81R-R6", "08:00", null, "08:00", "07:00", null, "ELECTIVE");
+
+        var row = rows("1425", dayD, dayD).get(0);
+        assertEquals(2, num(row, "timed_cases"));
+        assertEquals(120.8, dbl(row, "total_op_minutes"), 1e-9);
+
+        var it = items("1425", dayD, dayD);
+        assertEquals(60.4, dbl(bySurgery(it, s1), "op_minutes"), 1e-9, "【D3】逐台保留 0.1 分钟，不取整到 60");
+        assertEquals(60.4, dbl(bySurgery(it, s2), "op_minutes"), 1e-9);
+        assertNull(bySurgery(it, bad).get("op_minutes"), "【D3】结束早于开台不计手术时长，与汇总同过滤");
+        double detailSum = it.stream().map(x -> dbl(x, "op_minutes")).filter(Objects::nonNull)
+                .mapToDouble(Double::doubleValue).sum();
+        assertEquals(dbl(row, "total_op_minutes"), detailSum, 1e-9, "汇总总手术时长 == 明细逐台加总");
+        assertEquals(num(row, "timed_cases"), it.stream().filter(x -> x.get("op_minutes") != null).count());
+    }
+
+    /** 两天窗口：summary 是区间合计行，与按日行逐列相加相等；首台入室时刻取区间最早 */
+    @Test
+    void turnoverSummaryIsTheRangeTotal() {
+        Long adm = newAdmission("M", 66);
+        surgery(adm, "DONE", dayD, "V81R-R7", "08:00", "08:00", "08:10", "09:00:30", "09:10", "ELECTIVE");
+        surgery(adm, "DONE", dayD, "V81R-R7", "09:30", "09:40", "09:50", "10:50", "11:00", "ELECTIVE");
+        surgery(adm, "DONE", dayC, "V81R-R7", "08:00", "07:45", "08:00", "08:45", "08:55", "ELECTIVE");
+        surgery(adm, "DONE", dayC, "V81R-R7", "09:00", "09:30", "09:40", "10:30", "10:40", "ELECTIVE");
+        surgery(adm, "DONE", dayC, "V81R-R8", "08:00", null, "08:05", "08:35", null, "DAY");
+
+        var rs = rows("1425", dayD, dayC);
+        assertEquals(2, rs.size());
+        var s = summary("1425", dayD, dayC);
+        assertNotNull(s, "【D9】1425 须给区间合计行");
+        for (String k : List.of("cases", "timed_cases", "turnovers", "in_room_recorded")) {
+            assertEquals(sum(rs, k), num(s, k), "区间合计 " + k + " == 按日之和");
+        }
+        assertEquals(5, num(s, "cases"));
+        assertEquals(2, num(s, "turnovers"), "两天各一对接台（跨日不接）");
+        assertEquals(rs.stream().mapToDouble(r -> dbl(r, "total_op_minutes")).sum(), dbl(s, "total_op_minutes"), 1e-9);
+        assertEquals(rs.stream().mapToDouble(r -> dbl(r, "total_turnover_minutes")).sum(),
+                dbl(s, "total_turnover_minutes"), 1e-9);
+        assertEquals(30.0 + 35.0, dbl(s, "total_turnover_minutes"), 1e-9);
+        assertEquals(32.5, dbl(s, "avg_turnover_minutes"), 1e-9);
+        Object earliest = jdbc.queryForObject("select ?::timestamptz", Object.class, at(dayD, "08:00"));
+        assertEquals(earliest, s.get("first_in_room_at"), "区间最早入室时刻");
+    }
+
     // ================= D8 明细 CSV 中文化 =================
+
+    @Test
+    void detailCsvTranslatesCodesAndHeaders() {
+        Long adm = newAdmission("F", 35);
+        surgery(adm, "DONE", dayC, "V81R-R9", "08:00", "08:00", "08:10", "09:00", "09:10", "ELECTIVE");
+        jdbc.update("""
+                insert into inp_surgery(admission_id, procedure_name, status, scheduled_at, cancel_stage, cancel_reason,
+                                        cancelled_at, created_at)
+                values (?, 'V81审阅取消', 'CANCELLED', ?::timestamptz, 'PRE_IN', '血压高', ?::timestamptz, ?::timestamptz)
+                """, adm, at(dayC, "09:00"), at(dayC, "10:00"), at(dayC, "06:00"));
+
+        // JSON 明细保留编码（分桶键与既有调用方都按码取值）
+        var it = items("1428", dayC, dayC);
+        assertEquals("ELECTIVE", it.get(0).get("surgery_kind"));
+        assertEquals("DONE", it.get(0).get("status"));
+
+        String c28 = anesQc.detailCsv("1428", dayC, dayC);
+        String header = c28.lines().skip(3).findFirst().orElse("");
+        assertFalse(header.contains("is_unplanned_reop"), "表头不得出英文列名：" + header);
+        assertTrue(header.contains("是否非计划再次手术"), header);
+        String data = c28.lines().skip(4).findFirst().orElse("");
+        assertTrue(data.contains("择期") && data.contains("已完成"), "类别与状态出中文：" + data);
+        assertFalse(data.contains("ELECTIVE") || data.contains(",DONE"), data);
+
+        String c26 = anesQc.detailCsv("1426", dayC, dayC);
+        String d26 = c26.lines().skip(4).findFirst().orElse("");
+        assertTrue(d26.contains("入室前") && d26.contains("已取消"), "取消阶段与状态出中文：" + d26);
+        assertFalse(d26.contains("PRE_IN") || d26.contains("CANCELLED"), d26);
+    }
 
     // ================= D10 不声称国标 =================
 
+    @Test
+    void noNationalStandardClaimOnScreenOrCsv() {
+        Long adm = newAdmission("M", 45);
+        surgery(adm, "DONE", dayC, "V81R-R10", "08:00", "08:00", "08:10", "09:00", "09:10", "ELECTIVE");
+        var r = anesQc.indicators(dayC, dayC, null);
+        assertEquals(0, r.getCode());
+        String std = String.valueOf(r.getData().get("standardNote"));
+        Set<String> texts = new HashSet<>();
+        texts.add(std);
+        @SuppressWarnings("unchecked")
+        var inds = (List<Map<String, Object>>) r.getData().get("indicators");
+        for (var ind : inds) {
+            if (ind.get("note") != null) texts.add(String.valueOf(ind.get("note")));
+        }
+        for (String code : List.of("1424", "1429")) {
+            texts.add(anesQc.indicatorsCsv(code, dayC, dayC));
+            texts.add(anesQc.detailCsv(code, dayC, dayC));
+        }
+        for (String t : texts) {
+            assertFalse(t.contains("国标"), "不得自称国标：" + t);
+            assertFalse(t.contains("2022"), "不得自称按 2022 版指标：" + t);
+        }
+        String note1424 = String.valueOf(indicator("1424", dayC, dayC).get("note"));
+        assertTrue(note1424.contains("择期首台口径"), note1424);
+        assertTrue(note1424.contains("平台以开台时间判定"), note1424);
+    }
 }

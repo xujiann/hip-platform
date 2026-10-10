@@ -70,12 +70,12 @@
       <template v-else>
         <el-alert v-if="ind.note" type="info" :closable="false" class="caveat" :title="ind.note" />
         <el-descriptions v-if="ind.summary" :column="4" border size="small" class="caveat">
-          <el-descriptions-item v-for="k in keysOf(ind.summary)" :key="k" :label="zh(k)">
+          <el-descriptions-item v-for="k in keysOf(ind.summary)" :key="k" :label="zhFor(ind.code, k)">
             {{ fmt(ind.summary[k]) }}
           </el-descriptions-item>
         </el-descriptions>
         <el-table v-if="ind.rows && ind.rows.length" :data="ind.rows" size="small" border max-height="360">
-          <el-table-column v-for="c in columnsOf(ind.rows)" :key="c" :prop="c" :label="zh(c)"
+          <el-table-column v-for="c in columnsOf(ind.rows)" :key="c" :prop="c" :label="zhFor(ind.code, c)"
                            :min-width="colWidth(c)" show-overflow-tooltip>
             <template #default="{ row }">{{ fmt(row[c]) }}</template>
           </el-table-column>
@@ -382,6 +382,18 @@ const ZH: Record<string, string> = {
 
 function zh(col: string): string {
   return ZH[col] ?? col
+}
+
+/**
+ * 汇总表头的逐指标覆盖 —— 与后端 AnesQcController.zhOf() 同源（v81 审阅修补 D2）。
+ * 1436★ 的 cases 是手术台次、patients 是按患者去重的患者数，通用名「台数」「人数」在年龄分布表里会被读成患者数量。
+ */
+const ZH_BY_INDICATOR: Record<string, Record<string, string>> = {
+  '1436': { patients: '患者数', cases: '台次' },
+}
+
+function zhFor(code: string, col: string): string {
+  return ZH_BY_INDICATOR[code]?.[col] ?? zh(col)
 }
 
 /**
