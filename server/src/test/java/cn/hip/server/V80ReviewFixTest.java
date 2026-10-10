@@ -259,6 +259,31 @@ class V80ReviewFixTest {
         assertFalse(drawer.contains("{{ d.icdName || d.icdCode }}"), "不得再只印标准名");
     }
 
+    // ==================== D2 / D5：协定处方整组撤回只撤本批、检验行不可单行移除 ====================
+
+    @Test
+    void d2_applyStampsBatchAndDropUsesIt() {
+        String ds = read("frontend/shell/src/views/outpatient/DoctorStationView.vue");
+        int a = ds.indexOf("async function applyTemplate(");
+        int b = ds.indexOf("const rxLines = ref", a);
+        assertTrue(a > 0 && b > a, "找不到 applyTemplate / dropAgreedGroup");
+        String src = ds.substring(a, b);
+        assertTrue(src.contains("stampTemplateLines("), "套用时须给每行打上来源模板与批次：\n" + src);
+        assertTrue(src.contains("dropTemplateBatch("), "撤组须按批次撤：\n" + src);
+        assertFalse(src.contains("l.tplId === row.tplId"), "旧过滤（tplId 恒 undefined → 撤掉全部协定行）须删除");
+    }
+
+    @Test
+    void d5_lockedLabLinesHaveNoSingleRowRemove() {
+        String ds = read("frontend/shell/src/views/outpatient/DoctorStationView.vue");
+        int i = ds.indexOf("labLines.splice($index, 1)");
+        assertTrue(i > 0, "找不到检查检验表的移除按钮");
+        String line = ds.substring(ds.lastIndexOf('\n', i), ds.indexOf('\n', i));
+        assertTrue(line.contains("v-if=\"!row.locked\""), "协定处方来源的检验/检查/治疗行不得单行移除：" + line);
+        String after = ds.substring(i, ds.indexOf("</template>", i));
+        assertTrue(after.contains("dropAgreedGroup(row)"), "锁定行改为整组撤回");
+    }
+
     // ---------------- 源码读取（仓库相对路径；worktree 下同样有效） ----------------
 
     private static Path repoRoot() {

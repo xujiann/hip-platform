@@ -418,8 +418,10 @@
               <template #default="{ row }"><el-input v-model="row.remark" size="small" placeholder="备注" maxlength="200" /></template>
             </el-table-column>
             <el-table-column label="" width="60">
-              <template #default="{ $index }">
-                <el-button link type="danger" @click="labLines.splice($index, 1)">移除</el-button>
+              <template #default="{ row, $index }">
+                <!-- v80 审阅修补（D5）：协定处方来源的检验 / 检查 / 治疗行与药品行同口径——不单行移除，只能整组撤回 -->
+                <el-button v-if="!row.locked" link type="danger" @click="labLines.splice($index, 1)">移除</el-button>
+                <el-button v-else link type="warning" @click="dropAgreedGroup(row)">撤组</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -661,6 +663,7 @@ import { editedSinceApplied, eligibleForDefaultTemplate, pickDefaultTemplate, pl
   revertDefaultTemplate, untouchedDefaultTemplate, type DefaultTemplate } from '../../utils/default-template'
 import { presaveBeforeSign } from '../../utils/emr-submit'
 import { formatHistoryDiagnosis, stripBlockMarks } from '../../utils/print-format'
+import { dropTemplateBatch, stampTemplateLines } from '../../utils/rx-template-apply'
 
 const categoryNames: Record<string, string> = { LAB: '检验', EXAM: '检查', TREAT: '治疗', MATERIAL: '材料' }
 const typeNames: Record<string, string> = { DRUG: '药品', LAB: '检验', EXAM: '检查', TREAT: '治疗' }
@@ -1088,6 +1091,7 @@ const rxQty = ref(1)
 const rxTemplates = ref<Record<string, unknown>[]>([])
 const tplPicked = ref<number | undefined>(undefined)
 const tplHint = ref('')
+let tplBatchSeq = 0   // v80 审阅修补（D2）：套用批次序号，本页内递增即可
 const scopeNames: Record<string, string> = { PERSONAL: '个人', DEPT: '科室', HOSPITAL: '全院' }
 
 async function loadRxTemplates() {
@@ -1105,7 +1109,8 @@ async function applyTemplate(id: number | undefined) {
     tplPicked.value = undefined
     return
   }
-  const lines = (resp.data.data ?? []) as Record<string, unknown>[]
+  // v80 审阅修补（D2）：每行打上来源模板 id 与本次套用批次号，撤组只撤这一批（同一模板套两次也是两批）
+  const lines = stampTemplateLines((resp.data.data ?? []) as Record<string, unknown>[], id, `${id}-${++tplBatchSeq}`)
   const warn: string[] = []
   for (const ln of lines) {
     // 落地提示，不拦截——真正的判定仍在开单端点
@@ -1126,12 +1131,12 @@ async function applyTemplate(id: number | undefined) {
   tplPicked.value = undefined
 }
 
-/** 协定处方整组撤回（locked 行不可单行删） */
+/** 协定处方整组撤回（locked 行不可单行删）；v80 审阅修补（D2）：只撤 row 所在那一批，药品与检查检验一并计数 */
 function dropAgreedGroup(row: Record<string, unknown>) {
-  const before = rxLines.value.length
-  rxLines.value = rxLines.value.filter((l) => !(l.locked && l.tplId === row.tplId))
-  labLines.value = labLines.value.filter((l) => !(l.locked && l.tplId === row.tplId))
-  tplHint.value = `已撤回协定处方（移除 ${before - rxLines.value.length} 行）`
+  const r = dropTemplateBatch(rxLines.value, labLines.value, row)
+  rxLines.value = r.rx
+  labLines.value = r.lab
+  tplHint.value = `已撤回协定处方（移除 ${r.removed} 行）`
 }
 
 const rxLines = ref<Record<string, unknown>[]>([])
