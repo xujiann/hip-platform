@@ -577,7 +577,7 @@ public class DoctorStationService {
      * 诊断助手（偏离表 979★ + 1084★ 的"可从中挑选"）：一次返回三段。
      *
      * <ul>
-     *   <li><b>history</b> 该患者历史诊断，按编码+名称去重、按最近就诊倒序；</li>
+     *   <li><b>history</b> 该患者历史诊断，按编码+名称+体系去重（体系空按西医）、按最近就诊倒序；</li>
      *   <li><b>favorite</b> 当前医生的常用诊断（outp_diagnosis_favorite），按使用次数倒序；</li>
      *   <li><b>frequent</b> 全院高频诊断，<b>按 outp_diagnosis 真实数据聚合</b>（近 180 天），
      *       不是硬编码清单——没数据就是空的。</li>
@@ -598,7 +598,8 @@ public class DoctorStationService {
             var args = new java.util.ArrayList<Object>();
             var sql = new StringBuilder("""
                     select d.icd_code as "icdCode", d.icd_name as "icdName",
-                           d.diag_system as "diagSystem", max(r.visit_date) as "lastVisitDate"
+                           coalesce(nullif(d.diag_system, ''), 'ICD10') as "diagSystem",
+                           max(r.visit_date) as "lastVisitDate"
                     from outp_diagnosis d
                     join outp_registration r on r.id = d.registration_id
                     where r.patient_id = ? and r.status <> 'CANCELLED'
@@ -610,7 +611,10 @@ public class DoctorStationService {
                 args.add(like);
                 args.add(like);
             }
-            sql.append(" group by d.icd_code, d.icd_name, d.diag_system")
+            // v80 审阅修补二（R2-3）：体系空值（v44 前历史行、bootstrap 种子不传 diagSystem）按西医归组——V135 注释「读侧按西医解释」。
+            // 此前空与 ICD10 分两组，同一诊断在历史页签出现两条；中医（TCM）仍单独成组。常用段按 (user_id, icd_code) / 名称唯一、
+            // 高频段按编码 + 名称分组，都不含体系，无此问题。
+            sql.append(" group by d.icd_code, d.icd_name, coalesce(nullif(d.diag_system, ''), 'ICD10')")
                .append(" order by max(r.visit_date) desc, max(r.id) desc limit ").append(ASSIST_LIMIT);
             history = jdbc.queryForList(sql.toString(), args.toArray());
         }
