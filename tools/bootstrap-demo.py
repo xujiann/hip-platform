@@ -544,7 +544,9 @@ def ensure_emr_ref_demo():
                         'presentIllness': '3 天前无明显诱因出现尿频、尿急、尿痛，伴发热，体温最高 38.6℃，无腰痛。',
                         'pastHistory': '既往体健', 'physicalExam': 'T 38.2℃，双肾区无叩痛，耻骨上轻压痛',
                         'advice': '留中段尿培养，经验性抗感染，3 天后复诊'},
-                'diagnoses': [{'icdCode': 'N39.0', 'icdName': '泌尿道感染'}]}, dt)) is not None:
+                # v80 审阅修补（D7）：用字典里的实际编码 N39.000（V4 种子）——此前写 N39.0，诊断助手显示「泌尿道感染 (N39.0)」，
+                # 评委在下拉里搜到的是 N39.000，两条能同时加进诊断表，像重复诊断
+                'diagnoses': [{'icdCode': 'N39.000', 'icdName': '泌尿道感染'}]}, dt)) is not None:
             print('引用演示·历史病历：张三往次就诊已写一份门诊病历（泌尿道感染）')
     if not lines:
         return
@@ -645,3 +647,59 @@ try:
     ensure_demo_ris_template()
 except Exception as e:  # noqa: BLE001
     print(f"ensure_demo_ris_template：异常 {type(e).__name__}: {e}（已跳过，不影响其它段）")
+
+
+
+# v80 审阅修补（审计「演示前置缺口」① / D10）：全新库零处方模板、零协定处方，999★/1000★ 只能现场先建。
+# 种两张，全部走产品接口 /api/outpatient/rx-templates、按名称幂等（含已停用的也算已有，不重复建）：
+#   ① admin 建的**全院协定处方**（category=AGREED，2 行药品）——医生站「套用处方模板 / 协定处方」下拉带「协定」标签，整组带入、只能撤组；
+#   ② doctor01 建的**内科门诊科室处方模板**（category=RX，scope=DEPT，留空科室 = 本人所在科室）。
+# 协定处方必须 admin 建：药师账号无科室，只能建个人协定处方，医生看不到（v80 复核 D3，权限未改）。
+def ensure_demo_rx_templates():
+    def drug_id(code, name):
+        rows = call('GET', '/masterdata/drugs?keyword=' + name, t=t).get('data') or []
+        hit = next((d for d in rows if d.get('code') == code), None)
+        return hit['id'] if hit else None
+
+    def ensure(token, who, name, category, scope, lines, remark):
+        have = call('GET', '/outpatient/rx-templates?includeDisabled=true&keyword=' + name, t=token).get('data') or []
+        if any(x.get('name') == name for x in have):
+            print(f'  处方模板（{who}）：「{name}」已有，跳过')
+            return
+        body = {'name': name, 'category': category, 'scope': scope, 'remark': remark, 'lines': lines}
+        r = call('POST', '/outpatient/rx-templates', body, token)
+        if r.get('code') == 0:
+            print(f'  处方模板（{who}）：已建「{name}」#{r.get("data")}（{len(lines)} 行）')
+        else:
+            print(f"  处方模板（{who}）：「{name}」创建失败 {r.get('code')} {r.get('message')}")
+
+    smecta, ome = drug_id('D0010', '蒙脱石散'), drug_id('D0008', '奥美拉唑肠溶胶囊')
+    ibu, hxzq = drug_id('D0002', '布洛芬缓释胶囊'), drug_id('D0004', '藿香正气口服液')
+    if smecta and ome:
+        ensure(t, 'admin', '演示协定处方·急性胃肠炎', 'AGREED', 'HOSPITAL', [
+            {'orderType': 'DRUG', 'itemId': smecta, 'qty': 1, 'usageRoute': '口服', 'frequency': 'tid',
+             'dosePerTime': '1袋', 'days': 3, 'sortNo': 0},
+            {'orderType': 'DRUG', 'itemId': ome, 'qty': 1, 'usageRoute': '口服', 'frequency': 'qd',
+             'dosePerTime': '20mg', 'days': 3, 'sortNo': 1},
+        ], '演示：药事委员会审定的固定组合，明细不可改')
+    else:
+        print('  处方模板（admin）：主数据缺 D0010 蒙脱石散 / D0008 奥美拉唑肠溶胶囊，跳过协定处方')
+    dt = login_as('doctor01', 'Demo1234')
+    if not dt:
+        print('  处方模板（doctor01）：doctor01 登录失败，跳过科室模板')
+    elif ibu and hxzq:
+        ensure(dt, 'doctor01', '内科上感常用（演示）', 'RX', 'DEPT', [
+            {'orderType': 'DRUG', 'itemId': ibu, 'qty': 1, 'usageRoute': '口服', 'frequency': 'bid',
+             'dosePerTime': '0.3g', 'days': 3, 'sortNo': 0},
+            {'orderType': 'DRUG', 'itemId': hxzq, 'qty': 1, 'usageRoute': '口服', 'frequency': 'bid',
+             'dosePerTime': '10ml', 'days': 3, 'sortNo': 1},
+        ], '演示：内科门诊科室模板，套用后可移除重录')
+    else:
+        print('  处方模板（doctor01）：主数据缺 D0002 布洛芬缓释胶囊 / D0004 藿香正气口服液，跳过科室模板')
+
+
+# 兜底：本段只是演示前置，任何意外（接口契约变更、返回体缺键）只打印、不打断整个引导脚本
+try:
+    ensure_demo_rx_templates()
+except Exception as e:  # noqa: BLE001
+    print(f"ensure_demo_rx_templates：异常 {type(e).__name__}: {e}（已跳过，不影响其它段）")
