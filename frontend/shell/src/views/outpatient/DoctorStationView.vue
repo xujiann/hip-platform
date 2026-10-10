@@ -492,11 +492,13 @@
         </el-tab-pane>
       </el-tabs>
     </el-card>
-    <el-empty v-else class="workspace" description="从左侧队列选择患者" />
+    <el-empty v-else class="workspace"
+              :description="visitDenied ? '无权查阅该次就诊：不是当日就诊，且不是本人接诊（挂号不在本人名下、病历也不是本人书写）。请从左侧选择其他就诊' : '从左侧队列选择患者'" />
 
     <!-- v37 历史就诊抽屉：近 50 次就诊（剔退号）+ 各次诊断/主诉/处理意见 -->
     <el-drawer v-model="historyVisible" title="历史就诊" size="480px">
-      <el-empty v-if="!history.length" description="无历史就诊" :image-size="60" />
+      <el-empty v-if="!history.length" :image-size="60"
+                :description="historyDenied ? '该患者非当日就诊，且本人未接诊过其往次就诊，不显示其历次就诊' : '无历史就诊'" />
       <!-- v79 审阅修补（三）（乙组反驳 B1-E2/B2-4c，1082★）：抽屉不在编辑区复制容器里，copy 冒不到那一层；
            这里列的是当前所看患者的历次就诊，复制时登记来源患者即当前患者（onCopy 按 current 取） -->
       <div v-else @copy="onCopy" @cut="onCopy">
@@ -526,7 +528,7 @@
       <el-tabs v-model="assistTab">
         <el-tab-pane :label="`历史诊断(${assist.history.length})`" name="history">
           <el-empty v-if="!assist.history.length" :image-size="60"
-                    :description="assistHistoryDenied ? '本人名下无该患者的有效挂号，不显示其历史诊断' : '该患者无历史诊断'" />
+                    :description="assistHistoryDenied ? '该患者非当日就诊，且本人未接诊过其往次就诊，不显示其历史诊断' : '该患者无历史诊断'" />
           <div v-for="(e, i) in assist.history" :key="'h' + i" class="assist-row">
             <span class="assist-name" @click="addDiagFrom(e)">{{ e.icdName }}
               <span v-if="e.icdCode" class="dim">({{ e.icdCode }})</span></span>
@@ -684,9 +686,22 @@ const worklist = ref<Record<string, unknown>[]>([])
 const current = ref<Record<string, unknown> | null>(null)
 const historyVisible = ref(false)
 const history = ref<Record<string, unknown>[]>([])
+/** v80 审阅修补二（R2-2）：打开的这次就诊被 4036 拒（非当日且非本人接诊）——工作区空态换一句说明 */
+const visitDenied = ref(false)
+/** v80 审阅修补二（R2-2）：历次就诊被 4036 拒时为真——抽屉照开，空态换一句说明，不说成「无历史就诊」 */
+const historyDenied = ref(false)
 async function openHistory() {
   if (!current.value) return
-  history.value = (await client.get(`/outpatient/doctor/patient/${current.value.patientId}/history`)).data.data
+  historyDenied.value = false
+  try {
+    history.value = (await client.get(`/outpatient/doctor/patient/${current.value.patientId}/history`,
+      { __silentCodes: [4036] })).data.data
+  } catch (e) {
+    if ((e as BizError).bizCode !== 4036) throw e
+    // 与诊断助手一致：不弹红字、不留未处理的 rejection，抽屉里说明为什么是空的
+    history.value = []
+    historyDenied.value = true
+  }
   historyVisible.value = true
 }
 const tab = ref('emr')
@@ -1185,8 +1200,19 @@ async function openPatient(row: Record<string, unknown> | null) {
   current.value = row
   currentEmrId.value = null   // v55：切患者先清，别让上一位的 id 挂在这一位的按钮上
   autoTpl.value = null        // v79：默认模板黄条只属于套用它的那一次进页
+  visitDenied.value = false
   if (!row) return
-  const resp = await client.get(`/outpatient/doctor/${row.registrationId}/workspace`)
+  let resp
+  try {
+    resp = await client.get(`/outpatient/doctor/${row.registrationId}/workspace`, { __silentCodes: [4036] })
+  } catch (e) {
+    if ((e as BizError).bizCode !== 4036) throw e
+    // v80 审阅修补二（R2-2）：跨日期队列点开他人往次挂号 → 4036。清掉 current 回到空态并写明原因——
+    // 不白屏，也不让上一位患者的病历、诊断留在编辑区里冒充这一位
+    current.value = null
+    visitDenied.value = true
+    return
+  }
   const ws = resp.data.data
   currentEmrId.value = typeof ws.emr?.id === 'number' ? ws.emr.id : null   // v55：版本留痕按钮的唯一数据来源之一
   emrAuthorId.value = typeof ws.emr?.doctorId === 'number' ? ws.emr.doctorId : null
