@@ -6,8 +6,8 @@
         <span class="hint">
           模板按三级范围发放：<b>个人</b>只有本人可见可改；<b>科室</b>本科室医生可见、创建者与管理员可改；
           <b>全院</b>所有医生可见、仅管理员可改。<b>协定处方</b>（药事委员会审定的固定组合）套用时整组带入，
-          <b>明细任何人都不可就地修改</b>——需要调整请停用本模板后另建新版，
-          这样已按旧版开出的处方仍追得到当时用的是哪一版。
+          <b>明细任何人都不可就地修改</b>——需要调整请停用本模板后另建新版；已开出的医嘱不受模板后续修改影响。
+          医生能套用的全院 / 科室协定处方由系统管理员建立；药师可建个人协定处方，仅本人可见、医生站看不到。
           <br>
           <b>套用模板只是把明细填进医生站的开单表单，不代替也不跳过任何开单校验</b>：
           医生点「开立」时仍走原有开单接口，过敏禁忌、同诊重复用药、抗菌药分级处方权、CDSS 审查、
@@ -82,6 +82,10 @@
             <el-radio value="AGREED">协定处方（固定组合，不可改明细）</el-radio>
           </el-radio-group>
           <div v-if="editingId !== null" class="sub">类别建档后不可改：改类别等于换一张模板，请另建。</div>
+          <!-- v80 审阅修补（D3）：权限未改，只说实话——药师账号无科室，建得了的只有个人协定处方 -->
+          <div v-if="form.category === 'AGREED'" class="sub">
+            医生能套用的协定处方须由系统管理员按全院或科室范围建立；药师建的协定处方只能是个人范围，仅本人可见、医生站看不到。
+          </div>
         </el-form-item>
         <el-form-item label="作用范围" required>
           <el-select v-model="form.scope" style="width: 160px">
@@ -102,7 +106,7 @@
           <div style="width: 100%">
             <el-alert v-if="linesLocked" type="warning" :closable="false" show-icon
                       title="协定处方的明细由药事委员会固定，不可就地修改"
-                      description="需要调整请先停用本模板，再按新组合另建一张。这样已按旧版开出的处方仍能追溯到当时的版本。" />
+                      description="需要调整请先停用本模板，再按新组合另建一张。已开出的医嘱不受模板后续修改影响。" />
             <div v-else class="line-add">
               <el-select v-model="pickType" size="small" style="width: 100px">
                 <el-option v-for="t in ORDER_TYPES" :key="t.value" :label="t.label" :value="t.value" />
@@ -403,7 +407,7 @@ async function setEnabled(row: TplRow, enabled: boolean) {
 async function remove(row: TplRow) {
   try {
     await ElMessageBox.confirm(
-      `删除后该模板与其明细将不可恢复。日常请优先用「停用」——停用会保留明细，历史处方仍能解释当时照的是哪张模板。确定删除《${row.name}》？`,
+      `删除后该模板与其明细将不可恢复。日常请优先用「停用」——停用会保留明细，需要时可重新启用。已开出的医嘱不受影响。确定删除《${row.name}》？`,
       '删除模板', { type: 'warning' })
   } catch {
     return   // 用户取消

@@ -284,6 +284,49 @@ class V80ReviewFixTest {
         assertTrue(after.contains("dropAgreedGroup(row)"), "锁定行改为整组撤回");
     }
 
+    // ==================== D3 / D4：协定处方文案说实话 ====================
+
+    @Test
+    void d3_doctorCreatingAgreedIsToldOnlyTheAdminCanFileIt() {
+        String doc = newDoctor("H");
+        Authentication auth = new UsernamePasswordAuthenticationToken(doc, null, List.of());
+        Long drug = jdbc.queryForObject("select id from md_drug where enabled order by id limit 1", Long.class);
+        R<Long> r = rxTemplateController.create(new TemplateReq("V80F医生建协定", "DEPT", 1L, "AGREED", null,
+                List.of(new TemplateLine("DRUG", drug, 1, "口服", "tid", "1片", 3, 0))), auth);
+        assertEquals(4060, r.getCode());
+        assertFalse(r.getMessage().contains("药师"), "药师无科室，只能建个人协定处方、医生看不到——提示不得说药师可建档：" + r.getMessage());
+        assertTrue(r.getMessage().contains("系统管理员"), r.getMessage());
+    }
+
+    @Test
+    void d3_pharmacistAgreedTemplateIsPersonalAndInvisibleToDoctors() {
+        // 权限不改（本轮范围外）——把实情钉住，文案据此写
+        String pharm = newUser("P", null, "PHARMACIST");
+        String doc = newDoctor("I");
+        Authentication pa = new UsernamePasswordAuthenticationToken(pharm, null, List.of());
+        Authentication da = new UsernamePasswordAuthenticationToken(doc, null, List.of());
+        Long drug = jdbc.queryForObject("select id from md_drug where enabled order by id limit 1", Long.class);
+        R<Long> r = rxTemplateController.create(new TemplateReq("V80F药师个人协定", "PERSONAL", null, "AGREED", null,
+                List.of(new TemplateLine("DRUG", drug, 1, "口服", "tid", "1片", 3, 0))), pa);
+        assertEquals(0, r.getCode(), r.getMessage());
+        Long id = r.getData();
+        List<Map<String, Object>> seen = rxTemplateController.list(null, null, false, da).getData();
+        assertTrue(seen.stream().noneMatch(m -> id.equals(((Number) m.get("id")).longValue())), "药师个人协定处方医生不可见");
+    }
+
+    @Test
+    void d4_noClaimThatIssuedPrescriptionsTraceBackToTemplateVersion() {
+        for (String rel : List.of("frontend/shell/src/views/outpatient/RxTemplateView.vue",
+                "modules/outpatient/src/main/java/cn/hip/outpatient/service/RxTemplateService.java",
+                "modules/outpatient/src/main/java/cn/hip/outpatient/web/RxTemplateController.java")) {
+            String s = read(rel);
+            for (String claim : List.of("追溯", "追得到", "哪一版", "仍能解释")) {
+                assertFalse(s.contains(claim), rel + " 仍声称已开处方可追溯模板版本（outp_order 不记模板 id，模板可删可下架）：「" + claim + "」");
+            }
+            assertFalse(s.contains("管理员/药师"), rel + " 仍说药师可建协定处方");
+        }
+    }
+
     // ---------------- 源码读取（仓库相对路径；worktree 下同样有效） ----------------
 
     private static Path repoRoot() {
