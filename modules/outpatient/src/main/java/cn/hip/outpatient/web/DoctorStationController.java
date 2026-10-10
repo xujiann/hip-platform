@@ -142,8 +142,7 @@ public class DoctorStationController {
         var m = new LinkedHashMap<String, Object>();
         OutpEmr emr = emrRepository.findByRegistrationId(registrationId).orElse(null);
         // v80 审阅修补二（N-1）：就诊级对象权限；登录人从安全上下文取——方法签名被既有用例直接调用，不加形参
-        String denied = denyVisit(registrationId, emr);
-        if (denied != null) return R.fail(4036, denied);
+        if (visitDenied(registrationId, emr)) return R.fail(4036, "无权查阅该次就诊（非当日就诊且非本人接诊）");
         m.put("emr", emr);
         m.put("emrSignerName", emr == null || emr.getSignature() == null || emr.getDoctorId() == null ? null
                 : userRepository.findById(emr.getDoctorId())
@@ -227,8 +226,9 @@ public class DoctorStationController {
     @GetMapping("/{registrationId}/emr/amendments")
     public R<List<Map<String, Object>>> amendments(@PathVariable Long registrationId) {
         // v80 审阅修补二（N-1）：补正正文同属该次就诊的病历内容，与工作区同一就诊级口径
-        String denied = denyVisit(registrationId, emrRepository.findByRegistrationId(registrationId).orElse(null));
-        if (denied != null) return R.fail(4036, denied);
+        if (visitDenied(registrationId, emrRepository.findByRegistrationId(registrationId).orElse(null))) {
+            return R.fail(4036, "无权查阅该次就诊（非当日就诊且非本人接诊）");
+        }
         return R.ok(doctorStationService.listAmendments(registrationId));
     }
 
@@ -295,19 +295,18 @@ public class DoctorStationController {
      * v80 审阅修补二（复核反驳者 N-1）：就诊级读出（工作区、补正历史）的对象级校验。此前无校验——接诊队列不限医生、
      * 可跨 92 天，逐个打开他人往次挂号即读到主诉、现病史、诊断，患者级的 4036 被绕过。
      * 口径「当日就诊队列共享、往次就诊归本人」：ADMIN 全看；否则以下任一成立放行——就诊日期是今天（当日队列全院共享，
-     * 代班照常）；挂号归属为空（科室号，只看这一次）；归属是我；这次门诊病历是我写的。都不成立返回 4036 文案（不带数据）；
-     * 挂号不存在时返回 null 保持原行为。写端点（病历保存 / 签名 / 补正、开单、作废）不在此列，他人续写口径待定。
-     * 本控制器类级门槛只放 ADMIN / DOCTOR_OUTP。
+     * 代班照常）；挂号归属为空（科室号，只看这一次）；归属是我；这次门诊病历是我写的。都不成立返回真，调用方回 4036（不带数据）；
+     * 挂号不存在时返回假保持原行为。写端点（病历保存 / 签名 / 补正、开单、作废）不在此列，他人续写口径待定。
+     * 本控制器类级门槛只放 ADMIN / DOCTOR_OUTP。4036 文案在两个调用点写成字面量，供 tools/gen-error-codes.py 抓进速查表。
      */
-    private String denyVisit(Long registrationId, OutpEmr emr) {
+    private boolean visitDenied(Long registrationId, OutpEmr emr) {
         var reg = registrationRepository.findById(registrationId).orElse(null);
-        if (reg == null) return null;
+        if (reg == null) return false;
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-        if (auth != null && isAdmin(auth)) return null;
-        if (BusinessDates.today().equals(reg.getVisitDate()) || reg.getDoctorId() == null) return null;
+        if (auth != null && isAdmin(auth)) return false;
+        if (BusinessDates.today().equals(reg.getVisitDate()) || reg.getDoctorId() == null) return false;
         Long me = auth == null ? null : currentUserService.idOf(auth);
-        if (me != null && (me.equals(reg.getDoctorId()) || (emr != null && me.equals(emr.getDoctorId())))) return null;
-        return "无权查阅该次就诊（非当日就诊且非本人接诊）";
+        return !(me != null && (me.equals(reg.getDoctorId()) || (emr != null && me.equals(emr.getDoctorId()))));
     }
 
     private static boolean isAdmin(Authentication auth) {
