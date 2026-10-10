@@ -348,6 +348,8 @@ const ZH: Record<string, string> = {
   in_room_recorded: '已录入室时间台数',
   turnover_prev_surgery_id: '接台上一台手术ID',
   prev_out_room_at: '上一台出室时间',
+  without_cancel_time: '其中无取消时刻(按锚点日归集)',
+  cancelled_at: '取消时刻',
   died: '是否死亡',
   died_at: '死亡时间',
   transfusion_id: '输血记录ID',

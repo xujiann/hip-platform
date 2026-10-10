@@ -300,6 +300,58 @@ class V81AnesQcCaliberTest {
                 "入室早于上一台出室（重叠/录错）不计接台——旧明细横连取 max(out_room_at) 会接到 12:00 那台上算出 30 分钟");
     }
 
+    // ================= 1426★ 取消手术按取消日归集 =================
+
+    /**
+     * V146 补 {@code cancelled_at} 就是为了让 1426★ 按「哪一天取消的」统计，而控制器此前仍挂全局手术锚点
+     * （取消的手术四时间点全空，锚点退化为排台日）：第 1 天排台、第 20 天才取消的手术落在第 1 天。
+     * 修正后窗口 = coalesce(cancelled_at, 原锚点)：录了取消时刻的按取消日，历史行（V146 前取消、无取消时刻）回落原锚点。
+     */
+    @Test
+    void cancellationIsBucketedByCancelDayWithAnchorFallback() {
+        String day1 = jdbc.queryForObject("select (current_date - 290)::text", String.class);
+        String day20 = jdbc.queryForObject("select (current_date - 271)::text", String.class);
+        Long clash = jdbc.queryForObject("""
+                select count(*) from inp_surgery s
+                where (coalesce(s.cancelled_at, s.start_at, s.in_room_at, s.scheduled_at, s.created_at) >= ?::date
+                       and coalesce(s.cancelled_at, s.start_at, s.in_room_at, s.scheduled_at, s.created_at) < ?::date + 1)
+                   or (coalesce(s.start_at, s.in_room_at, s.scheduled_at, s.created_at) >= ?::date
+                       and coalesce(s.start_at, s.in_room_at, s.scheduled_at, s.created_at) < ?::date + 1)
+                """, Long.class, day1, day20, day1, day20);
+        assertEquals(0L, clash, "夹具窗口内不得有其它手术");
+
+        Long adm = newAdmission();
+        Long late = jdbc.queryForObject("""
+                insert into inp_surgery(admission_id, procedure_name, status, scheduled_at, cancel_stage,
+                                        cancel_reason, cancelled_at)
+                values (?, 'V81第20天才取消', 'CANCELLED', ?::timestamptz, 'SCHEDULE', '患者转院', ?::timestamptz)
+                returning id
+                """, Long.class, adm, at(day1, "08:00"), at(day20, "16:00"));
+        Long legacy = jdbc.queryForObject("""
+                insert into inp_surgery(admission_id, procedure_name, status, scheduled_at, cancel_stage)
+                values (?, 'V81历史取消（无取消时刻）', 'CANCELLED', ?::timestamptz, 'PRE_IN')
+                returning id
+                """, Long.class, adm, at(day1, "09:00"));
+
+        var onDay20 = rows("1426", day20);
+        assertEquals(1, onDay20.stream().mapToLong(r -> num(r, "cases")).sum(),
+                "第 1 天排台、第 20 天取消的手术必须算进第 20 天");
+        assertEquals("SCHEDULE", onDay20.get(0).get("cancel_stage"));
+        var onDay1 = rows("1426", day1);
+        assertEquals(1, onDay1.stream().mapToLong(r -> num(r, "cases")).sum(),
+                "第 1 天只剩那台无取消时刻的历史取消（回落原锚点 = 排台日），不得再含第 20 天才取消的那台");
+        assertEquals("PRE_IN", onDay1.get(0).get("cancel_stage"));
+
+        var d20 = items("1426", day20);
+        assertEquals(List.of(late), d20.stream().map(i -> num(i, "surgery_id")).toList(), "明细与汇总同窗");
+        var d1 = items("1426", day1);
+        assertEquals(List.of(legacy), d1.stream().map(i -> num(i, "surgery_id")).toList());
+        // 分桶穿透同窗：bucketSummaryCount == items
+        var b = anesQc.detail("1426", day20, day20, null, null, "SCHEDULE");
+        assertEquals(0, b.getCode(), b.getMessage());
+        assertEquals(1, ((Number) b.getData().get("bucketSummaryCount")).intValue());
+    }
+
     @Test
     void turnoverSummaryGivesFirstInRoomTimeAndRecordedCount() {
         Long adm = newAdmission();

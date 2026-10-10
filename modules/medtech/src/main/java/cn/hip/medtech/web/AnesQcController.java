@@ -218,6 +218,15 @@ public class AnesQcController {
             + "接台分钟逐对先舍入到 0.1 分钟再求和，故明细里接台时长有值的行数 == 接台次数，"
             + "各行接台时长之和 == 总接台时长；明细另给上一台手术 ID 与出室时间，每一对可逐条核对。";
 
+    /** v81：1426★ 按取消发生日归集（V146 cancelled_at），无取消时刻的历史行回落统计锚点 */
+    static final String CANCEL_DAY_NOTE =
+            "【时间归集口径（v81 修正）】本指标按取消发生的日期落窗（取消时写入的取消时刻），"
+            + "不再按手术的统计锚点日期：取消的手术没有入室、开台时间，锚点会退化成排台日，"
+            + "第 1 天排台、第 20 天才取消的手术此前算在第 1 天，本版起算在第 20 天。"
+            + "取消时刻是 V146 起才采集的，此前取消的历史行没有这个时刻（不回填、不拿最后修改时间冒充），"
+            + "这些行仍按统计锚点日期（排台 / 建单日）落窗，without_cancel_time 列给出每个阶段里这类行的台数，"
+            + "两种日期混在同一张表里时据此识别；穿透明细逐台给出 cancelled_at，为空即属这一类。";
+
     /** v81：1425★「入室时间」两列的口径 */
     static final String IN_ROOM_NOTE =
             " 【入室时间（v81 新增）】first_in_room_at 是当日（统计日）最早一台的入室时刻，"
@@ -295,6 +304,14 @@ public class AnesQcController {
 
     /** 统计时间窗谓词（两个 ?::date 参数，闭开区间 [from, to+1)） */
     private static final String WINDOW = ANCHOR + " >= ?::date and " + ANCHOR + " < ?::date + 1";
+
+    /**
+     * v81：1426★ 取消手术的时间窗——按<b>取消发生日</b>（V146 {@code cancelled_at}）落窗，
+     * 无取消时刻的历史行（V146 之前取消，迁移零回填）回落全局手术锚点。
+     * 参数个数、顺序、开闭区间与 {@link #WINDOW} 逐字一致，可原地互换（分桶参数照旧追加在后）。
+     */
+    private static final String CANCEL_WINDOW =
+            "coalesce(s.cancelled_at, " + ANCHOR + ") >= ?::date and coalesce(s.cancelled_at, " + ANCHOR + ") < ?::date + 1";
 
     /**
      * 事件时间窗谓词（{@code by=event}）：按 {@code surg_event.event_time} 落窗。
@@ -420,6 +437,7 @@ public class AnesQcController {
                 .replace("{delayAgg}", DELAY_AGG)
                 .replace("{offsetMinX}", OFFSET_MIN_X)
                 .replace("{turnMin}", TURN_MIN)
+                .replace("{cancelWindow}", CANCEL_WINDOW)
                 .replace("{window}", WINDOW)
                 .replace("{alive}", NOT_CANCELLED)
                 .replace("{ageYears}", AGE_YEARS)
@@ -725,7 +743,8 @@ public class AnesQcController {
                     + "只给国标口径会让 surgery_kind 未录的历史手术整片消失，只给全量口径又与国标对不上。"
                     + DELAY_VOLUME_NOTE;
             case "1425" -> TURNOVER_NOTE + " 手术时长 = 结束 − 开台，只统计两点都录了的台次。" + IN_ROOM_NOTE;
-            case "1426" -> "按 cancel_stage 四阶段（APPLY 申请 / SCHEDULE 排程 / PRE_IN 入室前 / IN_OP 术中）归集；"
+            case "1426" -> CANCEL_DAY_NOTE
+                    + "按 cancel_stage 四阶段（APPLY 申请 / SCHEDULE 排程 / PRE_IN 入室前 / IN_OP 术中）归集；"
                     + "状态为取消但未标阶段的单列一行，不摊进四阶段。";
             case "1427" -> "跨日 = 开台与结束不在同一自然日，分母只含两点都录了的台次。";
             case "1429" -> DEATH_NOTE + " " + DEATH_GRANULARITY_NOTE;
@@ -771,10 +790,11 @@ public class AnesQcController {
                                else '已取消但未标注阶段' end                          as stage_name,
                            coalesce(s.cancel_stage, '（未标注）')                     as cancel_stage,
                            count(*)                                                   as cases,
-                           count(*) filter (where coalesce(s.cancel_reason, '') <> '') as with_reason
+                           count(*) filter (where coalesce(s.cancel_reason, '') <> '') as with_reason,
+                           count(*) filter (where s.cancelled_at is null)             as without_cancel_time
                     from inp_surgery s
                     where (s.cancel_stage is not null or coalesce(s.status, '') = 'CANCELLED')
-                      and {window}
+                      and {cancelWindow}
                     group by s.cancel_stage
                     order by case coalesce(s.cancel_stage, 'Z')
                                  when 'APPLY' then 1 when 'SCHEDULE' then 2
@@ -1642,11 +1662,11 @@ public class AnesQcController {
                     {cap}
                     """), w.f(), w.t(), w.f(), w.t());
             case "1426" -> bucketed("""
-                    select x.*, y.cancel_stage, y.cancel_reason
+                    select x.*, y.cancel_stage, y.cancel_reason, y.cancelled_at
                     from (
                         {surg}
                         where (s.cancel_stage is not null or coalesce(s.status, '') = 'CANCELLED')
-                          and {window}{bucket}
+                          and {cancelWindow}{bucket}
                     ) x
                     join inp_surgery y on y.id = x.surgery_id
                     order by x.surgery_id desc
@@ -2160,6 +2180,8 @@ public class AnesQcController {
             case "in_room_recorded" -> "已录入室时间台数";
             case "turnover_prev_surgery_id" -> "接台上一台手术ID";
             case "prev_out_room_at" -> "上一台出室时间";
+            case "without_cancel_time" -> "其中无取消时刻(按锚点日归集)";
+            case "cancelled_at" -> "取消时刻";
             case "died" -> "是否死亡";
             case "died_at" -> "死亡时间";
             case "transfusion_id" -> "输血记录ID";

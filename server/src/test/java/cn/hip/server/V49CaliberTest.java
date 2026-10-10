@@ -803,6 +803,8 @@ class V49CaliberTest {
                 .count("cases", SIZE)
                 .count("with_reason", it -> countWhere(it,
                         x -> str(x, "cancel_reason") != null && !str(x, "cancel_reason").isBlank()))
+                // v81：按取消日落窗，无取消时刻的历史行回落锚点——这类行数 == 明细 cancelled_at 为空的条数
+                .count("without_cancel_time", it -> countWhere(it, x -> x.get("cancelled_at") == null))
                 .rowsTotal(rs -> sum(rs, "cases")));
 
         // 1427★ 跨日手术。判据：明细只含跨日台次，条数即 cross_day_cases；
