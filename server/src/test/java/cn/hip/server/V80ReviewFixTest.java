@@ -556,6 +556,23 @@ class V80ReviewFixTest {
         assertTrue(ds.contains("v-model=\"row.customName\" size=\"small\" maxlength=\"128\""), "自定义描述 maxlength 128");
     }
 
+    @Test
+    void r2_rxCategoryLabelMatchesDoctorStationEditability() {
+        // 反驳者三：「处方模板（可套用后再改）」不实——医生站套用后药品行参数是只读列，只能移除 / 另行加药
+        String tv = read("frontend/shell/src/views/outpatient/RxTemplateView.vue");
+        int i = tv.indexOf("<el-radio value=\"RX\">");
+        assertTrue(i > 0, "找不到处方模板类别单选");
+        String label = tv.substring(i, tv.indexOf("</el-radio>", i));
+        assertFalse(label.contains("再改") || label.contains("可改"), "类别文案不得声称套用后可改：" + label);
+        String ds = read("frontend/shell/src/views/outpatient/DoctorStationView.vue");
+        int a = ds.indexOf("<el-table :data=\"rxLines\"");
+        String table = ds.substring(a, ds.indexOf("</el-table>", a));
+        for (String col : List.of("prop=\"dosePerTime\"", "prop=\"frequency\"", "prop=\"usageRoute\"", "prop=\"days\"", "prop=\"qty\"")) {
+            assertTrue(table.contains(col), "前提：药品参数为只读列 " + col + "（若改为可编辑，类别文案可恢复「可改」）");
+        }
+        assertTrue(table.contains("rxLines.splice($index, 1)"), "非锁定行可逐行移除");
+    }
+
     // ---------------- 源码读取（仓库相对路径；worktree 下同样有效） ----------------
 
     private static Path repoRoot() {

@@ -77,8 +77,10 @@
                     placeholder="如：上呼吸道感染·成人常用" />
         </el-form-item>
         <el-form-item label="模板类别" required>
+          <!-- v80 审阅修补二（反驳者三）：原「可套用后再改」不实——医生站套用后药品行的单次量 / 频次 / 途径 / 天数 / 数量都是只读列，
+               只能改加急与备注、逐行移除或另行加药（DoctorStationView rxLines 表） -->
           <el-radio-group v-model="form.category" :disabled="editingId !== null">
-            <el-radio value="RX">处方模板（可套用后再改）</el-radio>
+            <el-radio value="RX">处方模板（套用后可逐行移除、另行加药）</el-radio>
             <el-radio value="AGREED">协定处方（固定组合，不可改明细）</el-radio>
           </el-radio-group>
           <div v-if="editingId !== null" class="sub">类别建档后不可改：改类别等于换一张模板，请另建。</div>
