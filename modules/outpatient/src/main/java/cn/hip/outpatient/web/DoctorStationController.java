@@ -6,6 +6,7 @@ import cn.hip.outpatient.repository.*;
 import cn.hip.outpatient.service.DoctorStationService;
 import cn.hip.outpatient.service.RegistrationService.BizException;
 import cn.hip.platform.core.common.R;
+import cn.hip.platform.core.config.BusinessDates;
 import cn.hip.platform.core.security.CurrentUserService;
 import cn.hip.platform.empi.repository.PatientRepository;
 import lombok.RequiredArgsConstructor;
@@ -140,6 +141,9 @@ public class DoctorStationController {
     public R<Map<String, Object>> workspace(@PathVariable Long registrationId) {
         var m = new LinkedHashMap<String, Object>();
         OutpEmr emr = emrRepository.findByRegistrationId(registrationId).orElse(null);
+        // v80 审阅修补二（N-1）：就诊级对象权限；登录人从安全上下文取——方法签名被既有用例直接调用，不加形参
+        String denied = denyVisit(registrationId, emr);
+        if (denied != null) return R.fail(4036, denied);
         m.put("emr", emr);
         m.put("emrSignerName", emr == null || emr.getSignature() == null || emr.getDoctorId() == null ? null
                 : userRepository.findById(emr.getDoctorId())
@@ -222,6 +226,9 @@ public class DoctorStationController {
     /** 病历补正历史 */
     @GetMapping("/{registrationId}/emr/amendments")
     public R<List<Map<String, Object>>> amendments(@PathVariable Long registrationId) {
+        // v80 审阅修补二（N-1）：补正正文同属该次就诊的病历内容，与工作区同一就诊级口径
+        String denied = denyVisit(registrationId, emrRepository.findByRegistrationId(registrationId).orElse(null));
+        if (denied != null) return R.fail(4036, denied);
         return R.ok(doctorStationService.listAmendments(registrationId));
     }
 
@@ -261,28 +268,50 @@ public class DoctorStationController {
                                                   Authentication auth) {
         // v80 审阅修补（D1）：历史段是该患者的诊断，按患者判对象级权限；只传 keyword 的常用 / 高频不是患者数据，不判
         if (patientId != null && !mayReadPatient(patientId, auth)) {
-            return R.fail(4036, "无权查阅该患者的历史诊断（本人名下无该患者的有效挂号）");
+            return R.fail(4036, "无权查阅该患者的历史诊断（该患者非当日就诊，且本人未接诊过其往次就诊）");
         }
         return R.ok(doctorStationService.diagnosisAssist(patientId, keyword, currentUserService.idOf(auth)));
     }
 
     /**
-     * v80 审阅修补（D1，v80 复核·方案三审计）：患者级既往资料（诊断助手历史段、患者历次就诊）的对象级校验。
-     * 此前只有类级角色门槛，任意门诊医生按 patientId 能读任意患者的历史诊断与历次主诉、处理意见。
-     * 口径与 v80 版本端点（{@code EmrVersionController#denyIfNotOwner}）、引用抽屉（{@code EmrRefController#canRead}）一致：
-     * ADMIN / QUALITY 全看；其余须本人名下至少有一条该患者<b>未退号</b>的挂号（{@code outp_registration.doctor_id = 我}）。
-     * 这里是患者级而非就诊级，故没有「归属为空放行」——那会让任何挂过科室号的患者对全院医生敞开。
+     * v80 审阅修补（D1）→ 审阅修补二（两位复核反驳者 R2-1 / N-2 / N-3、反驳者三 N-1）：患者级既往资料
+     * （诊断助手历史段、患者历次就诊）的对象级校验。口径「当日就诊队列共享、往次就诊归本人」：
+     * ADMIN 全看；其余须该患者有一条<b>未退号</b>挂号满足——归属是我，或就诊日期是今天，或那次门诊病历是我写的
+     * （{@link OutpRegistrationRepository#patientReadableBy}，一条 SQL）。
+     * D1 初版只看 {@code outp_registration.doctor_id = 我}：{@code startVisit} 不改写已有归属，代班接诊人写了病历仍 4036；
+     * 科室号接诊前归属为空也 4036。这里是患者级而非就诊级，故仍不设「归属为空放行」。
+     * 本控制器类级门槛只放 ADMIN / DOCTOR_OUTP（D1 初版的 QUALITY 分支走不到，已删）。
      * {@code auth} 为空（方法签名本无该形参的端点）时从安全上下文取；认不出是谁则拒。
      */
     private boolean mayReadPatient(Long patientId, Authentication auth) {
         if (auth == null) auth = SecurityContextHolder.getContext().getAuthentication();
         if (auth == null) return false;
-        if (auth.getAuthorities().stream()
-                .anyMatch(a -> "ROLE_ADMIN".equals(a.getAuthority()) || "ROLE_QUALITY".equals(a.getAuthority()))) {
-            return true;
-        }
+        if (isAdmin(auth)) return true;
         Long me = currentUserService.idOf(auth);
-        return me != null && registrationRepository.existsByPatientIdAndDoctorIdAndStatusNot(patientId, me, "CANCELLED");
+        return me != null && registrationRepository.patientReadableBy(patientId, me, BusinessDates.today());
+    }
+
+    /**
+     * v80 审阅修补二（复核反驳者 N-1）：就诊级读出（工作区、补正历史）的对象级校验。此前无校验——接诊队列不限医生、
+     * 可跨 92 天，逐个打开他人往次挂号即读到主诉、现病史、诊断，患者级的 4036 被绕过。
+     * 口径「当日就诊队列共享、往次就诊归本人」：ADMIN 全看；否则以下任一成立放行——就诊日期是今天（当日队列全院共享，
+     * 代班照常）；挂号归属为空（科室号，只看这一次）；归属是我；这次门诊病历是我写的。都不成立返回 4036 文案（不带数据）；
+     * 挂号不存在时返回 null 保持原行为。写端点（病历保存 / 签名 / 补正、开单、作废）不在此列，他人续写口径待定。
+     * 本控制器类级门槛只放 ADMIN / DOCTOR_OUTP。
+     */
+    private String denyVisit(Long registrationId, OutpEmr emr) {
+        var reg = registrationRepository.findById(registrationId).orElse(null);
+        if (reg == null) return null;
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth != null && isAdmin(auth)) return null;
+        if (BusinessDates.today().equals(reg.getVisitDate()) || reg.getDoctorId() == null) return null;
+        Long me = auth == null ? null : currentUserService.idOf(auth);
+        if (me != null && (me.equals(reg.getDoctorId()) || (emr != null && me.equals(emr.getDoctorId())))) return null;
+        return "无权查阅该次就诊（非当日就诊且非本人接诊）";
+    }
+
+    private static boolean isAdmin(Authentication auth) {
+        return auth.getAuthorities().stream().anyMatch(a -> "ROLE_ADMIN".equals(a.getAuthority()));
     }
 
     public record FavoriteRequest(String icdCode, String icdName, String diagSystem) {}
@@ -353,7 +382,7 @@ public class DoctorStationController {
     public R<List<Map<String, Object>>> patientHistory(@PathVariable Long patientId) {
         // v80 审阅修补（D1）：登录人从安全上下文取——方法签名被既有用例直接调用，不加 Authentication 形参
         if (!mayReadPatient(patientId, null)) {
-            return R.fail(4036, "无权查阅该患者的历次就诊（本人名下无该患者的有效挂号）");
+            return R.fail(4036, "无权查阅该患者的历次就诊（该患者非当日就诊，且本人未接诊过其往次就诊）");
         }
         var regs = registrationRepository.findTop50ByPatientIdOrderByIdDesc(patientId).stream()
                 .filter(r -> !"CANCELLED".equals(r.getStatus()))

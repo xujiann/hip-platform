@@ -10,6 +10,7 @@ import cn.hip.outpatient.service.RxTemplateService.TemplateLine;
 import cn.hip.outpatient.service.RxTemplateService.TemplateReq;
 import cn.hip.outpatient.web.RxTemplateController;
 import cn.hip.platform.core.common.R;
+import cn.hip.platform.core.config.BusinessDates;
 import cn.hip.platform.empi.entity.Patient;
 import cn.hip.platform.empi.service.PatientService;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -30,6 +31,7 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 
@@ -42,11 +44,17 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  *
  * <ul>
  *   <li><b>D1</b> 诊断助手（带 patientId）与患者历次就诊只有类级角色门槛，任意门诊医生按 patientId 读任意患者的历史诊断、
- *       主诉与处理意见。口径与 v80 版本端点一致：ADMIN / QUALITY 全看；其余须本人至少有一条该患者未退号的挂号，否则 4036 且不带数据。
+ *       主诉与处理意见。（初版）ADMIN 全看；其余须本人至少有一条该患者未退号的挂号，否则 4036 且不带数据。
  *       只传 keyword 的常用 / 高频部分不受影响。</li>
  *   <li><b>D8</b> 患者历次就诊的诊断只回编码 / 名称 / 主诊断，抽屉里疑诊读作确诊——追加前缀、后缀、确诊疑诊、自定义描述、诊断体系五键，既有三键不动。</li>
  *   <li><b>D3 / D4</b> 文案：协定处方「药师可建档」「已开处方可追溯旧版」两句不实（不改权限）。</li>
  *   <li><b>D2 / D5</b> 医生站撤组与单行移除：纯逻辑在 {@code utils/rx-template-apply.ts}（vitest 对拍），这里只钉页面接线。</li>
+ *   <li><b>审阅修补二</b>（两位复核反驳者 N-1 / R2-1 / N-2 / N-3 及反驳者三 N-1）：D1 只看挂号归属，可被「跨日期队列 + 逐次工作区」绕过，
+ *       又把代班接诊人与科室号接诊前挡在外面。统一口径「当日就诊队列共享、往次就诊归本人」：
+ *       就诊级（工作区、补正历史）当日 / 归属为空 / 归属是我 / 我写过这次病历，任一成立放行；
+ *       患者级（诊断助手历史段、历次就诊）该患者有一条未退号挂号满足归属是我 / 当日 / 我写过病历，不设归属为空放行。
+ *       同轮：历史诊断空体系按西医归组（R2-3）、历次就诊按就诊日期倒序（R2-4）、诊断前后缀与自定义描述超长 4000 点名（N-4）。
+ *       「他人不可读」的用例一律用昨天的就诊造——今天的就诊按口径全院可读。</li>
  * </ul>
  *
  * <p>MockMvc 走完整鉴权链；医生是真实落库账号（{@code currentUserService.idOf} 按用户名查库）。
@@ -98,30 +106,49 @@ class V80ReviewFixTest {
         return patientService.register(p).getId();
     }
 
-    /** 挂 doctor 名下的号（排班带医生，挂号即归属该医生）；doctor 为空则挂科室号（归属为空） */
-    private Long registerFor(Long pid, String doctor) {
+    private static LocalDate today() {
+        return BusinessDates.today();
+    }
+
+    private static LocalDate yesterday() {
+        return BusinessDates.today().minusDays(1);
+    }
+
+    /** 挂 doctor 名下的号（排班带医生，挂号即归属该医生）；doctor 为空则挂科室号（归属为空）。就诊日期按 date */
+    private Long registerOn(Long pid, String doctor, LocalDate date) {
         OutpSchedule s = new OutpSchedule();
         s.setDeptId(1L);
         if (doctor != null) s.setDoctorId(idOf(doctor));
-        s.setScheduleDate(cn.hip.platform.core.config.BusinessDates.today());
+        s.setScheduleDate(date);
         s.setFee(BigDecimal.ZERO);
         s.setCapacity(5);
         s = scheduleRepository.save(s);
         return registrationService.register(pid, s.getId()).getId();
     }
 
-    /** owner 名下挂号 → owner 接诊 → owner 暂存病历（诊断按给定） */
-    private Long visitBy(Long pid, String owner, List<OutpDiagnosis> diags) {
-        Long rid = registerFor(pid, owner);
-        Long ownerId = idOf(owner);
-        doctorStationService.startVisit(rid, ownerId);
+    /**
+     * owner 名下挂号 → writer 接诊 → writer 暂存病历（诊断按给定）。writer 与 owner 不同即「代班」：
+     * startVisit 不改写已有归属，挂号仍记在 owner 名下，病历书写人是 writer。
+     */
+    private Long visit(Long pid, String owner, String writer, LocalDate date, List<OutpDiagnosis> diags) {
+        Long rid = registerOn(pid, owner, date);
+        Long writerId = idOf(writer);
+        doctorStationService.startVisit(rid, writerId);
         OutpEmr e = new OutpEmr();
         e.setChiefComplaint("V80F咽痛两天");
         e.setAdvice("V80F对症处理");
-        doctorStationService.saveEmr(rid, e, diags, ownerId, null, null);
+        doctorStationService.saveEmr(rid, e, diags, writerId, null, null);
         em.flush();
         em.clear();
         return rid;
+    }
+
+    /**
+     * owner 名下<b>昨天</b>的就诊，owner 本人接诊并书写。v80 审阅修补二起当日就诊队列全院共享，
+     * 「他人不可读」的用例必须用往次就诊造（同 tools/bootstrap-demo.py 张三往次就诊挂前一天的做法）。
+     */
+    private Long visitBy(Long pid, String owner, List<OutpDiagnosis> diags) {
+        return visit(pid, owner, owner, yesterday(), diags);
     }
 
     private static OutpDiagnosis diag(String code, String name) {
@@ -193,14 +220,14 @@ class V80ReviewFixTest {
         String historyUrl = "/api/outpatient/doctor/patient/" + pid + "/history";
         String assistUrl = "/api/outpatient/doctor/diagnosis-assist?patientId=" + pid;
 
-        // b 名下有一条该患者的挂号但已退号 → 仍不算接诊过
-        Long ridB = registerFor(pid, b);
+        // b 名下有一条该患者的（往次）挂号但已退号 → 仍不算接诊过
+        Long ridB = registerOn(pid, b, yesterday());
         jdbc.update("update outp_registration set status = 'CANCELLED' where id = ?", ridB);
         em.clear();
         assertEquals(4036, getAs(historyUrl, b, "DOCTOR_OUTP").get("code").asInt(), "退号不授予查阅权");
         assertEquals(4036, getAs(assistUrl, b, "DOCTOR_OUTP").get("code").asInt(), "退号不授予查阅权");
 
-        // 未退号（已挂号、尚未接诊）即可——医生站点开自己队列里的患者先看既往，本就是接诊前的动作
+        // 未退号（已挂号、尚未接诊）即可——本人名下的号，接诊前先看既往本就是常规动作
         jdbc.update("update outp_registration set status = 'REGISTERED' where id = ?", ridB);
         em.clear();
         assertEquals(0, getAs(historyUrl, b, "DOCTOR_OUTP").get("code").asInt());
@@ -325,6 +352,208 @@ class V80ReviewFixTest {
             }
             assertFalse(s.contains("管理员/药师"), rel + " 仍说药师可建协定处方");
         }
+    }
+
+    // ==================== 审阅修补二：当日就诊队列共享、往次就诊归本人（N-1 / R2-1 / N-2 / 反驳三 N-1） ====================
+
+    private static String wsUrl(Long rid) {
+        return "/api/outpatient/doctor/" + rid + "/workspace";
+    }
+
+    private static String amendUrl(Long rid) {
+        return "/api/outpatient/doctor/" + rid + "/emr/amendments";
+    }
+
+    private static String histUrl(Long pid) {
+        return "/api/outpatient/doctor/patient/" + pid + "/history";
+    }
+
+    private static String assistUrl(Long pid) {
+        return "/api/outpatient/doctor/diagnosis-assist?patientId=" + pid;
+    }
+
+    @Test
+    void r2_othersPastVisitWorkspaceAndAmendmentsAreRefused() throws Exception {
+        // N-1：队列可跨 92 天列出他人往次挂号，逐个打开工作区即读到主诉、现病史、诊断——D1 被绕过
+        String a = newDoctor("J"), b = newDoctor("K");
+        Long pid = newPatient();
+        Long rid = visitBy(pid, a, List.of(diag("J02.900", "急性咽炎")));
+
+        for (String url : List.of(wsUrl(rid), amendUrl(rid))) {
+            JsonNode denied = getAs(url, b, "DOCTOR_OUTP");
+            assertEquals(4036, denied.get("code").asInt(), "他人往次就诊须 4036：" + url + " → " + denied);
+            assertTrue(noData(denied), "被拒时不得带回任何数据：" + denied);
+            assertFalse(denied.toString().contains("V80F咽痛两天"), "被拒时不得带回主诉");
+            assertTrue(denied.get("message").asText().contains("非当日就诊且非本人接诊"), denied.toString());
+        }
+        // 本人接诊的往次就诊照常
+        JsonNode mine = getAs(wsUrl(rid), a, "DOCTOR_OUTP");
+        assertEquals(0, mine.get("code").asInt(), mine.toString());
+        assertEquals("V80F咽痛两天", mine.at("/data/emr/chiefComplaint").asText());
+        assertEquals(0, getAs(amendUrl(rid), a, "DOCTOR_OUTP").get("code").asInt());
+        // 管理员照常
+        assertEquals("V80F咽痛两天", getAs(wsUrl(rid), "v80fadmin", "ADMIN").at("/data/emr/chiefComplaint").asText());
+        assertEquals(0, getAs(amendUrl(rid), "v80fadmin", "ADMIN").get("code").asInt());
+    }
+
+    @Test
+    void r2_todaysQueueIsSharedSoASubstituteReadsPatientHistory() throws Exception {
+        // R2-1：代班医生 B 接诊挂在 A 名下的当日号并写病历——此前读该患者诊断助手历史与历次就诊都是 4036
+        String a = newDoctor("L"), b = newDoctor("M"), c = newDoctor("N");
+        Long pid = newPatient();
+        Long past = visitBy(pid, a, List.of(diag("J02.900", "急性咽炎")));   // A 的往次就诊
+        Long rid = visit(pid, a, b, today(), List.of(diag("J06.900", "急性上呼吸道感染")));
+        assertEquals(idOf(a), jdbc.queryForObject("select doctor_id from outp_registration where id = ?", Long.class, rid),
+                "前提：startVisit 不改写已有归属，挂号仍记在 A 名下");
+
+        for (String who : List.of(b, c)) {   // c 没碰过这次就诊：当日队列全院共享，同样可读
+            for (String url : List.of(wsUrl(rid), amendUrl(rid), histUrl(pid), assistUrl(pid))) {
+                JsonNode r = getAs(url, who, "DOCTOR_OUTP");
+                assertEquals(0, r.get("code").asInt(), who + " 读 " + url + " → " + r);
+            }
+        }
+        JsonNode hist = getAs(histUrl(pid), b, "DOCTOR_OUTP");
+        assertEquals(2, hist.get("data").size(), "患者级放行后历次就诊全给（含 A 的往次）：" + hist);
+        // 患者级放行不等于就诊级放行：A 的往次就诊工作区，B 仍须 4036
+        assertEquals(4036, getAs(wsUrl(past), b, "DOCTOR_OUTP").get("code").asInt());
+    }
+
+    @Test
+    void r2_substituteWhoWroteAPastVisitKeepsAccess() throws Exception {
+        // R2-1 的往次形态：B 代班写过病历的那次就诊已成往次，挂号仍在 A 名下——B 写过就能读
+        String a = newDoctor("O"), b = newDoctor("P"), c = newDoctor("Q");
+        Long pid = newPatient();
+        Long rid = visit(pid, a, b, yesterday(), List.of(diag("J02.900", "急性咽炎")));
+
+        for (String url : List.of(wsUrl(rid), amendUrl(rid), histUrl(pid), assistUrl(pid))) {
+            assertEquals(0, getAs(url, b, "DOCTOR_OUTP").get("code").asInt(), "书写医生读 " + url);
+            assertEquals(0, getAs(url, a, "DOCTOR_OUTP").get("code").asInt(), "归属医生读 " + url);
+            assertEquals(4036, getAs(url, c, "DOCTOR_OUTP").get("code").asInt(), "既非归属又非书写的医生读 " + url);
+        }
+    }
+
+    @Test
+    void r2_deptRegistrationTodayIsReadableBeforeAcceptance() throws Exception {
+        // 反驳三 N-1：科室号（doctor_id 为空）接诊前，本人队列里的这位患者历史就诊 / 历史诊断一律 4036
+        String a = newDoctor("R"), other = newDoctor("S");
+        Long pid = newPatient();
+        visitBy(pid, other, List.of(diag("J02.900", "急性咽炎")));   // 患者有他人往次就诊
+        Long rid = registerOn(pid, null, today());                   // 今天挂科室号，尚未接诊
+        em.flush();
+        em.clear();
+        for (String url : List.of(wsUrl(rid), histUrl(pid), assistUrl(pid))) {
+            JsonNode r = getAs(url, a, "DOCTOR_OUTP");
+            assertEquals(0, r.get("code").asInt(), "当日科室号接诊前须可读：" + url + " → " + r);
+        }
+    }
+
+    @Test
+    void r2_patientWithOnlyOthersOrUnownedPastRegistrationsIsRefused() throws Exception {
+        // 患者级不设「归属为空放行」：往次科室号（从未接诊）不授予患者级查阅权；就诊级归属为空照放行（只看这一次）
+        String a = newDoctor("T"), b = newDoctor("U");
+        Long pid = newPatient();
+        visitBy(pid, a, List.of(diag("J02.900", "急性咽炎")));
+        Long unowned = registerOn(pid, null, yesterday());
+        em.flush();
+        em.clear();
+        for (String url : List.of(histUrl(pid), assistUrl(pid))) {
+            JsonNode r = getAs(url, b, "DOCTOR_OUTP");
+            assertEquals(4036, r.get("code").asInt(), url + " → " + r);
+            assertTrue(noData(r));
+            assertTrue(r.get("message").asText().contains("该患者非当日就诊，且本人未接诊过其往次就诊"), r.toString());
+        }
+        assertEquals(0, getAs(wsUrl(unowned), b, "DOCTOR_OUTP").get("code").asInt(), "就诊级：归属为空的那一次可读");
+        assertEquals(0, getAs(histUrl(pid), "v80fadmin", "ADMIN").get("code").asInt());
+    }
+
+    @Test
+    void r2_assistHistoryTreatsBlankSystemAsWestern() throws Exception {
+        // R2-3：bootstrap 写入的诊断 diag_system 为空，医生站暂存写 ICD10——同一诊断在历史段里出现两条
+        String a = newDoctor("V");
+        Long pid = newPatient();
+        visit(pid, a, a, yesterday(), List.of(diag("N39.000", "泌尿道感染")));
+        OutpDiagnosis west = diag("N39.000", "泌尿道感染");
+        west.setDiagSystem(OutpDiagnosis.SYSTEM_ICD10);
+        OutpDiagnosis tcm = diag("", "淋证");
+        tcm.setDiagSystem(OutpDiagnosis.SYSTEM_TCM);
+        visit(pid, a, a, today(), List.of(west, tcm));
+
+        JsonNode r = getAs(assistUrl(pid), a, "DOCTOR_OUTP");
+        assertEquals(0, r.get("code").asInt(), r.toString());
+        int n39 = 0;
+        for (JsonNode h : r.at("/data/history")) {
+            if ("N39.000".equals(h.get("icdCode").asText())) {
+                n39++;
+                assertEquals("ICD10", h.get("diagSystem").asText(), "空体系按西医归组并回 ICD10：" + h);
+            }
+        }
+        assertEquals(1, n39, "空体系与 ICD10 须归为一组：" + r.at("/data/history"));
+        assertEquals(2, r.at("/data/history").size(), "中医诊断仍单独一组：" + r.at("/data/history"));
+    }
+
+    @Test
+    void r2_patientHistoryIsOrderedByVisitDateDescThenIdDesc() throws Exception {
+        // R2-4：按挂号 id 倒序时，先挂今天、后补挂昨天的那次排在今天上面
+        String a = newDoctor("W");
+        Long pid = newPatient();
+        Long t = visit(pid, a, a, today(), List.of(diag("J02.900", "急性咽炎")));
+        Long y1 = visit(pid, a, a, yesterday(), List.of(diag("J02.900", "急性咽炎")));
+        Long y2 = visit(pid, a, a, yesterday(), List.of(diag("J02.900", "急性咽炎")));
+        JsonNode r = getAs(histUrl(pid), a, "DOCTOR_OUTP");
+        assertEquals(0, r.get("code").asInt(), r.toString());
+        List<Long> got = new java.util.ArrayList<>();
+        r.get("data").forEach(h -> got.add(h.get("registrationId").asLong()));
+        assertEquals(List.of(t, y2, y1), got, "就诊日期倒序、同日按 id 倒序：" + r);
+    }
+
+    @Test
+    void r2_overlongDiagnosisQualifierIsRejectedWith4000NamingRowAndField() {
+        // N-4：前缀超 32 字整次暂存以 4091「编码长度超限」失败，不说是哪一栏
+        String a = newDoctor("X");
+        Long pid = newPatient();
+        Long rid = registerOn(pid, a, today());
+        Long aid = idOf(a);
+        doctorStationService.startVisit(rid, aid);
+        OutpEmr e = new OutpEmr();
+        e.setChiefComplaint("V80F超长");
+        Object[][] cases = {{"prefix", 32, "前缀"}, {"suffix", 32, "后缀"}, {"customName", 128, "自定义描述"}};
+        for (Object[] c : cases) {
+            int max = (Integer) c[1];
+            OutpDiagnosis ok = diag("J02.900", "急性咽炎");
+            OutpDiagnosis bad = diag("J06.900", "急性上呼吸道感染");
+            String atMax = "长".repeat(max), over = "长".repeat(max + 1);
+            switch ((String) c[0]) {
+                case "prefix" -> { ok.setPrefix(atMax); bad.setPrefix(over); }
+                case "suffix" -> { ok.setSuffix(atMax); bad.setSuffix(over); }
+                default -> { ok.setCustomName(atMax); bad.setCustomName(over); }
+            }
+            var ex = assertThrows(RegistrationService.BizException.class,
+                    () -> doctorStationService.saveEmr(rid, e, List.of(ok, bad), aid, null, null), (String) c[0]);
+            assertEquals(4000, ex.code, ex.getMessage());
+            assertTrue(ex.getMessage().contains("第 2 条诊断") && ex.getMessage().contains((String) c[2])
+                    && ex.getMessage().contains(max + " 字"), ex.getMessage());
+        }
+        assertEquals(0L, jdbc.queryForObject("select count(*) from outp_diagnosis where registration_id = ?", Long.class, rid),
+                "预检在任何写库之前：被拒时不得落诊断");
+    }
+
+    @Test
+    void r2_frontendHandles4036AndFormatsDiagnosisHintAndCapsQualifierInputs() {
+        String ds = read("frontend/shell/src/views/outpatient/DoctorStationView.vue");
+        // R2-2：历史就诊遇 4036 打开抽屉显示说明，不弹红字
+        int a = ds.indexOf("async function openHistory(");
+        String fn = ds.substring(a, ds.indexOf("\n}", a));
+        assertTrue(fn.contains("__silentCodes: [4036]") && fn.contains("historyDenied"), fn);
+        // 工作区遇 4036 有明确提示，不白屏、不残留上一位患者的内容
+        int o = ds.indexOf("async function openPatient(");
+        String op = ds.substring(o, ds.indexOf("\n}", o));
+        assertTrue(op.contains("__silentCodes: [4036]") && op.contains("visitDenied"), op);
+        // N-6：开单行诊断提示按打印口径（前后缀、疑诊），不再只印标准名
+        assertFalse(ds.contains("{{ d.icdName }}"), "开单行诊断提示须带前后缀与疑诊");
+        // N-4：三个输入框 maxlength 与库列宽一致（V135：prefix/suffix varchar(32)、custom_name varchar(128)）
+        assertTrue(ds.contains("v-model=\"row.prefix\" size=\"small\" maxlength=\"32\""), "前缀 maxlength 32");
+        assertTrue(ds.contains("v-model=\"row.suffix\" size=\"small\" maxlength=\"32\""), "后缀 maxlength 32");
+        assertTrue(ds.contains("v-model=\"row.customName\" size=\"small\" maxlength=\"128\""), "自定义描述 maxlength 128");
     }
 
     // ---------------- 源码读取（仓库相对路径；worktree 下同样有效） ----------------

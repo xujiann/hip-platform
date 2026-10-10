@@ -20,8 +20,21 @@ public interface OutpRegistrationRepository extends JpaRepository<OutpRegistrati
 
     List<OutpRegistration> findTop50ByPatientIdOrderByIdDesc(Long patientId);
 
-    /** v80 审阅修补（D1）：本人名下有没有该患者未退号的挂号——患者级既往资料（历史诊断、历次就诊）的对象级判据。 */
-    boolean existsByPatientIdAndDoctorIdAndStatusNot(Long patientId, Long doctorId, String status);
+    /**
+     * v80 审阅修补二：患者级既往资料（诊断助手历史段、患者历次就诊）的对象级判据——口径「当日就诊队列共享、往次就诊归本人」。
+     * 该患者存在一条<b>未退号</b>挂号满足其一即可：挂号归属是我；就诊日期是今天（当日队列全院共享，代班、科室号接诊前照常）；
+     * 这次就诊的门诊病历是我写的（代班写过的往次就诊）。<b>不设「归属为空放行」</b>——那会让任何挂过科室号的患者对全院医生敞开。
+     */
+    @org.springframework.data.jpa.repository.Query(value = """
+            select exists (
+              select 1 from outp_registration r
+              where r.patient_id = :patientId and r.status <> 'CANCELLED'
+                and (r.doctor_id = :me or r.visit_date = :today
+                     or exists (select 1 from outp_emr e where e.registration_id = r.id and e.doctor_id = :me)))
+            """, nativeQuery = true)
+    boolean patientReadableBy(@org.springframework.data.repository.query.Param("patientId") Long patientId,
+                              @org.springframework.data.repository.query.Param("me") Long me,
+                              @org.springframework.data.repository.query.Param("today") LocalDate today);
 
     Optional<OutpRegistration> findByScheduleIdAndPatientIdAndStatus(Long scheduleId, Long patientId, String status);
 
