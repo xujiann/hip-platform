@@ -63,6 +63,10 @@
           </el-select></el-form-item>
           <el-form-item label="分级"><el-input-number v-model="ae.level" :min="1" :max="4" /></el-form-item>
           <el-form-item><el-date-picker v-model="ae.occurredOn" type="date" value-format="YYYY-MM-DD" placeholder="发生日期" /></el-form-item>
+          <!-- v81 审阅修补（D11）：上报接口与列表一直收 / 回科室，表单此前没有科室栏 -->
+          <el-form-item><el-select v-model="ae.deptId" placeholder="发生科室（可选）" clearable filterable style="width: 150px">
+            <el-option v-for="d in depts" :key="d.id" :label="d.name" :value="d.id" />
+          </el-select></el-form-item>
           <el-form-item><el-input v-model="ae.description" placeholder="事件描述" style="width: 240px" /></el-form-item>
           <el-form-item><el-checkbox v-model="ae.anonymous">匿名</el-checkbox></el-form-item>
           <el-button type="danger" size="small" @click="reportAe" :loading="reportAeLoading">上报</el-button>
@@ -71,6 +75,7 @@
           <el-table-column prop="type" label="类型" width="100" />
           <el-table-column prop="level" label="级" width="50" />
           <el-table-column prop="occurred_on" label="发生日期" width="110" />
+          <el-table-column prop="dept_name" label="科室" width="110" />
           <el-table-column prop="description" label="描述" show-overflow-tooltip />
           <el-table-column label="上报" width="70">
             <template #default="{ row }">{{ row.anonymous ? '匿名' : '实名' }}</template>
@@ -112,7 +117,13 @@ const tab = ref('emr')
 const emr = ref<Record<string, unknown>>({})
 const aeList = ref<Record<string, unknown>[]>([])
 const inf = ref<Record<string, unknown>>({})
-const ae = reactive({ type: '跌倒', level: 3, occurredOn: '', description: '', anonymous: false })
+const ae = reactive<{ type: string; level: number; occurredOn: string; deptId: number | null; description: string; anonymous: boolean }>(
+  { type: '跌倒', level: 3, occurredOn: '', deptId: null, description: '', anonymous: false })
+const depts = ref<{ id: number; name: string }[]>([])
+
+async function loadDepts() {
+  depts.value = (await client.get('/system/depts')).data.data ?? []
+}
 const reportAeLoading = ref(false)
 const busyId = ref<unknown>(null)
 
@@ -155,5 +166,6 @@ onMounted(() => {
   loadEmr()
   loadAe()
   loadInf()
+  loadDepts()
 })
 </script>
