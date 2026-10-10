@@ -95,7 +95,7 @@
     <el-alert v-if="detailTruncated" type="warning" show-icon :closable="false" class="caveat"
               :title="`命中超过 ${detailLimit} 条，仅显示前 ${detailLimit} 条（不做翻页）；请缩小统计区间后再穿透`" />
     <el-table :data="detailItems" v-loading="detailLoading" size="small" border height="calc(100vh - 240px)">
-      <el-table-column v-for="c in columnsOf(detailItems)" :key="c" :prop="c" :label="zh(c)"
+      <el-table-column v-for="c in columnsOf(detailItems)" :key="c" :prop="c" :label="zhDetail(c)"
                        :min-width="colWidth(c)" show-overflow-tooltip>
         <template #default="{ row }">{{ fmt(row[c]) }}</template>
       </el-table-column>
@@ -335,10 +335,19 @@ const ZH: Record<string, string> = {
   end_at: '结束时间',
   out_room_at: '出室时间',
   status: '状态',
-  delay_minutes: '较排台延迟(分钟)',
+  delay_minutes: '延迟分钟(仅延迟台次)',
   judgement: '判定',
   op_minutes: '手术时长(分钟)',
   turnover_minutes: '接台时长(分钟)',
+  delayed_minutes_total: '延迟开台量(分钟,合计)',
+  avg_delay_minutes: '平均延迟(分钟/延迟台)',
+  elective_delayed_minutes_total: '择期延迟开台量(分钟,合计)',
+  elective_avg_delay_minutes: '择期平均延迟(分钟/延迟台)',
+  start_offset_minutes: '实开较排台偏移(分钟,提前为负)',
+  first_in_room_at: '首台入室时间',
+  in_room_recorded: '已录入室时间台数',
+  turnover_prev_surgery_id: '接台上一台手术ID',
+  prev_out_room_at: '上一台出室时间',
   died: '是否死亡',
   died_at: '死亡时间',
   transfusion_id: '输血记录ID',
@@ -368,6 +377,19 @@ const ZH: Record<string, string> = {
 
 function zh(col: string): string {
   return ZH[col] ?? col
+}
+
+/**
+ * 明细里与汇总同名、含义不同的列 —— 与后端 AnesQcController.zhDetail() 同源。
+ * 1424★ 明细的 on_time / delayed 是逐台布尔判定位，汇总里同名列是台数。
+ */
+const ZH_DETAIL: Record<string, string> = {
+  on_time: '是否准点',
+  delayed: '是否延迟',
+}
+
+function zhDetail(col: string): string {
+  return ZH_DETAIL[col] ?? zh(col)
 }
 
 onMounted(async () => {
