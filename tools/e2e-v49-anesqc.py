@@ -355,6 +355,60 @@ print(f'[5] 逐条对账 OK（{len(reconciled)} 条 available 指标全部核过
       f'—— v46 只核过 1428★ 一条')
 
 # ============================================================================
+# ⑤b v81：1424★ 延迟开台量 / 1425★ 入室时间与接台——新键在、且汇总 == 明细逐台加总
+# ============================================================================
+def _sum1(items, key):
+    """明细逐台（逐对）已舍入到 0.1 分钟，加总后再按 0.1 比，避开浮点尾差"""
+    return round(sum(float(it[key]) for it in items if it.get(key) is not None), 1)
+
+
+turn_before = row_sum(rows('1425', day, day), 'turnovers')
+s3 = new_surgery('V81接台E2E术三', 'V49-OR-A')    # 与 s1 同手术间、在 s1 出室之后入室 → 多出一对接台
+same_day3 = _bjday(timeline(s3, t)[1]) == day
+
+sum24 = indicator('1424', day, day)['summary']
+for k in ('delayed_minutes_total', 'avg_delay_minutes',
+          'elective_delayed_minutes_total', 'elective_avg_delay_minutes'):
+    assert k in sum24, f'1424★ summary 缺 v81 新键 {k}（延迟开台量）'
+    for r in rows('1424', day, day):
+        assert k in r, f'1424★ 日表缺 v81 新键 {k}'
+det24 = detail('1424', day, day)
+assert not det24['truncated'], '1424★ 明细被截断，对账不成立'
+for it in det24['items']:
+    for k in ('start_offset_minutes', 'delayed', 'on_time', 'delay_minutes'):
+        assert k in it, f'1424★ 明细缺键 {k}'
+    assert (it['delay_minutes'] is not None) == (it['delayed'] is True), \
+        f'v81 起 delay_minutes 只在判为延迟时取值（准点 / 提前 / 判不了为空）：{it}'
+assert sum(1 for it in det24['items'] if it['delayed'] is True) == _n(sum24, 'delayed'), \
+    '1424★ 明细里 delayed 为真的行数必须等于汇总 delayed'
+assert _sum1(det24['items'], 'delay_minutes') == round(float(_n(sum24, 'delayed_minutes_total')), 1), \
+    '1424★ 延迟开台量：汇总 delayed_minutes_total 必须等于明细 delay_minutes 逐台加总'
+
+r25 = rows('1425', day, day)
+assert len(r25) == 1, f'单日窗口 1425★ 日表应只有一行：{r25}'
+for k in ('first_in_room_at', 'in_room_recorded'):
+    assert k in r25[0], f'1425★ 日表缺 v81 新键 {k}（入室时间）'
+det25 = detail('1425', day, day)
+assert not det25['truncated'], '1425★ 明细被截断，对账不成立'
+pairs = [it for it in det25['items'] if it.get('turnover_minutes') is not None]
+assert len(pairs) == _n(r25[0], 'turnovers'), \
+    f'1425★ 明细接台对数 {len(pairs)} 必须等于汇总 turnovers {_n(r25[0], "turnovers")}（v81 起两侧同一 lag 口径）'
+assert _sum1(pairs, 'turnover_minutes') == round(float(_n(r25[0], 'total_turnover_minutes')), 1), \
+    '1425★ 明细接台分钟逐对加总必须等于汇总 total_turnover_minutes'
+ins = [_parse(it['in_room_at']) for it in det25['items'] if it.get('in_room_at')]
+assert len(ins) == _n(r25[0], 'in_room_recorded'), '1425★ in_room_recorded 必须等于明细里录了入室时间的条数'
+assert ins and _parse(r25[0]['first_in_room_at']) == min(ins), \
+    '1425★ first_in_room_at 必须等于明细里最早的入室时间'
+if same_day3:
+    assert _n(r25[0], 'turnovers') - turn_before == 1, \
+        '同手术间、上一台出室后入室的第三台应让接台次数 +1'
+    assert any(it.get('surgery_id') == s3 and it.get('turnover_prev_surgery_id') is not None for it in pairs), \
+        '新接台那一台的明细须给出上一台手术 ID，逐对可核'
+print(f'[5b] v81 1424★ 延迟开台量 / 1425★ 入室时间与接台 OK（延迟台 {_n(sum24, "delayed")} 台、'
+      f'延迟量 {_n(sum24, "delayed_minutes_total")} 分钟 == 明细加总；接台 {len(pairs)} 对 == 汇总'
+      + ('' if same_day3 else '；第三台跨了业务日零点，接台增量断言本次跳过') + '）')
+
+# ============================================================================
 # ⑥ 占比穿透：bucket 参数（1422★「查看各指标占比详情」与「对占比准确性核对校验」）
 # ============================================================================
 bucketed = 0
