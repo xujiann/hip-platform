@@ -28,6 +28,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.function.Function;
@@ -480,6 +481,15 @@ class V49CaliberTest {
         return denominator == 0 ? null : round(100.0 * numerator / denominator, 2);
     }
 
+    /** 1424★ 明细延迟分钟逐台加总（v81：delay_minutes 只在判为延迟的台次有值）；electiveOnly = 国标口径只算择期 */
+    private static Double delaySum(List<Map<String, Object>> items, boolean electiveOnly) {
+        return round(items.stream()
+                .filter(x -> !electiveOnly || "ELECTIVE".equals(str(x, "surgery_kind")))
+                .map(x -> dbl(x, "delay_minutes"))
+                .filter(Objects::nonNull)
+                .mapToDouble(Double::doubleValue).sum(), 1);
+    }
+
     /** 时间戳：JdbcTemplate 直出经 Jackson 序列化，可能是 ISO 串也可能是毫秒数，两种都接 */
     private static Instant instantOf(Object v) {
         if (v == null) return null;
@@ -735,6 +745,14 @@ class V49CaliberTest {
                         num(row, "on_time") + num(row, "delayed")))
                 .derived("elective_on_time_rate_pct", (row, rows, it) -> pct(num(row, "elective_on_time"),
                         num(row, "elective_on_time") + num(row, "elective_delayed")))
+                // v81 延迟开台量：明细 delay_minutes 只在判为延迟的台次有值（逐台已舍入到 0.1），
+                // 汇总 == 明细逐台加总；均值分母是延迟台数，无延迟台次时为空
+                .derived("delayed_minutes_total", (row, rows, it) -> delaySum(it, false))
+                .derived("avg_delay_minutes", (row, rows, it) -> num(row, "delayed") == 0 ? null
+                        : round(delaySum(it, false) / num(row, "delayed"), 1))
+                .derived("elective_delayed_minutes_total", (row, rows, it) -> delaySum(it, true))
+                .derived("elective_avg_delay_minutes", (row, rows, it) -> num(row, "elective_delayed") == 0 ? null
+                        : round(delaySum(it, true) / num(row, "elective_delayed"), 1))
                 .rowsTotal(rs -> sum(rs, "first_cases")));
         Rule r1424 = m.get("1424");
         r1424.summaryRule = new Rule("1424.summary")
@@ -746,7 +764,11 @@ class V49CaliberTest {
                 .countRow("elective_on_time", r1424.counts.get("elective_on_time"))
                 .countRow("elective_delayed", r1424.counts.get("elective_delayed"))
                 .derived("on_time_rate_pct", r1424.derived.get("on_time_rate_pct"))
-                .derived("elective_on_time_rate_pct", r1424.derived.get("elective_on_time_rate_pct"));
+                .derived("elective_on_time_rate_pct", r1424.derived.get("elective_on_time_rate_pct"))
+                .derived("delayed_minutes_total", r1424.derived.get("delayed_minutes_total"))
+                .derived("avg_delay_minutes", r1424.derived.get("avg_delay_minutes"))
+                .derived("elective_delayed_minutes_total", r1424.derived.get("elective_delayed_minutes_total"))
+                .derived("elective_avg_delay_minutes", r1424.derived.get("elective_avg_delay_minutes"));
 
         // 1425★ 手术台数 / 总手术时长 / 接台时长。
         // 判据：明细逐台带 op_minutes 与 turnover_minutes，
@@ -768,6 +790,10 @@ class V49CaliberTest {
                         : round(dbl(row, "total_op_minutes") / num(row, "timed_cases"), 1))
                 .derived("avg_turnover_minutes", (row, rows, it) -> num(row, "turnovers") == 0 ? null
                         : round(dbl(row, "total_turnover_minutes") / num(row, "turnovers"), 1))
+                // v81 入室时间：录了入室时间的台数 = 明细 in_room_at 非空的条数；
+                // 首台入室时刻是时间戳（非数值），由具名用例逐日核对明细最早入室时刻
+                .count("in_room_recorded", it -> countWhere(it, x -> x.get("in_room_at") != null))
+                .coveredBy("first_in_room_at", "firstInRoomAtIsTheEarliestInRoomTimeInTheDetail")
                 .rowsTotal(rs -> sum(rs, "cases")));
 
         // 1426★ 取消手术四阶段构成。判据：明细逐条带 cancel_stage 与 cancel_reason。
@@ -1557,6 +1583,25 @@ class V49CaliberTest {
      * 一条指标悄悄多/少一批手术（比如漏了 {@code cancel_stage is null} 那一半条件），
      * 单看它自己是自洽的，只有横向比才现形。
      */
+    /**
+     * v81：1425★ 汇总的 {@code first_in_room_at}（当日最早入室时刻）是时间戳，通用对账引擎只核数值列，
+     * 故由本用例具名覆盖：它必须等于同窗穿透明细里最早的 {@code in_room_at}，且夹具里就是 V49-OR-2 的 08:00
+     * （不是排台更早的历史手术——历史手术没录入室时间）。
+     */
+    @Test
+    void firstInRoomAtIsTheEarliestInRoomTimeInTheDetail() {
+        var rs = rows("1425", d0, d0);
+        assertEquals(1, rs.size(), "单日窗口日表只有一行");
+        var it = items("1425", d0, d0);
+        Instant earliest = it.stream().map(x -> instantOf(x.get("in_room_at")))
+                .filter(Objects::nonNull).min(Instant::compareTo).orElse(null);
+        assertNotNull(earliest, "夹具里有录了入室时间的台次");
+        assertEquals(earliest, instantOf(rs.get(0).get("first_in_room_at")),
+                "first_in_room_at 必须等于明细里最早的入室时间");
+        assertEquals(LocalDate.parse(d0).atTime(8, 0).atZone(BIZ).toInstant(), earliest,
+                "夹具当日最早入室是 V49-OR-2 的 08:00");
+    }
+
     @Test
     void crossIndicatorPopulationsAgree() {
         long byKind = sum(rows("1428", d0, d0), "cases");

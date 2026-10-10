@@ -352,7 +352,7 @@ class V46AnesQcTest {
         }
     }
 
-    /** 穿透明细逐台给出「排台 / 开台 / 延迟分钟 / 判定」，否则「准点率 50%」无从核对 */
+    /** 穿透明细逐台给出「排台 / 开台 / 开台偏移 / 判定」，否则「准点率 50%」无从核对 */
     @Test
     void firstCaseDetailShowsPerCaseJudgement() {
         Long adm = newAdmission(newPatient("F", 33));
@@ -362,7 +362,9 @@ class V46AnesQcTest {
         assertEquals(1, items.size());
         var it = items.get(0);
         assertEquals("准点", it.get("judgement"));
-        assertEquals(20L, num(it, "delay_minutes"));
+        // v81 口径修正：delay_minutes 只在判为延迟时取值，准点台次为空；原有符号偏移改由 start_offset_minutes 给出
+        assertNull(it.get("delay_minutes"), "准点台次不得带延迟分钟（v81 起 delay_minutes 仅延迟台次有值）");
+        assertEquals(20L, num(it, "start_offset_minutes"));
         assertNotNull(it.get("admission_no"), "明细须能核对到住院号");
         assertNotNull(it.get("patient_name"), "明细须能核对到人");
     }

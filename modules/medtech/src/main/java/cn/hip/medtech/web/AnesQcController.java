@@ -211,7 +211,30 @@ public class AnesQcController {
 
     static final String TURNOVER_NOTE =
             "接台时长 = 同一手术间、同一自然日内相邻两台的「上一台出室 → 下一台入室」间隔；"
-            + "跨自然日的相邻两台不计接台，入室早于上一台出室（重叠或录错）的也不计入——不做负值累加。";
+            + "跨自然日的相邻两台不计接台，入室早于上一台出室（重叠或录错）的也不计入——不做负值累加。"
+            + "【口径已修正（v81）】相邻 = 同一手术间、同一统计日内按入室时间排序的前一台（未取消、落在本时间窗内），"
+            + "汇总与穿透明细用同一段排序取数；此前明细是另取「同日最晚一次出室」，"
+            + "遇到重叠或录错的台次会越过前一台接到更早那台上，与汇总对不上账。"
+            + "接台分钟逐对先舍入到 0.1 分钟再求和，故明细里接台时长有值的行数 == 接台次数，"
+            + "各行接台时长之和 == 总接台时长；明细另给上一台手术 ID 与出室时间，每一对可逐条核对。";
+
+    /** v81：1425★「入室时间」两列的口径 */
+    static final String IN_ROOM_NOTE =
+            " 【入室时间（v81 新增）】first_in_room_at 是当日（统计日）最早一台的入室时刻，"
+            + "in_room_recorded 是当日录了入室时间的台数——未录入室时间的台次进台数、不进这两列，"
+            + "两列都只说明已录入的部分；逐台入室时间见穿透明细。";
+
+    /** v81：1424★「延迟开台量」与明细延迟分钟的口径（含 delay_minutes 的语义修正说明） */
+    static final String DELAY_VOLUME_NOTE =
+            " 【延迟开台量（v81 新增）】delayed_minutes_total 是判为延迟的首台「实开 − 排台」分钟之和，"
+            + "avg_delay_minutes 是其均值（分母为延迟台数，无延迟台次时为空）；"
+            + "elective_delayed_minutes_total / elective_avg_delay_minutes 是同一算法的择期国标口径。"
+            + "延迟量从排台时间起算（不扣阈值），判不判延迟用的是与准点率同一个阈值。"
+            + "【口径已修正（v81），会改变明细数值】穿透明细的 delay_minutes 原为「实开 − 排台」的有符号偏移，"
+            + "准点台次也是正数、提前开台是负数，逐台加总得不出延迟量；本版起它只在判为延迟时取值，"
+            + "准点、提前、判不了一律为空，原来的有符号偏移改由 start_offset_minutes 给出，"
+            + "另给 delayed / on_time 两个判定位（判不了时皆空）。"
+            + "逐台分钟先舍入到 0.1 分钟，故明细 delay_minutes 之和 == delayed_minutes_total。";
 
     static final String ADVERSE_NOTE =
             "qc_adverse_event 是全院不良事件登记表，无 surgery_id 关联列，无法筛出「麻醉与手术相关」子集，"
@@ -299,6 +322,58 @@ public class AnesQcController {
             "case coalesce(s.asa_grade, '') when 'I' then 1 when 'II' then 2 when 'III' then 3 "
             + "when 'IV' then 4 when 'V' then 5 when 'VI' then 6 else 0 end";
 
+    /**
+     * v81：1424★ 首台「实开 − 排台」有符号偏移（分钟，逐台先舍入到 0.1）。
+     * <b>汇总的延迟量与明细的延迟分钟用的是同一个逐台舍入值</b>：汇总对它求和，明细逐台列出，
+     * 于是「汇总延迟量 == 明细延迟分钟逐台加总」逐位成立——先求和后舍入与逐台舍入会差在末位。
+     * 别名 {@code j0} 是 1424 汇总 / 日表的首台 CTE，明细侧用 {@link #OFFSET_MIN_X}（同式，别名 x）。
+     */
+    private static final String OFFSET_MIN_J0 =
+            "round((extract(epoch from (j0.start_at - j0.scheduled_at)) / 60)::numeric, 1)";
+
+    /** @see #OFFSET_MIN_J0 —— 同一式子，明细外层别名 x */
+    private static final String OFFSET_MIN_X =
+            "round((extract(epoch from (x.start_at - x.scheduled_at)) / 60)::numeric, 1)";
+
+    /** 延迟分钟：只有判为延迟的首台取值（开台晚于排台 + 阈值），准点 / 提前 / 判不了一律为空 */
+    private static final String DELAY_MIN =
+            "case when j0.judgeable and not j0.on_time then " + OFFSET_MIN_J0 + " end";
+
+    /**
+     * 1424★ 延迟开台量四列（日表与 summary 共用，追加在既有列之后）。
+     * 均值分母是「延迟台数」（delay_min 非空的台数 == delayed），不是首台数；无延迟时均值为空、合计为 0。
+     */
+    private static final String DELAY_AGG = """
+            coalesce(sum(j.delay_min), 0)                                                as delayed_minutes_total,
+                   round(sum(j.delay_min) / nullif(count(j.delay_min), 0), 1)           as avg_delay_minutes,
+                   coalesce(sum(j.delay_min) filter (where j.surgery_kind = 'ELECTIVE'), 0) as elective_delayed_minutes_total,
+                   round(sum(j.delay_min) filter (where j.surgery_kind = 'ELECTIVE')
+                         / nullif(count(j.delay_min) filter (where j.surgery_kind = 'ELECTIVE'), 0), 1)
+                                                                                         as elective_avg_delay_minutes""";
+
+    /**
+     * v81：1425★ 接台分钟（逐对先舍入到 0.1），汇总与明细共用——汇总对它求和、明细逐对列出，
+     * 「明细接台分钟逐对加总 == 汇总 total_turnover_minutes」逐位成立。
+     */
+    private static final String TURN_MIN =
+            "round((extract(epoch from (q.in_room_at - q.prev_out)) / 60)::numeric, 1)";
+
+    /**
+     * v81：1425★ 接台序列——汇总与明细<b>同一段 SQL</b>：同手术间、同锚点日，按 (in_room_at, id) 排序取上一台
+     * out_room_at（lag）。只排录了手术间与入室时间的、未取消的、落在时间窗里的台次。
+     * 接台成立 = prev_out 非空且本台入室不早于它（重叠 / 录错不计、不做负值累加）。
+     * 修正前明细用 {@code max(out_room_at)} 横连另算一套：重叠时会越过上一台接到更早那台上，且不滤取消与时间窗。
+     */
+    private static final String TURN_SEQ = """
+            select b.id, b.op_day, b.in_room_at,
+                   lag(b.out_room_at) over (partition by b.room_no, b.op_day
+                                            order by b.in_room_at, b.id) as prev_out,
+                   lag(b.id)          over (partition by b.room_no, b.op_day
+                                            order by b.in_room_at, b.id) as prev_id
+            from (select s.id, s.room_no, s.in_room_at, s.out_room_at, {anchor}::date as op_day
+                  from inp_surgery s
+                  where s.room_no is not null and s.in_room_at is not null and {alive} and {window}) b""";
+
     /** 穿透明细多取 1 条判 truncated：只取 LIMIT 条会让「刚好第 200 条」漏报 */
     private static final String DETAIL_CAP = " limit " + (DETAIL_LIMIT + 1);
 
@@ -334,9 +409,17 @@ public class AnesQcController {
             left join sys_dept d on d.id = a.dept_id
             """;
 
-    /** 占位符展开。{surg} 先展开（其内不含其它占位符），其余互不嵌套 */
+    /**
+     * 占位符展开。{surg} 先展开（其内不含其它占位符）；{turnSeq} 内含 {anchor}/{alive}/{window}、
+     * {delayMin} 内无占位符，故这几段须在 {window} 等之前展开；其余互不嵌套。
+     */
     private static String q(String sql) {
         return sql.replace("{surg}", SURG_SELECT)
+                .replace("{turnSeq}", TURN_SEQ)
+                .replace("{delayMin}", DELAY_MIN)
+                .replace("{delayAgg}", DELAY_AGG)
+                .replace("{offsetMinX}", OFFSET_MIN_X)
+                .replace("{turnMin}", TURN_MIN)
                 .replace("{window}", WINDOW)
                 .replace("{alive}", NOT_CANCELLED)
                 .replace("{ageYears}", AGE_YEARS)
@@ -639,8 +722,9 @@ public class AnesQcController {
                     + "排台时间 + 阈值（阈值走 sys_config 键 anes.qc.ontime_minutes，不硬编码）。"
                     + "准点率的分母只含「排台时间与开台时间都录了」的首台，判不了的单列 unjudgeable，不并进分母。"
                     + "另给一组 elective_* 是《2022 版》国标口径（只算择期手术首台）：两套口径并排给、不二选一——"
-                    + "只给国标口径会让 surgery_kind 未录的历史手术整片消失，只给全量口径又与国标对不上。";
-            case "1425" -> TURNOVER_NOTE + " 手术时长 = 结束 − 开台，只统计两点都录了的台次。";
+                    + "只给国标口径会让 surgery_kind 未录的历史手术整片消失，只给全量口径又与国标对不上。"
+                    + DELAY_VOLUME_NOTE;
+            case "1425" -> TURNOVER_NOTE + " 手术时长 = 结束 − 开台，只统计两点都录了的台次。" + IN_ROOM_NOTE;
             case "1426" -> "按 cancel_stage 四阶段（APPLY 申请 / SCHEDULE 排程 / PRE_IN 入室前 / IN_OP 术中）归集；"
                     + "状态为取消但未标阶段的单列一行，不摊进四阶段。";
             case "1427" -> "跨日 = 开台与结束不在同一自然日，分母只含两点都录了的台次。";
@@ -984,6 +1068,9 @@ public class AnesQcController {
                            (b.start_at is not null and b.scheduled_at is not null
                               and b.start_at <= b.scheduled_at + (?::int * interval '1 minute')) as on_time
                     from base b where b.rn = 1
+                ), judged2 as (
+                    select j0.*, {delayMin} as delay_min
+                    from judged j0
                 )
                 select j.op_day,
                        count(*)                                                              as first_cases,
@@ -999,15 +1086,22 @@ public class AnesQcController {
                        round(100.0 * count(*) filter (where j.surgery_kind = 'ELECTIVE' and j.on_time)
                              / nullif(count(*) filter (where j.surgery_kind = 'ELECTIVE'
                                           and j.judgeable), 0), 2)                           as elective_on_time_rate_pct,
-                       string_agg(distinct coalesce(d.name, '（未知科室）'), '、')            as first_case_depts
-                from judged j
+                       string_agg(distinct coalesce(d.name, '（未知科室）'), '、')            as first_case_depts,
+                       {delayAgg}
+                from judged2 j
                 left join sys_dept d on d.id = j.dept_id
                 group by j.op_day
                 order by j.op_day desc
                 """), w.f(), w.t(), m);
     }
 
-    /** 1425★ 台数 / 手术时长 / 接台时长：ops 与 turn 分开算再左连——接台的分母是「相邻对」不是「台数」 */
+    /**
+     * 1425★ 台数 / 手术时长 / 接台时长 / 入室时间：ops 与 turn 分开算再左连——接台的分母是「相邻对」不是「台数」。
+     *
+     * <p>v81：接台序列改走 {@link #TURN_SEQ}（与穿透明细同一段 SQL），接台分钟逐对先舍入再求和（{@link #TURN_MIN}），
+     * 明细逐对加总 == 汇总。另追加入室时间两列：{@code first_in_room_at}（当日最早入室时刻）、
+     * {@code in_room_recorded}（录了入室时间的台数，即 first_in_room_at 的取值范围）。
+     */
     private List<Map<String, Object>> turnoverRows(Window w) {
         return jdbc.queryForList(q("""
                 with base as (
@@ -1016,11 +1110,7 @@ public class AnesQcController {
                     from inp_surgery s
                     where {alive} and {window}
                 ), seq as (
-                    select b.op_day, b.in_room_at,
-                           lag(b.out_room_at) over (partition by b.room_no, b.op_day
-                                                    order by b.in_room_at, b.id) as prev_out
-                    from base b
-                    where b.room_no is not null and b.in_room_at is not null
+                    {turnSeq}
                 ), ops as (
                     select op_day,
                            count(*)                                                       as cases,
@@ -1028,15 +1118,17 @@ public class AnesQcController {
                                               and end_at > start_at)                       as timed_cases,
                            coalesce(sum(extract(epoch from (end_at - start_at)) / 60)
                                     filter (where start_at is not null and end_at is not null
-                                              and end_at > start_at), 0)                   as op_minutes
+                                              and end_at > start_at), 0)                   as op_minutes,
+                           min(in_room_at)                                                 as first_in_room_at,
+                           count(in_room_at)                                               as in_room_recorded
                     from base
                     group by op_day
                 ), turn as (
-                    select op_day, count(*) as turnovers,
-                           coalesce(sum(extract(epoch from (in_room_at - prev_out)) / 60), 0) as turn_minutes
-                    from seq
-                    where prev_out is not null and in_room_at >= prev_out
-                    group by op_day
+                    select q.op_day, count(*) as turnovers,
+                           coalesce(sum({turnMin}), 0)                                     as turn_minutes
+                    from seq q
+                    where q.prev_out is not null and q.in_room_at >= q.prev_out
+                    group by q.op_day
                 )
                 select o.op_day,
                        o.cases,
@@ -1045,11 +1137,13 @@ public class AnesQcController {
                        round((o.op_minutes / nullif(o.timed_cases, 0))::numeric, 1)         as avg_op_minutes,
                        coalesce(t.turnovers, 0)                                             as turnovers,
                        round(coalesce(t.turn_minutes, 0)::numeric, 1)                       as total_turnover_minutes,
-                       round((t.turn_minutes / nullif(t.turnovers, 0))::numeric, 1)         as avg_turnover_minutes
+                       round((t.turn_minutes / nullif(t.turnovers, 0))::numeric, 1)         as avg_turnover_minutes,
+                       o.first_in_room_at,
+                       o.in_room_recorded
                 from ops o
                 left join turn t on t.op_day = o.op_day
                 order by o.op_day desc
-                """), w.args());
+                """), w.f(), w.t(), w.f(), w.t());
     }
 
     /**
@@ -1160,12 +1254,15 @@ public class AnesQcController {
                         from inp_surgery s
                         where s.room_no is not null and {alive} and {window}
                     ), judged as (
-                        select b.surgery_kind,
+                        select b.surgery_kind, b.start_at, b.scheduled_at,
                                (b.start_at is not null and b.scheduled_at is not null)            as judgeable,
                                (b.start_at is not null and b.scheduled_at is not null
                                   and b.start_at <= b.scheduled_at
                                                     + (?::int * interval '1 minute'))             as on_time
                         from base b where b.rn = 1
+                    ), judged2 as (
+                        select j0.*, {delayMin} as delay_min
+                        from judged j0
                     )
                     select count(*)                                                          as first_cases,
                            count(*) filter (where on_time)                                   as on_time,
@@ -1179,8 +1276,9 @@ public class AnesQcController {
                                               and judgeable and not on_time)                 as elective_delayed,
                            round(100.0 * count(*) filter (where surgery_kind = 'ELECTIVE' and on_time)
                                  / nullif(count(*) filter (where surgery_kind = 'ELECTIVE'
-                                              and judgeable), 0), 2)                         as elective_on_time_rate_pct
-                    from judged
+                                              and judgeable), 0), 2)                         as elective_on_time_rate_pct,
+                           {delayAgg}
+                    from judged2 j
                     """), w.f(), w.t(), onTimeMinutes());
             case "1427" -> one(q("""
                     select count(*) filter (where s.start_at is not null and s.end_at is not null) as timed_cases,
@@ -1489,6 +1587,9 @@ public class AnesQcController {
         // 不传 bucket 时展开成空串，展开后的 SQL 与本版之前逐字相同
         String bp = bucketPred(code, bucket);
         return switch (code) {
+            // v81 口径修正：delay_minutes 只在判为延迟时取值（准点 / 提前 / 判不了为空），
+            // 旧的「实开 − 排台」有符号偏移另列为 start_offset_minutes；delayed / on_time 与 judgement
+            // 同一判定（判不了两者皆空）。与汇总共用同一阈值（onTimeMinutes）与同一逐台舍入式（OFFSET_MIN_*）。
             case "1424" -> jdbc.queryForList(q("""
                     with base as (
                         select s.id,
@@ -1499,40 +1600,47 @@ public class AnesQcController {
                         where s.room_no is not null and {alive} and {window}
                     )
                     select x.*,
-                           round(extract(epoch from (x.start_at - x.scheduled_at)) / 60.0) as delay_minutes,
-                           case when x.start_at is null or x.scheduled_at is null
+                           case when j.on_time is false then {offsetMinX} end             as delay_minutes,
+                           case when j.on_time is null
                                      then '无法判定（缺排台或开台时间）'
-                                when x.start_at <= x.scheduled_at + (?::int * interval '1 minute')
-                                     then '准点'
-                                else '延迟' end                                            as judgement
+                                when j.on_time then '准点'
+                                else '延迟' end                                            as judgement,
+                           {offsetMinX}                                                    as start_offset_minutes,
+                           not j.on_time                                                   as delayed,
+                           j.on_time                                                       as on_time
                     from (
                         {surg}
                         where s.id in (select id from base where rn = 1)
                     ) x
+                    cross join lateral (
+                        select case when x.start_at is null or x.scheduled_at is null then null
+                                    else x.start_at <= x.scheduled_at + (?::int * interval '1 minute')
+                               end as on_time
+                    ) j
                     order by x.start_at desc nulls last, x.surgery_id desc
                     {cap}
                     """), w.f(), w.t(), onTimeMinutes());
+            // v81 口径修正：接台改走与汇总同一段 {turnSeq}（lag，同手术间同锚点日按入室排序取上一台出室），
+            // 修正前是 max(out_room_at) 横连——重叠时越过上一台接到更早那台、且不滤取消与时间窗，与汇总对不上账。
+            // turnover_minutes 仅在接台成立时取值；另给 turnover_prev_surgery_id / prev_out_room_at 让每一对可核。
             case "1425" -> jdbc.queryForList(q("""
+                    with seq as (
+                        {turnSeq}
+                    )
                     select x.*,
                            round(extract(epoch from (x.end_at - x.start_at)) / 60.0)        as op_minutes,
-                           round(extract(epoch from (x.in_room_at - prev.prev_out)) / 60.0) as turnover_minutes
+                           case when q.prev_out is not null and q.in_room_at >= q.prev_out
+                                then {turnMin} end                                           as turnover_minutes,
+                           q.prev_id                                                         as turnover_prev_surgery_id,
+                           q.prev_out                                                        as prev_out_room_at
                     from (
                         {surg}
                         where {alive} and {window}
                     ) x
-                    left join lateral (
-                        select max(s2.out_room_at) as prev_out
-                        from inp_surgery s2
-                        where x.in_room_at is not null
-                          and s2.room_no = x.room_no
-                          and s2.out_room_at is not null
-                          and s2.out_room_at <= x.in_room_at
-                          and s2.out_room_at::date = x.in_room_at::date
-                          and s2.id <> x.surgery_id
-                    ) prev on true
+                    left join seq q on q.id = x.surgery_id
                     order by x.in_room_at desc nulls last, x.surgery_id desc
                     {cap}
-                    """), w.args());
+                    """), w.f(), w.t(), w.f(), w.t());
             case "1426" -> bucketed("""
                     select x.*, y.cancel_stage, y.cancel_reason
                     from (
@@ -1851,6 +1959,9 @@ public class AnesQcController {
         return indicatorsCsv(indicator, from, to, null);
     }
 
+    /** 明细 CSV 的「报表」栏取值；toCsv 据此换用明细表头（{@link #zhDetail}） */
+    private static final String DETAIL_KIND = "取值明细";
+
     /** 穿透明细 CSV（与 {@link #detail} 同 SQL 同口径、同 200 条上限；超限在尾注明写截断） */
     @GetMapping(value = "/detail.csv", produces = "text/csv;charset=UTF-8")
     public String detailCsv(@RequestParam(required = false) String indicator,
@@ -1866,7 +1977,7 @@ public class AnesQcController {
         if (!d.available()) return unavailableCsv(d, w.window());
         List<Map<String, Object>> rows = detailRows(d.code(), w.window(), b.by());
         boolean truncated = rows.size() > DETAIL_LIMIT;
-        return toCsv(d, w.window(), "取值明细",
+        return toCsv(d, w.window(), DETAIL_KIND,
                 truncated ? rows.subList(0, DETAIL_LIMIT) : rows, truncated, b.by());
     }
 
@@ -1898,7 +2009,9 @@ public class AnesQcController {
             sb.append(csv("（该统计区间内无数据）")).append('\n');
         } else {
             var cols = new ArrayList<>(rows.get(0).keySet());
-            sb.append(String.join(",", cols.stream().map(c -> csv(zh(c))).toList())).append('\n');
+            boolean detail = DETAIL_KIND.equals(kind);
+            sb.append(String.join(",", cols.stream().map(c -> csv(detail ? zhDetail(c) : zh(c))).toList()))
+              .append('\n');
             for (var r : rows) {
                 sb.append(String.join(",", cols.stream().map(c -> csv(r.get(c))).toList())).append('\n');
             }
@@ -1918,6 +2031,18 @@ public class AnesQcController {
         String note = noteOf(d.code(), by);
         if (note != null) sb.append(csv("口径：" + note)).append('\n');
         return sb.toString();
+    }
+
+    /**
+     * 明细里与汇总同名、含义不同的列（v81：1424★ 明细的 on_time / delayed 是逐台布尔判定位，
+     * 汇总里同名列是台数）。明细 CSV 先查这里，免得布尔列顶着「准点开台数」的表头导出。
+     */
+    private static String zhDetail(String col) {
+        return switch (col) {
+            case "on_time" -> "是否准点";
+            case "delayed" -> "是否延迟";
+            default -> zh(col);
+        };
     }
 
     /** 列名中文化（CSV 表头用；未登记的列名原样输出，不猜也不隐藏） */
@@ -2020,10 +2145,21 @@ public class AnesQcController {
             case "end_at" -> "结束时间";
             case "out_room_at" -> "出室时间";
             case "status" -> "状态";
-            case "delay_minutes" -> "较排台延迟(分钟)";
+            // v81：delay_minutes 改为只在判为延迟时取值，表头跟着改，免得「较排台延迟」读成有符号偏移
+            case "delay_minutes" -> "延迟分钟(仅延迟台次)";
             case "judgement" -> "判定";
             case "op_minutes" -> "手术时长(分钟)";
             case "turnover_minutes" -> "接台时长(分钟)";
+            // v81 新增：1424★ 延迟开台量 / 明细有符号偏移；1425★ 入室时间与接台对
+            case "delayed_minutes_total" -> "延迟开台量(分钟,合计)";
+            case "avg_delay_minutes" -> "平均延迟(分钟/延迟台)";
+            case "elective_delayed_minutes_total" -> "择期延迟开台量(分钟,合计)";
+            case "elective_avg_delay_minutes" -> "择期平均延迟(分钟/延迟台)";
+            case "start_offset_minutes" -> "实开较排台偏移(分钟,提前为负)";
+            case "first_in_room_at" -> "首台入室时间";
+            case "in_room_recorded" -> "已录入室时间台数";
+            case "turnover_prev_surgery_id" -> "接台上一台手术ID";
+            case "prev_out_room_at" -> "上一台出室时间";
             case "died" -> "是否死亡";
             case "died_at" -> "死亡时间";
             case "transfusion_id" -> "输血记录ID";
