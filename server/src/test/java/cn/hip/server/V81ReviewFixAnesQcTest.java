@@ -218,6 +218,39 @@ class V81ReviewFixAnesQcTest {
 
     // ================= D2 / D4 1436 患者数与明细 =================
 
+    /** 甲（男 50 岁）两次住院各一台、乙（男 50 岁）一台，全在「45–59 岁 / 男」一格；返回乙那台的手术 ID */
+    private Long seed1436() {
+        Long admA1 = newAdmission("M", 50);
+        Long admA2 = admissionOf(patientOf(admA1), "DISCHARGED");
+        Long admB = newAdmission("M", 50);
+        surgery(admA1, "DONE", dayC, "V81R-R3", "08:00", "08:00", "08:10", "09:00", "09:10", "ELECTIVE");
+        surgery(admA2, "DONE", dayC, "V81R-R3", "10:00", "10:00", "10:10", "11:00", "11:10", "ELECTIVE");
+        return surgery(admB, "DONE", dayC, "V81R-R4", "08:00", "08:00", "08:10", "09:00", "09:10", "DAY");
+    }
+
+    /** 【D4】明细逐台带出生日期、手术时年龄、年龄段、性别与患者 ID；明细与分桶明细的去重患者数 == patients */
+    @Test
+    void ageSexDetailShowsBirthDateAgeAndSex() {
+        Long sb = seed1436();
+        var it = items("1436", dayC, dayC);
+        assertEquals(3, it.size());
+        var b = bySurgery(it, sb);
+        assertEquals(50, num(b, "age_at_surgery"), "【D4】手术时年龄按锚点日与出生日期算：满 50 岁又 10 天");
+        assertNotNull(b.get("birth_date"), "【D4】明细须带出生日期");
+        assertEquals("男", b.get("sex"), "【D4】明细须带性别（与汇总同一中文名）");
+        assertEquals("45–59 岁", b.get("age_band"), "明细年龄段与汇总分段同一公式");
+        assertEquals(2, it.stream().map(x -> x.get("patient_id")).distinct().count(),
+                "明细去重患者数 == 汇总 patients");
+
+        var bk = anesQc.detail("1436", dayC, dayC, null, null, "45–59 岁 / 男");
+        assertEquals(0, bk.getCode(), bk.getMessage());
+        @SuppressWarnings("unchecked")
+        var bItems = (List<Map<String, Object>>) bk.getData().get("items");
+        assertEquals(2, bItems.stream().map(x -> x.get("patient_id")).distinct().count());
+        assertTrue(bItems.stream().allMatch(x -> "45–59 岁".equals(x.get("age_band")) && "男".equals(x.get("sex"))),
+                "分桶明细逐行可见自己落在哪一格");
+    }
+
     // ================= D3 / D9 1425 手术时长同口径 + 区间合计 =================
 
     // ================= D8 明细 CSV 中文化 =================

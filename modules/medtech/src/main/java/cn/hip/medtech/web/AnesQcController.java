@@ -344,6 +344,35 @@ public class AnesQcController {
             "extract(year from age(" + ANCHOR + "::date, p.birth_date))";
 
     /**
+     * 1436★ 年龄段名（与汇总 band_no 分段同一组阈值、同一个 {@link #AGE_YEARS}）。
+     * 分桶谓词与明细的 age_band 列共用这一段，明细逐行看得到自己落在哪一格。
+     */
+    private static final String AGE_BAND = """
+            case when p.birth_date is null then '未知（无出生日期）'
+                 when {ageYears} < 1  then '<1 岁'
+                 when {ageYears} < 18 then '1–17 岁'
+                 when {ageYears} < 45 then '18–44 岁'
+                 when {ageYears} < 60 then '45–59 岁'
+                 when {ageYears} < 75 then '60–74 岁'
+                 else '≥75 岁' end""";
+
+    /** 1436★ 性别名（与汇总 sex 列同一映射） */
+    private static final String SEX_NAME = "case p.sex when 'M' then '男' when 'F' then '女' else '未知' end";
+
+    /**
+     * v81 审阅修补（审计 D4）：1436★ 明细在公共投影末尾追加的五列——患者 ID（核对去重患者数）、出生日期、
+     * 手术时年龄（与汇总分段同一公式：统计锚点日 − 出生日期的整岁）、年龄段、性别。
+     * 修正前 1436★ 明细复用公共投影，没有出生日期、年龄、性别任何一列，任何一格都核不了。
+     */
+    private static final String SURG_EXTRA_1436 = """
+            ,
+                   p.id                        as patient_id,
+                   p.birth_date,
+                   {ageYears}                  as age_at_surgery,
+                   {ageBand}                   as age_band,
+                   {sexName}                   as sex""";
+
+    /**
      * ASA 分级的严重度序（V140 明写值域是 ASCII 罗马数字 I–VI，不用全角）。
      * <b>只用于「一次住院多台手术分级不同时归属到最重一级」，不参与任何展示</b>——
      * 未填写与非标准写法一律 0 排最轻，<b>不猜、不并进任何一个实级</b>：
@@ -434,7 +463,7 @@ public class AnesQcController {
                    -- 属 V49CaliberTest 登记在案的两条无法对账列。纯读侧投影，
                    -- 不改写路径、不改既有列顺序，只在末尾追加。
                    s.op_icd,
-                   s.is_unplanned_reop
+                   s.is_unplanned_reop{surgExtra}
             from inp_surgery s
             join inp_admission a on a.id = s.admission_id
             join empi_patient p on p.id = a.patient_id
@@ -442,11 +471,12 @@ public class AnesQcController {
             """;
 
     /**
-     * 占位符展开。{surg} 先展开（其内不含其它占位符）；{turnSeq} 内含 {anchor}/{alive}/{window}、
+     * 占位符展开。{surg} 先展开（其内只含 {surgExtra}，紧接着展开成空串；1436★ 明细在调用前自行展开成追加列）；{turnSeq} 内含 {anchor}/{alive}/{window}、
      * {delayMin} 内无占位符，故这几段须在 {window} 等之前展开；其余互不嵌套。
      */
     private static String q(String sql) {
         return sql.replace("{surg}", SURG_SELECT)
+                .replace("{surgExtra}", "")
                 .replace("{turnSeq}", TURN_SEQ)
                 .replace("{delayMin}", DELAY_MIN)
                 .replace("{delayAgg}", DELAY_AGG)
@@ -455,6 +485,8 @@ public class AnesQcController {
                 .replace("{cancelWindow}", CANCEL_WINDOW)
                 .replace("{window}", WINDOW)
                 .replace("{alive}", PERFORMED)
+                .replace("{ageBand}", AGE_BAND)
+                .replace("{sexName}", SEX_NAME)
                 .replace("{ageYears}", AGE_YEARS)
                 .replace("{asaRank}", ASA_RANK)
                 .replace("{anchor}", ANCHOR)
@@ -1399,16 +1431,7 @@ public class AnesQcController {
             case "1431" -> new BucketSpec(List.of("dept_name"),
                     "coalesce(d.name, '（未知科室）')");
             case "1436" -> new BucketSpec(List.of("age_band", "sex"),
-                    """
-                    case when p.birth_date is null then '未知（无出生日期）'
-                         when {ageYears} < 1  then '<1 岁'
-                         when {ageYears} < 18 then '1–17 岁'
-                         when {ageYears} < 45 then '18–44 岁'
-                         when {ageYears} < 60 then '45–59 岁'
-                         when {ageYears} < 75 then '60–74 岁'
-                         else '≥75 岁' end
-                    || '""" + BUCKET_SEP + """
-                    ' || case p.sex when 'M' then '男' when 'F' then '女' else '未知' end""");
+                    "{ageBand} || '" + BUCKET_SEP + "' || {sexName}");
             case "1438" -> new BucketSpec(List.of("procedure_name", "op_icd"),
                     "coalesce(nullif(trim(s.procedure_name), ''), '（未填写术式）') || '" + BUCKET_SEP
                     + "' || coalesce(nullif(trim(s.op_icd), ''), '（未编码）')");
@@ -1704,7 +1727,15 @@ public class AnesQcController {
                     order by s.start_at desc
                     {cap}
                     """), w.args());
-            case "1428", "1430", "1436", "1438", "1439" -> bucketed("""
+            // v81 审阅修补（D4）：1436★ 明细在公共投影末尾追加患者 ID / 出生日期 / 手术时年龄 / 年龄段 / 性别
+            case "1436" -> bucketed("""
+                    {surg}
+                    where {alive} and {window}{bucket}
+                    order by {anchor} desc, s.id desc
+                    {cap}
+                    """.replace("{surg}", SURG_SELECT.replace("{surgExtra}", SURG_EXTRA_1436)),
+                    bp, bucketArgs(w, code, bucket));
+            case "1428", "1430", "1438", "1439" -> bucketed("""
                     {surg}
                     where {alive} and {window}{bucket}
                     order by {anchor} desc, s.id desc
@@ -2139,6 +2170,9 @@ public class AnesQcController {
             case "band" -> "输注量分档";
             case "patients" -> "人数(按患者去重)";
             case "patient_id" -> "患者ID";
+            // v81 审阅修补（D4）：1436★ 明细追加列
+            case "birth_date" -> "出生日期";
+            case "age_at_surgery" -> "手术时年龄(岁)";
             case "transfusion_records" -> "输血记录条数";
             case "non_auto_ml" -> "其中非自体血量(ml)";
             case "has_auto" -> "是否输过自体血";

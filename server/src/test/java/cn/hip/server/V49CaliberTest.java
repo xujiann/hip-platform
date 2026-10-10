@@ -154,12 +154,9 @@ class V49CaliberTest {
     private static final Map<String, String> NOT_MECHANICALLY_COVERED = new LinkedHashMap<>();
 
     static {
-        NOT_MECHANICALLY_COVERED.put("1436★ 的分桶（年龄段 × 性别）在【不带 bucket 的全量明细】上",
-                "汇总按「年龄段 × 性别」分桶，而全量明细走的公共投影 SURG_SELECT 里【既无出生日期也无性别】，"
-                + "落到某个桶里的是哪几台手术，在全量明细上看不出来。故本类的通用对账引擎对 1436★ 只对【总数】"
-                + "（各桶 cases 之和 == 明细条数）。"
-                + "分桶级已由 v49 新增的 bucket 参数覆盖（bucket=「18–44 岁 / 女」这样的二元键），"
-                + "见 bucketDrillsIntoExactlyOneShareOfTheRatio——那条用例逐桶断言「桶内条数 == 该行 cases」。");
+        // 【已销案 v81 审阅修补 D4】「1436★ 的分桶（年龄段 × 性别）在不带 bucket 的全量明细上」原登记在此：
+        // 公共投影无出生日期与性别，全量明细逐桶还原不了。现 1436★ 明细追加 patient_id / birth_date /
+        // age_at_surgery / age_band / sex 五列（age_band、sex 与汇总同一表达式），通用对账引擎改为逐桶对账。
         NOT_MECHANICALLY_COVERED.put("1438★ 的分桶（术式名 × op_icd）在【不带 bucket 的全量明细】上",
                 "汇总按 (procedure_name, op_icd) 二元组分行，而全量明细的公共投影 SURG_SELECT 里【没有 op_icd 列】，"
                 + "二元键的后一半取不到，逐桶还原不了；且汇总行本身有 limit 50，行合计在术式多于 50 种时也不等于总量。"
@@ -908,11 +905,14 @@ class V49CaliberTest {
                 .itemsTotal(it -> it.stream().map(V49CaliberTest::patientKey).distinct().count()));
 
         // 1436★ 手术患者年龄段 × 性别分布。
-        // 【只能对总数、对不到分桶】：明细的公共投影里既无出生日期也无性别（见类头清单二）。
-        m.put("1436", new Rule("1436")
+        // v81 审阅修补（D4）：明细逐台带 age_band / sex（与汇总同一表达式），逐桶对账：该格 cases == 该格明细条数。
+        Rule r1436 = new Rule("1436")
                 .labels("age_band", "sex")
-                .total("cases", SIZE)
-                .rowsTotal(rs -> sum(rs, "cases")));
+                .count("cases", SIZE)
+                .rowsTotal(rs -> sum(rs, "cases"));
+        r1436.rowKey = row -> str(row, "age_band") + BUCKET_SEP + str(row, "sex");
+        r1436.itemKey = (item, all) -> str(item, "age_band") + BUCKET_SEP + str(item, "sex");
+        m.put("1436", r1436);
 
         // 1437★ 每日镇痛泵新增 / 拆泵 / 在用量。
         // 【判据要点】新增/拆泵是【事件当日】的计数，明细逐条带 event_type，可逐日数出来；
