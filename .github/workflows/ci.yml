@@ -235,6 +235,7 @@ jobs:
           python3 tools/e2e-v78-specimen.py
           python3 tools/e2e-v79-emrversion.py
           python3 tools/e2e-v79-emrref.py
+          python3 tools/e2e-v80-access.py
 
       - name: 失败时输出服务端日志
         if: failure()
