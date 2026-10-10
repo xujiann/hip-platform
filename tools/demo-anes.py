@@ -17,8 +17,10 @@
     同间相邻台次形成 10 个接台对（接台间隔 25–45 分钟）。
   · 择期 / 急诊 / 日间三类都有；首台不排急诊。
   · 取消四阶段各一台：排程阶段（D-5）/ 入室前（D-3）/ 术中（D-1，已入室已开台）/ 申请阶段。
-    **申请阶段那台没有排台时间**——申请即取消，`POST /inpatient/surgeries` 不传 scheduledAt，
-    统计锚点退化成建单时刻，故它落在**今天**而不是过去 1–7 天（这是 API 的真实形态，不是偷懒）。
+    1426 按**取消发生日**归集：前三台的取消时刻用取消端点的 `at` 补录到当天（排台前 2 小时 / 排台前 10 分钟 /
+    开台后约 20 分钟），故落在 D-5 / D-3 / D-1；**申请阶段那台没有排台时间**——申请即取消，取消时刻取运行当刻，
+    故它落在**今天**而不是过去 1–7 天（这是 API 的真实形态，不是偷懒）。
+  · 演示住院按患者编号奇偶分属外科门诊、内科门诊两个临床科室（1424 首台科室不止一个）。
   · 患者年龄覆盖 1436 的六个年龄段（<1 / 1–17 / 18–44 / 45–59 / 60–74 / ≥75），每段男女都有。
   · 不良事件 5 条、4 种名称（管路滑脱 ×2 / 跌倒 / 给药错误 / 压疮），其中 1 条已处理。
     1450 是**全院**不良事件口径（qc_adverse_event 无手术关联列），这里只是让窗口里有数。
@@ -296,12 +298,18 @@ def ensure_admission(patient, ctx):
         say(f"  {patient['name']} 已在院（{cur.get('admissionNo')}），续用")
         return cur
     bed = free_bed()
-    surg = DEPTS.get('OUTP_SURG') or next(d for d in DEPTS.values() if d.get('type') == 'CLINICAL')
+    # v81 审阅修补（D12）：演示住院按患者编号奇偶分属外科、内科两个临床科室——1424「首台手术患者所属科室」
+    # 此前只出现一个科室。种子里只有这两个临床科室；缺内科时回落外科（已建的住院不改）。
+    clinical = [d for d in DEPTS.values() if d.get('type') == 'CLINICAL']
+    surg = DEPTS.get('OUTP_SURG') or clinical[0]
+    med = DEPTS.get('OUTP_MED') or surg
+    digits = ''.join(ch for ch in patient['name'] if ch.isdigit())
+    dept = med if digits and int(digits) % 2 == 0 else surg
     adm = do(f"入院 {patient['name']}", 'POST', '/inpatient/admissions',
-             {'patientId': patient['id'], 'deptId': surg['id'], 'bedId': bed['id'],
+             {'patientId': patient['id'], 'deptId': dept['id'], 'bedId': bed['id'],
               'diagName': '择期/急诊手术', 'deposit': 500, 'payMethod': 'CASH'})
     STATS['admissions'] += 1
-    say(f"  入院 {patient['name']} → {adm.get('admissionNo')}（{bed.get('bedNo')} 床）")
+    say(f"  入院 {patient['name']} → {adm.get('admissionNo')}（{dept.get('name')}，{bed.get('bedNo')} 床）")
     ctx['adm'] = adm
     return adm
 
@@ -362,9 +370,20 @@ def do_cancel(c, patient, rows, ctx):
            {'stage': 'IN_ROOM', 'at': iso(sched + _dt.timedelta(minutes=5))})
         do('打点 START', 'PUT', f'/inpatient/surgeries/{sid}/timepoint',
            {'stage': 'START', 'at': iso(sched + _dt.timedelta(minutes=25))})
-    do(f'取消手术（{stage}）', 'PUT', f'/inpatient/surgeries/{sid}/cancel', {'stage': stage, 'reason': reason})
+    # v81 审阅修补（D6）：取消时刻补录到真实发生日——排程阶段在排台前 2 小时、入室前在排台前 10 分钟、
+    # 术中在开台后 20 分钟；申请阶段那台未排台，取消时刻取当前（不传 at）。1426 按取消日归集即落在这几天。
+    body = {'stage': stage, 'reason': reason}
+    cancel_at = None
+    if sched is not None:
+        cancel_at = {'SCHEDULE': sched - _dt.timedelta(hours=2), 'PRE_IN': sched - _dt.timedelta(minutes=10),
+                     'IN_OP': sched + _dt.timedelta(minutes=45)}.get(stage)
+    if cancel_at is not None:
+        body['at'] = iso(cancel_at)
+    do(f'取消手术（{stage}）', 'PUT', f'/inpatient/surgeries/{sid}/cancel', body)
     STATS['cancels_new'] += 1
     when = f'{sched:%m-%d %H:%M}' if sched else '今天（未排台）'
+    if cancel_at is not None:
+        when += f'，取消于 {cancel_at:%m-%d %H:%M}'
     say(f"  取消 {patient['name']} {proc} #{sid}：{stage}，{when}，{reason}")
 
 
