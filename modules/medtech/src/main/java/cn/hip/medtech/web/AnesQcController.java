@@ -77,7 +77,7 @@ import java.util.Map;
  * <p><b>1422★1423★「穿透查看取值明细 + 导出 EXCEL」不是可选项</b>，它是防「指标算得出但对不上账」
  * 的关键：每个 available 的指标都有 {@code GET /detail?indicator=} 逐条明细与 {@code .csv} 导出，
  * 且明细与汇总<b>同一时间窗、同一锚点、同一过滤条件</b>（共用 {@link #ANCHOR} / {@link #WINDOW}
- * / {@link #NOT_CANCELLED} 三个片段常量，改口径只有一处可改）。
+ * / {@link #PERFORMED} 三个片段常量，改口径只有一处可改）。
  *
  * <h2>同窗同锚点还不够，<b>粒度也必须对齐</b>——本版修掉两处「算得出但对不上账」</h2>
  * <ul>
@@ -320,9 +320,24 @@ public class AnesQcController {
      */
     private static final String EVENT_WINDOW = "e.event_time >= ?::date and e.event_time < ?::date + 1";
 
-    /** 取消的手术不计入「做了几台」类指标（取消本身由 1426★ 单独统计） */
-    private static final String NOT_CANCELLED =
-            "coalesce(s.status, '') <> 'CANCELLED' and s.cancel_stage is null";
+    /**
+     * 「做了几台」类指标的公共存活条件 = <b>已开展</b>：未取消，且已登记开台时间或状态为已完成（DONE）。
+     *
+     * <p>v81 审阅修补（审计 D1）：此前这里只排除取消，只申请（REQUESTED）、已排台未做（SCHEDULED 且无开台）
+     * 的台次全被算进 1425★ 台数、1428★「各类已开展手术」、1436★ 年龄分布，1424★ 中排得早却没做的台次
+     * 还会按排台时刻抢占首台位。开台时间优先于状态：已开台未点「完成」的台次是真开展了；
+     * 状态 DONE 兜住 V140 之前没有时间点的历史完成台次。取消本身由 1426★ 单独统计，覆盖率段不走本条件。
+     */
+    private static final String PERFORMED =
+            "coalesce(s.status, '') <> 'CANCELLED' and s.cancel_stage is null"
+            + " and (s.start_at is not null or coalesce(s.status, '') = 'DONE')";
+
+    /** v81 审阅修补：走 {@link #PERFORMED} 的指标逐条随 note 下发的口径说明 */
+    static final String PERFORMED_NOTE =
+            " 【已开展口径（v81 审阅修补，会改变既有数值）】本指标只统计已开展的手术台次："
+            + "已登记开台时间，或状态为已完成；只申请、已排台尚未开台的台次与已取消的台次都不计（取消见 1426★）。"
+            + "此前只排除了取消，未开展的台次也被计入台数、类别与年龄分布，排得早却没做的台次还会抢占首台位。"
+            + "页首覆盖率段的手术总台数仍是全部登记台次（含未开展），两者之差即未开展的台数。";
 
     /** 年龄（岁，按统计锚点日与出生日期算） */
     private static final String AGE_YEARS =
@@ -439,7 +454,7 @@ public class AnesQcController {
                 .replace("{turnMin}", TURN_MIN)
                 .replace("{cancelWindow}", CANCEL_WINDOW)
                 .replace("{window}", WINDOW)
-                .replace("{alive}", NOT_CANCELLED)
+                .replace("{alive}", PERFORMED)
                 .replace("{ageYears}", AGE_YEARS)
                 .replace("{asaRank}", ASA_RANK)
                 .replace("{anchor}", ANCHOR)
@@ -457,6 +472,14 @@ public class AnesQcController {
         boolean bySurgery = BY_SURGERY.equals(by);
         return q(sql.replace("{byWindow}", bySurgery ? WINDOW : EVENT_WINDOW)
                 .replace("{byDay}", bySurgery ? ANCHOR + "::date" : "e.event_time::date"));
+    }
+
+    /** 汇总与明细走 {@code {alive}}（= {@link #PERFORMED} 已开展口径）的指标 */
+    private static boolean usesPerformed(String code) {
+        return switch (code) {
+            case "1424", "1425", "1427", "1428", "1429", "1430", "1431", "1436", "1438", "1439" -> true;
+            default -> false;
+        };
     }
 
     /** 走事件表 / 事件时间的六条指标——<b>只有这六条受 by 影响</b>，其余指标 by 不参与 SQL */
@@ -719,6 +742,7 @@ public class AnesQcController {
      */
     private static String noteOf(String code, String by) {
         String base = baseNoteOf(code);
+        if (usesPerformed(code)) base = base == null ? PERFORMED_NOTE.trim() : base + PERFORMED_NOTE;
         if (!isEventIndicator(code)) return base;
         String byNote = "1450".equals(code)
                 ? "【时间归集口径】本指标两种 by 取值返回同一批数：qc_adverse_event 无 surgery_id 关联列，"
