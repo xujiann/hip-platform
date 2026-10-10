@@ -238,6 +238,11 @@ class V49SurgeryCancelledAtTest {
         Long admId = admit("四阶段时刻");
         for (String stage : List.of("APPLY", "SCHEDULE", "PRE_IN", "IN_OP")) {
             Long sid = newSurgery(admId, "四阶段时刻" + stage, null);
+            // v81 审阅修补（D7）：术中取消须已登记入室时间（否则 4910），先打入室
+            if ("IN_OP".equals(stage)) {
+                assertEquals(0, surgeryService.registerTimepoint(sid,
+                        new SurgeryService.TimepointReq("IN_ROOM", null)).getCode());
+            }
             assertEquals(0, surgeryService.cancel(sid, new CancelReq(stage, stage + " 阶段取消原因")).getCode());
             assertNotNull(rowOf(sid).get("cancelled_at"), stage + " 阶段取消也必须落时刻");
         }

@@ -128,7 +128,15 @@ public class SurgeryService {
                             String incisionType, String surgeryKind, Boolean unplannedReop) {}
 
     /** 取消手术（1426★）：阶段与原因<b>都必填</b>，缺一返 4907 */
-    public record CancelReq(String stage, String reason) {}
+    /**
+     * {@code at}（v81 审阅修补 D6）：可选的取消发生时刻，与时间点端点同格式、同解析口径（解析不出 4909）；
+     * 不传或空白取当前时刻（既有行为）。两参构造保留给既有调用方。
+     */
+    public record CancelReq(String stage, String reason, String at) {
+        public CancelReq(String stage, String reason) {
+            this(stage, reason, null);
+        }
+    }
 
     // ===================== ① 四个时间点登记 =====================
 
@@ -277,12 +285,48 @@ public class SurgeryService {
         if (reason.isEmpty()) return R.fail(4907, "取消原因必填");
         if (reason.length() > 200) return R.fail(4907, "取消原因不超过 200 个字符");
 
+        // v81 审阅修补（D6）：取消时刻可补录——事后登记的取消此前一律落在登记当刻，1426★ 按取消日归集就错到登记那天。
+        Instant now = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+        Instant cancelledAt = now;
+        if (req.at() != null && !req.at().isBlank()) {
+            cancelledAt = parseInstant(req.at());
+            if (cancelledAt == null) {
+                return R.fail(4909, "取消时刻格式非法，请用 ISO-8601（如 2026-09-04T09:30:00+08:00）");
+            }
+            cancelledAt = cancelledAt.truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+        }
+
+        var rows = jdbc.queryForList("select status, scheduled_at, in_room_at from inp_surgery where id = ?", id);
+        // 状态不允许仍先报 4900，不被阶段校验抢先（既有 e2e 与用例按 4900 断言）
+        if (rows.isEmpty() || !List.of("REQUESTED", "SCHEDULED").contains(String.valueOf(rows.get(0).get("status")))) {
+            return R.fail(4900, "手术记录不存在，或已完成/已取消（已完成的手术不可取消）");
+        }
+        Instant scheduledAt = toInstant(rows.get(0).get("scheduled_at"));
+        Instant inRoomAt = toInstant(rows.get(0).get("in_room_at"));
+
+        // v81 审阅修补（D7）：取消阶段与已登记时间点一致——此前阶段由操作人手选、后端不核，
+        // 从未入室的台次可记「术中取消」、已入室的可记「申请阶段取消」，1426★ 四阶段构成随之失真。
+        String mismatch = switch (stage) {
+            case "APPLY" -> scheduledAt != null ? "该台已排台（已有排台时间），不能登记为申请阶段取消" : null;
+            case "SCHEDULE", "PRE_IN" -> inRoomAt != null
+                    ? "该台已登记入室时间，不能登记为「" + CANCEL_STAGES.get(stage) + "」取消（应为术中取消）" : null;
+            case "IN_OP" -> inRoomAt == null ? "该台尚未登记入室时间，不能登记为术中取消（请先补录入室时间，或改选入室前取消）" : null;
+            default -> null;
+        };
+        if (mismatch != null) return R.fail(4910, "取消阶段与已登记时间点不一致：" + mismatch);
+
+        // 4911：取消时刻不得晚于当前；术中取消不得早于入室时刻。
+        // 不以建单时刻为下界：手术申请本身也常是事后补录（时间点端点同样不以建单为下界）
+        if (cancelledAt.isAfter(now)) return R.fail(4911, "取消时刻非法：不能晚于当前时刻");
+        if ("IN_OP".equals(stage) && inRoomAt != null && cancelledAt.isBefore(inRoomAt)) {
+            return R.fail(4911, "取消时刻非法：术中取消不能早于入室时间");
+        }
+
         // cancelled_at（V146）：取消**发生**的时刻，与 status/cancel_stage 同一条 update 落库。
         // 1426★ 此前只能挂 AnesQcController.ANCHOR 那个全局手术锚点（取消的台次四时间点全空，
         // 锚点退化成排台日/建单日），于是"9 月 1 日排台、9 月 20 日取消"被算进 9 月 1 日那一周。
         // 截断到微秒同 registerTimepoint：PG timestamptz 只存微秒且**四舍五入**，
         // 不截断的写入值与回读值会差最多 500ns，跨过日界或与其它时刻比较时产生假越界。
-        Instant cancelledAt = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
         int n = jdbc.update("""
                 update inp_surgery set status = 'CANCELLED', cancel_stage = ?, cancel_reason = ?,
                        cancelled_at = ?

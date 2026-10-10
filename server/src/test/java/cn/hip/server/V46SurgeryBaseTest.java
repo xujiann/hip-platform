@@ -427,6 +427,11 @@ class V46SurgeryBaseTest {
         Long admId = admit("取消四阶段");
         for (String stage : List.of("APPLY", "SCHEDULE", "PRE_IN", "IN_OP")) {
             Long sid = newSurgery(admId, "取消术式" + stage, null);
+            // v81 审阅修补（D7）：术中取消须已登记入室时间（4910），先打入室
+            if ("IN_OP".equals(stage)) {
+                assertEquals(0, surgeryService.registerTimepoint(sid,
+                        new SurgeryService.TimepointReq("IN_ROOM", null)).getCode());
+            }
             assertEquals(0, surgeryService.cancel(sid, new CancelReq(stage, stage + " 阶段取消原因")).getCode());
             var row = rowOf(sid);
             assertEquals("CANCELLED", row.get("status"));
