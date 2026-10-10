@@ -389,7 +389,9 @@
                   诊断：
                   <template v-if="diagList.length">
                     <el-tag v-for="(d, i) in diagList" :key="i" size="small" type="info" style="margin-right: 4px">
-                      {{ d.icdName }}
+                      <!-- v80 审阅修补二（N-6）：按 1026★ 打印口径拼前缀 / 名称［自定义］/ 后缀 /（疑诊）/ [中医]——
+                           diagList 行与历史就诊接口同为 camelCase 键，复用 formatHistoryDiagnosis；此前只印标准名，疑诊在这里读作确诊 -->
+                      {{ formatHistoryDiagnosis(d) }}
                     </el-tag>
                   </template>
                   <span v-else>尚未录入诊断</span>
