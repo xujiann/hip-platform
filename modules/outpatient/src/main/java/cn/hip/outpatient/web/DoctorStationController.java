@@ -375,7 +375,7 @@ public class DoctorStationController {
 
     /**
      * v37 门诊病历连续调阅：患者历次就诊（近 50 次，剔除已退号）+ 各次诊断与病历摘要。
-     * 医生站接诊时看既往——此前 findTop50ByPatientIdOrderByIdDesc 定义后零调用者，本端点接上。
+     * 医生站接诊时看既往——此前 findTop50ByPatientIdOrderByIdDesc 定义后零调用者，本端点接上（审阅修补二 R2-4 换成按就诊日期倒序的同族方法）。
      * 批量 In 查询避免 50 次 N+1；纯只读。
      */
     @GetMapping("/patient/{patientId}/history")
@@ -384,7 +384,8 @@ public class DoctorStationController {
         if (!mayReadPatient(patientId, null)) {
             return R.fail(4036, "无权查阅该患者的历次就诊（该患者非当日就诊，且本人未接诊过其往次就诊）");
         }
-        var regs = registrationRepository.findTop50ByPatientIdOrderByIdDesc(patientId).stream()
+        // v80 审阅修补二（R2-4）：按就诊日期倒序、同日按 id 倒序——按 id 倒序时后补挂的往次号排在今天上面
+        var regs = registrationRepository.findTop50ByPatientIdOrderByVisitDateDescIdDesc(patientId).stream()
                 .filter(r -> !"CANCELLED".equals(r.getStatus()))
                 .toList();
         if (regs.isEmpty()) return R.ok(List.of());

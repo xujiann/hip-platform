@@ -18,7 +18,8 @@ public interface OutpRegistrationRepository extends JpaRepository<OutpRegistrati
     List<OutpRegistration> findByVisitDateBetweenAndDoctorIdOrderByIdDesc(
             LocalDate from, LocalDate to, Long doctorId);
 
-    List<OutpRegistration> findTop50ByPatientIdOrderByIdDesc(Long patientId);
+    /** v80 审阅修补二（R2-4）：患者历次就诊按就诊日期倒序、同日按挂号 id 倒序（按 id 倒序时后补挂的往次号会排在今天上面）。 */
+    List<OutpRegistration> findTop50ByPatientIdOrderByVisitDateDescIdDesc(Long patientId);
 
     /**
      * v80 审阅修补二：患者级既往资料（诊断助手历史段、患者历次就诊）的对象级判据——口径「当日就诊队列共享、往次就诊归本人」。
