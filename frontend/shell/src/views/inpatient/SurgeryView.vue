@@ -189,6 +189,10 @@
             <el-option v-for="o in dict.cancelStages" :key="o.code" :label="o.name" :value="o.code" />
           </el-select>
         </el-form-item>
+        <el-form-item label="取消时刻">
+          <el-date-picker v-model="cancelForm.at" type="datetime" value-format="YYYY-MM-DDTHH:mm:ss"
+                          placeholder="留空取当前时刻，可补录实际发生时刻" style="width: 100%" />
+        </el-form-item>
         <el-form-item label="取消原因">
           <el-input v-model="cancelForm.reason" type="textarea" :rows="3" maxlength="200" show-word-limit />
         </el-form-item>
@@ -254,14 +258,14 @@ const edit = reactive({
 
 const cancelVisible = ref(false)
 const cancelLoading = ref(false)
-const cancelForm = reactive({ id: 0, stage: 'SCHEDULE', reason: '' })
+const cancelForm = reactive({ id: 0, stage: 'SCHEDULE', reason: '', at: '' })
 
 /** 已完成/已取消的台次不再打点、不再术后记录、不再取消（后端同样拦，前端只是不给死按钮） */
 function actionable(row: Row): boolean {
   return row.status !== 'DONE' && row.status !== 'CANCELLED'
 }
 
-const pad = (n: number) => String(n).padStart(2, '0')
+function pad(n: number): string { return String(n).padStart(2, '0') }
 
 /** 本地日历日（不用 toISOString——那是 UTC，北京时间 00:00-08:00 会退一天） */
 function localDate(d: Date): string {
@@ -388,9 +392,10 @@ async function saveEdit() {
 
 function openCancel(row: Row) {
   cancelForm.id = Number(row.id)
-  // 预选与当前状态相符的阶段：只申请未排台 → 申请阶段，已排台 → 排程阶段（仍可改）
-  cancelForm.stage = row.status === 'REQUESTED' ? 'APPLY' : 'SCHEDULE'
+  // 按已登记时间点预选；REQUESTED 状态也可能已带排台或入室时间。
+  cancelForm.stage = row.in_room_at || row.start_at ? 'IN_OP' : row.scheduled_at ? 'SCHEDULE' : 'APPLY'
   cancelForm.reason = ''
+  cancelForm.at = ''
   cancelVisible.value = true
 }
 
@@ -402,7 +407,7 @@ async function submitCancel() {
   cancelLoading.value = true
   try {
     await client.put(`/inpatient/surgeries/${cancelForm.id}/cancel`,
-      { stage: cancelForm.stage, reason: cancelForm.reason.trim() })
+      { stage: cancelForm.stage, reason: cancelForm.reason.trim(), at: cancelForm.at || undefined })
     ElMessage.success('已取消该台手术（记录保留，计入取消阶段统计）')
     cancelVisible.value = false
     await load()

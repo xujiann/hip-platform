@@ -296,7 +296,7 @@ public class SurgeryService {
             cancelledAt = cancelledAt.truncatedTo(java.time.temporal.ChronoUnit.MICROS);
         }
 
-        var rows = jdbc.queryForList("select status, scheduled_at, in_room_at from inp_surgery where id = ?", id);
+        var rows = jdbc.queryForList("select status, scheduled_at, in_room_at, start_at, end_at, out_room_at from inp_surgery where id = ? for update", id);
         // 状态不允许仍先报 4900，不被阶段校验抢先（既有 e2e 与用例按 4900 断言）
         if (rows.isEmpty() || !List.of("REQUESTED", "SCHEDULED").contains(String.valueOf(rows.get(0).get("status")))) {
             return R.fail(4900, "手术记录不存在，或已完成/已取消（已完成的手术不可取消）");
@@ -306,11 +306,15 @@ public class SurgeryService {
 
         // v81 审阅修补（D7）：取消阶段与已登记时间点一致——此前阶段由操作人手选、后端不核，
         // 从未入室的台次可记「术中取消」、已入室的可记「申请阶段取消」，1426★ 四阶段构成随之失真。
+        boolean started = rows.get(0).get("start_at") != null;
+        boolean ended = rows.get(0).get("end_at") != null || rows.get(0).get("out_room_at") != null;
         String mismatch = switch (stage) {
-            case "APPLY" -> scheduledAt != null ? "该台已排台（已有排台时间），不能登记为申请阶段取消" : null;
-            case "SCHEDULE", "PRE_IN" -> inRoomAt != null
-                    ? "该台已登记入室时间，不能登记为「" + CANCEL_STAGES.get(stage) + "」取消（应为术中取消）" : null;
-            case "IN_OP" -> inRoomAt == null ? "该台尚未登记入室时间，不能登记为术中取消（请先补录入室时间，或改选入室前取消）" : null;
+            case "APPLY" -> scheduledAt != null || inRoomAt != null || started || ended
+                    ? "该台已有排台或后续时间点，不能登记为申请阶段取消" : null;
+            case "SCHEDULE", "PRE_IN" -> inRoomAt != null || started || ended
+                    ? "该台已有入室或后续时间点，不能登记为入室前取消" : null;
+            case "IN_OP" -> inRoomAt == null || ended
+                    ? "术中取消须已入室且尚未结束或出室" : null;
             default -> null;
         };
         if (mismatch != null) return R.fail(4910, "取消阶段与已登记时间点不一致：" + mismatch);

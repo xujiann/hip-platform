@@ -531,6 +531,15 @@ public class NursingQualityController {
 
     @PostMapping("/api/quality/adverse-events")
     public R<Void> reportAdverse(@RequestBody AdverseEventReq req, Authentication auth) {
+        if (req == null || !java.util.List.of("跌倒", "给药错误", "压疮", "管路滑脱", "其他").contains(req.type() == null ? "" : req.type())) {
+            return R.fail(9804, "事件类型须为跌倒、给药错误、压疮、管路滑脱或其他");
+        }
+        try {
+            var occurred = java.time.LocalDate.parse(req.occurredOn() == null ? "" : req.occurredOn());
+            if (occurred.isAfter(cn.hip.platform.core.config.BusinessDates.today())) return R.fail(9804, "发生日期不能晚于今天");
+        } catch (java.time.format.DateTimeParseException ex) {
+            return R.fail(9804, "发生日期须为有效日期（YYYY-MM-DD）");
+        }
         if (req.level() == null || req.level() < 1 || req.level() > 4) return R.fail(9804, "事件分级须为 1-4");
         boolean anon = Boolean.TRUE.equals(req.anonymous());
         jdbc.update("""

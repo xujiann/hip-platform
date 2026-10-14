@@ -150,6 +150,39 @@ class V81AnesQcCaliberTest {
         return items.stream().map(x -> dbl(x, key)).filter(Objects::nonNull).mapToDouble(Double::doubleValue).sum();
     }
 
+    @Test
+    void midnightCaseMustNotStealNextDaysFirstCase() {
+        Long adm = newAdmission();
+        Long night = surgery(adm, dayB, "V81-NIGHT", "23:00", "23:30", "23:40", "23:50", "23:55", "EMERGENCY");
+        jdbc.update("update inp_surgery set start_at = ?::date + interval '10 minutes', end_at = ?::date + interval '50 minutes', out_room_at = ?::date + interval '60 minutes' where id = ?", dayA, dayA, dayA, night);
+        Long morning = surgery(adm, dayA, "V81-NIGHT", "08:00", "07:50", "08:00", "09:00", "09:10", "ELECTIVE");
+        assertEquals(morning, num(items("1424", dayA).getFirst(), "surgery_id"));
+        assertEquals(1, num(summary("1424", dayB), "first_cases"));
+        assertEquals(0, num(summary("1425", dayA), "turnovers"));
+    }
+
+    @Test
+    void electiveFirstCaseIsSelectedWithinElectivePopulation() {
+        Long adm = newAdmission();
+        surgery(adm, dayA, "V81-ELECT", "02:00", "01:50", "02:00", "03:00", "03:10", "EMERGENCY");
+        surgery(adm, dayA, "V81-ELECT", "08:00", "08:40", "08:50", "09:30", "09:40", "ELECTIVE");
+        var total = summary("1424", dayA);
+        assertEquals(1, num(total, "first_cases"));
+        assertEquals(1, num(total, "elective_first_cases"));
+        assertEquals(1, num(total, "elective_delayed"));
+        assertEquals(50.0, dbl(total, "elective_delayed_minutes_total"));
+    }
+
+    @Test
+    void missingEntryMustNotMakeTurnoverSkipAnInterveningCase() {
+        Long adm = newAdmission();
+        surgery(adm, dayA, "V81-GAP", "08:00", "08:00", "08:10", "09:00", "09:10", "ELECTIVE");
+        surgery(adm, dayA, "V81-GAP", "09:30", null, "09:40", "10:00", "10:20", "ELECTIVE");
+        Long last = surgery(adm, dayA, "V81-GAP", "10:30", "10:40", "10:50", "11:30", "11:40", "ELECTIVE");
+        assertEquals(20.0, dbl(bySurgery(items("1425", dayA), last), "turnover_minutes"));
+        assertEquals(20.0, dbl(summary("1425", dayA), "total_turnover_minutes"));
+    }
+
     // ================= 1424★ 延迟开台量 =================
 
     /**

@@ -98,7 +98,7 @@
               title="明细与汇总同时间窗、同锚点、同过滤条件——对不上账即为缺陷，请据此核对。" />
     <el-alert v-if="detailNote" type="info" :closable="false" class="caveat" :title="detailNote" />
     <el-alert v-if="detailBucket" type="success" :closable="false" class="caveat"
-              :title="`分桶：${detailBucket}——该桶汇总计数 ${fmt(detailBucketCount)}`
+              :title="`分桶：${fmtCell(detailCode === '1426' ? 'cancel_stage' : 'surgery_kind', detailBucket)}——该桶汇总计数 ${fmt(detailBucketCount)}`
                 + (detailBucketPatients != null ? `（患者数 ${fmt(detailBucketPatients)}）` : '')
                 + `，本次明细 ${detailItems.length} 行`" />
     <el-alert v-if="detailTruncated" type="warning" show-icon :closable="false" class="caveat"
@@ -286,7 +286,7 @@ function fmt(v: unknown): string {
  * 只译显示，不改数据（分桶键仍按原值拼接）；未登记的码原样显示。
  */
 const CODE_ZH: Record<string, Record<string, string>> = {
-  status: { REQUESTED: '已申请', SCHEDULED: '已排台', DONE: '已完成', CANCELLED: '已取消' },
+  status: { REQUESTED: '已申请', SCHEDULED: '已排台', DONE: '已完成', CANCELLED: '已取消', NEW: '待处理', HANDLED: '已处理' },
   surgery_kind: { ELECTIVE: '择期', EMERGENCY: '急诊', DAY: '日间' },
   cancel_stage: { APPLY: '申请阶段', SCHEDULE: '排程阶段', PRE_IN: '入室前', IN_OP: '术中' },
 }
@@ -333,7 +333,7 @@ const ZH: Record<string, string> = {
   cross_day_pct: '跨日占比(%)',
   avg_hours: '平均时长(小时)',
   kind_name: '手术类别',
-  surgery_kind: '类别编码',
+  surgery_kind: '手术类别',
   pct: '构成比(%)',
   asa_grade: 'ASA 分级',
   deaths: '死亡例数',
@@ -376,13 +376,15 @@ const ZH: Record<string, string> = {
   planned_name: '计划性',
   events: '事件次数',
   event_name: '事件',
-  event_type: '事件编码',
+  event_type: '事件名称',
   level: '级别',
   level1: 'Ⅰ级',
   level2: 'Ⅱ级',
   level3: 'Ⅲ级',
   level4: 'Ⅳ级',
   handled: '已处置',
+  is_first_case: '是否全部首台',
+  is_elective_first_case: '是否择期首台',
   surgery_id: '手术ID',
   admission_id: '住院ID',
   admission_no: '住院号',
@@ -403,7 +405,7 @@ const ZH: Record<string, string> = {
   elective_delayed_minutes_total: '择期延迟开台量(分钟,合计)',
   elective_avg_delay_minutes: '择期平均延迟(分钟/延迟台)',
   start_offset_minutes: '实开较排台偏移(分钟,提前为负)',
-  first_in_room_at: '首台入室时间',
+  first_in_room_at: '最早入室时间',
   in_room_recorded: '已录入室时间台数',
   turnover_prev_surgery_id: '接台上一台手术ID',
   prev_out_room_at: '上一台出室时间',

@@ -120,6 +120,19 @@ class V81SurgeryCancelGuardTest {
         assertNull(row.get("cancelled_at"), "被拒的取消不得落取消时刻");
     }
 
+    @Test
+    void inconsistentLaterTimepointsMustRejectCancellationWithoutChangingRow() throws Exception {
+        Long adm = admit("取消边界");
+        for (String stage : List.of("APPLY", "PRE_IN", "IN_OP")) {
+            Long sid = newSurgery(adm, "后续时间点" + stage, null);
+            if (stage.equals("APPLY")) jdbc.update("update inp_surgery set in_room_at = now() - interval '1 hour' where id = ?", sid);
+            if (stage.equals("PRE_IN")) jdbc.update("update inp_surgery set start_at = now() - interval '1 hour' where id = ?", sid);
+            if (stage.equals("IN_OP")) jdbc.update("update inp_surgery set in_room_at = now() - interval '2 hours', out_room_at = now() - interval '1 hour' where id = ?", sid);
+            assertEquals(4910, cancel(sid, stage, null).getCode());
+            assertUntouched(sid);
+        }
+    }
+
     // ================= D7 取消阶段与已登记时间点一致 =================
 
     @Test

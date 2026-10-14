@@ -71,8 +71,8 @@ import java.util.Map;
  *
  * <p><b>1424★ 两套口径并排给、不二选一</b>：{@code on_time_rate_pct} 是全部首台，
  * {@code elective_on_time_rate_pct} 是《2022 版》国标口径（只算择期首台，见 V140 对
- * {@code surgery_kind} 的说明）。只给国标口径会让 {@code surgery_kind} 未录的历史手术整片消失，
- * 只给全量口径又与国标对不上——两套并排 + 覆盖率，才是能对账的形态。
+ * {@code surgery_kind} 的说明）。只给择期口径会让 {@code surgery_kind} 未录的历史手术整片消失，
+ * 只给全量口径又不能反映择期首台——两套并排 + 覆盖率，才是能对账的形态。
  *
  * <p><b>1422★1423★「穿透查看取值明细 + 导出 EXCEL」不是可选项</b>，它是防「指标算得出但对不上账」
  * 的关键：每个 available 的指标都有 {@code GET /detail?indicator=} 逐条明细与 {@code .csv} 导出，
@@ -212,7 +212,7 @@ public class AnesQcController {
     static final String TURNOVER_NOTE =
             "接台时长 = 同一手术间、同一自然日内相邻两台的「上一台出室 → 下一台入室」间隔；"
             + "跨自然日的相邻两台不计接台，入室早于上一台出室（重叠或录错）的也不计入——不做负值累加。"
-            + "【口径已修正（v81）】相邻 = 同一手术间、同一统计日内按入室时间排序的前一台（未取消、落在本时间窗内），"
+            + "【口径已修正（v81）】相邻 = 同一手术间内按入室时间（缺则开台、排台）排序的前一台已开展手术；不跳过缺入室时间的中间台次，且两台入室日与前台出室日必须相同，不设间隔上限（落在本时间窗内），"
             + "汇总与穿透明细用同一段排序取数；此前明细是另取「同日最晚一次出室」，"
             + "遇到重叠或录错的台次会越过前一台接到更早那台上，与汇总对不上账。"
             + "接台分钟逐对先舍入到 0.1 分钟再求和，故明细里接台时长有值的行数 == 接台次数，"
@@ -243,7 +243,7 @@ public class AnesQcController {
             + "准点台次也是正数、提前开台是负数，逐台加总得不出延迟量；本版起它只在判为延迟时取值，"
             + "准点、提前、判不了一律为空，原来的有符号偏移改由 start_offset_minutes 给出，"
             + "另给 delayed / on_time 两个判定位（判不了时皆空）。"
-            + "逐台分钟先舍入到 0.1 分钟，故明细 delay_minutes 之和 == delayed_minutes_total。";
+            + "逐台分钟先舍入到 0.1 分钟，故按 is_first_case 筛选的明细 delay_minutes 之和 == delayed_minutes_total；择期合计按 is_elective_first_case 筛选，避免两套独立首台混加。";
 
     static final String ADVERSE_NOTE =
             "qc_adverse_event 是全院不良事件登记表，无 surgery_id 关联列，无法筛出「麻醉与手术相关」子集，"
@@ -337,7 +337,7 @@ public class AnesQcController {
             " 【已开展口径（v81 审阅修补，会改变既有数值）】本指标只统计已开展的手术台次："
             + "已登记开台时间，或状态为已完成；只申请、已排台尚未开台的台次与已取消的台次都不计（取消见 1426★）。"
             + "此前只排除了取消，未开展的台次也被计入台数、类别与年龄分布，排得早却没做的台次还会抢占首台位。"
-            + "页首覆盖率段的手术总台数仍是全部登记台次（含未开展），两者之差即未开展的台数。";
+            + "页首覆盖率段的手术总台数仍是全部登记台次（含未开展），两者之差包含未开展与已取消台次，不能作为未开展台数。";
 
     /** 年龄（岁，按统计锚点日与出生日期算） */
     private static final String AGE_YEARS =
@@ -405,11 +405,11 @@ public class AnesQcController {
      * 均值分母是「延迟台数」（delay_min 非空的台数 == delayed），不是首台数；无延迟时均值为空、合计为 0。
      */
     private static final String DELAY_AGG = """
-            coalesce(sum(j.delay_min), 0)                                                as delayed_minutes_total,
-                   round(sum(j.delay_min) / nullif(count(j.delay_min), 0), 1)           as avg_delay_minutes,
-                   coalesce(sum(j.delay_min) filter (where j.surgery_kind = 'ELECTIVE'), 0) as elective_delayed_minutes_total,
-                   round(sum(j.delay_min) filter (where j.surgery_kind = 'ELECTIVE')
-                         / nullif(count(j.delay_min) filter (where j.surgery_kind = 'ELECTIVE'), 0), 1)
+            coalesce(sum(j.delay_min) filter (where j.rn = 1), 0)                                                as delayed_minutes_total,
+                   round(sum(j.delay_min) filter (where j.rn = 1) / nullif(count(j.delay_min) filter (where j.rn = 1), 0), 1)           as avg_delay_minutes,
+                   coalesce(sum(j.delay_min) filter (where j.surgery_kind = 'ELECTIVE' and j.kind_rn = 1), 0) as elective_delayed_minutes_total,
+                   round(sum(j.delay_min) filter (where j.surgery_kind = 'ELECTIVE' and j.kind_rn = 1)
+                         / nullif(count(j.delay_min) filter (where j.surgery_kind = 'ELECTIVE' and j.kind_rn = 1), 0), 1)
                                                                                          as elective_avg_delay_minutes""";
 
     /**
@@ -420,20 +420,23 @@ public class AnesQcController {
             "round((extract(epoch from (q.in_room_at - q.prev_out)) / 60)::numeric, 1)";
 
     /**
-     * v81：1425★ 接台序列——汇总与明细<b>同一段 SQL</b>：同手术间、同锚点日，按 (in_room_at, id) 排序取上一台
-     * out_room_at（lag）。只排录了手术间与入室时间的、未取消的、落在时间窗里的台次。
-     * 接台成立 = prev_out 非空且本台入室不早于它（重叠 / 录错不计、不做负值累加）。
+     * v81：1425★ 接台序列——汇总与明细<b>同一段 SQL</b>：同手术间按入室时间（缺则开台、排台）排序取上一台
+     * out_room_at（lag）。录了手术间的已开展台次都参与排序，缺入室时间的中间台次不跳过。
+     * 接台成立 = 相邻台次入室日相同、前台出室日与本台入室日相同，且本台入室不早于它（重叠 / 录错不计、不做负值累加）。
      * 修正前明细用 {@code max(out_room_at)} 横连另算一套：重叠时会越过上一台接到更早那台上，且不滤取消与时间窗。
      */
     private static final String TURN_SEQ = """
             select b.id, b.op_day, b.in_room_at,
-                   lag(b.out_room_at) over (partition by b.room_no, b.op_day
-                                            order by b.in_room_at, b.id) as prev_out,
-                   lag(b.id)          over (partition by b.room_no, b.op_day
-                                            order by b.in_room_at, b.id) as prev_id
-            from (select s.id, s.room_no, s.in_room_at, s.out_room_at, {anchor}::date as op_day
+                   case when (lag(b.sequence_at) over seq_window)::date = b.in_room_at::date
+                         and (lag(b.out_room_at) over seq_window)::date = b.in_room_at::date
+                        then lag(b.out_room_at) over seq_window end as prev_out,
+                   lag(b.id) over seq_window as prev_id
+            from (select s.id, s.room_no, s.in_room_at, s.out_room_at,
+                         coalesce(s.in_room_at, s.start_at, s.scheduled_at, s.created_at) as sequence_at,
+                         {anchor}::date as op_day
                   from inp_surgery s
-                  where s.room_no is not null and s.in_room_at is not null and {alive} and {window}) b""";
+                  where s.room_no is not null and {alive} and {window}) b
+            window seq_window as (partition by b.room_no order by b.sequence_at, b.id)""";
 
     /** 穿透明细多取 1 条判 truncated：只取 LIMIT 条会让「刚好第 200 条」漏报 */
     private static final String DETAIL_CAP = " limit " + (DETAIL_LIMIT + 1);
@@ -483,6 +486,8 @@ public class AnesQcController {
                 .replace("{offsetMinX}", OFFSET_MIN_X)
                 .replace("{turnMin}", TURN_MIN)
                 .replace("{cancelWindow}", CANCEL_WINDOW)
+                .replace("{firstWindow}", "coalesce(s.in_room_at, s.start_at, s.scheduled_at, s.created_at) >= ?::date and coalesce(s.in_room_at, s.start_at, s.scheduled_at, s.created_at) < ?::date + 1")
+                .replace("{firstAnchor}", "coalesce(s.in_room_at, s.start_at, s.scheduled_at, s.created_at)")
                 .replace("{window}", WINDOW)
                 .replace("{alive}", PERFORMED)
                 .replace("{ageBand}", AGE_BAND)
@@ -792,10 +797,10 @@ public class AnesQcController {
 
     private static String baseNoteOf(String code) {
         return switch (code) {
-            case "1424" -> "首台 = 同一手术间、同一自然日内入室（缺则开台）时间最早的一台。准点 = 开台时间不晚于"
+            case "1424" -> "首台 = 同一手术间按入室日（缺则开台日）归集、入室（缺则开台）时间最早的一台。准点 = 开台时间不晚于"
                     + "排台时间 + 阈值（阈值走 sys_config 键 anes.qc.ontime_minutes，不硬编码）。"
                     + "准点率的分母只含「排台时间与开台时间都录了」的首台，判不了的单列 unjudgeable，不并进分母。"
-                    + "另给一组 elective_* 是择期首台口径（只算择期手术首台）：两套口径并排给、不二选一——"
+                    + "另给一组 elective_* 是独立选择的择期首台口径（急诊首台不占择期首台位）：两套口径并排给、不二选一——"
                     + "只给择期口径会让 surgery_kind 未录的历史手术整片消失。"
                     + "平台以开台时间判定准点与延迟（未记录麻醉开始时间）。"
                     + DELAY_VOLUME_NOTE;
@@ -1132,47 +1137,50 @@ public class AnesQcController {
      * 1424★ 首台：先按手术间 × 自然日排序取 rn=1，再按日汇总准点 / 延迟 / 判不了。
      *
      * <p><b>两套口径并排给，不二选一</b>：{@code first_cases / on_time_rate_pct} 是全部首台，
-     * {@code elective_*} 是《2022 版》国标口径（<b>只算择期手术首台</b>，见 V140 对
-     * {@code surgery_kind} 的说明）。只给国标口径会让 {@code surgery_kind} 未录的历史手术
-     * 整片消失，只给全量口径又与国标对不上——两套并排 + 覆盖率，才是能对账的形态。
+     * {@code elective_*} 是独立选择的择期首台口径（<b>只算择期手术首台</b>，见 V140 对
+     * {@code surgery_kind} 的说明）。只给择期口径会让 {@code surgery_kind} 未录的历史手术
+     * 整片消失，只给全量口径又不能反映择期首台——两套并排 + 覆盖率，才是能对账的形态。
      */
     private List<Map<String, Object>> firstCaseRows(Window w) {
         int m = onTimeMinutes();
         return jdbc.queryForList(q("""
                 with base as (
                     select s.id, s.scheduled_at, s.start_at, s.surgery_kind, a.dept_id,
-                           {anchor}::date as op_day,
+                           {firstAnchor}::date as op_day,
                            row_number() over (
-                               partition by s.room_no, {anchor}::date
-                               order by coalesce(s.in_room_at, s.start_at, s.scheduled_at), s.id) as rn
+                               partition by s.room_no, {firstAnchor}::date
+                               order by coalesce(s.in_room_at, s.start_at, s.scheduled_at), s.id) as rn,
+                               row_number() over (
+                                   partition by s.room_no, {firstAnchor}::date, s.surgery_kind
+                                   order by coalesce(s.in_room_at, s.start_at, s.scheduled_at), s.id) as kind_rn
                     from inp_surgery s
                     join inp_admission a on a.id = s.admission_id
-                    where s.room_no is not null and {alive} and {window}
+                    where s.room_no is not null and {alive} and {firstWindow}
                 ), judged as (
                     select b.*,
                            (b.start_at is not null and b.scheduled_at is not null)            as judgeable,
                            (b.start_at is not null and b.scheduled_at is not null
                               and b.start_at <= b.scheduled_at + (?::int * interval '1 minute')) as on_time
-                    from base b where b.rn = 1
+                    from base b where b.rn = 1 or (b.surgery_kind = 'ELECTIVE' and b.kind_rn = 1)
                 ), judged2 as (
                     select j0.*, {delayMin} as delay_min
                     from judged j0
                 )
                 select j.op_day,
-                       count(*)                                                              as first_cases,
-                       count(*) filter (where j.on_time)                                     as on_time,
-                       count(*) filter (where j.judgeable and not j.on_time)                 as delayed,
-                       count(*) filter (where not j.judgeable)                               as unjudgeable,
-                       round(100.0 * count(*) filter (where j.on_time)
-                             / nullif(count(*) filter (where j.judgeable), 0), 2)            as on_time_rate_pct,
-                       count(*) filter (where j.surgery_kind = 'ELECTIVE')                   as elective_first_cases,
-                       count(*) filter (where j.surgery_kind = 'ELECTIVE' and j.on_time)     as elective_on_time,
-                       count(*) filter (where j.surgery_kind = 'ELECTIVE'
+                       count(*) filter (where rn = 1)                                                              as first_cases,
+                       count(*) filter (where rn = 1 and j.on_time)                                     as on_time,
+                       count(*) filter (where rn = 1 and j.judgeable and not j.on_time)                 as delayed,
+                       count(*) filter (where j.rn = 1 and not j.judgeable)                               as unjudgeable,
+                       round(100.0 * count(*) filter (where rn = 1 and j.on_time)
+                             / nullif(count(*) filter (where rn = 1 and j.judgeable), 0), 2)            as on_time_rate_pct,
+                       count(*) filter (where j.surgery_kind = 'ELECTIVE' and kind_rn = 1)                   as elective_first_cases,
+                       count(*) filter (where j.surgery_kind = 'ELECTIVE' and kind_rn = 1 and j.on_time)     as elective_on_time,
+                       count(*) filter (where j.surgery_kind = 'ELECTIVE' and kind_rn = 1
                                           and j.judgeable and not j.on_time)                 as elective_delayed,
-                       round(100.0 * count(*) filter (where j.surgery_kind = 'ELECTIVE' and j.on_time)
-                             / nullif(count(*) filter (where j.surgery_kind = 'ELECTIVE'
+                       round(100.0 * count(*) filter (where j.surgery_kind = 'ELECTIVE' and kind_rn = 1 and j.on_time)
+                             / nullif(count(*) filter (where j.surgery_kind = 'ELECTIVE' and kind_rn = 1
                                           and j.judgeable), 0), 2)                           as elective_on_time_rate_pct,
-                       string_agg(distinct coalesce(d.name, '（未知科室）'), '、')            as first_case_depts,
+                       string_agg(distinct coalesce(d.name, '（未知科室）'), '、') filter (where j.rn = 1)            as first_case_depts,
                        {delayAgg}
                 from judged2 j
                 left join sys_dept d on d.id = j.dept_id
@@ -1337,33 +1345,36 @@ public class AnesQcController {
                     with base as (
                         select s.scheduled_at, s.start_at, s.surgery_kind,
                                row_number() over (
-                                   partition by s.room_no, {anchor}::date
-                                   order by coalesce(s.in_room_at, s.start_at, s.scheduled_at), s.id) as rn
+                                   partition by s.room_no, {firstAnchor}::date
+                                   order by coalesce(s.in_room_at, s.start_at, s.scheduled_at), s.id) as rn,
+                               row_number() over (
+                                   partition by s.room_no, {firstAnchor}::date, s.surgery_kind
+                                   order by coalesce(s.in_room_at, s.start_at, s.scheduled_at), s.id) as kind_rn
                         from inp_surgery s
-                        where s.room_no is not null and {alive} and {window}
+                        where s.room_no is not null and {alive} and {firstWindow}
                     ), judged as (
-                        select b.surgery_kind, b.start_at, b.scheduled_at,
+                        select b.*,
                                (b.start_at is not null and b.scheduled_at is not null)            as judgeable,
                                (b.start_at is not null and b.scheduled_at is not null
                                   and b.start_at <= b.scheduled_at
                                                     + (?::int * interval '1 minute'))             as on_time
-                        from base b where b.rn = 1
+                        from base b where b.rn = 1 or (b.surgery_kind = 'ELECTIVE' and b.kind_rn = 1)
                     ), judged2 as (
                         select j0.*, {delayMin} as delay_min
                         from judged j0
                     )
-                    select count(*)                                                          as first_cases,
-                           count(*) filter (where on_time)                                   as on_time,
-                           count(*) filter (where judgeable and not on_time)                 as delayed,
-                           count(*) filter (where not judgeable)                             as unjudgeable,
-                           round(100.0 * count(*) filter (where on_time)
-                                 / nullif(count(*) filter (where judgeable), 0), 2)          as on_time_rate_pct,
-                           count(*) filter (where surgery_kind = 'ELECTIVE')                 as elective_first_cases,
-                           count(*) filter (where surgery_kind = 'ELECTIVE' and on_time)     as elective_on_time,
-                           count(*) filter (where surgery_kind = 'ELECTIVE'
+                    select count(*) filter (where rn = 1)                                                          as first_cases,
+                           count(*) filter (where rn = 1 and on_time)                                   as on_time,
+                           count(*) filter (where rn = 1 and judgeable and not on_time)                 as delayed,
+                           count(*) filter (where rn = 1 and not judgeable)                             as unjudgeable,
+                           round(100.0 * count(*) filter (where rn = 1 and on_time)
+                                 / nullif(count(*) filter (where rn = 1 and judgeable), 0), 2)          as on_time_rate_pct,
+                           count(*) filter (where surgery_kind = 'ELECTIVE' and kind_rn = 1)                 as elective_first_cases,
+                           count(*) filter (where surgery_kind = 'ELECTIVE' and kind_rn = 1 and on_time)     as elective_on_time,
+                           count(*) filter (where surgery_kind = 'ELECTIVE' and kind_rn = 1
                                               and judgeable and not on_time)                 as elective_delayed,
-                           round(100.0 * count(*) filter (where surgery_kind = 'ELECTIVE' and on_time)
-                                 / nullif(count(*) filter (where surgery_kind = 'ELECTIVE'
+                           round(100.0 * count(*) filter (where surgery_kind = 'ELECTIVE' and kind_rn = 1 and on_time)
+                                 / nullif(count(*) filter (where surgery_kind = 'ELECTIVE' and kind_rn = 1
                                               and judgeable), 0), 2)                         as elective_on_time_rate_pct,
                            {delayAgg}
                     from judged2 j
@@ -1381,7 +1392,7 @@ public class AnesQcController {
                     where {alive} and {window}
                     """), w.args());
             // v81 审阅修补（D9）：1425★ 区间合计——与按日汇总同一段 SQL（同一 {alive}/{window}、同一 {turnSeq}、
-            // 逐台 / 逐对先舍入再求和），故区间合计 == 按日各行之和逐位成立；接台不跨日（lag 按手术间 × 锚点日分区）。
+            // 逐台 / 逐对先舍入再求和），故区间合计 == 按日各行之和逐位成立；接台不跨入室自然日或前台出室自然日，不设间隔上限。
             // first_in_room_at 是区间内最早入室时刻（按日行里是当日最早）
             case "1425" -> one(q("""
                     with base as (
@@ -1731,14 +1742,18 @@ public class AnesQcController {
             // 同一判定（判不了两者皆空）。与汇总共用同一阈值（onTimeMinutes）与同一逐台舍入式（OFFSET_MIN_*）。
             case "1424" -> jdbc.queryForList(q("""
                     with base as (
-                        select s.id,
+                        select s.id, s.surgery_kind,
                                row_number() over (
-                                   partition by s.room_no, {anchor}::date
-                                   order by coalesce(s.in_room_at, s.start_at, s.scheduled_at), s.id) as rn
+                                   partition by s.room_no, {firstAnchor}::date
+                                   order by coalesce(s.in_room_at, s.start_at, s.scheduled_at), s.id) as rn,
+                               row_number() over (partition by s.room_no, {firstAnchor}::date, s.surgery_kind
+                                   order by coalesce(s.in_room_at, s.start_at, s.scheduled_at), s.id) as kind_rn
                         from inp_surgery s
-                        where s.room_no is not null and {alive} and {window}
+                        where s.room_no is not null and {alive} and {firstWindow}
                     )
                     select x.*,
+                           exists (select 1 from base where id = x.surgery_id and rn = 1) as is_first_case,
+                           exists (select 1 from base where id = x.surgery_id and surgery_kind = 'ELECTIVE' and kind_rn = 1) as is_elective_first_case,
                            case when j.on_time is false then {offsetMinX} end             as delay_minutes,
                            case when j.on_time is null
                                      then '无法判定（缺排台或开台时间）'
@@ -1749,7 +1764,7 @@ public class AnesQcController {
                            j.on_time                                                       as on_time
                     from (
                         {surg}
-                        where s.id in (select id from base where rn = 1)
+                        where s.id in (select id from base where rn = 1 or (surgery_kind = 'ELECTIVE' and kind_rn = 1))
                     ) x
                     cross join lateral (
                         select case when x.start_at is null or x.scheduled_at is null then null
@@ -2101,7 +2116,14 @@ public class AnesQcController {
         var b = parseBy(by);
         if (b.error() != null) return errCsv(b.error().getCode(), b.error().getMessage());
         if (!d.available()) return unavailableCsv(d, w.window());
-        return toCsv(d, w.window(), "指标汇总", rowsOf(d.code(), w.window(), b.by()), false, b.by());
+        var rows = new ArrayList<>(rowsOf(d.code(), w.window(), b.by()));
+        var total = summaryOf(d.code(), w.window());
+        String csv = toCsv(d, w.window(), "指标汇总", rows, false, b.by());
+        if (total != null && !total.isEmpty()) {
+            csv += "\n区间合计\n" + String.join(",", total.keySet().stream().map(c -> csv(zhOf(d.code(), c))).toList()) + "\n"
+                    + String.join(",", total.values().stream().map(AnesQcController::csv).toList()) + "\n";
+        }
+        return csv;
     }
 
     /** 兼容重载：不带 by 的三参调用等价于 {@code by=event}。刻意不加 {@code @GetMapping} */
@@ -2192,6 +2214,8 @@ public class AnesQcController {
      */
     private static String zhDetail(String col) {
         return switch (col) {
+            case "is_first_case" -> "是否全部首台";
+            case "is_elective_first_case" -> "是否择期首台";
             case "on_time" -> "是否准点";
             case "delayed" -> "是否延迟";
             case "is_unplanned_reop" -> "是否非计划再次手术";
@@ -2213,6 +2237,8 @@ public class AnesQcController {
                 case "SCHEDULED" -> "已排台";
                 case "DONE" -> "已完成";
                 case "CANCELLED" -> "已取消";
+                case "NEW" -> "待处理";
+                case "HANDLED" -> "已处理";
                 default -> null;
             };
             case "surgery_kind" -> switch (s) {
@@ -2274,7 +2300,7 @@ public class AnesQcController {
             case "cross_day_pct" -> "跨日占比(%)";
             case "avg_hours" -> "平均时长(小时)";
             case "kind_name" -> "手术类别";
-            case "surgery_kind" -> "类别编码";
+            case "surgery_kind" -> "手术类别";
             case "pct" -> "构成比(%)";
             case "asa_grade" -> "ASA 分级";
             // 1429★ 粒度修正后 deaths/death_rate_pct 是患者口径，表头跟着改，
@@ -2330,7 +2356,7 @@ public class AnesQcController {
             case "planned_name" -> "计划性";
             case "events" -> "事件次数";
             case "event_name" -> "事件";
-            case "event_type" -> "事件编码";
+            case "event_type" -> "事件名称";
             case "level" -> "级别";
             case "level1" -> "Ⅰ级";
             case "level2" -> "Ⅱ级";
@@ -2359,7 +2385,7 @@ public class AnesQcController {
             case "elective_delayed_minutes_total" -> "择期延迟开台量(分钟,合计)";
             case "elective_avg_delay_minutes" -> "择期平均延迟(分钟/延迟台)";
             case "start_offset_minutes" -> "实开较排台偏移(分钟,提前为负)";
-            case "first_in_room_at" -> "首台入室时间";
+            case "first_in_room_at" -> "最早入室时间";
             case "in_room_recorded" -> "已录入室时间台数";
             case "turnover_prev_surgery_id" -> "接台上一台手术ID";
             case "prev_out_room_at" -> "上一台出室时间";

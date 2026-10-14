@@ -302,7 +302,9 @@ def ensure_admission(patient, ctx):
     # 此前只出现一个科室。种子里只有这两个临床科室；缺内科时回落外科（已建的住院不改）。
     clinical = [d for d in DEPTS.values() if d.get('type') == 'CLINICAL']
     surg = DEPTS.get('OUTP_SURG') or clinical[0]
-    med = DEPTS.get('OUTP_MED') or surg
+    med = DEPTS.get('OUTP_IM')
+    if med is None or med == surg:
+        raise RuntimeError('演示必须具备不同的外科和内科门诊科室')
     digits = ''.join(ch for ch in patient['name'] if ch.isdigit())
     dept = med if digits and int(digits) % 2 == 0 else surg
     adm = do(f"入院 {patient['name']}", 'POST', '/inpatient/admissions',
@@ -482,6 +484,7 @@ def self_check():
         facts[f'1424.{k}'] = s24.get(k)
         need(_n(s24.get(k)) > 0, f'1424 汇总 {k} 应 > 0，实得 {s24.get(k)}')
     d24 = demo(detail('1424')['items'])
+    need(len({x.get('dept_name') for x in d24 if x.get('dept_name')}) >= 2, '演示首台必须覆盖至少两个科室')
     kinds = {'准点': 0, '延迟': 0, '提前': 0}
     for x in d24:
         st, sc = _ts(x.get('start_at')), _ts(x.get('scheduled_at'))
