@@ -124,6 +124,9 @@ public class DoctorStationController {
     @PostMapping("/{registrationId}/start")
     public R<Map<String, Object>> start(@PathVariable Long registrationId, Authentication auth) {
         try {
+            int denied = writeDenial(registrationId, auth, false);
+            if (denied == 4036) return R.fail(4036, "无权写入该次就诊（非当日就诊且非本人接诊）");
+            if (denied == 4023) return R.fail(4023, "仅病历书写医师本人可修改或补正，管理员修改保留原书写人");
             var reg = doctorStationService.startVisit(registrationId, currentUserService.idOf(auth));
             return R.ok(Map.of("registrationId", reg.getId(), "status", reg.getStatus()));
         } catch (BizException e) {
@@ -183,6 +186,9 @@ public class DoctorStationController {
     public R<OutpEmr> saveEmr(@PathVariable Long registrationId, @RequestBody SaveEmrRequest req,
                               Authentication auth) {
         try {
+            int denied = writeDenial(registrationId, auth, true);
+            if (denied == 4036) return R.fail(4036, "无权写入该次就诊（非当日就诊且非本人接诊）");
+            if (denied == 4023) return R.fail(4023, "仅病历书写医师本人可修改或补正，管理员修改保留原书写人");
             return R.ok(doctorStationService.saveEmr(registrationId, req.emr(),
                     req.diagnoses() == null ? List.of() : req.diagnoses(), currentUserService.idOf(auth),
                     req.templateId(), req.fields()));
@@ -201,6 +207,9 @@ public class DoctorStationController {
     @PostMapping("/{registrationId}/emr/sign")
     public R<Object> signEmr(@PathVariable Long registrationId, Authentication auth) {
         try {
+            int denied = writeDenial(registrationId, auth, true);
+            if (denied == 4036) return R.fail(4036, "无权写入该次就诊（非当日就诊且非本人接诊）");
+            if (denied == 4023) return R.fail(4023, "仅病历书写医师本人可修改或补正，管理员修改保留原书写人");
             var emr = doctorStationService.signEmr(registrationId, currentUserService.idOf(auth), signatureAdapter);
             return R.ok(Map.of("signature", emr.getSignature(), "signedAt", emr.getSignedAt()));
         } catch (BizException e) {
@@ -214,6 +223,9 @@ public class DoctorStationController {
     @PostMapping("/{registrationId}/emr/amend")
     public R<Void> amendEmr(@PathVariable Long registrationId, @RequestBody AmendRequest req, Authentication auth) {
         try {
+            int denied = writeDenial(registrationId, auth, true);
+            if (denied == 4036) return R.fail(4036, "无权写入该次就诊（非当日就诊且非本人接诊）");
+            if (denied == 4023) return R.fail(4023, "仅病历书写医师本人可修改或补正，管理员修改保留原书写人");
             doctorStationService.amendEmr(registrationId, req.amendText(), req.reason(),
                     currentUserService.idOf(auth));
             return R.ok();
@@ -238,6 +250,9 @@ public class DoctorStationController {
     public R<Object> createOrders(@PathVariable Long registrationId, @RequestBody CreateOrdersRequest req,
                                   Authentication auth) {
         try {
+            int denied = writeDenial(registrationId, auth, false);
+            if (denied == 4036) return R.fail(4036, "无权写入该次就诊（非当日就诊且非本人接诊）");
+            if (denied == 4023) return R.fail(4023, "仅病历书写医师本人可修改或补正，管理员修改保留原书写人");
             return R.ok(doctorStationService.createOrders(registrationId, req.lines(), currentUserService.idOf(auth)));
         } catch (BizException e) {
             return R.fail(e.code, e.getMessage());
@@ -245,13 +260,20 @@ public class DoctorStationController {
     }
 
     @PutMapping("/orders/{orderId}/cancel")
-    public R<Void> cancelOrder(@PathVariable Long orderId) {
+    public R<Void> cancelOrder(@PathVariable Long orderId, Authentication auth) {
         try {
+            var order = orderRepository.findById(orderId).orElse(null);
+            if (order != null && writeDenial(order.getRegistrationId(), auth, false) != 0)
+                return R.fail(4036, "无权作废该次就诊的医嘱（非当日就诊且非本人接诊）");
             doctorStationService.cancelOrder(orderId);
             return R.ok();
         } catch (BizException e) {
             return R.fail(e.code, e.getMessage());
         }
+    }
+
+    public R<Void> cancelOrder(Long orderId) {
+        return cancelOrder(orderId, SecurityContextHolder.getContext().getAuthentication());
     }
 
     // ==================== v44 车道E：门诊诊断域完整化（977/979/982/983/984/1084） ====================
@@ -296,9 +318,18 @@ public class DoctorStationController {
      * 可跨 92 天，逐个打开他人往次挂号即读到主诉、现病史、诊断，患者级的 4036 被绕过。
      * 口径「当日就诊队列共享、往次就诊归本人」：ADMIN 全看；否则以下任一成立放行——就诊日期是今天（当日队列全院共享，
      * 代班照常）；挂号归属为空（科室号，只看这一次）；归属是我；这次门诊病历是我写的。都不成立返回真，调用方回 4036（不带数据）；
-     * 挂号不存在时返回假保持原行为。写端点（病历保存 / 签名 / 补正、开单、作废）不在此列，他人续写口径待定。
+     * 挂号不存在时返回假保持原行为。写端点复用本就诊范围，另对病历正文校验书写人。
      * 本控制器类级门槛只放 ADMIN / DOCTOR_OUTP。4036 文案在两个调用点写成字面量，供 tools/gen-error-codes.py 抓进速查表。
      */
+    /** 接口先拒绝明显越权；服务层在自身事务内锁定就诊并再次核验，防止校验与落库之间归属变化。 */
+    private int writeDenial(Long registrationId, Authentication auth, boolean checkAuthor) {
+        OutpEmr emr = emrRepository.findByRegistrationId(registrationId).orElse(null);
+        if (visitDenied(registrationId, emr)) return 4036;
+        if (checkAuthor && emr != null && emr.getDoctorId() != null && !isAdmin(auth)
+                && !emr.getDoctorId().equals(currentUserService.idOf(auth))) return 4023;
+        return 0;
+    }
+
     private boolean visitDenied(Long registrationId, OutpEmr emr) {
         var reg = registrationRepository.findById(registrationId).orElse(null);
         if (reg == null) return false;

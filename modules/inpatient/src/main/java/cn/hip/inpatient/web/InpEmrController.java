@@ -45,6 +45,35 @@ public class InpEmrController {
      * 旧请求体反序列化后两者为 null，整段结构化逻辑短路，落库与返回体逐字节不变；
      * 三参构造器保留是为让既有单测（V42EmrTemplateTest:74,98）源码零改动。
      */
+    private boolean admin(Authentication auth) {
+        var effective = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+        if (effective == null) effective = auth;
+        return effective != null && effective.getAuthorities().stream().anyMatch(a -> "ROLE_ADMIN".equals(a.getAuthority()));
+    }
+
+    private boolean authorDenied(InpMedicalRecord record, Authentication auth) {
+        if (admin(auth)) return false;
+        Long me = auth == null ? null : currentUserService.idOf(auth);
+        return me == null || !me.equals(record.getDoctorId());
+    }
+
+    private boolean admissionWriterDenied(Long admissionId, Authentication auth) {
+        if (admin(auth)) return false;
+        Long me = auth == null ? null : currentUserService.idOf(auth);
+        var rows = jdbc.queryForList("select doctor_id from inp_admission where id = ? for update", admissionId);
+        return me == null || rows.isEmpty() || (rows.getFirst().get("doctor_id") != null
+                && !me.equals(((Number)rows.getFirst().get("doctor_id")).longValue()));
+    }
+
+    /** 与签名、修改和补正同一行锁；刷新缓存，签名的正文必须是拿锁后的最新正文。 */
+    private InpMedicalRecord lockedRecord(Long admissionId, Long recordId) {
+        var rows = jdbc.queryForList("select id from inp_medical_record where id = ? and admission_id = ? for update", recordId, admissionId);
+        if (rows.isEmpty()) return null;
+        InpMedicalRecord record = recordRepo.findById(recordId).orElse(null);
+        if (record != null) entityManager.refresh(record);
+        return record;
+    }
+
     public record SaveRecordRequest(String recordType, String title, String content,
                                     Long templateId, java.util.Map<String, Object> fields) {
         /** v45 之前的三参形态 */
@@ -68,8 +97,11 @@ public class InpEmrController {
             List.of("ADMISSION", "FIRST_PROGRESS", "PROGRESS", "ROUND", "DISCHARGE", "PREOP");
 
     @PostMapping("/records")
+    @org.springframework.transaction.annotation.Transactional
+    @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP')")
     public R<InpMedicalRecord> addRecord(@PathVariable Long admissionId,
                                          @RequestBody SaveRecordRequest req, Authentication auth) {
+        if (admissionWriterDenied(admissionId, auth)) return R.fail(9130, "无权写入该住院病历（非主管医师）");
         // v47：**不传仍默认 PROGRESS（既有行为逐字不动）**，只有显式传了非白名单值才拒。
         // 挡在结构化渲染之前，避免类型非法时先报模板校验码（4024–4027）造成误导。
         if (req.recordType() != null && !RECORD_TYPES.contains(req.recordType())) {
@@ -116,8 +148,11 @@ public class InpEmrController {
      * 是病历时限质控"查房时限"统计的数据来源。
      */
     @PostMapping("/records/round")
+    @org.springframework.transaction.annotation.Transactional
+    @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP')")
     public R<InpMedicalRecord> addRound(@PathVariable Long admissionId,
                                         @RequestBody RoundRequest req, Authentication auth) {
+        if (admissionWriterDenied(admissionId, auth)) return R.fail(9130, "无权写入该住院病历（非主管医师）");
         if (req.roundLevel() == null || !List.of("CHIEF", "ATTENDING", "RESIDENT").contains(req.roundLevel())) {
             return R.fail(9119, "查房级别非法（CHIEF 主任 / ATTENDING 主治 / RESIDENT 住院医）");
         }
@@ -159,17 +194,21 @@ public class InpEmrController {
 
     /** 1.0.4：住院病历 CA 签名（SignatureAdapter，与门诊同语义；已签名不可重签） */
     @PostMapping("/records/{recordId}/sign")
+    @org.springframework.transaction.annotation.Transactional
+    @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP')")
     public R<java.util.Map<String, Object>> signRecord(@PathVariable Long admissionId,
                                                        @PathVariable Long recordId, Authentication auth) {
-        InpMedicalRecord r = recordRepo.findById(recordId)
-                .filter(x -> x.getAdmissionId().equals(admissionId)).orElse(null);
+        InpMedicalRecord r = lockedRecord(admissionId, recordId);
         if (r == null) return R.fail(9102, "病历不存在");
+        if (authorDenied(r, auth)) return R.fail(9130, "无权写入该住院病历（非书写医师）");
         if (r.getSignature() != null) return R.fail(9103, "病历已签名");
         var result = signatureAdapter.sign(r.getContent(), currentUserService.idOf(auth));
         if (!result.ok()) return R.fail(9104, "签名失败: " + result.message());
         r.setSignature(result.signature());
         r.setSignedAt(java.time.Instant.now());
-        recordRepo.save(r);
+        jdbc.update("update inp_medical_record set signature=?, signed_at=? where id=? and admission_id=? and signature is null",
+                r.getSignature(), java.sql.Timestamp.from(r.getSignedAt()), recordId, admissionId);
+        entityManager.refresh(r);
         recordInpVersion(r, cn.hip.outpatient.service.EmrVersionService.SUBMIT, currentUserService.idOf(auth));
         return R.ok(java.util.Map.of("signature", r.getSignature(), "signedAt", r.getSignedAt()));
     }
@@ -210,12 +249,13 @@ public class InpEmrController {
      * 标题/查房意见超列宽 4000。
      */
     @PutMapping("/records/{recordId}")
+    @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP')")
     @org.springframework.transaction.annotation.Transactional
     public R<InpMedicalRecord> updateRecord(@PathVariable Long admissionId, @PathVariable Long recordId,
                                             @RequestBody UpdateRecordRequest req, Authentication auth) {
-        InpMedicalRecord r = recordRepo.findById(recordId)
-                .filter(x -> x.getAdmissionId().equals(admissionId)).orElse(null);
+        InpMedicalRecord r = lockedRecord(admissionId, recordId);
         if (r == null) return R.fail(9102, "病历不存在");
+        if (authorDenied(r, auth)) return R.fail(9130, "无权写入该住院病历（非书写医师）");
         if (r.getSignature() != null) {
             return R.fail(9103, "病历已签名（已提交），原文冻结不可直接修改；如需更正请点「补正」追加补正记录");
         }
@@ -267,11 +307,13 @@ public class InpEmrController {
      * 签名前走 PUT /records/{recordId} 直接修改（v79 审阅修补补上，此前该路径不存在），签名后才走补正。
      */
     @PostMapping("/records/{recordId}/amend")
+    @org.springframework.transaction.annotation.Transactional
+    @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP')")
     public R<Void> amendRecord(@PathVariable Long admissionId, @PathVariable Long recordId,
                                @RequestBody AmendRequest req, Authentication auth) {
-        InpMedicalRecord r = recordRepo.findById(recordId)
-                .filter(x -> x.getAdmissionId().equals(admissionId)).orElse(null);
+        InpMedicalRecord r = lockedRecord(admissionId, recordId);
         if (r == null) return R.fail(9107, "病历不存在");
+        if (authorDenied(r, auth)) return R.fail(9130, "无权写入该住院病历（非书写医师）");
         // v79 审阅修补（乙组 N10）：原文「请直接修改」指向一条不存在的路；现修改端点已补，文案指向时间线上真实的入口
         if (r.getSignature() == null) {
             return R.fail(9108, "病历尚未签名，无需补正：请在病历时间线点该记录的「修改」直接修改正文");

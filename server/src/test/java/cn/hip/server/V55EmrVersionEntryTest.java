@@ -128,7 +128,7 @@ class V55EmrVersionEntryTest {
         s.setCapacity(5);
         s = scheduleRepository.save(s);
         Long rid = registrationService.register(newPatient(), s.getId()).getId();
-        doctorStationService.startVisit(rid, null);
+        doctorStationService.startVisit(rid, userId("v55doc"));
         return rid;
     }
 

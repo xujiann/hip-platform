@@ -47,6 +47,28 @@ public class DoctorStationService {
     private final org.springframework.jdbc.core.JdbcTemplate jdbc;
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
 
+    /** v82：锁与校验位于业务事务内部，异常正常回滚后仍由控制器返回原业务码。 */
+    private void guardWrite(Long registrationId, Long actorId, boolean checkAuthor) {
+        jdbc.queryForList("select id from outp_registration where id = ? for update", registrationId);
+        var auth = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null) return; // 可信服务层调用；所有 HTTP 写入口均受类级身份校验保护。
+        if (auth.getAuthorities().stream().anyMatch(a -> "ROLE_ADMIN".equals(a.getAuthority()))) return;
+        Long me = actorId;
+        if (me == null) {
+            var users = jdbc.queryForList("select id from sys_user where username = ?", Long.class, auth.getName());
+            if (!users.isEmpty()) me = users.getFirst();
+        }
+        if (me == null) throw new BizException(4036, "无权写入该次就诊（无法识别当前医师）");
+        var reg = registrationRepository.findById(registrationId).orElse(null);
+        if (reg == null) return; // 由原业务路径返回记录不存在的错误码。
+        var emr = emrRepository.findByRegistrationId(registrationId).orElse(null);
+        boolean allowed = BusinessDates.today().equals(reg.getVisitDate()) || reg.getDoctorId() == null
+                || me.equals(reg.getDoctorId()) || (emr != null && me.equals(emr.getDoctorId()));
+        if (!allowed) throw new BizException(4036, "无权写入该次就诊（非当日就诊且非本人接诊）");
+        if (checkAuthor && emr != null && emr.getDoctorId() != null && !me.equals(emr.getDoctorId()))
+            throw new BizException(4023, "仅病历书写医师本人可修改或补正");
+    }
+
     /** 组号取数据库序列：跨实例、跨重启唯一 */
     private long nextGroupSeq() {
         // 空 query space（1.1.7 B-8）：未声明时 Hibernate 按"可能读任何表"处理，
@@ -61,6 +83,7 @@ public class DoctorStationService {
     /** 接诊：挂号状态置为 VISITED */
     @Transactional
     public OutpRegistration startVisit(Long registrationId, Long doctorId) {
+        guardWrite(registrationId, doctorId, false);
         OutpRegistration reg = registrationRepository.findById(registrationId)
                 .orElseThrow(() -> new BizException(4001, "挂号记录不存在"));
         if ("CANCELLED".equals(reg.getStatus())) {
@@ -107,6 +130,7 @@ public class DoctorStationService {
     @Transactional
     public OutpEmr saveEmr(Long registrationId, OutpEmr data, List<OutpDiagnosis> diagnoses, Long doctorId,
                            Long templateId, java.util.Map<String, Object> fields) {
+        guardWrite(registrationId, doctorId, true);
         OutpEmr emr = emrRepository.findByRegistrationId(registrationId).orElseGet(() -> {
             OutpEmr e = new OutpEmr();
             e.setRegistrationId(registrationId);
@@ -134,7 +158,7 @@ public class DoctorStationService {
         emr.setPastHistory(data.getPastHistory());
         emr.setPhysicalExam(data.getPhysicalExam());
         emr.setAdvice(data.getAdvice());
-        emr.setDoctorId(doctorId);
+        if (emr.getId() == null) emr.setDoctorId(doctorId); // 仅新建时确定归属；历史未登记书写人的记录也不猜填
         // v45 车道 I：结构化录入。fields == null 时整段跳过——content_json / template_id
         // **连碰都不碰**（既有病历上已有的侧车值不会被一次无 fields 的保存抹掉）。
         if (fields != null) {
@@ -867,6 +891,7 @@ public class DoctorStationService {
     /** 开立一组医嘱（药品成一张处方，检查检验各自成申请单） */
     @Transactional
     public List<OutpOrder> createOrders(Long registrationId, List<OrderLine> lines, Long doctorId) {
+        guardWrite(registrationId, doctorId, false);
         OutpRegistration reg = registrationRepository.findById(registrationId)
                 .orElseThrow(() -> new BizException(4001, "挂号记录不存在"));
         if (!"VISITED".equals(reg.getStatus())) {
@@ -1254,6 +1279,7 @@ public class DoctorStationService {
     @Transactional
     public OutpEmr signEmr(Long registrationId, Long doctorId,
                            cn.hip.platform.integration.signature.SignatureAdapter signatureAdapter) {
+        guardWrite(registrationId, doctorId, true);
         OutpEmr emr = emrRepository.findByRegistrationId(registrationId)
                 .orElseThrow(() -> new BizException(4009, "病历不存在，请先书写保存"));
         if (emr.getSignature() != null) {
@@ -1297,6 +1323,7 @@ public class DoctorStationService {
      */
     @Transactional
     public void amendEmr(Long registrationId, String amendText, String reason, Long doctorId) {
+        guardWrite(registrationId, doctorId, true);
         OutpEmr emr = emrRepository.findByRegistrationId(registrationId)
                 .orElseThrow(() -> new BizException(4016, "病历不存在，无法补正"));
         if (emr.getSignature() == null) {
@@ -1333,6 +1360,7 @@ public class DoctorStationService {
     public void cancelOrder(Long orderId) {
         OutpOrder o = orderRepository.findById(orderId)
                 .orElseThrow(() -> new BizException(4006, "医嘱不存在"));
+        guardWrite(o.getRegistrationId(), null, false);
         if (!"CREATED".equals(o.getStatus())) {
             throw new BizException(4007, "已收费/已执行的医嘱不能作废，请先退费");
         }

@@ -78,7 +78,10 @@ class LisRisReviewFlowTest {
         s.setCapacity(5);
         s = scheduleRepository.save(s);
         Long rid = registrationService.register(pid, s.getId()).getId();
-        doctorStationService.startVisit(rid, null);
+        userAuth("flowFixtureDoctor");
+        Long doctorId = jdbc.queryForObject("select id from sys_user where username='flowFixtureDoctor'", Long.class);
+        doctorStationService.startVisit(rid, doctorId);
+        flush(); // 后续夹具通过 JDBC 读取真实书写人，不能读到尚未刷盘的旧 null。
         return rid;
     }
 
@@ -88,7 +91,8 @@ class LisRisReviewFlowTest {
         Long rid = visitedRegistration();
         Long drugId = seeds.drug("布洛芬").getId();
         Long orderId = doctorStationService.createOrders(rid,
-                List.of(new OrderLine("DRUG", drugId, 1, "口服", "bid", "1粒", 3)), null).get(0).getId();
+                List.of(new OrderLine("DRUG", drugId, 1, "口服", "bid", "1粒", 3)),
+                jdbc.queryForObject("select doctor_id from outp_registration where id=?", Long.class, rid)).get(0).getId();
 
         assertEquals(0, reviewController.reject(orderId, "用量不适宜", admin).getCode());
         var order = orderRepository.findById(orderId).orElseThrow();

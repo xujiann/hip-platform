@@ -2,8 +2,8 @@
 
 面向中小型医院的一体化信息平台。规划见 [总体规划.md](总体规划.md)，实施背景见 [平台建设规划.md](平台建设规划.md)。
 
-**当前状态（2026-10-14）**：`v1.8.0` · 迁移 V177 · 13 后端模块 + 108 前端页面 ·
-1251 单元/集成测试（2 跳过） + 50 套 E2E + 两项演示脚本（全新库 CI 顺序全绿，含演示驱动脚本）· 错误码 554（速查表全量） · sys_config 100 键 · 六轮全库审阅闭环 ·
+**当前状态（2026-10-14）**：`v1.8.1` · 迁移 V177 · 13 后端模块 + 108 前端页面 ·
+1258 单元/集成测试（2 跳过） + 51 套 E2E + 两项演示脚本（全新库 CI 顺序全绿，含演示驱动脚本）· 错误码 555（速查表全量） · sys_config 100 键 · 六轮全库审阅闭环 ·
 [性能基线 v2](docs/性能基线-20260818.md)（10 万级实测）· 投标应答核账进行中（v3 偏离表已上调 27 条，待签认见 `docs/验收/偏离表重出-签认清单.md`）。
 变更历史见 [CHANGELOG.md](CHANGELOG.md)；**文档从 [docs/README.md](docs/README.md) 进**（按开发接手 / 实施部署 / 运行支持 / 审阅存档四类导航）。
 
@@ -34,7 +34,8 @@ wsl -d Ubuntu -u root -- service postgresql start
 # 生产/正常环境仍用：cd deploy && docker compose up -d
 
 # 2. 启动后端（首次启动自动建表并创建 admin/admin123）
-mvn -pl server -am spring-boot:run
+mvn -pl server -am -DskipTests install
+mvn -pl server spring-boot:run
 
 # 3. 启动前端
 cd frontend/shell && npm install && npm run dev
@@ -46,7 +47,7 @@ cd frontend/shell && npm install && npm run dev
 ```bash
 # 首次准备测试库（测试硬性要求 127.0.0.1:5432/hip_test，账号 hip/hip123456）
 wsl -d Ubuntu -u postgres -- psql -c "create database hip_test owner hip;"
-mvn test          # 1125 单元/集成测试；E2E 见 tools/e2e-*.py（需后端运行）
+mvn test          # 单元/集成回归；最新数量见顶部状态，E2E 见 tools/e2e-*.py（需后端运行）
 ```
 
 > 注意：部分测试依赖 B 类种子数据（药名/科室），清单见 docs/种子数据分层清单.md「测试契约」节；
