@@ -71,7 +71,9 @@ def owner(filename):
 
 
 def advice(code, msg):
-    if code in (1000, 1001, 1002, 1005):
+    if code == 1005:
+        return '核对角色及源就诊归属，联系管理员确认查阅权限'
+    if code in (1000, 1001, 1002):
         return '重新登录 / 联系管理员分配角色'
     if code == 1402:
         return '按提示取值域重填配置'
