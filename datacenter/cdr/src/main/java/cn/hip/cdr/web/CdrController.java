@@ -17,6 +17,7 @@ import java.util.Map;
 public class CdrController {
 
     private final CdrSyncService syncService;
+    private final cn.hip.cdr.service.CdrReadService readService;
     private final CdrDocumentRepository docRepository;
     private final cn.hip.cdr.service.CdrLegacyService legacyService;
 
@@ -29,23 +30,25 @@ public class CdrController {
     @GetMapping("/patients/{patientId}/documents")
     @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP','QUALITY')")   // 1.0.9(A-6)：与 /search 同口径，内容含病历原文
     public R<Object> documents(@PathVariable Long patientId,
-                               @RequestParam(required = false) String docType) {
-        return R.ok(syncService.patientDocuments(patientId, docType));
+                               @RequestParam(required = false) String docType,
+                               org.springframework.security.core.Authentication auth) {
+        return R.ok(readService.patientDocuments(patientId, docType, auth));
     }
 
     /** 单文档明细（含 content 全文）：列表已投影化，点开才取全文（1.1.7） */
     @GetMapping("/documents/{id}")
     @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP','QUALITY')")
-    public R<Object> document(@PathVariable Long id) {
-        var doc = syncService.document(id);
-        return doc == null ? R.fail(4040, "文档不存在") : R.ok(doc);
+    public R<Object> document(@PathVariable Long id, org.springframework.security.core.Authentication auth) {
+        var doc = readService.document(id, auth);
+        if (doc != null) return R.ok(doc);
+        return docRepository.existsById(id) ? R.fail(1005, "无权查阅该临床文档") : R.fail(4040, "文档不存在");
     }
 
     /** 病历全文检索（ILIKE 起步版）；1.0.6：内容含主诉/现病史/诊断，限临床与质控角色 */
     @GetMapping("/search")
     @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP','QUALITY')")
-    public R<Object> search(@RequestParam String keyword) {
-        return R.ok(docRepository.search(keyword, org.springframework.data.domain.PageRequest.of(0, 50)));
+    public R<Object> search(@RequestParam String keyword, org.springframework.security.core.Authentication auth) {
+        return R.ok(readService.search(keyword, auth));
     }
 
     /** 增量同步（updated_at 水位） */
