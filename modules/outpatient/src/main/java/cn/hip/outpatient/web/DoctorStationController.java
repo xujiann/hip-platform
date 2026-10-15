@@ -2,6 +2,7 @@ package cn.hip.outpatient.web;
 
 import cn.hip.outpatient.entity.OutpDiagnosis;
 import cn.hip.outpatient.entity.OutpEmr;
+import cn.hip.outpatient.entity.OutpRegistration;
 import cn.hip.outpatient.repository.*;
 import cn.hip.outpatient.service.DoctorStationService;
 import cn.hip.outpatient.service.RegistrationService.BizException;
@@ -96,7 +97,13 @@ public class DoctorStationController {
         Map<Long, OutpEmr> emrByReg = regs.isEmpty() ? Map.of()
                 : emrRepository.findByRegistrationIdIn(regs.stream().map(r -> r.getId()).toList()).stream()
                         .collect(java.util.stream.Collectors.toMap(OutpEmr::getRegistrationId, e -> e));
+        // 与工作区共用对象权限；筛选参数不能扩权。先过滤，再组装患者身份及过敏史。
+        Authentication viewer = auth != null ? auth : SecurityContextHolder.getContext().getAuthentication();
+        boolean admin = viewer != null && isAdmin(viewer);
+        Long me = viewer == null || admin ? null : currentUserService.idOf(viewer);
+        LocalDate today = BusinessDates.today();
         return R.ok(regs.stream()
+                .filter(r -> canReadVisit(r, emrByReg.get(r.getId()), today, admin, me))
                 .map(r -> {
                     var m = new LinkedHashMap<String, Object>();
                     m.put("registrationId", r.getId());
@@ -334,10 +341,16 @@ public class DoctorStationController {
         var reg = registrationRepository.findById(registrationId).orElse(null);
         if (reg == null) return false;
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-        if (auth != null && isAdmin(auth)) return false;
-        if (BusinessDates.today().equals(reg.getVisitDate()) || reg.getDoctorId() == null) return false;
-        Long me = auth == null ? null : currentUserService.idOf(auth);
-        return !(me != null && (me.equals(reg.getDoctorId()) || (emr != null && me.equals(emr.getDoctorId()))));
+        boolean admin = auth != null && isAdmin(auth);
+        Long me = auth == null || admin ? null : currentUserService.idOf(auth);
+        return !canReadVisit(reg, emr, BusinessDates.today(), admin, me);
+    }
+
+    /** 队列与工作区同口径；当日共享和未归属号的既有放行规则保持。 */
+    private static boolean canReadVisit(OutpRegistration reg, OutpEmr emr, LocalDate today,
+                                        boolean admin, Long me) {
+        if (admin || today.equals(reg.getVisitDate()) || reg.getDoctorId() == null) return true;
+        return me != null && (me.equals(reg.getDoctorId()) || (emr != null && me.equals(emr.getDoctorId())));
     }
 
     private static boolean isAdmin(Authentication auth) {
