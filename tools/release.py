@@ -109,7 +109,7 @@ def main():
 2. 备份数据库：tools/db-backup.ps1
 3. 替换 hip-server jar 与前端 dist（整目录换）
 4. 启动——Flyway 自动前滚新增迁移（配置/字典/规则库/实施段不受影响）
-5. 回归抽查：HIP_E2E_BASE=http://<host>:8080/api python tools/e2e-outpatient.py（指向测试库；tools/ 下含全部 20 套）
+5. 回归抽查：HIP_E2E_BASE=http://<host>:8080/api python tools/e2e-outpatient.py（指向测试库；tools/ 下含全部 {len(e2e_files)} 套）
 6. 任一步失败：tools/db-restore.ps1 恢复备份，回退旧产物
 
 有 impl 定制模块的医院：升级前先对新版重编译定制模块（ADR-0003）。
