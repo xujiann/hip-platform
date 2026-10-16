@@ -235,7 +235,17 @@ class V41ArrearsTest {
     @Test
     @WithMockUser(roles = "CASHIER")
     void writeOffIsAdminOnlyWhilePaymentIsCashierWork() {
-        Long admId = owingDischarge("核销越权");
+        // Medical setup belongs to an administrator; the assertions below still run as CASHIER.
+        var originalAuth = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+        Long admId;
+        try {
+            org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(
+                    new org.springframework.security.authentication.UsernamePasswordAuthenticationToken("admin", null,
+                            List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_ADMIN"))));
+            admId = owingDischarge("核销越权");
+        } finally {
+            org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(originalAuth);
+        }
         Long id = arrearsId(admId);
 
         // 收费员本职：看台账、补缴、催缴都放行
