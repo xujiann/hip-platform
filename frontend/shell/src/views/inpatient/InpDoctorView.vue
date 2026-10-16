@@ -747,16 +747,17 @@ async function doTransfer() {
     ElMessage.warning('请选择目标科室与空床')
     return
   }
+  const admissionId = current.value.id
   transferring.value = true
   try {
-    await client.post(`/inpatient/admissions/${current.value.id}/transfer`, {
+    await client.post(`/inpatient/admissions/${admissionId}/transfer`, {
       toDeptId: tf.toDeptId, toBedId: tf.toBedId, reason: tf.reason || null,
     })
     ElMessage.success('转科成功')
     transferVisible.value = false
     await loadList()
     // 转科改了科室/床位，刷新当前工作区表头
-    const updated = admissions.value.find((a) => a.id === current.value?.id) ?? null
+    const updated = admissions.value.find((a) => a.id === admissionId) ?? null
     await open(updated)
   } finally {
     transferring.value = false
