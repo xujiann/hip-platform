@@ -17,12 +17,28 @@ public class InpatientWriteAccess {
 
     @Transactional(propagation = Propagation.MANDATORY)
     public void assertCanWrite(Long admissionId) {
+        assertAccess(admissionId, java.util.Set.of("ROLE_ADMIN"));
+    }
+
+    /** Ward coordination keeps the existing nursing workflow; doctors still need ownership. */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void assertCanCoordinateCare(Long admissionId) {
+        assertAccess(admissionId, java.util.Set.of("ROLE_ADMIN", "ROLE_NURSE"));
+    }
+
+    /** Interim billing additionally belongs to the cashier; it does not grant clinical writing. */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void assertCanInterimSettle(Long admissionId) {
+        assertAccess(admissionId, java.util.Set.of("ROLE_ADMIN", "ROLE_NURSE", "ROLE_CASHIER"));
+    }
+
+    private void assertAccess(Long admissionId, java.util.Set<String> crossAdmissionRoles) {
         var rows = jdbc.queryForList("select doctor_id from inp_admission where id = ? for update", admissionId);
         if (rows.isEmpty()) throw new InpatientService.InpException(9003, "住院记录不存在");
         var auth = SecurityContextHolder.getContext().getAuthentication();
-        // Trusted non-HTTP callers are preserved; every HTTP decision entry has a doctor/admin role gate.
+        // Trusted non-HTTP callers are preserved; HTTP entries retain their own role gates.
         if (auth == null) return;
-        if (auth.getAuthorities().stream().anyMatch(a -> "ROLE_ADMIN".equals(a.getAuthority()))) return;
+        if (auth.getAuthorities().stream().anyMatch(a -> crossAdmissionRoles.contains(a.getAuthority()))) return;
         boolean doctor = auth.getAuthorities().stream().anyMatch(a -> "ROLE_DOCTOR_OUTP".equals(a.getAuthority()));
         Long me = doctor ? currentUserService.idOf(auth) : null;
         Object owner = rows.getFirst().get("doctor_id");

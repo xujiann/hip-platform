@@ -363,6 +363,7 @@ public class InpatientService {
     /** 转科转床：原子占新床成功后才释放旧床，全程留痕（reason 为收尾环补采的转科原因，可空） */
     @Transactional
     public InpAdmission transfer(Long admissionId, Long toDeptId, Long toBedId, String reason, Long operatorId) {
+        clinicalWriteAccess.assertCanCoordinateCare(admissionId);
         InpAdmission adm = admissionRepo.findById(admissionId)
                 .orElseThrow(() -> new InpException(9003, "住院记录不存在"));
         if (!"IN_HOSPITAL".equals(adm.getStatus())) {
@@ -404,6 +405,7 @@ public class InpatientService {
     /** 出院结算：payMethod=YB 时走医保通道上传结算（费用总额口径） */
     @Transactional
     public InpSettlement discharge(Long admissionId, Long cashierId, String payMethod) {
+        clinicalWriteAccess.assertCanCoordinateCare(admissionId);
         InpAdmission adm = admissionRepo.findById(admissionId)
                 .orElseThrow(() -> new InpException(9003, "住院记录不存在"));
         // v35 出院病历完整性 gate（试点期可配 emr.gate.discharge，默认 warn 静默放行不硬拦）。
@@ -560,6 +562,7 @@ public class InpatientService {
      */
     @Transactional
     public InpSettlement interimSettle(Long admissionId, Long cashierId, String payMethod) {
+        clinicalWriteAccess.assertCanInterimSettle(admissionId);
         InpAdmission adm = admissionRepo.findById(admissionId)
                 .orElseThrow(() -> new InpException(9003, "住院记录不存在"));
         if (!"IN_HOSPITAL".equals(adm.getStatus())) {
