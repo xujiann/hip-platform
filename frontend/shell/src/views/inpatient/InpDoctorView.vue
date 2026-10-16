@@ -424,11 +424,11 @@ const integrity = ref<{ complete: boolean; missing: string[] } | null>(null)
 
 async function loadIntegrity(admissionId: number) {
   try {
-    integrity.value = (await client.get(
+    return (await client.get(
       `/inpatient/admissions/${admissionId}/emr-integrity`)).data.data
   } catch {
     // 预检取不到不影响书写——宁可不显示，也不摆一条误导的「无缺项」
-    integrity.value = null
+    return null
   }
 }
 const orders = ref<Record<string, unknown>[]>([])
@@ -645,7 +645,7 @@ async function jumpToPatient(row: Record<string, unknown>) {
 }
 
 async function loadAccount(id: unknown) {
-  account.value = (await client.get(`/inpatient/admissions/${id}/account`)).data.data
+  return (await client.get(`/inpatient/admissions/${id}/account`)).data.data
 }
 
 /**
@@ -656,7 +656,7 @@ async function loadEmrTemplates() {
   // v74 补 993★ 硬缺口（v68 三方复核）：此前走 /emr-templates?deptId=患者所在科室，不认登录人与使用范围，
   // 下拉里含所有人的个人模板。改走 /emr-templates/visible：按登录医生的科室与授权过滤（DEPT 本科室 + 被授权科室，
   // PERSONAL 本人 + 被授权个人，GLOBAL/HOSPITAL 人人可见），默认模板置顶。口径从"患者所在科室"改为"医生所在科室"。
-  emrTemplates.value = (await client.get('/emr-templates/visible', { params: { type: 'EMR' } })).data.data ?? []
+  return (await client.get('/emr-templates/visible', { params: { type: 'EMR' } })).data.data ?? []
 }
 
 /** 套用模板到病历正文。已有内容时先确认——医生写了一半被模板冲掉是不可撤销的损失。 */
@@ -675,32 +675,48 @@ async function applyEmrTemplate() {
   if (!recordTitle.value.trim()) recordTitle.value = String(t.name ?? '')
 }
 
+let workspaceRequest = 0
 async function open(row: Record<string, unknown> | null) {
-  // v74 复核（1006★ 第二轮审计者）：备注/注意事项/加急是页面级值，换患者必须清空，
-  // 否则给 A 填了没开立、切到 B 再点开药，备注会落到 B 的医嘱上。同一患者刷新（开立/停嘱后）不清。
+  const request = ++workspaceRequest
   if (row?.id !== current.value?.id) {
     resetExtras()
-    // v79 审阅修补：换患者时撤掉进行中的修改，不把 A 的记录 id 带到 B 的路径上
     if (editingRecord.value) clearEditor()
   }
-  current.value = row
+  // Hide the previous patient's data before any request, including a denied selection.
+  current.value = null
+  orders.value = []
+  records.value = []
+  vitals.value = []
+  totalAmount.value = 0
+  depositAmount.value = 0
   account.value = null
+  integrity.value = null
   emrTemplateId.value = null
   emrTemplates.value = []
   if (!row) return
-  const [ws, rec, vit] = await Promise.all([
-    client.get(`/inpatient/admissions/${row.id}/workspace`),
-    client.get(`/inpatient/admissions/${row.id}/records`),
-    client.get(`/inpatient/admissions/${row.id}/vitals`),
-    loadIntegrity(row.id as number),
-    loadAccount(row.id),
-    loadEmrTemplates(),
-  ])
-  orders.value = ws.data.data.orders
-  totalAmount.value = ws.data.data.totalAmount
-  depositAmount.value = ws.data.data.depositAmount
-  records.value = rec.data.data
-  vitals.value = vit.data.data
+  try {
+    const [ws, rec, vit, check, balance, templates] = await Promise.all([
+      client.get(`/inpatient/admissions/${row.id}/workspace`),
+      client.get(`/inpatient/admissions/${row.id}/records`),
+      client.get(`/inpatient/admissions/${row.id}/vitals`),
+      loadIntegrity(row.id as number),
+      loadAccount(row.id),
+      loadEmrTemplates(),
+    ])
+    // A late response from an earlier selection must not reopen that patient.
+    if (request !== workspaceRequest) return
+    orders.value = ws.data.data.orders
+    totalAmount.value = ws.data.data.totalAmount
+    depositAmount.value = ws.data.data.depositAmount
+    records.value = rec.data.data
+    vitals.value = vit.data.data
+    integrity.value = check
+    account.value = balance
+    emrTemplates.value = templates
+    current.value = row
+  } catch {
+    // The shared client reports the error; keep the workspace empty and login intact.
+  }
 }
 
 function openTransfer() {
