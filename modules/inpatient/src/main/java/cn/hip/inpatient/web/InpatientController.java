@@ -30,6 +30,7 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class InpatientController {
 
+    private final cn.hip.inpatient.service.InpatientReadAccess clinicalReadAccess;
     private final InpatientService inpatientService;
     private final cn.hip.inpatient.service.InpatientWriteAccess clinicalWriteAccess;
     private final BedRepo bedRepo;
@@ -180,6 +181,7 @@ public class InpatientController {
      */
     @GetMapping("/admissions/{id}/print/discharge-summary")
     public R<Map<String, Object>> printDischargeSummary(@PathVariable Long id) {
+        clinicalReadAccess.assertCanRead(id);
         var head = jdbcTemplate.queryForList("""
                 select a.admission_no, a.admit_at, a.discharged_at, a.status,
                        a.admit_diag_icd, a.admit_diag_name,
@@ -568,6 +570,7 @@ public class InpatientController {
     /** 住院工作区：医嘱 + 押金 + 费用汇总 */
     @GetMapping("/admissions/{id}/workspace")
     public R<Map<String, Object>> workspace(@PathVariable Long id) {
+        clinicalReadAccess.assertCanRead(id);
         var m = new LinkedHashMap<String, Object>();
         admissionRepo.findById(id).ifPresent(a -> m.put("admission", toDto(a)));
         List<InpOrder> orders = orderRepo.findByAdmissionIdOrderByIdAsc(id);

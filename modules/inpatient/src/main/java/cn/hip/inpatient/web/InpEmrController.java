@@ -20,6 +20,7 @@ import java.util.List;
 @RequiredArgsConstructor
 public class InpEmrController {
 
+    private final cn.hip.inpatient.service.InpatientReadAccess clinicalReadAccess;
     private final MedicalRecordRepo recordRepo;
     private final VitalSignRepo vitalRepo;
     private final CurrentUserService currentUserService;
@@ -34,6 +35,7 @@ public class InpEmrController {
 
     @GetMapping("/records")
     public R<List<InpMedicalRecord>> records(@PathVariable Long admissionId) {
+        clinicalReadAccess.assertCanRead(admissionId);
         return R.ok(recordRepo.findByAdmissionIdOrderByIdDesc(admissionId));
     }
 
@@ -184,6 +186,7 @@ public class InpEmrController {
     @GetMapping("/records/rounds")
     public R<List<java.util.Map<String, Object>>> rounds(@PathVariable Long admissionId,
                                                          @RequestParam(required = false) String level) {
+        clinicalReadAccess.assertCanRead(admissionId);
         String sql = "select r.id, r.round_level, r.round_opinion, r.superior_correction, r.created_at, "
                 + "r.round_doctor_id, u.real_name as round_doctor_name, (r.signature is not null) as signed "
                 + "from inp_medical_record r left join sys_user u on u.id = r.round_doctor_id "
@@ -331,6 +334,11 @@ public class InpEmrController {
     @GetMapping("/records/{recordId}/amendments")
     public R<List<java.util.Map<String, Object>>> amendments(@PathVariable Long admissionId,
                                                              @PathVariable Long recordId) {
+        // A record from another admission must never be resolved via this path, even by an administrator.
+        if (!Boolean.TRUE.equals(jdbc.queryForObject(
+                "select exists(select 1 from inp_medical_record where id = ? and admission_id = ?)",
+                Boolean.class, recordId, admissionId))) return R.fail(9102, "病历不存在");
+        clinicalReadAccess.assertCanRead(admissionId);
         return R.ok(jdbc.queryForList("""
                 select a.id, a.amend_text, a.reason, a.amended_by, a.amended_at, u.real_name as amended_by_name
                 from emr_amendment a left join sys_user u on u.id = a.amended_by
