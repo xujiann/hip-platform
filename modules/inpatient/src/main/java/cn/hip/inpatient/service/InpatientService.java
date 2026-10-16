@@ -23,6 +23,7 @@ import cn.hip.platform.core.config.BusinessDates;
 public class InpatientService {
 
     private final BedRepo bedRepo;
+    private final InpatientWriteAccess clinicalWriteAccess;
     private final AdmissionRepo admissionRepo;
     private final DepositRepo depositRepo;
     private final OrderRepo orderRepo;
@@ -132,6 +133,7 @@ public class InpatientService {
     /** 开住院医嘱（记账式：TEMP 开立即计费；v39 LONG 长期医嘱按执行行累计计费） */
     @Transactional
     public List<InpOrder> createOrders(Long admissionId, List<OrderLine> lines, Long doctorId) {
+        clinicalWriteAccess.assertCanWrite(admissionId);
         InpAdmission adm = admissionRepo.findById(admissionId)
                 .orElseThrow(() -> new InpException(9003, "住院记录不存在"));
         if (!"IN_HOSPITAL".equals(adm.getStatus())) {
@@ -286,6 +288,7 @@ public class InpatientService {
     @Transactional
     public void stopOrder(Long orderId, Long doctorId) {
         InpOrder o = orderRepo.findById(orderId).orElseThrow(() -> new InpException(9008, "医嘱不存在"));
+        clinicalWriteAccess.assertCanWrite(o.getAdmissionId());
         if (!"LONG".equals(o.getOrderNature())) throw new InpException(9128, "停嘱仅适用于长期医嘱");
         int n = entityManager.createNativeQuery(
                 "update inp_order set stop_at = now(), stop_doctor_id = :uid where id = :oid and stop_at is null")
@@ -340,6 +343,7 @@ public class InpatientService {
     @Transactional
     public void cancelOrder(Long orderId) {
         InpOrder o = orderRepo.findById(orderId).orElseThrow(() -> new InpException(9008, "医嘱不存在"));
+        clinicalWriteAccess.assertCanWrite(o.getAdmissionId());
         InpAdmission adm = admissionRepo.findById(o.getAdmissionId())
                 .orElseThrow(() -> new InpException(9003, "住院记录不存在"));
         if (!"IN_HOSPITAL".equals(adm.getStatus())) {

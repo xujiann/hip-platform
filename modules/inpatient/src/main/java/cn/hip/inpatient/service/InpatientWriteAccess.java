@@ -1,0 +1,46 @@
+package cn.hip.inpatient.service;
+
+import cn.hip.platform.core.security.CurrentUserService;
+import lombok.RequiredArgsConstructor;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
+
+/** Serialize physician decisions against attending changes on the admission row. */
+@Service
+@RequiredArgsConstructor
+public class InpatientWriteAccess {
+    private final JdbcTemplate jdbc;
+    private final CurrentUserService currentUserService;
+
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void assertCanWrite(Long admissionId) {
+        var rows = jdbc.queryForList("select doctor_id from inp_admission where id = ? for update", admissionId);
+        if (rows.isEmpty()) throw new InpatientService.InpException(9003, "住院记录不存在");
+        var auth = SecurityContextHolder.getContext().getAuthentication();
+        // Trusted non-HTTP callers are preserved; every HTTP decision entry has a doctor/admin role gate.
+        if (auth == null) return;
+        if (auth.getAuthorities().stream().anyMatch(a -> "ROLE_ADMIN".equals(a.getAuthority()))) return;
+        boolean doctor = auth.getAuthorities().stream().anyMatch(a -> "ROLE_DOCTOR_OUTP".equals(a.getAuthority()));
+        Long me = doctor ? currentUserService.idOf(auth) : null;
+        Object owner = rows.getFirst().get("doctor_id");
+        if (me == null || (owner != null && !me.equals(((Number) owner).longValue()))) {
+            throw new InpatientService.InpException(9018, "无权操作该病案（非本人主管）");
+        }
+    }
+
+    @Transactional
+    public void setAttending(Long admissionId, Long doctorId) {
+        assertCanWrite(admissionId);
+        jdbc.update("update inp_admission set doctor_id = ? where id = ?", doctorId, admissionId);
+    }
+
+    @Transactional
+    public void setDischargeDiagnosis(Long admissionId, String icd, String name) {
+        assertCanWrite(admissionId);
+        jdbc.update("update inp_admission set discharge_diag_icd = ?, discharge_diag_name = ? where id = ?",
+                icd, name, admissionId);
+    }
+}

@@ -31,6 +31,7 @@ import java.util.Map;
 public class InpatientController {
 
     private final InpatientService inpatientService;
+    private final cn.hip.inpatient.service.InpatientWriteAccess clinicalWriteAccess;
     private final BedRepo bedRepo;
     private final AdmissionRepo admissionRepo;
     private final DepositRepo depositRepo;
@@ -46,6 +47,7 @@ public class InpatientController {
 
     /** 停嘱（仅 LONG）：费用固化 + PENDING 行置 SKIPPED；从未执行过则作废 */
     @org.springframework.web.bind.annotation.PostMapping("/orders/{orderId}/stop")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP')")
     public R<Void> stopOrder(@PathVariable Long orderId,
                              org.springframework.security.core.Authentication auth) {
         try {
@@ -220,14 +222,18 @@ public class InpatientController {
     public record DischargeDiagReq(String icd, String name) {}
 
     @PutMapping("/admissions/{id}/discharge-diag")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP')")
     public R<Void> setDischargeDiag(@PathVariable Long id, @RequestBody DischargeDiagReq req) {
         if (req.icd() == null || req.icd().isBlank()) {
             return R.fail(9105, "出院诊断编码必填");
         }
-        int n = jdbcTemplate.update(
-                "update inp_admission set discharge_diag_icd = ?, discharge_diag_name = ? where id = ?",
-                req.icd(), req.name(), id);
-        return n == 0 ? R.fail(9106, "住院记录不存在") : R.ok();
+        try {
+            clinicalWriteAccess.setDischargeDiagnosis(id, req.icd(), req.name());
+            return R.ok();
+        } catch (InpException e) {
+            if (e.code == 9003) return R.fail(9106, "住院记录不存在");
+            return R.fail(e.code, e.getMessage());
+        }
     }
 
     public record CreateBedsRequest(Long wardId, Integer count) {}
@@ -431,6 +437,7 @@ public class InpatientController {
      * <p>出院后仍允许改：病案整理阶段补录主管医生是常规工作（与 discharge-diag 补录同理）。
      */
     @PutMapping("/admissions/{id}/attending-doctor")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP')")
     public R<Void> setAttendingDoctor(@PathVariable Long id, @RequestBody AttendingDoctorReq req) {
         if (req == null || req.doctorId() == null || req.doctorId() <= 0) {
             return R.fail(4884, "主管医生必填");
@@ -438,8 +445,12 @@ public class InpatientController {
         Integer hit = jdbcTemplate.queryForObject(
                 "select count(*) from sys_user where id = ? and enabled = true", Integer.class, req.doctorId());
         if (hit == null || hit == 0) return R.fail(4884, "主管医生不存在或已停用");
-        int n = jdbcTemplate.update("update inp_admission set doctor_id = ? where id = ?", req.doctorId(), id);
-        return n == 0 ? R.fail(9003, "住院记录不存在") : R.ok();
+        try {
+            clinicalWriteAccess.setAttending(id, req.doctorId());
+            return R.ok();
+        } catch (InpException e) {
+            return R.fail(e.code, e.getMessage());
+        }
     }
 
     /**
@@ -650,6 +661,7 @@ public class InpatientController {
     public record CreateOrdersRequest(List<InpatientService.OrderLine> lines) {}
 
     @PostMapping("/admissions/{id}/orders")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP')")
     public R<Object> createOrders(@PathVariable Long id, @RequestBody CreateOrdersRequest req, Authentication auth) {
         try {
             return R.ok(inpatientService.createOrders(id, req.lines(), currentUserService.idOf(auth)));
@@ -689,6 +701,7 @@ public class InpatientController {
 
     /** 1.0.7：作废未执行医嘱（出院前清理误开医嘱；执行掉会多计费并白扣库存） */
     @PutMapping("/orders/{orderId}/cancel")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP')")
     public R<Void> cancelOrder(@PathVariable Long orderId) {
         try {
             inpatientService.cancelOrder(orderId);
