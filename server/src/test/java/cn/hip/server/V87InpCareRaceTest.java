@@ -1,0 +1,80 @@
+package cn.hip.server;
+
+import cn.hip.inpatient.service.InpatientService;
+import cn.hip.inpatient.web.InpatientController;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
+import java.util.List;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import static org.junit.jupiter.api.Assertions.*;
+
+/** Real commits and pg_stat_activity prove the writer waits on the ownership transaction. */
+@SpringBootTest
+class V87InpCareRaceTest {
+    @Autowired JdbcTemplate jdbc; @Autowired PlatformTransactionManager manager;
+    @Autowired InpatientService service; @Autowired InpatientController controller;
+    Long patient,admission,aid,bid,targetBed;String a,b;
+    @AfterEach void cleanup() {
+        new TransactionTemplate(manager).executeWithoutResult(tx -> {
+            if(admission!=null) {jdbc.update("delete from inp_transfer_log where admission_id=?",admission);jdbc.update("update inp_bed set status='FREE', admission_id=null where admission_id=?",admission);jdbc.update("delete from inp_admission where id=?",admission);}
+            if(patient!=null)jdbc.update("delete from empi_patient where id=?",patient);
+            if(aid!=null)jdbc.update("delete from sys_user where id=?",aid);
+            if(bid!=null)jdbc.update("delete from sys_user where id=?",bid);
+        });
+    }
+    private void auth(String name,String role) {
+        SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(name,null,List.of(new SimpleGrantedAuthority("ROLE_"+role))));
+    }
+    @Test void formerOwnerWaitsForHandoffAndIsDeniedAfterItCommits() throws Exception {
+        String suffix=String.valueOf(System.nanoTime());a="v87ra"+suffix;b="v87rb"+suffix;
+        new TransactionTemplate(manager).executeWithoutResult(tx -> {
+            aid=jdbc.queryForObject("insert into sys_user(username,password,real_name,enabled) values (?,'x',?,true) returning id",Long.class,a,a);
+            bid=jdbc.queryForObject("insert into sys_user(username,password,real_name,enabled) values (?,'x',?,true) returning id",Long.class,b,b);
+            patient=jdbc.queryForObject("insert into empi_patient(patient_no,name,sex) values (?,'V87归属竞争','U') returning id",Long.class,"V87R"+suffix);
+            var bed=jdbc.queryForMap("select id,ward_id from inp_bed order by id limit 1");
+            admission=jdbc.queryForObject("insert into inp_admission(admission_no,patient_id,dept_id,ward_id,bed_id,doctor_id,status,admit_at) values (?,?,1,?,?,?,'IN_HOSPITAL',now()) returning id",Long.class,"V87R"+suffix,patient,bed.get("ward_id"),bed.get("id"),aid);
+        });
+        targetBed=jdbc.queryForObject("select id from inp_bed where status='FREE' and id<>(select bed_id from inp_admission where id=?) order by id limit 1",Long.class,admission);
+        var before=jdbc.queryForMap("select bed_id,dept_id,ward_id,status from inp_admission where id=?",admission);
+        CountDownLatch handedOff=new CountDownLatch(1),release=new CountDownLatch(1),writerStarted=new CountDownLatch(1);
+        AtomicInteger writerPid=new AtomicInteger();ExecutorService pool=Executors.newFixedThreadPool(2);
+        try {
+            var handoff=pool.submit(() -> {
+                auth("admin","ADMIN");
+                try {return new TransactionTemplate(manager).execute(tx -> {
+                    assertEquals(0,controller.setAttendingDoctor(admission,new InpatientController.AttendingDoctorReq(bid)).getCode());
+                    handedOff.countDown();try {assertTrue(release.await(15,TimeUnit.SECONDS));}catch(InterruptedException e){throw new RuntimeException(e);}return true;
+                });} finally {SecurityContextHolder.clearContext();}
+            });
+            assertTrue(handedOff.await(10,TimeUnit.SECONDS));
+            var writer=pool.submit(() -> {
+                auth(a,"DOCTOR_OUTP");
+                try {return new TransactionTemplate(manager).execute(tx -> {
+                    writerPid.set(jdbc.queryForObject("select pg_backend_pid()",Integer.class));writerStarted.countDown();
+                    service.transfer(admission,1L,targetBed,"旧主管竞争转床",aid);return 0;
+                });} catch(InpatientService.InpException e){return e.code;}
+                finally {SecurityContextHolder.clearContext();}
+            });
+            assertTrue(writerStarted.await(5,TimeUnit.SECONDS));
+            boolean waiting=false;long until=System.nanoTime()+TimeUnit.SECONDS.toNanos(6);
+            while(System.nanoTime()<until) {
+                waiting=Boolean.TRUE.equals(jdbc.queryForObject("select exists(select 1 from pg_stat_activity where pid=? and wait_event_type='Lock')",Boolean.class,writerPid.get()));
+                if(waiting)break;if(writer.isDone())break;Thread.sleep(30);
+            }
+            assertTrue(waiting,"Writer must actually contend on the ownership lock");release.countDown();
+            assertTrue(handoff.get(10,TimeUnit.SECONDS));assertEquals(9018,writer.get(10,TimeUnit.SECONDS));
+            assertEquals(bid,jdbc.queryForObject("select doctor_id from inp_admission where id=?",Long.class,admission));
+            assertEquals(before,jdbc.queryForMap("select bed_id,dept_id,ward_id,status from inp_admission where id=?",admission));
+            assertEquals(0,jdbc.queryForObject("select count(*) from inp_transfer_log where admission_id=?",Integer.class,admission));
+        } finally {release.countDown();pool.shutdown();assertTrue(pool.awaitTermination(20,TimeUnit.SECONDS));}
+    }
+}
