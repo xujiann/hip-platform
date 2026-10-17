@@ -578,9 +578,10 @@ async function saveAttending() {
     ElMessage.warning('请选择主管医生')
     return
   }
+  const admissionId = current.value.id
   attendingSaving.value = true
   try {
-    const resp = await client.put(`/inpatient/admissions/${current.value.id}/attending-doctor`,
+    const resp = await client.put(`/inpatient/admissions/${admissionId}/attending-doctor`,
       { doctorId: attendingDoctorId.value })
     if (resp.data.code !== 0) {
       ElMessage.error(resp.data.message)
@@ -588,10 +589,9 @@ async function saveAttending() {
     }
     ElMessage.success('主管医生已更新')
     attendingVisible.value = false
-    const id = current.value.id
     await loadList()
-    // 列表行带 doctorName，重新指向刷新后的那一行以更新表头
-    current.value = admissions.value.find((a) => a.id === id) ?? current.value
+    // 列表刷新会清空工作区；重新读取金额和临床数据，并按新主管重新校验读取权限。
+    await open(admissions.value.find((a) => a.id === admissionId) ?? null)
   } finally {
     attendingSaving.value = false
   }
