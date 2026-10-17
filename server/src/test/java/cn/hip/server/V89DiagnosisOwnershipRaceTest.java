@@ -80,4 +80,42 @@ class V89DiagnosisOwnershipRaceTest {
             assertEquals(0,jdbc.queryForObject("select count(*) from inp_diagnosis where admission_id=?",Integer.class,admission));
         } finally {release.countDown();pool.shutdown();assertTrue(pool.awaitTermination(20,TimeUnit.SECONDS));}
     }
+
+    @Test void deletionWaitsBeforeTakingDiagnosisRowLock() throws Exception {
+        String suffix=String.valueOf(System.nanoTime());
+        new TransactionTemplate(manager).executeWithoutResult(tx -> {
+            patient=jdbc.queryForObject("insert into empi_patient(patient_no,name,sex) values (?,'V89删除顺序','U') returning id",Long.class,"V89D"+suffix);
+            var bed=jdbc.queryForMap("select id,ward_id from inp_bed order by id limit 1");
+            admission=jdbc.queryForObject("insert into inp_admission(admission_no,patient_id,dept_id,ward_id,bed_id,doctor_id,status,admit_at) values (?,?,1,?,?,1,'IN_HOSPITAL',now()) returning id",Long.class,"V89D"+suffix,patient,bed.get("ward_id"),bed.get("id"));
+        });
+        Long diagnosis=jdbc.queryForObject("insert into inp_diagnosis(admission_id,icd,name) values (?,'I10','V89') returning id",Long.class,admission);
+        CountDownLatch held=new CountDownLatch(1),release=new CountDownLatch(1),started=new CountDownLatch(1);
+        AtomicInteger deletePid=new AtomicInteger();ExecutorService pool=Executors.newFixedThreadPool(2);
+        try {
+            var holder=pool.submit(()->new TransactionTemplate(manager).execute(tx->{
+                jdbc.queryForObject("select id from inp_admission where id=? for update",Long.class,admission);
+                held.countDown();try {assertTrue(release.await(15,TimeUnit.SECONDS));}catch(InterruptedException e){throw new RuntimeException(e);}return true;
+            }));
+            assertTrue(held.await(5,TimeUnit.SECONDS));
+            var deletion=pool.submit(()->{
+                auth("admin","QUALITY");
+                try {return new TransactionTemplate(manager).execute(tx->{
+                    deletePid.set(jdbc.queryForObject("select pg_backend_pid()",Integer.class));started.countDown();
+                    return diagnoses.remove(diagnosis).getCode();
+                });} finally {SecurityContextHolder.clearContext();}
+            });
+            assertTrue(started.await(5,TimeUnit.SECONDS));
+            boolean waiting=false;long until=System.nanoTime()+TimeUnit.SECONDS.toNanos(6);
+            while(System.nanoTime()<until) {
+                waiting=Boolean.TRUE.equals(jdbc.queryForObject("select exists(select 1 from pg_stat_activity where pid=? and wait_event_type='Lock')",Boolean.class,deletePid.get()));
+                if(waiting||deletion.isDone())break;Thread.sleep(30);
+            }
+            assertTrue(waiting,"Deletion must actually wait on the admission transaction");
+            assertDoesNotThrow(()->new TransactionTemplate(manager).execute(tx->
+                jdbc.queryForObject("select id from inp_diagnosis where id=? for update nowait",Long.class,diagnosis)),
+                "Deletion must not hold the child diagnosis row while waiting on its parent");
+            release.countDown();assertTrue(holder.get(10,TimeUnit.SECONDS));assertEquals(0,deletion.get(10,TimeUnit.SECONDS));
+            assertEquals(0,jdbc.queryForObject("select count(*) from inp_diagnosis where id=?",Integer.class,diagnosis));
+        } finally {release.countDown();pool.shutdown();assertTrue(pool.awaitTermination(20,TimeUnit.SECONDS));}
+    }
 }
