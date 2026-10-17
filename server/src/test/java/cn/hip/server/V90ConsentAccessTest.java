@@ -90,6 +90,7 @@ class V90ConsentAccessTest {
         assertEquals(9018,call("POST","/api/emr/consents/"+mixed+"/patient-sign",Map.of("patientSign","x"),a,"DOCTOR_OUTP").path("code").asInt());
         assertEquals(0,call("GET","/api/emr/consents/"+outpatient,null,a,"DOCTOR_OUTP").path("code").asInt());
         assertEquals(0,call("POST","/api/emr/consents",Map.of("registrationId",reg,"consentType","SELF_PAY","content","门诊兼容"),a,"DOCTOR_OUTP").path("code").asInt());
+        jdbc.update("update inp_admission set status='DISCHARGED' where id=?",own);
         jdbc.update("update inp_admission set patient_id=? where id=?",patient,foreign);
         assertEquals(1005,call("GET","/api/emr/consents/"+mixed,null,a,"DOCTOR_OUTP").path("code").asInt());
     }

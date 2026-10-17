@@ -64,7 +64,7 @@ class V90ConsentOwnershipRaceTest {
                     writerPid.set(jdbc.queryForObject("select pg_backend_pid()",Integer.class));writerStarted.countDown();
                     int code=consents.doctorSign(consent,SecurityContextHolder.getContext().getAuthentication()).getCode();
                     // This outer transaction only exposes the backend PID for the lock assertion.
-                    // The controller catches the service rejection; roll back our wrapper explicitly as HTTP would.
+                    // A nonzero returned result must not commit the instrumentation wrapper.
                     if(code!=0)tx.setRollbackOnly();
                     return code;
                 });} catch(InpatientService.InpException e){return e.code;}
