@@ -77,4 +77,21 @@ class V90ConsentAccessTest {
         assertEquals(9110,call("POST","/api/emr/consents",Map.of("admissionId",adm,"registrationId",1,"consentType","SURGERY","content","x"),a,"DOCTOR_OUTP").path("code").asInt());
         assertEquals(9112,call("GET","/api/emr/consents/9223372036854775807",null,a,"DOCTOR_OUTP").path("code").asInt());
     }
+    @Test void outpatientCompatibilityAndHistoricalDualScopeCannotBypassAdmission() throws Exception {
+        String a=doctor(),b=doctor();Long own=admission(uid(a)),foreign=admission(uid(b));
+        Long patient=jdbc.queryForObject("select patient_id from inp_admission where id=?",Long.class,own);
+        Long schedule=jdbc.queryForObject("insert into outp_schedule(dept_id,schedule_date,capacity) values (1,current_date,10) returning id",Long.class);
+        Long reg=jdbc.queryForObject("insert into outp_registration(reg_no,patient_id,schedule_id,dept_id,visit_date,fee,status) values (1,?,?,1,current_date,0,'REGISTERED') returning id",Long.class,patient,schedule);
+        Long outpatient=jdbc.queryForObject("insert into emr_consent(registration_id,consent_type,title,content) values (?,'SELF_PAY','V90门诊','V90') returning id",Long.class,reg);
+        Long mixed=consent(foreign,"DRAFT");jdbc.update("update emr_consent set registration_id=? where id=?",reg,mixed);
+        var rows=call("GET","/api/emr/consents?registrationId="+reg,null,a,"DOCTOR_OUTP").path("data");
+        assertEquals(1,rows.size());assertEquals(outpatient.longValue(),rows.get(0).path("id").asLong());
+        assertEquals(1005,call("GET","/api/emr/consents/"+mixed,null,a,"DOCTOR_OUTP").path("code").asInt());
+        assertEquals(9018,call("POST","/api/emr/consents/"+mixed+"/patient-sign",Map.of("patientSign","x"),a,"DOCTOR_OUTP").path("code").asInt());
+        assertEquals(0,call("GET","/api/emr/consents/"+outpatient,null,a,"DOCTOR_OUTP").path("code").asInt());
+        assertEquals(0,call("POST","/api/emr/consents",Map.of("registrationId",reg,"consentType","SELF_PAY","content","门诊兼容"),a,"DOCTOR_OUTP").path("code").asInt());
+        jdbc.update("update inp_admission set patient_id=? where id=?",patient,foreign);
+        assertEquals(1005,call("GET","/api/emr/consents/"+mixed,null,a,"DOCTOR_OUTP").path("code").asInt());
+    }
+
 }

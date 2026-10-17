@@ -23,7 +23,7 @@
       <el-table-column label="操作" width="200">
         <template #default="{ row }">
           <el-button v-if="row.status === 'DRAFT'" link type="primary" size="small" @click="patientSign(row)">患者签名</el-button>
-          <el-button v-if="row.status === 'PATIENT_SIGNED'" link type="success" size="small" @click="doctorSign(row)">医师签名</el-button>
+          <el-button v-if="canDoctorSign && row.status === 'PATIENT_SIGNED'" link type="success" size="small" @click="doctorSign(row)">医师签名</el-button>
           <el-button v-if="row.status !== 'REVOKED' && row.status !== 'SIGNED'" link type="danger" size="small" @click="revoke(row)">作废</el-button>
           <el-tag v-if="row.status === 'SIGNED'" type="success" size="small" effect="plain">已生效</el-tag>
         </template>
@@ -54,9 +54,13 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
+import { useAuthStore } from '../../stores/auth'
+
+const auth = useAuthStore()
+const canDoctorSign = computed(() => auth.user?.roles?.some(r => r === 'ADMIN' || r === 'DOCTOR_OUTP') ?? false)
 
 const typeCn: Record<string, string> = {
   SURGERY: '手术', TRANSFUSION: '输血', ANESTHESIA: '麻醉',
@@ -76,9 +80,15 @@ async function loadAdmissions() {
   admissions.value = (await client.get('/inpatient/admissions')).data.data
     .filter((a: Record<string, unknown>) => a.status === 'IN_HOSPITAL')
 }
+let consentLoad = 0
 async function loadConsents() {
-  if (!admissionId.value) { consents.value = []; return }
-  consents.value = (await client.get('/emr/consents', { params: { admissionId: admissionId.value } })).data.data
+  const request = ++consentLoad
+  const selected = admissionId.value
+  consents.value = []
+  dialogVisible.value = false
+  if (!selected) return
+  const rows = (await client.get('/emr/consents', { params: { admissionId: selected } })).data.data
+  if (request === consentLoad && selected === admissionId.value) consents.value = rows
 }
 
 function openCreate() {
