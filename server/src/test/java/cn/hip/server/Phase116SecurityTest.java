@@ -100,7 +100,21 @@ class Phase116SecurityTest {
                 .andExpect(jsonPath("$.code").value(9003));   // 无此住院记录，但已过授权
         mockMvc.perform(get("/api/inpatient/admissions/999999/account").header("Authorization", cashier))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(0));
+                .andExpect(jsonPath("$.code").value(9003)); // v89：不存在的账户不再伪造空余额。
+        // Real cross-admission billing remains usable, with an actual deposit rather than only a role canary.
+        Long patient = jdbc.queryForObject("insert into empi_patient(patient_no,name,sex) values (?,'收费权限虚构','U') returning id",
+                Long.class, "P116" + System.nanoTime());
+        Long admission = jdbc.queryForObject("""
+                insert into inp_admission(admission_no,patient_id,dept_id,ward_id,bed_id,doctor_id,status,admit_at)
+                select ?,?,1,ward_id,id,1,'IN_HOSPITAL',now() from inp_bed order by id limit 1 returning id
+                """, Long.class, "P116" + System.nanoTime(), patient);
+        jdbc.update("insert into inp_deposit(admission_id,amount,pay_method) values (?,100,'CASH')", admission);
+        mockMvc.perform(get("/api/inpatient/admissions/" + admission + "/account").header("Authorization", cashier))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.admissionId").value(admission))
+                .andExpect(jsonPath("$.data.depositTotal").value(100))
+                .andExpect(jsonPath("$.data.balance").value(100));
     }
 
     /** B-1 失败路径：真实封顶线键 yb_cap_* 的坏值必须被拦——原规则校验的是不存在的幽灵键 */
