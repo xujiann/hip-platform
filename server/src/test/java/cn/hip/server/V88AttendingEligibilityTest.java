@@ -15,8 +15,10 @@ import java.math.BigDecimal;
 import java.util.*;
 import static org.junit.jupiter.api.Assertions.*;
 
-@SpringBootTest @Transactional @WithMockUser(roles="ADMIN")
+@SpringBootTest @org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc @Transactional @WithMockUser(roles="ADMIN")
 class V88AttendingEligibilityTest {
+    @Autowired org.springframework.test.web.servlet.MockMvc mvc;
+    @Autowired com.fasterxml.jackson.databind.ObjectMapper om;
     @Autowired InpatientService service;
     @Autowired InpatientWriteAccess access;
     @Autowired JdbcTemplate jdbc;
@@ -55,6 +57,39 @@ class V88AttendingEligibilityTest {
             var error=assertThrows(InpatientService.InpException.class,()->access.setAttending(id,target));
             assertEquals(4884,error.code);assertEquals(before,state());
         }
+    }
+    @Test void httpRejectsNonPhysicianForAdminDoctorAndNurseWithoutSideEffects() throws Exception {
+        Long target=account(true,"NURSE"),pid=patient(),bid=bed();
+        for(String role:List.of("ADMIN","DOCTOR_OUTP","NURSE")) {
+            var before=state();
+            var response=mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/inpatient/admissions")
+                .with(org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user("admin").roles(role))
+                .contentType("application/json").content(om.writeValueAsString(Map.of("patientId",pid,"deptId",1,"bedId",bid,"doctorId",target,"deposit",100))))
+                .andReturn().getResponse();
+            assertEquals(200,response.getStatus());
+            assertEquals(4884,om.readTree(response.getContentAsString(java.nio.charset.StandardCharsets.UTF_8)).path("code").asInt());
+            assertEquals(before,state());
+        }
+        Long id=admit(account(true,"DOCTOR_OUTP"));var before=state();
+        var response=mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/inpatient/admissions/"+id+"/attending-doctor")
+            .with(org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user("admin").roles("ADMIN"))
+            .contentType("application/json").content(om.writeValueAsString(Map.of("doctorId",target))))
+            .andReturn().getResponse();
+        assertEquals(200,response.getStatus());
+        assertEquals(4884,om.readTree(response.getContentAsString(java.nio.charset.StandardCharsets.UTF_8)).path("code").asInt());
+        assertEquals(before,state());
+    }
+    @Test void roleRevocationIsRecheckedOnEveryAssignment() {
+        Long owner=account(true,"DOCTOR_OUTP"),target=account(true,"DOCTOR_OUTP");
+        Long id=admit(owner);em.flush();
+        access.setAttending(id,target);
+        jdbc.update("delete from sys_user_role where user_id=?",target);
+        var before=state();
+        assertEquals(4884,assertThrows(InpatientService.InpException.class,()->access.setAttending(id,target)).code);
+        assertEquals(before,state());
+        Long pid=patient(),bid=bed();before=state();
+        assertEquals(4884,assertThrows(InpatientService.InpException.class,()->service.admit(pid,1L,bid,target,null,null,BigDecimal.TEN,"CASH",null)).code);
+        assertEquals(before,state());
     }
     @Test void eligibleAndUnassignedAdmissionRemainAvailable() {
         for(Long owner:List.of(account(true,"DOCTOR_OUTP"),account(true,"ADMIN"),account(true,"NURSE","DOCTOR_OUTP"))) {

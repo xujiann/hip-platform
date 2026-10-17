@@ -26,7 +26,7 @@ class V85InpWriteAccessTest {
     @Autowired PatientService patients; @Autowired InpatientService service; @Autowired EntityManager em;
     private String doctor() {
         String name="v85"+System.nanoTime();
-        jdbc.update("insert into sys_user(username,password,real_name,enabled) values (?,'x',?,true)",name,name);return name;
+        jdbc.update("insert into sys_user(username,password,real_name,enabled) values (?,'x',?,true)",name,name);jdbc.update("insert into sys_user_role(user_id,role_id) select u.id,r.id from sys_user u cross join sys_role r where u.username=? and r.code='DOCTOR_OUTP' on conflict do nothing",name);return name;
     }
     private Long uid(String who) {return jdbc.queryForObject("select id from sys_user where username=?",Long.class,who);}
     private Long admission(String owner) {

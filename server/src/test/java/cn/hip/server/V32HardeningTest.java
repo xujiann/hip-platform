@@ -57,7 +57,9 @@ class V32HardeningTest {
         u.setUsername(username);
         u.setPassword(passwordEncoder.encode("Abcd1234"));
         u.setRealName(username);
-        return userRepository.save(u).getId();
+        Long id = userRepository.saveAndFlush(u).getId();
+        jdbc.update("insert into sys_user_role(user_id,role_id) select ?,id from sys_role where code='DOCTOR_OUTP'", id);
+        return id;
     }
 
     private Authentication actAs(String username, String role) {

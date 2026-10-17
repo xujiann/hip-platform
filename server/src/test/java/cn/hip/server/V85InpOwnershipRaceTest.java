@@ -27,8 +27,8 @@ class V85InpOwnershipRaceTest {
         new TransactionTemplate(manager).executeWithoutResult(tx -> {
             if(admission!=null) {jdbc.update("delete from inp_order where admission_id=?",admission);jdbc.update("delete from inp_admission where id=?",admission);}
             if(patient!=null)jdbc.update("delete from empi_patient where id=?",patient);
-            if(aid!=null)jdbc.update("delete from sys_user where id=?",aid);
-            if(bid!=null)jdbc.update("delete from sys_user where id=?",bid);
+            if(aid!=null) {jdbc.update("delete from sys_user_role where user_id=?",aid);jdbc.update("delete from sys_user where id=?",aid);}
+            if(bid!=null) {jdbc.update("delete from sys_user_role where user_id=?",bid);jdbc.update("delete from sys_user where id=?",bid);}
         });
     }
     private void auth(String name,String role) {
@@ -39,6 +39,7 @@ class V85InpOwnershipRaceTest {
         new TransactionTemplate(manager).executeWithoutResult(tx -> {
             aid=jdbc.queryForObject("insert into sys_user(username,password,real_name,enabled) values (?,'x',?,true) returning id",Long.class,a,a);
             bid=jdbc.queryForObject("insert into sys_user(username,password,real_name,enabled) values (?,'x',?,true) returning id",Long.class,b,b);
+            jdbc.update("insert into sys_user_role(user_id,role_id) select u.id,r.id from sys_user u cross join sys_role r where u.id in (?,?) and r.code='DOCTOR_OUTP'",aid,bid);
             patient=jdbc.queryForObject("insert into empi_patient(patient_no,name,sex) values (?,'V85归属竞争','U') returning id",Long.class,"V85R"+suffix);
             var bed=jdbc.queryForMap("select id,ward_id from inp_bed order by id limit 1");
             admission=jdbc.queryForObject("insert into inp_admission(admission_no,patient_id,dept_id,ward_id,bed_id,doctor_id,status,admit_at) values (?,?,1,?,?,?,'IN_HOSPITAL',now()) returning id",Long.class,"V85R"+suffix,patient,bed.get("ward_id"),bed.get("id"),aid);

@@ -65,6 +65,7 @@ public class InpatientService {
     public InpAdmission admit(Long patientId, Long deptId, Long bedId, Long doctorId,
                               String diagIcd, String diagName,
                               BigDecimal deposit, String payMethod, Long operatorId) {
+        if (doctorId != null) clinicalWriteAccess.assertEligibleAttending(doctorId);
         InpBed bed = bedRepo.findById(bedId).orElseThrow(() -> new InpException(9001, "床位不存在"));
 
         InpAdmission adm = new InpAdmission();

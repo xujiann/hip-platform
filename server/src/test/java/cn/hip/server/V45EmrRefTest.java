@@ -86,6 +86,7 @@ class V45EmrRefTest {
     private Authentication doctorAuth(String username) {
         jdbc.update("insert into sys_user(username, password, real_name, enabled) "
                 + "values (?, 'x', ?, true) on conflict (username) do nothing", username, username + "医生");
+        jdbc.update("insert into sys_user_role(user_id,role_id) select u.id,r.id from sys_user u cross join sys_role r where u.username=? and r.code='DOCTOR_OUTP' on conflict do nothing",username);
         // 刻意**不给** ROLE_ADMIN/ROLE_QUALITY：横切角色会跳过对象级归属校验，测不出越权
         return new UsernamePasswordAuthenticationToken(username, null,
                 List.of(new SimpleGrantedAuthority("ROLE_DOCTOR_OUTP")));

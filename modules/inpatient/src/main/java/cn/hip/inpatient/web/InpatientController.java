@@ -444,9 +444,6 @@ public class InpatientController {
         if (req == null || req.doctorId() == null || req.doctorId() <= 0) {
             return R.fail(4884, "主管医生必填");
         }
-        Integer hit = jdbcTemplate.queryForObject(
-                "select count(*) from sys_user where id = ? and enabled = true", Integer.class, req.doctorId());
-        if (hit == null || hit == 0) return R.fail(4884, "主管医生不存在或已停用");
         try {
             clinicalWriteAccess.setAttending(id, req.doctorId());
             return R.ok();
