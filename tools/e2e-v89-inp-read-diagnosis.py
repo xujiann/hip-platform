@@ -80,6 +80,6 @@ try:
     target=next(d['id'] for d in before if d['icd']=='I10')
     ok(call('DELETE',f'/inpatient/diagnoses/{target}',token=t),'admin deletion')
     assert ok(call('GET','/auth/me',token=tokens['a']),'still logged in')['id']==ids['a']
-    print('e2e-v89-inp-read-diagnosis passed: scoped reads/collections, existing nursing/billing/coding roles, handoff and duplicate recovery')
+    print('e2e-v89-inp-read-diagnosis passed: scoped reads/collections, existing nursing/billing/coding roles, handoff, duplicate recovery and deletion duties')
 finally:
     for adm in reversed(admissions):cleanup(adm)
