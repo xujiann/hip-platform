@@ -50,7 +50,6 @@ public class DiagnosisController {
     @DeleteMapping("/{id}")
     @PreAuthorize("hasAnyRole('ADMIN','QUALITY')")
     public R<Void> remove(@PathVariable Long id) {
-        int n = jdbc.update("delete from inp_diagnosis where id = ?", id);
-        return n == 0 ? R.fail(9016, "诊断不存在") : R.ok();
+        return diagnoses.remove(id) ? R.ok() : R.fail(9016, "诊断不存在");
     }
 }

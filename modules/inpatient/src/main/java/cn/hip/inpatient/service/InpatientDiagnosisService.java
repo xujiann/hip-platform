@@ -21,4 +21,15 @@ public class InpatientDiagnosisService {
             on conflict (admission_id, icd) do nothing
             """, admissionId, icd, name) == 1;
     }
+
+    /** Keep delete in the same parent-before-child lock order as insertion and attending handoff. */
+    @Transactional
+    @org.springframework.security.access.prepost.PreAuthorize("hasAnyRole('ADMIN','QUALITY')")
+    public boolean remove(Long diagnosisId) {
+        var admissions = jdbc.queryForList("select admission_id from inp_diagnosis where id = ?", Long.class, diagnosisId);
+        if (admissions.isEmpty()) return false;
+        Long admissionId = admissions.getFirst();
+        access.assertCanCodeDiagnosis(admissionId);
+        return jdbc.update("delete from inp_diagnosis where id = ? and admission_id = ?", diagnosisId, admissionId) == 1;
+    }
 }

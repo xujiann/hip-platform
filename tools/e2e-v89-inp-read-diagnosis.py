@@ -70,6 +70,15 @@ try:
     ok(call('POST','/inpatient/diagnoses',{'admissionId':own['id'],'icd':'I10','name':'V89新主管'},tokens['b']),'new owner')
     assert call('POST','/inpatient/diagnoses',{'admissionId':own['id'],'icd':'I10','name':'V89重复'},tokens['q'])['code']==9015
     ok(call('POST','/inpatient/diagnoses',{'admissionId':own['id'],'icd':'K35','name':'V89编码员'},tokens['q']),'coder after duplicate')
+    before=ok(read(f"/inpatient/diagnoses?admissionId={own['id']}",t),'delete snapshot')
+    target=next(d['id'] for d in before if d['icd']=='K35')
+    for who in ['a','b','n','c']:
+        assert response('DELETE',f'/inpatient/diagnoses/{target}',token=tokens[who])['code']==1005
+        assert ok(read(f"/inpatient/diagnoses?admissionId={own['id']}",t),'delete denied unchanged')==before
+    ok(call('DELETE',f'/inpatient/diagnoses/{target}',token=tokens['q']),'coder deletion')
+    assert call('DELETE',f'/inpatient/diagnoses/{target}',token=tokens['q'])['code']==9016
+    target=next(d['id'] for d in before if d['icd']=='I10')
+    ok(call('DELETE',f'/inpatient/diagnoses/{target}',token=t),'admin deletion')
     assert ok(call('GET','/auth/me',token=tokens['a']),'still logged in')['id']==ids['a']
     print('e2e-v89-inp-read-diagnosis passed: scoped reads/collections, existing nursing/billing/coding roles, handoff and duplicate recovery')
 finally:
