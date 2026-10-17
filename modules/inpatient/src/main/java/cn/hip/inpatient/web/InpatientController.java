@@ -63,7 +63,7 @@ public class InpatientController {
     @org.springframework.web.bind.annotation.GetMapping("/exec-lines")
     public R<java.util.List<java.util.Map<String, Object>>> execLines(
             @org.springframework.web.bind.annotation.RequestParam String date) {
-        return R.ok(jdbcTemplate.queryForList("""
+        var sql = new StringBuilder("""
                 select e.id, e.exec_date, e.seq_no, e.status, e.amount,
                        o.id as order_id, o.item_name, o.spec, o.qty, o.usage_route, o.frequency, o.dose_per_time,
                        o.remark, coalesce(o.urgent, false) as urgent, o.notice,
@@ -74,8 +74,11 @@ public class InpatientController {
                 join empi_patient p on p.id = a.patient_id
                 left join inp_bed b on b.id = a.bed_id
                 where e.exec_date = ?::date and e.status = 'PENDING'
-                order by a.admission_no, o.id, e.seq_no
-                """, date));
+                """);
+        var args = new java.util.ArrayList<Object>();args.add(date);
+        clinicalReadAccess.clinicalScope().appendSql(sql, args);
+        sql.append(" order by a.admission_no, o.id, e.seq_no");
+        return R.ok(jdbcTemplate.queryForList(sql.toString(), args.toArray()));
     }
 
     /** 按执行行执行（并发抢占，仅一方成功；扣库存 + 医嘱费用累加） */
@@ -102,6 +105,7 @@ public class InpatientController {
     /** v35：出院/归档前病历完整性只读预检——前端据此弹缺项、按 gate 模式决定提示或禁用 */
     @org.springframework.web.bind.annotation.GetMapping("/admissions/{id}/emr-integrity")
     public R<java.util.Map<String, Object>> emrIntegrity(@PathVariable Long id) {
+        clinicalReadAccess.assertCanRead(id);
         var missing = emrIntegrityService.check(id);
         return R.ok(java.util.Map.of(
                 "complete", missing.isEmpty(),
@@ -113,6 +117,7 @@ public class InpatientController {
     /** 1.0.1（2067）：住院每日费用清单——按执行日期检索医嘱费用明细与合计 */
     @GetMapping("/admissions/{id}/daily-fees")
     public R<Map<String, Object>> dailyFees(@PathVariable Long id, @RequestParam String date) {
+        clinicalReadAccess.assertCanRead(id);
         var rows = jdbcTemplate.queryForList("""
                 select item_name, spec, qty, unit_price, amount, order_type, executed_at
                 from inp_order
@@ -135,6 +140,7 @@ public class InpatientController {
     @org.springframework.security.access.prepost.PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP','NURSE','CASHIER')")
     @GetMapping("/admissions/{id}/print/daily-fee")
     public R<Map<String, Object>> printDailyFee(@PathVariable Long id, @RequestParam String date) {
+        clinicalReadAccess.assertCanReadBilling(id);
         var head = jdbcTemplate.queryForList("""
                 select a.admission_no, p.name as patient_name, p.patient_no, p.sex,
                        cd.name as dept_name, wd.name as ward_name, b.bed_no
@@ -264,13 +270,14 @@ public class InpatientController {
 
     @GetMapping("/beds")
     public R<List<Map<String, Object>>> beds(@RequestParam Long wardId) {
+        var scope = clinicalReadAccess.clinicalScope();
         return R.ok(bedRepo.findByWardIdOrderByBedNo(wardId).stream().map(b -> {
             var m = new LinkedHashMap<String, Object>();
             m.put("id", b.getId());
             m.put("bedNo", b.getBedNo());
             m.put("status", b.getStatus());
             if (b.getAdmissionId() != null) {
-                admissionRepo.findById(b.getAdmissionId()).ifPresent(a ->
+                admissionRepo.findById(b.getAdmissionId()).filter(a -> scope.includes(a.getDoctorId())).ifPresent(a ->
                         patientRepository.findById(a.getPatientId()).ifPresent(p ->
                                 m.put("patientName", p.getName())));
             }
@@ -307,11 +314,13 @@ public class InpatientController {
     /**
      * 在院患者列表 + 多维检索（2012★ 按科室/护理级别/是否转科等条件检索、2013★ 当前医生主管的病人）。
      *
-     * <p><b>契约保护（本方法最重要的一条）</b>：所有参数均可选，<b>一个都不传时逐字走 v43 之前的老路径</b>
+     * <p><b>契约保护</b>：所有参数均可选，ADMIN/NURSE 不传条件时保持 v43 旧行集与字段顺序；
+     * v89 普通医生在组装患者字段前按实时主管过滤，所有筛选条件只能进一步收窄。旧路径为
      * ——同一个 {@code findByStatusOrderByIdDesc("IN_HOSPITAL")}、同一个 id 降序、同一个 {@link #toDto}。
      * 既有前端（AdmissionView/DischargeView/InpNurseView/MobileWorkView/ConsentView/SurgeryView）
      * 与 E2E（{@code e2elib.ensure_not_admitted}）全部依赖当前行为，
-     * 单测 {@code V43InpSearchTest#noParamsMeansExactlyTheOldBehaviour} 钉死这一条。
+     * 单测 {@code V43InpSearchTest#noParamsMeansExactlyTheOldBehaviour} 保留管理员契约；
+     * {@code V89InpReadAccessTest} 钉住普通医生对象范围。
      *
      * <p><b>唯一的返回体增量</b>：每行尾部追加 {@code doctorId}/{@code doctorName} 两个键。
      * 2013★ 要求列表能看见"谁主管"，而 {@code inp_admission.doctor_id} 此前建了表却无任何读路径；
@@ -342,9 +351,11 @@ public class InpatientController {
                 || transferred != null || doctorId != null || !kw.isEmpty()
                 || Boolean.TRUE.equals(mine);
 
-        // ★ 零条件 = 旧行为：不进检索分支，连 SQL 都不换
+        var scope = clinicalReadAccess.clinicalScope();
+        // Preserve the privileged legacy row/field/order contract; ordinary doctors are scoped before DTOs.
         if (!filtered) {
-            return R.ok(withAttendingDoctor(admissionRepo.findByStatusOrderByIdDesc("IN_HOSPITAL")));
+            return R.ok(withAttendingDoctor(admissionRepo.findByStatusOrderByIdDesc("IN_HOSPITAL").stream()
+                    .filter(a -> scope.includes(a.getDoctorId())).toList()));
         }
 
         if (deptId != null && deptId <= 0) return R.fail(4880, "科室条件非法");
@@ -387,6 +398,7 @@ public class InpatientController {
                     ? " and exists (select 1 from inp_transfer_log t where t.admission_id = a.id)"
                     : " and not exists (select 1 from inp_transfer_log t where t.admission_id = a.id)");
         }
+        scope.appendSql(sql, args);
         sql.append(" order by a.id desc");   // 与旧行为同序
 
         List<Long> ids = jdbcTemplate.queryForList(sql.toString(), Long.class, args.toArray());
@@ -549,6 +561,7 @@ public class InpatientController {
         if (wardId != null) { sql.append(" and a.ward_id = ?"); args.add(wardId); }
         if (deptId != null) { sql.append(" and a.dept_id = ?"); args.add(deptId); }
         if (!st.isEmpty()) { sql.append(" and o.status = ?"); args.add(st); }
+        clinicalReadAccess.clinicalScope().appendSql(sql, args);
         sql.append(" order by o.id desc limit ?");
         args.add(ORDER_SEARCH_LIMIT + 1);
 
@@ -594,6 +607,7 @@ public class InpatientController {
     @org.springframework.security.access.prepost.PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP','NURSE','CASHIER')")
     @GetMapping("/admissions/{id}/account")
     public R<Map<String, Object>> account(@PathVariable Long id) {
+        clinicalReadAccess.assertCanReadBilling(id);
         List<InpDeposit> deposits = depositRepo.findByAdmissionIdOrderByIdAsc(id);
         List<InpOrder> orders = orderRepo.findByAdmissionIdOrderByIdAsc(id);
         BigDecimal depositTotal = deposits.stream().map(InpDeposit::getAmount)
@@ -643,6 +657,7 @@ public class InpatientController {
     /** 转科历史：某患者历次转科记录（带科室名/床号/原因），供转科对话框回看 */
     @GetMapping("/admissions/{id}/transfers")
     public R<List<Map<String, Object>>> transfers(@PathVariable Long id) {
+        clinicalReadAccess.assertCanRead(id);
         var rows = jdbcTemplate.queryForList("""
                 select t.id, t.created_at, t.reason,
                        fd.name as from_dept_name, td.name as to_dept_name,
@@ -677,7 +692,16 @@ public class InpatientController {
      */
     @GetMapping("/orders/pending")
     public R<List<Map<String, Object>>> pendingOrders() {
-        return R.ok(orderRepo.findByStatusAndOrderNatureNotOrderByIdAsc("CREATED", "LONG").stream().map(o -> {
+        var scope = clinicalReadAccess.clinicalScope();
+        var scopeSql = new StringBuilder("select a.id from inp_admission a where 1 = 1");
+        var scopeArgs = new java.util.ArrayList<Object>();
+        scope.appendSql(scopeSql, scopeArgs);
+        // Resolve the permitted admissions once rather than adding an ownership lookup per order.
+        java.util.Set<Long> visible = scope.all() ? null : new java.util.HashSet<>(
+                jdbcTemplate.queryForList(scopeSql.toString(), Long.class, scopeArgs.toArray()));
+        return R.ok(orderRepo.findByStatusAndOrderNatureNotOrderByIdAsc("CREATED", "LONG").stream()
+                .filter(o -> visible == null || visible.contains(o.getAdmissionId()))
+                .map(o -> {
             var m = new LinkedHashMap<String, Object>();
             m.put("orderId", o.getId());
             m.put("groupNo", o.getGroupNo());
@@ -776,6 +800,7 @@ public class InpatientController {
     @org.springframework.security.access.prepost.PreAuthorize("hasAnyRole('ADMIN','CASHIER','NURSE','DOCTOR_OUTP')")
     @GetMapping("/admissions/{id}/interim-settlements")
     public R<List<Map<String, Object>>> interimSettlements(@PathVariable Long id) {
+        clinicalReadAccess.assertCanReadBilling(id);
         return R.ok(jdbcTemplate.queryForList("""
                 select id, settle_no, total_amount, deposit_amount, balance, pay_method, created_at
                 from inp_settlement

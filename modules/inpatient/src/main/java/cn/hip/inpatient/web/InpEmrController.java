@@ -349,6 +349,7 @@ public class InpEmrController {
 
     @GetMapping("/vitals")
     public R<List<InpVitalSign>> vitals(@PathVariable Long admissionId) {
+        clinicalReadAccess.assertCanRead(admissionId);
         return R.ok(vitalRepo.findByAdmissionIdOrderByMeasuredAtAsc(admissionId));
     }
 
@@ -456,6 +457,7 @@ public class InpEmrController {
                 where a.id = ?
                 """, admissionId);
         if (head.isEmpty()) return R.fail(4820, "住院记录不存在");
+        clinicalReadAccess.assertCanRead(admissionId);
         var h = head.get(0);
 
         java.time.LocalDate admitDate = toLocalDate(h.get("admit_at"));

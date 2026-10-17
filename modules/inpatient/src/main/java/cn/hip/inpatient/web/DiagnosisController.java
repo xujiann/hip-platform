@@ -1,9 +1,10 @@
 package cn.hip.inpatient.web;
 
 import cn.hip.platform.core.common.R;
-import cn.hip.platform.core.security.CurrentUserService;
+import cn.hip.inpatient.service.InpatientDiagnosisService;
+import cn.hip.inpatient.service.InpatientReadAccess;
+import cn.hip.inpatient.service.InpatientService.InpException;
 import lombok.RequiredArgsConstructor;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
@@ -20,49 +21,25 @@ import java.util.Map;
 public class DiagnosisController {
 
     private final JdbcTemplate jdbc;
-    private final CurrentUserService currentUserService;
+    private final InpatientDiagnosisService diagnoses;
+    private final InpatientReadAccess readAccess;
 
     public record DiagReq(Long admissionId, String icd, String name) {}
 
     @PostMapping
     public R<Void> add(@RequestBody DiagReq req, Authentication auth) {
         if (req.icd() == null || req.icd().isBlank()) return R.fail(9014, "ICD 编码必填");
-        Integer exists = jdbc.queryForObject("select count(*) from inp_admission where id = ?",
-                Integer.class, req.admissionId());
-        if (exists == null || exists == 0) return R.fail(9003, "住院记录不存在");
-        // v32：对象级归属校验（收尾 P2-3 残留的"记后续"项——doctor_id 早在 V8 已具备，
-        // 责任医生模型不再是延后理由）。诊断直接影响 DRG 严重度子分组与医保支付权重，
-        // 此前门诊医生 DOCTOR_OUTP 可给**任意**住院病案补录 → 水平越权。
-        // ADMIN/QUALITY（编码组）按业务横切所有病案；仅具 DOCTOR_OUTP 的医生只能补录
-        // 主管医生为本人的病案。doctor_id 为空（未采集主管）时放行——不能强推一个
-        // 从未采集的归属，否则误拒历史/测试数据（admit 的 doctorId 可空）。
-        if (!hasCrossDomainRole(auth)) {
-            Long ownerId = jdbc.queryForObject(
-                    "select doctor_id from inp_admission where id = ?", Long.class, req.admissionId());
-            Long selfId = currentUserService.idOf(auth);
-            if (ownerId != null && !ownerId.equals(selfId)) {
-                return R.fail(9018, "无权操作该病案（非本人主管）");
-            }
-        }
         try {
-            jdbc.update("insert into inp_diagnosis(admission_id, icd, name) values (?,?,?)",
-                    req.admissionId(), req.icd(), req.name());
-        } catch (DuplicateKeyException e) {
-            return R.fail(9015, "该诊断已录入");
+            return diagnoses.add(req.admissionId(), req.icd(), req.name())
+                    ? R.ok() : R.fail(9015, "该诊断已录入");
+        } catch (InpException e) {
+            return R.fail(e.code, e.getMessage());
         }
-        return R.ok();
-    }
-
-    /** 跨域角色：ADMIN 与病案编码组 QUALITY 按业务横切所有病案，不受主管归属约束 */
-    private static boolean hasCrossDomainRole(Authentication auth) {
-        if (auth == null) return false;
-        return auth.getAuthorities().stream()
-                .map(a -> a.getAuthority())
-                .anyMatch(r -> "ROLE_ADMIN".equals(r) || "ROLE_QUALITY".equals(r));
     }
 
     @GetMapping
     public R<List<Map<String, Object>>> list(@RequestParam Long admissionId) {
+        readAccess.assertCanReadCoding(admissionId);
         return R.ok(jdbc.queryForList(
                 "select * from inp_diagnosis where admission_id = ? order by id", admissionId));
     }

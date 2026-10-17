@@ -60,7 +60,11 @@ class V89DiagnosisOwnershipRaceTest {
                 auth(a,"DOCTOR_OUTP");
                 try {return new TransactionTemplate(manager).execute(tx -> {
                     writerPid.set(jdbc.queryForObject("select pg_backend_pid()",Integer.class));writerStarted.countDown();
-                    return diagnoses.add(new cn.hip.inpatient.web.DiagnosisController.DiagReq(admission,"I10","V89并发诊断"),SecurityContextHolder.getContext().getAuthentication()).getCode();
+                    int code=diagnoses.add(new cn.hip.inpatient.web.DiagnosisController.DiagReq(admission,"I10","V89并发诊断"),SecurityContextHolder.getContext().getAuthentication()).getCode();
+                    // This outer transaction only exposes the backend PID for the lock assertion.
+                    // The controller catches the service rejection; roll back our wrapper explicitly as HTTP would.
+                    if(code!=0)tx.setRollbackOnly();
+                    return code;
                 });} catch(InpatientService.InpException e){return e.code;}
                 finally {SecurityContextHolder.clearContext();}
             });

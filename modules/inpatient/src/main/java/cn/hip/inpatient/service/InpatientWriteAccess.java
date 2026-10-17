@@ -33,6 +33,12 @@ public class InpatientWriteAccess {
         assertAccess(admissionId, java.util.Set.of("ROLE_ADMIN", "ROLE_NURSE", "ROLE_CASHIER"));
     }
 
+    /** Coding duties are cross-admission; ordinary doctors must still be the current attending. */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void assertCanCodeDiagnosis(Long admissionId) {
+        assertAccess(admissionId, java.util.Set.of("ROLE_ADMIN", "ROLE_QUALITY"));
+    }
+
     private void assertAccess(Long admissionId, java.util.Set<String> crossAdmissionRoles) {
         var rows = jdbc.queryForList("select doctor_id from inp_admission where id = ? for update", admissionId);
         if (rows.isEmpty()) throw new InpException(9003, "住院记录不存在");

@@ -58,6 +58,9 @@ class V89InpReadAccessTest {
         }
         jdbc.update("update inp_admission set doctor_id=? where id=?",uid(b),id);
         for(String path:details(id)) assertEquals(1005,read(path,a,"DOCTOR_OUTP").path("code").asInt(),path);
+        for(String path:details(Long.MAX_VALUE)) {
+            assertEquals(path.endsWith("/print/temp-sheet")?4820:9003,read(path,a,"DOCTOR_OUTP").path("code").asInt(),path);
+        }
     }
     @Test void cashierAndCoderKeepOnlyTheirExistingResponsibilities() throws Exception {
         String a=doctor(),b=doctor();Long id=admission(uid(a));
@@ -92,9 +95,24 @@ class V89InpReadAccessTest {
         for(int i=0;i<205;i++)order(foreign,"TEMP");
         var data=read("/orders/search?keyword=V89",a,"DOCTOR_OUTP").path("data");
         assertEquals(4,data.path("items").size());assertFalse(data.path("truncated").asBoolean());
-        for(String path:details(unassigned))assertEquals(1005,read(path,"v89-missing","DOCTOR_OUTP").path("code").asInt(),path);
+        for(String path:details(unassigned)) {
+            assertEquals(1005,read(path,"v89-missing","DOCTOR_OUTP").path("code").asInt(),path);
+            assertEquals(0,read(path,a,"DOCTOR_OUTP").path("code").asInt(),path);
+        }
+        assertEquals(1005,read("/diagnoses?admissionId="+unassigned,"v89-missing","DOCTOR_OUTP").path("code").asInt());
+        assertEquals(0,read("/orders/pending","v89-missing","DOCTOR_OUTP").path("data").size());
+        assertEquals(0,read("/exec-lines?date="+BusinessDates.today(),"v89-missing","DOCTOR_OUTP").path("data").size());
         assertEquals(0,read("/admissions","v89-missing","DOCTOR_OUTP").path("data").size());
         assertEquals(0,read("/orders/search?keyword=V89","v89-missing","DOCTOR_OUTP").path("data").path("items").size());
+    }
+    @Test void samePatientDoesNotGrantAccessToAnotherAdmission() throws Exception {
+        String a=doctor(),b=doctor();Long own=admission(uid(a));
+        jdbc.update("update inp_admission set status='DISCHARGED' where id=?",own);
+        Long other=admission(uid(b));
+        jdbc.update("update inp_admission set patient_id=(select patient_id from inp_admission where id=?) where id=?",own,other);
+        for(String path:details(other)) assertEquals(1005,read(path,a,"DOCTOR_OUTP").path("code").asInt(),path);
+        assertEquals(1005,read("/diagnoses?admissionId="+other,a,"DOCTOR_OUTP").path("code").asInt());
+        assertEquals(0,read("/diagnoses?admissionId="+own,a,"DOCTOR_OUTP").path("code").asInt());
     }
     @Test void diagnosisUnknownIdentityIsDeniedAndCoderDuplicateDoesNotAbortTransaction() throws Exception {
         Long id=admission(null);
