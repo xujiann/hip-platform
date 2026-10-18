@@ -86,4 +86,10 @@ class V91BloodSurgeryAccessTest {
         assertEquals(1005,code("GET","/api/inpatient/surgeries/"+s+"/detail",null,a,"DOCTOR_OUTP"));
         assertEquals(0,code("PUT","/api/inpatient/surgeries/"+s+"/complete",Map.of("opNote","x","anesNote","x"),b,"DOCTOR_OUTP"));
     }
+    @Test void existingMenusFollowScopedDutiesWithoutGrantingTechniciansBloodAccess(){
+        for(String role:List.of("DOCTOR_OUTP","NURSE","TECHNICIAN"))assertEquals(1,jdbc.queryForObject("select count(*) from sys_role_menu rm join sys_role r on r.id=rm.role_id where r.code=? and rm.menu_id=40",Integer.class,role));
+        assertEquals(1,jdbc.queryForObject("select count(*) from sys_role_menu rm join sys_role r on r.id=rm.role_id where r.code='DOCTOR_OUTP' and rm.menu_id=45",Integer.class));
+        for(String role:List.of("TECHNICIAN","QUALITY","CASHIER"))assertEquals(0,jdbc.queryForObject("select count(*) from sys_role_menu rm join sys_role r on r.id=rm.role_id where r.code=? and rm.menu_id=45",Integer.class,role));
+    }
+
 }

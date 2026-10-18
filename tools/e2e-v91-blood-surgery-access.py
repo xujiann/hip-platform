@@ -6,7 +6,11 @@ from e2elib import call,ok,login,provision_user,new_patient,find_free_bed,discha
 t=login();tokens={'admin':t};ids={};admissions=[];suffix=str(time.time_ns())[-10:]
 for key,role in [('a','DOCTOR_OUTP'),('b','DOCTOR_OUTP'),('n','NURSE'),('tech','TECHNICIAN'),('q','QUALITY'),('cash','CASHIER')]:
     tokens[key]=provision_user(t,'e2e91'+key+suffix,role,'V91'+key)
-    ids[key]=ok(call('GET','/auth/me',token=tokens[key]),'identity')['id']
+    identity=ok(call('GET','/auth/me',token=tokens[key]),'identity');ids[key]=identity['id']
+    paths={m['path'] for m in identity['menus']}
+    if key in ['a','b','n','tech']:assert '/surgery' in paths,(key,paths)
+    if key in ['a','b','n']:assert '/inpatient/blood' in paths,(key,paths)
+    if key=='tech':assert '/inpatient/blood' not in paths
 
 def response(method,path,body=None,who='admin'):
     try:return call(method,path,body,tokens[who])
