@@ -338,7 +338,7 @@ async function save() {
   }
   saveLoading.value = true
   try {
-    await client.post('/inpatient/surgeries', form)
+    await client.post('/inpatient/surgeries', { ...form, scheduledAt: form.scheduledAt || null })
     ElMessage.success('已提交')
     dialogVisible.value = false
     await load()
