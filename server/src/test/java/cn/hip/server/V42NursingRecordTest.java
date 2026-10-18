@@ -269,6 +269,9 @@ class V42NursingRecordTest {
         assertEquals(4800, nursingRecordController.update(-1L,
                 new RecordReq(admId, "OBSERVE", null, "改", null, null, null)).getCode());
 
+        // v92：修改使用实际登录人；管理员不能替他人改署名草稿。
+        SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
+                "nur42writer", null, List.of(new SimpleGrantedAuthority("ROLE_NURSE"))));
         // 签名前可改
         assertEquals(0, nursingRecordController.update(id,
                 new RecordReq(admId, "OBSERVE", null, "神志清、T38.2℃", "物理降温", "30 分钟后复测", null)).getCode());

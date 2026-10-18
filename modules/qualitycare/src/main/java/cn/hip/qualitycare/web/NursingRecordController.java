@@ -8,6 +8,9 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.sql.Timestamp;
@@ -106,6 +109,8 @@ public class NursingRecordController {
 
     /** 新增护理记录（记录人取当前登录护士；record_time 可倒填，夜班补录不吃 now()） */
     @PostMapping("/api/nursing/records")
+    @PreAuthorize("hasAnyRole('ADMIN','NURSE')")
+    @Transactional
     public R<Map<String, Object>> add(@RequestBody RecordReq req, Authentication auth) {
         String kind = req.recordKind();
         if (kind == null || !KINDS.contains(kind)) {
@@ -115,32 +120,43 @@ public class NursingRecordController {
             return R.fail(4802, "病情观察与护理措施不能同时为空");
         }
         var adm = jdbc.queryForList(
-                "select status from inp_admission where id = ?", req.admissionId());
+                "select status from inp_admission where id = ? for update", req.admissionId());
         if (adm.isEmpty() || !"IN_HOSPITAL".equals(adm.get(0).get("status"))) {
             return R.fail(4805, "住院记录不存在或已出院");
         }
         Timestamp when = req.recordTime() == null || req.recordTime().isBlank()
                 ? Timestamp.from(Instant.now()) : parseTime(req.recordTime());
         if (when == null) return R.fail(4811, "日期时间格式非法：" + req.recordTime());
+        Long nurseId = auth == null ? null : currentUserService.idOf(auth);
+        if (nurseId == null) throw new AccessDeniedException("无法识别当前护理记录人");
         Long id = jdbc.queryForObject("""
                 insert into nur_record(admission_id, record_time, record_kind, observation, measure,
                                        effect, measure_code, nurse_id)
                 values (?,?,?,?,?,?,?,?) returning id
                 """, Long.class, req.admissionId(), when, kind, trimToNull(req.observation()),
                 trimToNull(req.measure()), trimToNull(req.effect()), trimToNull(req.measureCode()),
-                currentUserService.idOf(auth));
+                nurseId);
         return R.ok(Map.of("id", id));
     }
 
     /**
+     * v92：仅记录人维护草稿；修改与签名持同一记录行锁，签名内容与冻结行保持一致。
      * 修改护理记录：**已签名不可改**（4803）——与病历签名冻结同语义。
      * 签名后要补正走 v43 的 emr_amendment 通路（需先放宽 V80 的 CHECK），本版不做。
      */
     @PutMapping("/api/nursing/records/{id}")
+    @PreAuthorize("hasAnyRole('ADMIN','NURSE')")
+    @Transactional
     public R<Void> update(@PathVariable Long id, @RequestBody RecordReq req) {
-        var rows = jdbc.queryForList("select signature, record_kind from nur_record where id = ?", id);
+        var rows = jdbc.queryForList("select signature, record_kind, nurse_id from nur_record where id = ? for update", id);
         if (rows.isEmpty()) return R.fail(4800, "护理记录不存在");
         if (rows.get(0).get("signature") != null) return R.fail(4803, "护理记录已签名，不可修改");
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        Long me = auth == null ? null : currentUserService.idOf(auth);
+        Object owner = rows.get(0).get("nurse_id");
+        if (me == null || owner == null || !me.equals(((Number) owner).longValue())) {
+            throw new AccessDeniedException("只有记录护士本人可以修改");
+        }
         String kind = req.recordKind() == null || req.recordKind().isBlank()
                 ? (String) rows.get(0).get("record_kind") : req.recordKind();
         if (!KINDS.contains(kind)) {
@@ -171,13 +187,15 @@ public class NursingRecordController {
      * 代签等于把法定责任转嫁给未在场的人。
      */
     @PostMapping("/api/nursing/records/{id}/sign")
+    @PreAuthorize("hasAnyRole('ADMIN','NURSE')")
+    @Transactional
     public R<Map<String, Object>> sign(@PathVariable Long id, Authentication auth) {
         var rows = jdbc.queryForList(
-                "select nurse_id, signature, observation, measure, effect from nur_record where id = ?", id);
+                "select nurse_id, signature, observation, measure, effect from nur_record where id = ? for update", id);
         if (rows.isEmpty()) return R.fail(4800, "护理记录不存在");
         var row = rows.get(0);
         if (row.get("signature") != null) return R.fail(4808, "护理记录已签名，不可重复签名");
-        Long me = currentUserService.idOf(auth);
+        Long me = auth == null ? null : currentUserService.idOf(auth);
         Object nurseId = row.get("nurse_id");
         if (me == null || nurseId == null || !me.equals(((Number) nurseId).longValue())) {
             return R.fail(4804, "只有记录护士本人可以签名");

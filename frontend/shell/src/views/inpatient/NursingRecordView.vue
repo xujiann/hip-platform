@@ -26,7 +26,7 @@
         <el-date-picker v-model="to" type="date" value-format="YYYY-MM-DD" style="width: 140px"
                         @change="loadRecords" />
       </el-form-item>
-      <el-button type="primary" size="small" :disabled="!admissionId" @click="openAdd">新增记录</el-button>
+      <el-button v-if="canWrite" type="primary" size="small" :disabled="!admissionId" @click="openAdd">新增记录</el-button>
       <el-button size="small" :disabled="!admissionId" @click="doPrint">打印记录单</el-button>
     </el-form>
 
@@ -56,13 +56,13 @@
       </el-table-column>
       <el-table-column label="操作" width="130">
         <template #default="{ row }">
-          <template v-if="!row.signed">
+          <template v-if="!row.signed && canEdit(row)">
             <el-button link type="primary" size="small" :loading="busyId === row.id"
                        @click="openEdit(row)">修改</el-button>
             <el-button link type="success" size="small" :loading="busyId === row.id"
                        @click="sign(row)">签名</el-button>
           </template>
-          <span v-else class="frozen">已冻结</span>
+          <span v-else class="frozen">{{ row.signed ? '已冻结' : '—' }}</span>
         </template>
       </el-table-column>
     </el-table>
@@ -104,10 +104,11 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import client from '../../api/client'
+import { useAuthStore } from '../../stores/auth'
 
 /** 巡视与护理观察同表按类型区分（后端 nur_record.record_kind），前端只做展示映射 */
 const KINDS = [
@@ -117,6 +118,11 @@ const KINDS = [
 ]
 
 const route = useRoute()
+const auth = useAuthStore()
+const canWrite = computed(() => auth.user?.roles.some((r) => ['ADMIN', 'NURSE'].includes(r)) ?? false)
+function canEdit(row: Record<string, unknown>) {
+  return canWrite.value && row.nurse_id != null && Number(row.nurse_id) === auth.user?.id
+}
 const board = ref<Record<string, unknown>[]>([])
 const records = ref<Record<string, unknown>[]>([])
 const gate = ref<Record<string, unknown> | null>(null)
@@ -130,6 +136,7 @@ const loading = ref(false)
 const saving = ref(false)
 const dialog = ref(false)
 const busyId = ref<unknown>(null)
+const formAdmissionId = ref<number>()
 const form = reactive({
   id: 0, recordKind: 'OBSERVE', recordTime: '', observation: '', measure: '',
   effect: '', measureCode: '',
@@ -142,35 +149,57 @@ function kindTagType(v: string) {
   return v === 'ROUNDS' ? 'warning' : v === 'MEASURE' ? 'success' : 'primary'
 }
 
-async function loadBoard() {
-  board.value = (await client.get('/inpatient/nursing/board')).data.data
-  if (!admissionId.value && board.value.length) {
-    admissionId.value = Number(board.value[0].admission_id)
-  }
+let recordsRequest = 0
+let boardRequest = 0
+function clearRecords() {
+  ++recordsRequest
+  records.value = []
+  gate.value = null
+  dialog.value = false
+  formAdmissionId.value = undefined
+  loading.value = false
 }
+watch(admissionId, clearRecords, { flush: 'sync' })
 
 async function loadRecords() {
-  if (!admissionId.value) return
+  clearRecords()
+  const id = admissionId.value
+  if (!id) return
+  const request = recordsRequest
   loading.value = true
   try {
-    const params: Record<string, unknown> = { admissionId: admissionId.value }
+    const params: Record<string, unknown> = { admissionId: id }
     if (kind.value) params.kind = kind.value
     if (from.value) params.from = from.value
     if (to.value) params.to = to.value
-    records.value = (await client.get('/nursing/records', { params })).data.data
-    gate.value = (await client.get('/nursing/records/gate-check',
-      { params: { admissionId: admissionId.value } })).data.data
+    const [listed, checked] = await Promise.all([
+      client.get('/nursing/records', { params }),
+      client.get('/nursing/records/gate-check', { params: { admissionId: id } }),
+    ])
+    if (request !== recordsRequest || id !== admissionId.value) return
+    records.value = listed.data.data
+    gate.value = checked.data.data
   } finally {
-    loading.value = false
+    if (request === recordsRequest) loading.value = false
   }
 }
 
 async function reload() {
-  await loadBoard()
+  clearRecords()
+  const request = ++boardRequest
+  board.value = []
+  const rows = (await client.get('/inpatient/nursing/board')).data.data
+  if (request !== boardRequest) return
+  board.value = rows
+  if (!admissionId.value && board.value.length) {
+    admissionId.value = Number(board.value[0].admission_id)
+  }
   await loadRecords()
 }
 
 function openAdd() {
+  if (!canWrite.value || !admissionId.value) return
+  formAdmissionId.value = admissionId.value
   Object.assign(form, {
     id: 0, recordKind: 'OBSERVE', recordTime: '', observation: '', measure: '',
     effect: '', measureCode: '',
@@ -179,6 +208,8 @@ function openAdd() {
 }
 
 function openEdit(row: Record<string, unknown>) {
+  if (!canEdit(row) || row.signed) return
+  formAdmissionId.value = Number(row.admission_id)
   Object.assign(form, {
     id: Number(row.id),
     recordKind: String(row.record_kind),
@@ -192,6 +223,9 @@ function openEdit(row: Record<string, unknown>) {
 }
 
 async function save() {
+  if (!canWrite.value || !formAdmissionId.value || formAdmissionId.value !== admissionId.value) return
+  const targetAdmission = formAdmissionId.value
+  const targetRecord = form.id
   if (!form.observation.trim() && !form.measure.trim()) {
     ElMessage.warning('病情观察与护理措施至少填一项')
     return
@@ -199,7 +233,7 @@ async function save() {
   saving.value = true
   try {
     const body = {
-      admissionId: admissionId.value,
+      admissionId: targetAdmission,
       recordKind: form.recordKind,
       recordTime: form.recordTime || undefined,
       observation: form.observation,
@@ -207,22 +241,26 @@ async function save() {
       effect: form.effect,
       measureCode: form.measureCode,
     }
-    if (form.id) await client.put(`/nursing/records/${form.id}`, body)
+    if (targetRecord) await client.put(`/nursing/records/${targetRecord}`, body)
     else await client.post('/nursing/records', body)
     ElMessage.success('已保存')
-    dialog.value = false
-    await loadRecords()
+    if (admissionId.value === targetAdmission) {
+      dialog.value = false
+      await loadRecords()
+    }
   } finally {
     saving.value = false
   }
 }
 
 async function sign(row: Record<string, unknown>) {
+  if (!canEdit(row) || row.signed) return
+  const targetAdmission = admissionId.value
   busyId.value = row.id
   try {
     await client.post(`/nursing/records/${row.id}/sign`)
     ElMessage.success('已签名（签名后不可修改）')
-    await loadRecords()
+    if (admissionId.value === targetAdmission) await loadRecords()
   } finally {
     busyId.value = null
   }
