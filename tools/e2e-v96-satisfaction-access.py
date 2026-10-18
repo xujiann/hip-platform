@@ -57,7 +57,7 @@ expect(1005,'GET',BASE+'/stats',who='n');expect(1005,'POST',BASE,{'score':5},'n'
 expect(0,'PUT',f'/system/users/{ids["n"]}',{'username':name,'realName':'V96n','roleCodes':['NURSE']})
 assert stats('n')['count']==1
 for who in tokens:
-    expect(0,'GET','/auth/me',who=who)
+    expect(1005 if who=='interface' else 0,'GET','/auth/me',who=who)
     # Its existing machine-only whitelist intentionally excludes the employee dashboard.
     expect(1005 if who=='interface' else 0,'GET','/stats/overview',who=who)
 print('e2e-v96-satisfaction-access passed: real collectors, anonymous/same patient, scoped totals/averages/recent, quality read-only, role usability and no-write rejection')
