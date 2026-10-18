@@ -256,9 +256,19 @@ function fmt(v: unknown): string {
   return fmtDateTime(v, '')
 }
 
+let listRequest = 0
+let pageRequest = 0
+function clearPage() {
+  ++pageRequest
+  page.value = null
+  qc.value = null
+}
 async function loadList() {
+  const request = ++listRequest
+  list.value = []
+  clearPage()
   const resp = await client.get('/quality/med-records', { params: { keyword: keyword.value } })
-  list.value = resp.data.data
+  if (request === listRequest) list.value = resp.data.data
 }
 
 /* ---- v42 病案首页质控汇总（终末质控评分单只读视图，兑现偏离表序号 7） ---- */
@@ -272,12 +282,15 @@ function qcTagType(g: unknown): 'success' | 'warning' | 'danger' | 'info' {
 }
 
 async function pick(row: Record<string, unknown> | null) {
+  clearPage()
+  const request = pageRequest
   if (!row) return
   const [resp, qcResp] = await Promise.all([
     client.get(`/inpatient/admissions/${row.id}/front-page`),
     // 质控摘要未评分也返回 200（scored=false）——病案首页对所有病案都要能打开，不为"还没质控"弹红字
     client.get(`/quality/mr-qc/summary/${row.id}`),
   ])
+  if (request !== pageRequest) return
   page.value = resp.data.data
   qc.value = qcResp.data.data as Record<string, any>
 }
@@ -320,13 +333,16 @@ const queue = ref<Queue>({
   overdueCount: 0, limit: 200, truncated: false,
 })
 
+let queueRequest = 0
 async function loadQueue() {
+  const request = ++queueRequest
+  queue.value = { ...queue.value, items: [], total: 0, pendingCode: 0, pendingArchive: 0, overdueCount: 0, truncated: false }
   queueLoading.value = true
   try {
     const resp = await client.get('/quality/mr-workqueue')
-    queue.value = resp.data.data as Queue
+    if (request === queueRequest) queue.value = resp.data.data as Queue
   } finally {
-    queueLoading.value = false
+    if (request === queueRequest) queueLoading.value = false
   }
 }
 
