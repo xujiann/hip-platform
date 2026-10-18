@@ -6,8 +6,11 @@ from e2elib import call,ok,login,provision_user,new_patient
 BASE='/patientcare/satisfaction'
 t=login();suffix=str(time.time_ns())[-10:];tokens={'admin':t};ids={}
 for key,role in {'a':'DOCTOR_OUTP','b':'DOCTOR_OUTP','n':'NURSE','n2':'NURSE','q':'QUALITY','cash':'CASHIER','tech':'TECHNICIAN','interface':'INTERFACE'}.items():
-    tokens[key]=provision_user(t,'e2e96'+key+suffix,role,'V96'+key)
+    # INTERFACE cannot use the employee change-password route. Complete ordinary initial
+    # account setup first, then assign the final duty via the real administrator API.
+    tokens[key]=provision_user(t,'e2e96'+key+suffix,'TECHNICIAN' if role=='INTERFACE' else role,'V96'+key)
     me=ok(call('GET','/auth/me',token=tokens[key]),'identity');ids[key]=me['id']
+    if role=='INTERFACE':ok(call('PUT',f'/system/users/{ids[key]}',{'username':'e2e96'+key+suffix,'realName':'V96'+key,'roleCodes':['INTERFACE']},t),'interface duty')
     if key in ['a','b','n','n2','q']:assert '/patientcare' in {x['path'] for x in me['menus']}
 
 def expect(code,method,path,body=None,who='admin'):
@@ -55,5 +58,6 @@ expect(0,'PUT',f'/system/users/{ids["n"]}',{'username':name,'realName':'V96n','r
 assert stats('n')['count']==1
 for who in tokens:
     expect(0,'GET','/auth/me',who=who)
-    expect(0,'GET','/stats/overview',who=who)
+    # Its existing machine-only whitelist intentionally excludes the employee dashboard.
+    expect(1005 if who=='interface' else 0,'GET','/stats/overview',who=who)
 print('e2e-v96-satisfaction-access passed: real collectors, anonymous/same patient, scoped totals/averages/recent, quality read-only, role usability and no-write rejection')
