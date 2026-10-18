@@ -111,10 +111,10 @@
       <!-- v42 车道2：护理记录单（合版时代加——该文件由车道1 独占，车道2 只交付端点与返回体） -->
       <template v-else-if="type === 'nur-record'">
         <div class="sheet-head">
-          <p>姓名：{{ hdr.patient_name }}　性别：{{ sexNameOf(hdr.sex) }}　科室：{{ hdr.dept_name }}
-            　病区：{{ hdr.ward_name || '—' }}　床号：{{ hdr.bed_no || '—' }}</p>
-          <p>住院号：{{ hdr.admission_no }}　患者号：{{ hdr.patient_no }}　入院日期：{{ fmtDate(hdr.admit_at) }}
-            　护理级别：{{ hdr.care_level || '—' }}</p>
+          <p>姓名：{{ data.patient_name }}　性别：{{ sexNameOf(data.sex) }}　科室：{{ data.dept_name }}
+            　病区：{{ data.ward_name || '—' }}　床号：{{ data.bed_no || '—' }}</p>
+          <p>住院号：{{ data.admission_no }}　患者号：{{ data.patient_no }}　入院日期：{{ fmtDate(data.admit_at) }}
+            　护理级别：{{ data.care_level || '—' }}</p>
           <p v-if="nurFrom || nurTo">记录区间：{{ nurFrom || '起始' }} ~ {{ nurTo || '至今' }}</p>
         </div>
         <table class="tbl">
