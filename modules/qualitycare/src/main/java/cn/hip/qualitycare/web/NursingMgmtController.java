@@ -26,6 +26,7 @@ public class NursingMgmtController {
     public record ShiftReq(Long deptId, String nurseName, String shiftDate, String shiftType) {}
 
     @PostMapping("/shifts")
+    @PreAuthorize("hasAnyRole('ADMIN','NURSE')")
     public R<Void> addShift(@RequestBody ShiftReq req) {
         if (!SHIFTS.contains(req.shiftType())) return R.fail(4580, "班次只能为 DAY/MID/NIGHT");
         try {
@@ -49,6 +50,7 @@ public class NursingMgmtController {
     public record ScoreReq(Long deptId, String item, Double score, String note) {}
 
     @PostMapping("/qc-scores")
+    @PreAuthorize("hasAnyRole('ADMIN','QUALITY')")
     public R<Void> addScore(@RequestBody ScoreReq req, Authentication auth) {
         if (req.score() == null || req.score() < 0 || req.score() > 100) return R.fail(4582, "评分范围 0-100");
         jdbc.update("insert into nur_qc_score(dept_id, item, score, checker, note) values (?,?,?,?,?)",

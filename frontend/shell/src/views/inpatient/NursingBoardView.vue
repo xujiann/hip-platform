@@ -35,7 +35,7 @@
       <el-table-column prop="patient_name" label="姓名" width="90" />
       <el-table-column label="护理级别" width="130">
         <template #default="{ row }">
-          <el-select :model-value="row.care_level" size="small" style="width: 90px"
+          <el-select :disabled="!canNurse" :model-value="row.care_level" size="small" style="width: 90px"
                      @change="(v: string) => setLevel(row, v)">
             <el-option v-for="l in ['特级', '一级', '二级', '三级']" :key="l" :label="l" :value="l" />
           </el-select>
@@ -72,6 +72,10 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
+import { useAuthStore } from '../../stores/auth'
+
+const auth = useAuthStore()
+const canNurse = computed(() => auth.user?.roles.some((r) => ['ADMIN', 'NURSE'].includes(r)) ?? false)
 
 const router = useRouter()
 const records = ref<Record<string, unknown>[]>([])
@@ -141,6 +145,7 @@ function reset() {
  * 无原因的调级在质控上不可追溯。取消则重新加载还原下拉显示（下拉是非受控回显）。
  */
 async function setLevel(row: Record<string, unknown>, level: string) {
+  if (!canNurse.value) return
   const res = await ElMessageBox.prompt(`调整为「${level}护理」的原因`, '护理级别变更', {
     inputPlaceholder: '如：病情加重转特级护理 / 病情稳定降级',
   }).catch(() => null)

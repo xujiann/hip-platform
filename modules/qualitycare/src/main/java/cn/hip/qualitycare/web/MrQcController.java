@@ -365,10 +365,10 @@ public class MrQcController {
      * 在院/出院病案都要能打开，为「还没质控」弹一条红字是噪音。未评分时附带
      * {@code autoFindings} 自动判定的缺项预览，让首页也能看到「预计会扣哪些项」。
      *
-     * <p>只读，放宽到 NURSE/DOCTOR：病案首页本身就是这几类角色在看。
+     * <p>只读病案管理摘要，与病案首页保持ADMIN/QUALITY职责；护理从专属文书/监测入口读取。
      */
     @GetMapping("/summary/{admissionId}")
-    @PreAuthorize("hasAnyRole('ADMIN','QUALITY','NURSE','DOCTOR')")
+    @PreAuthorize("hasAnyRole('ADMIN','QUALITY')")
     public R<Map<String, Object>> summary(@PathVariable Long admissionId) {
         var sheet = loadSheet(admissionId);
         if (sheet != null) {

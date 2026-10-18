@@ -17,16 +17,17 @@ import java.util.Map;
 public class RiskAssessController {
 
     private final JdbcTemplate jdbc;
+    private final cn.hip.qualitycare.service.NursingWriteAccess nursingAccess;
 
     public record AssessReq(Long admissionId, String assessType, Integer score, String note) {}
 
     /** Braden 6-23 分（≤12 高危 / 13-14 中危 / ≥15 低危）；Morse 0-125（≥45 高危 / 25-44 中危 / <25 低危） */
     @PostMapping
+    @org.springframework.security.access.prepost.PreAuthorize("hasAnyRole('ADMIN','NURSE')")
+    @org.springframework.transaction.annotation.Transactional
     public R<Map<String, Object>> assess(@RequestBody AssessReq req, Authentication auth) {
-        Integer inHosp = jdbc.queryForObject(
-                "select count(*) from inp_admission where id = ? and status = 'IN_HOSPITAL'",
-                Integer.class, req.admissionId());
-        if (inHosp == null || inHosp == 0) return R.fail(4780, "住院记录不存在或已出院");
+        nursingAccess.requireActor(auth);
+        if (!nursingAccess.lockActiveAdmission(req.admissionId())) return R.fail(4780, "住院记录不存在或已出院");
         String level;
         if ("BRADEN".equals(req.assessType())) {
             if (req.score() == null || req.score() < 6 || req.score() > 23) return R.fail(4781, "Braden 评分范围 6-23");

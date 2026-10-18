@@ -3,6 +3,7 @@
     <el-tabs v-model="tab">
       <el-tab-pane label="护理排班" name="shift">
         <el-form inline size="small">
+          <template v-if="canNurse">
           <el-form-item><el-input v-model="shift.deptId" placeholder="科室ID" style="width: 90px" /></el-form-item>
           <el-form-item><el-input v-model="shift.nurseName" placeholder="护士姓名" style="width: 120px" /></el-form-item>
           <el-form-item>
@@ -14,6 +15,7 @@
             </el-select>
           </el-form-item>
           <el-button type="primary" size="small" @click="addShift" :loading="addShiftLoading">排班</el-button>
+          </template>
           <el-date-picker v-model="shiftQueryDate" type="date" value-format="YYYY-MM-DD" size="small"
                           style="width: 140px; margin-left: 16px" @change="loadShifts" />
         </el-form>
@@ -28,7 +30,7 @@
       </el-tab-pane>
 
       <el-tab-pane label="护理质控评分" name="score">
-        <el-form inline size="small">
+        <el-form v-if="canQuality" inline size="small">
           <el-form-item><el-input v-model="score.deptId" placeholder="科室ID" style="width: 90px" /></el-form-item>
           <el-form-item><el-input v-model="score.item" placeholder="检查项目（如 基础护理）" style="width: 180px" /></el-form-item>
           <el-form-item><el-input-number v-model="score.score" :min="0" :max="100" /></el-form-item>
@@ -213,10 +215,16 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { todayLocal } from '../../utils/date'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
+import { useAuthStore } from '../../stores/auth'
+
+const auth = useAuthStore()
+const canNurse = computed(() => auth.user?.roles.some((r) => ['ADMIN', 'NURSE'].includes(r)) ?? false)
+const canQuality = computed(() => auth.user?.roles.some((r) => ['ADMIN', 'QUALITY'].includes(r)) ?? false)
+
 
 const tab = ref('shift')
 const today = todayLocal()
@@ -288,6 +296,7 @@ async function loadCssd() { cssdPackages.value = (await client.get('/cssd/packag
 async function loadPhc() { phcRecords.value = (await client.get('/phc/records')).data.data }
 
 async function addShift() {
+  if (!canNurse.value) return
   if (!shift.deptId || !shift.nurseName) { ElMessage.warning('请填写完整'); return }
   addShiftLoading.value = true
   try {
@@ -297,6 +306,7 @@ async function addShift() {
   } finally { addShiftLoading.value = false }
 }
 async function addScore() {
+  if (!canQuality.value) return
   if (!score.deptId || !score.item) { ElMessage.warning('请填写完整'); return }
   addScoreLoading.value = true
   try {

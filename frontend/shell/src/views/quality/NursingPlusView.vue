@@ -33,13 +33,13 @@
           </el-table-column>
           <el-table-column label="操作" width="200">
             <template #default="{ row }">
-              <template v-if="row.status === 'REPORTED'">
+              <template v-if="canQuality && row.status === 'REPORTED'">
                 <el-button link type="success" size="small" :loading="busyId === row.id"
                            @click="reviewCard(row, true)">通过</el-button>
                 <el-button link type="danger" size="small" :loading="busyId === row.id"
                            @click="reviewCard(row, false)">退回</el-button>
               </template>
-              <el-button v-if="row.status === 'REVIEWED'" link type="primary" size="small"
+              <el-button v-if="canQuality && row.status === 'REVIEWED'" link type="primary" size="small"
                          :loading="busyId === row.id" @click="submitCard(row)">
                 上报</el-button>
             </template>
@@ -72,7 +72,7 @@
       </el-tab-pane>
 
       <el-tab-pane label="质控抽检" name="qccheck">
-        <el-form inline size="small">
+        <el-form v-if="canQuality" inline size="small">
           <el-form-item><el-input v-model="planForm.title" placeholder="抽检计划名" style="width: 170px" /></el-form-item>
           <el-form-item><el-input v-model="planForm.standard" placeholder="质控标准" style="width: 200px" /></el-form-item>
           <el-form-item><el-checkbox v-model="planForm.adHoc">临时表单</el-checkbox></el-form-item>
@@ -87,7 +87,7 @@
           <el-table-column prop="scores" label="评分次数" width="90" />
           <el-table-column label="操作" width="90">
             <template #default="{ row }">
-              <el-button link type="primary" size="small" :loading="busyId === row.id"
+              <el-button v-if="canQuality" link type="primary" size="small" :loading="busyId === row.id"
                          @click.stop="addScore(row)">评分</el-button>
             </template>
           </el-table-column>
@@ -118,7 +118,7 @@
             </el-select>
           </el-form-item>
           <el-form-item label="评分"><el-input-number v-model="risk.score" :min="0" :max="125" /></el-form-item>
-          <el-button type="primary" size="small" @click="doAssess" :loading="doAssessLoading">评估</el-button>
+          <el-button v-if="canNurse" type="primary" size="small" @click="doAssess" :loading="doAssessLoading">评估</el-button>
           <el-button size="small" @click="loadRiskTrend">查趋势</el-button>
         </el-form>
         <el-alert title="Braden 6-23：≤12 高危 / 13-14 中危 / ≥15 低危 ｜ Morse 0-125：≥45 高危 / 25-44 中危 / <25 低危"
@@ -157,7 +157,7 @@
       </el-tab-pane>
 
       <el-tab-pane label="交接班" name="handover">
-        <el-form inline size="small">
+        <el-form v-if="canNurse" inline size="small">
           <!-- v42：科室原为自由文本 ID 输入，填错直接触发 FK 异常走 4090 兜底码（护士看不懂） -->
           <el-form-item>
             <el-select v-model="ho.deptId" filterable placeholder="科室" style="width: 150px">
@@ -191,13 +191,13 @@
             <template #default="{ row }">
               <span v-if="row.receiver_id" class="received">
                 {{ row.receiver_name }} · {{ fmtDateTime(row.received_at, '') }}</span>
-              <el-button v-else link type="primary" size="small" :loading="busyId === row.id"
+              <el-button v-else-if="canNurse && row.author !== auth.user?.username" link type="primary" size="small" :loading="busyId === row.id"
                          @click="receiveHandover(row)">签收</el-button>
             </template>
           </el-table-column>
         </el-table>
         <h4>班次字典
-          <el-button link type="primary" size="small" @click="addShiftType" :loading="addShiftTypeLoading">新增班次</el-button>
+          <el-button v-if="canNurse" link type="primary" size="small" @click="addShiftType" :loading="addShiftTypeLoading">新增班次</el-button>
         </h4>
         <el-table :data="shiftTypes" size="small" border>
           <el-table-column prop="code" label="编码" width="90" />
@@ -211,9 +211,15 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
+import { useAuthStore } from '../../stores/auth'
+
+const auth = useAuthStore()
+const canNurse = computed(() => auth.user?.roles.some((r) => ['ADMIN', 'NURSE'].includes(r)) ?? false)
+const canQuality = computed(() => auth.user?.roles.some((r) => ['ADMIN', 'QUALITY'].includes(r)) ?? false)
+
 import { fmtDateTime } from '../../utils/date'
 
 const tab = ref('cards')
@@ -241,12 +247,19 @@ const addHandoverLoading = ref(false)
 const addShiftTypeLoading = ref(false)
 const busyId = ref<unknown>(null)
 
+let riskRequest = 0
+watch(() => risk.admissionId, () => { ++riskRequest; riskTrend.value = [] }, { flush: 'sync' })
 async function loadRiskTrend() {
-  if (!risk.admissionId) return
-  riskTrend.value = (await client.get('/nursing/risk-assess', { params: { admissionId: risk.admissionId } })).data.data
+  const request = ++riskRequest
+  const id = risk.admissionId
+  riskTrend.value = []
+  if (!id) return
+  const rows = (await client.get('/nursing/risk-assess', { params: { admissionId: id } })).data.data
+  if (request === riskRequest && id === risk.admissionId) riskTrend.value = rows
 }
 async function loadRiskAlerts() { riskAlerts.value = (await client.get('/nursing/risk-assess/alerts')).data.data }
 async function doAssess() {
+  if (!canNurse.value) return
   if (!risk.admissionId) { ElMessage.warning('请填写住院ID'); return }
   doAssessLoading.value = true
   try {
@@ -257,13 +270,19 @@ async function doAssess() {
   } finally { doAssessLoading.value = false }
 }
 
-async function loadCards() { cards.value = (await client.get('/infection/cards')).data.data }
+async function loadCards() { cards.value = []; cards.value = (await client.get('/infection/cards')).data.data }
+let calendarRequest = 0
+watch(calAdmId, () => { ++calendarRequest; calendar.value = [] }, { flush: 'sync' })
 async function loadCalendar() {
-  if (!calAdmId.value) return
-  calendar.value = (await client.get('/nursing/temp-calendar', { params: { admissionId: calAdmId.value } })).data.data
+  const request = ++calendarRequest
+  const id = calAdmId.value
+  calendar.value = []
+  if (!id) return
+  const rows = (await client.get('/nursing/temp-calendar', { params: { admissionId: id } })).data.data
+  if (request === calendarRequest && id === calAdmId.value) calendar.value = rows
 }
 async function loadFever() { postopFever.value = (await client.get('/nursing/postop-fever')).data.data }
-async function loadPlans() { plans.value = (await client.get('/qc-check/plans')).data.data }
+async function loadPlans() { plans.value = []; scores.value = []; currentPlan.value = null; plans.value = (await client.get('/qc-check/plans')).data.data }
 async function loadShift() {
   shiftTypes.value = (await client.get('/nursing/shift-types')).data.data
   handovers.value = (await client.get('/nursing/handovers')).data.data
@@ -280,6 +299,7 @@ async function reportCard() {
   } finally { reportCardLoading.value = false }
 }
 async function reviewCard(row: Record<string, unknown>, approve: boolean) {
+  if (!canQuality.value) return
   const res = await ElMessageBox.prompt('审核意见', approve ? '通过' : '退回', { inputValue: approve ? '属实' : '' }).catch(() => null)
   if (!res) return
   const { value } = res
@@ -290,6 +310,7 @@ async function reviewCard(row: Record<string, unknown>, approve: boolean) {
   } finally { busyId.value = null }
 }
 async function submitCard(row: Record<string, unknown>) {
+  if (!canQuality.value) return
   busyId.value = row.id
   try {
     await client.put(`/infection/cards/${row.id}/submit`)
@@ -298,6 +319,7 @@ async function submitCard(row: Record<string, unknown>) {
   } finally { busyId.value = null }
 }
 async function addPlan() {
+  if (!canQuality.value) return
   if (!planForm.title || !planForm.standard) { ElMessage.warning('请填写完整'); return }
   addPlanLoading.value = true
   try {
@@ -305,11 +327,16 @@ async function addPlan() {
     await loadPlans()
   } finally { addPlanLoading.value = false }
 }
+let planRequest = 0
 async function openPlan(row: Record<string, unknown>) {
+  const request = ++planRequest
+  scores.value = []
   currentPlan.value = row
-  scores.value = (await client.get('/qc-check/scores', { params: { planId: row.id } })).data.data
+  const rows = (await client.get('/qc-check/scores', { params: { planId: row.id } })).data.data
+  if (request === planRequest && currentPlan.value?.id === row.id) scores.value = rows
 }
 async function addScore(row: Record<string, unknown>) {
+  if (!canQuality.value) return
   const res = await ElMessageBox.prompt('对象,评分（逗号分隔）', '抽检评分', { inputValue: '内科病区,92' }).catch(() => null)
   if (!res) return
   const { value } = res
@@ -322,6 +349,7 @@ async function addScore(row: Record<string, unknown>) {
   } finally { busyId.value = null }
 }
 async function addHandover() {
+  if (!canNurse.value) return
   if (!ho.deptId || !ho.summary) { ElMessage.warning('请填写完整'); return }
   addHandoverLoading.value = true
   try {
@@ -336,6 +364,7 @@ async function addHandover() {
 }
 /** 接班签收（双签）：交班人不能签收自己的班，后端 4812 拦 */
 async function receiveHandover(row: Record<string, unknown>) {
+  if (!canNurse.value) return
   busyId.value = row.id
   try {
     await client.put(`/nursing/handovers/${row.id}/receive`)
@@ -344,6 +373,7 @@ async function receiveHandover(row: Record<string, unknown>) {
   } finally { busyId.value = null }
 }
 async function addShiftType() {
+  if (!canNurse.value) return
   const res = await ElMessageBox.prompt('编码,名称,开始,结束（逗号分隔）', '新增班次',
     { inputValue: 'AM8,行政班,08:00,17:30' }).catch(() => null)
   if (!res) return

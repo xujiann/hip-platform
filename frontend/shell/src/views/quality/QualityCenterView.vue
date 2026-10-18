@@ -1,7 +1,7 @@
 <template>
   <el-card>
     <el-tabs v-model="tab">
-      <el-tab-pane label="病历时限质控" name="emr">
+      <el-tab-pane v-if="canQuality" label="病历时限质控" name="emr">
         <el-button size="small" @click="loadEmr">重新核查</el-button>
         <el-descriptions :column="3" border size="small" style="margin: 10px 0">
           <el-descriptions-item label="缺陷总数">{{ emr.defectTotal ?? '-' }}</el-descriptions-item>
@@ -83,7 +83,7 @@
           <el-table-column label="状态" width="130">
             <template #default="{ row }">
               <el-tag v-if="row.status === 'HANDLED'" type="success" size="small">已处理</el-tag>
-              <el-button v-else link type="primary" size="small" :loading="busyId === row.id"
+              <el-button v-else-if="canQuality" link type="primary" size="small" :loading="busyId === row.id"
                          @click="handleAe(row)">处理</el-button>
             </template>
           </el-table-column>
@@ -109,11 +109,15 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
+import { useAuthStore } from '../../stores/auth'
 
-const tab = ref('emr')
+const auth = useAuthStore()
+const canQuality = computed(() => auth.user?.roles.some((r) => ['ADMIN', 'QUALITY'].includes(r)) ?? false)
+
+const tab = ref(canQuality.value ? 'emr' : 'adverse')
 const emr = ref<Record<string, unknown>>({})
 const aeList = ref<Record<string, unknown>[]>([])
 const inf = ref<Record<string, unknown>>({})
@@ -128,6 +132,8 @@ const reportAeLoading = ref(false)
 const busyId = ref<unknown>(null)
 
 async function loadEmr() {
+  emr.value = {}
+  if (!canQuality.value) return
   emr.value = (await client.get('/quality/emr-timeliness')).data.data
 }
 async function loadAe() {
@@ -152,6 +158,7 @@ async function reportAe() {
 }
 
 async function handleAe(row: Record<string, unknown>) {
+  if (!canQuality.value) return
   const res = await ElMessageBox.prompt('处理意见', '处理不良事件', { inputValue: '已核实并整改' }).catch(() => null)
   if (!res) return
   const { value } = res

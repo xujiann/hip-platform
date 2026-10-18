@@ -18,6 +18,7 @@ import java.util.Map;
 public class NursingQualityController {
 
     private final JdbcTemplate jdbc;
+    private final cn.hip.qualitycare.service.NursingWriteAccess nursingAccess;
     private final CurrentUserService currentUserService;
     private final cn.hip.platform.core.service.ConfigReader configReader;
     private final cn.hip.inpatient.service.EmrIntegrityService emrIntegrityService;
@@ -54,11 +55,15 @@ public class NursingQualityController {
      * 需要强制填变更原因的场景走下面的 {@link #changeCareLevel} 新端点（4806/4807）。
      */
     @PutMapping("/api/inpatient/admissions/{id}/care-level")
+    @PreAuthorize("hasAnyRole('ADMIN','NURSE')")
+    @org.springframework.transaction.annotation.Transactional
     public R<Void> setCareLevel(@PathVariable Long id, @RequestParam String level,
                                 @RequestParam(required = false) String reason, Authentication auth) {
         if (!CARE_LEVELS.contains(level)) return R.fail(9801, "非法护理级别");
+        Long actor = nursingAccess.requireActor(auth);
+        if (!nursingAccess.lockActiveAdmission(id)) return R.fail(4805, "住院记录不存在或已出院");
         jdbc.update("update inp_admission set care_level = ? where id = ?", level, id);
-        logCareLevel(id, level, reason, auth);
+        logCareLevel(id, level, reason, actor);
         return R.ok();
     }
 
@@ -72,22 +77,26 @@ public class NursingQualityController {
      * 但这条纪律不能倒灌进既有端点（会破坏 E2E 契约），故另立端点。
      */
     @PutMapping("/api/inpatient/admissions/{id}/care-level/change")
+    @PreAuthorize("hasAnyRole('ADMIN','NURSE')")
+    @org.springframework.transaction.annotation.Transactional
     public R<Void> changeCareLevel(@PathVariable Long id, @RequestBody CareLevelReq req, Authentication auth) {
         if (req.level() == null || !CARE_LEVELS.contains(req.level())) {
             return R.fail(4806, "护理级别非法（特级/一级/二级/三级）");
         }
         if (req.reason() == null || req.reason().isBlank()) return R.fail(4807, "护理级别变更原因必填");
+        Long actor = nursingAccess.requireActor(auth);
+        if (!nursingAccess.lockActiveAdmission(id)) return R.fail(4805, "住院记录不存在或已出院");
         int n = jdbc.update("update inp_admission set care_level = ? where id = ?", req.level(), id);
         if (n == 0) return R.fail(4805, "住院记录不存在");
-        logCareLevel(id, req.level(), req.reason(), auth);
+        logCareLevel(id, req.level(), req.reason(), actor);
         return R.ok();
     }
 
     /** 护理级别留痕：care_level 是被 update 覆盖的单列，无本表则护理天数分档统计无源可查 */
-    private void logCareLevel(Long admissionId, String level, String reason, Authentication auth) {
+    private void logCareLevel(Long admissionId, String level, String reason, Long actor) {
         jdbc.update("""
                 insert into nur_care_level_log(admission_id, level, changed_by, reason) values (?,?,?,?)
-                """, admissionId, level, auth == null ? null : currentUserService.idOf(auth),
+                """, admissionId, level, actor,
                 reason == null || reason.isBlank() ? null : reason.trim());
     }
 
@@ -186,6 +195,7 @@ public class NursingQualityController {
      * 阈值均 sys_config 可配。纯只读报表，不 gate 任何写路径。
      */
     @GetMapping("/api/quality/emr-timeliness")
+    @PreAuthorize("hasAnyRole('ADMIN','QUALITY')")
     public R<Map<String, Object>> emrTimeliness() {
         int firstProgressH = configReader.getInt("emr.timeliness.first_progress_hours", 8);
         int roundH = configReader.getInt("emr.timeliness.round_interval_hours", 48);
@@ -277,6 +287,7 @@ public class NursingQualityController {
 
     /** 病历时限缺陷科室看板（v34）：按科室汇总在院侧各类缺陷计数，供红黄灯预警 */
     @GetMapping("/api/quality/emr-timeliness/board")
+    @PreAuthorize("hasAnyRole('ADMIN','QUALITY')")
     public R<List<Map<String, Object>>> emrTimelinessBoard() {
         int firstProgressH = configReader.getInt("emr.timeliness.first_progress_hours", 8);
         return R.ok(jdbc.queryForList("""
@@ -314,6 +325,7 @@ public class NursingQualityController {
      * 嵌套段（patient / admission / diagnoses / surgeries / fees）供前端病案首页页面渲染。
      */
     @GetMapping("/api/inpatient/admissions/{id}/front-page")
+    @PreAuthorize("hasAnyRole('ADMIN','QUALITY')")
     public R<Map<String, Object>> frontPage(@PathVariable Long id) {
         var rows = jdbc.queryForList("""
                 select a.admission_no, a.care_level, a.admit_at, a.discharged_at, a.status, a.archived,
@@ -417,6 +429,7 @@ public class NursingQualityController {
 
     /** 病案首页选单：近期出院/在院住院记录（供病案首页页面按住院号选取） */
     @GetMapping("/api/quality/med-records")
+    @PreAuthorize("hasAnyRole('ADMIN','QUALITY')")
     public R<List<Map<String, Object>>> medRecords(@RequestParam(required = false) String keyword) {
         String kw = keyword == null ? "" : keyword.trim();
         String like = "%" + kw + "%";
@@ -444,6 +457,7 @@ public class NursingQualityController {
      * → overdue=true。纯只读，不 gate 任何写路径。
      */
     @GetMapping("/api/quality/mr-workqueue")
+    @PreAuthorize("hasAnyRole('ADMIN','QUALITY')")
     public R<Map<String, Object>> mrWorkqueue() {
         int overdueDays = configReader.getInt("mr.archive.overdue_days", 3);
         var rows = jdbc.queryForList("""
@@ -505,6 +519,7 @@ public class NursingQualityController {
 
     /** 病案归档（须已出院） */
     @PutMapping("/api/inpatient/admissions/{id}/archive")
+    @PreAuthorize("hasAnyRole('ADMIN','QUALITY')")
     public R<Object> archive(@PathVariable Long id) {
         // v35 归档病历完整性 gate（试点期可配 emr.gate.archive，默认 warn 警告放行）
         String mode = configReader.get("emr.gate.archive", "warn");
@@ -561,6 +576,7 @@ public class NursingQualityController {
     }
 
     @PutMapping("/api/quality/adverse-events/{id}/handle")
+    @PreAuthorize("hasAnyRole('ADMIN','QUALITY')")
     public R<Void> handleAdverse(@PathVariable Long id, @RequestParam String note, Authentication auth) {
         int n = jdbc.update("""
                 update qc_adverse_event set status = 'HANDLED', handle_note = ?, handler_id = ?

@@ -18,6 +18,7 @@ import java.util.Set;
 public class NursingPlusController {
 
     private final JdbcTemplate jdbc;
+    private final cn.hip.qualitycare.service.NursingWriteAccess nursingAccess;
     /** v42 交接班双签：接班人落 sys_user 外键，需按登录态解析用户 id */
     private final cn.hip.platform.core.security.CurrentUserService currentUserService;
 
@@ -38,6 +39,7 @@ public class NursingPlusController {
 
     /** 审核（通过/退回） */
     @PutMapping("/api/infection/cards/{id}/review")
+    @PreAuthorize("hasAnyRole('ADMIN','QUALITY')")
     public R<Void> review(@PathVariable Long id, @RequestParam boolean approve,
                           @RequestParam(required = false) String note) {
         int n = jdbc.update("""
@@ -49,6 +51,7 @@ public class NursingPlusController {
 
     /** 上报（甲类须 2 小时内——由前端提示，此处闭环状态机） */
     @PutMapping("/api/infection/cards/{id}/submit")
+    @PreAuthorize("hasAnyRole('ADMIN','QUALITY')")
     public R<Void> submit(@PathVariable Long id) {
         int n = jdbc.update("""
                 update idc_report_card set status = 'SUBMITTED', submitted_at = now()
@@ -99,6 +102,7 @@ public class NursingPlusController {
     public record ShiftTypeReq(String code, String name, String startTime, String endTime) {}
 
     @PostMapping("/api/nursing/shift-types")
+    @PreAuthorize("hasAnyRole('ADMIN','NURSE')")
     public R<Void> addShiftType(@RequestBody ShiftTypeReq req) {
         jdbc.update("""
                 insert into nur_shift_type(code, name, start_time, end_time) values (?,?,?,?)
@@ -117,6 +121,7 @@ public class NursingPlusController {
     public record PlanReq(String title, String standard, Boolean adHoc) {}
 
     @PostMapping("/api/qc-check/plans")
+    @PreAuthorize("hasAnyRole('ADMIN','QUALITY')")
     public R<Void> addPlan(@RequestBody PlanReq req) {
         jdbc.update("insert into qc_check_plan(title, standard, ad_hoc) values (?,?,?)",
                 req.title(), req.standard(), req.adHoc() != null && req.adHoc());
@@ -134,6 +139,7 @@ public class NursingPlusController {
     public record ScoreReq(Long planId, String target, Double score, String note) {}
 
     @PostMapping("/api/qc-check/scores")
+    @PreAuthorize("hasAnyRole('ADMIN','QUALITY')")
     public R<Void> addScore(@RequestBody ScoreReq req) {
         if (req.score() == null || req.score() < 0 || req.score() > 100) return R.fail(4704, "评分范围 0-100");
         Integer plan = jdbc.queryForObject("select count(*) from qc_check_plan where id = ?", Integer.class, req.planId());
@@ -162,6 +168,7 @@ public class NursingPlusController {
      * 现改为接受 shiftDate 入参；不传仍走当天，既有 E2E（e2e-phase3234 不传该字段）契约不变。
      */
     @PostMapping("/api/nursing/handovers")
+    @PreAuthorize("hasAnyRole('ADMIN','NURSE')")
     public R<Void> addHandover(@RequestBody HandoverReq req, Authentication auth) {
         if (req.summary() == null || req.summary().isBlank()) return R.fail(4706, "当班情况必填");
         String shiftDate = req.shiftDate() == null || req.shiftDate().isBlank() ? null : req.shiftDate().trim();
@@ -172,6 +179,7 @@ public class NursingPlusController {
                 return R.fail(4811, "班次日期格式非法（yyyy-MM-dd）：" + shiftDate);
             }
         }
+        nursingAccess.requireActor(auth);
         jdbc.update("""
                 insert into shift_handover(dept_id, shift_type, summary, todo, author, shift_date)
                 values (?,?,?,?,?, coalesce(cast(? as date), current_date))
@@ -187,6 +195,7 @@ public class NursingPlusController {
      * 才能做「交班人不能自己签收」这条校验。
      */
     @PutMapping("/api/nursing/handovers/{id}/receive")
+    @PreAuthorize("hasAnyRole('ADMIN','NURSE')")
     public R<Void> receiveHandover(@PathVariable Long id, Authentication auth) {
         var rows = jdbc.queryForList("select author, receiver_id from shift_handover where id = ?", id);
         if (rows.isEmpty() || rows.get(0).get("receiver_id") != null) {
