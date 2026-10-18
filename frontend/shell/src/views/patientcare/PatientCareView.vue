@@ -30,6 +30,21 @@
       </el-tab-pane>
 
       <el-tab-pane label="满意度" name="satisfaction">
+        <el-alert :title="satisfactionScope" type="info" :closable="false" style="margin-bottom: 10px" />
+        <el-form v-if="canRegister" inline size="small" @submit.prevent="submitSatisfaction">
+          <el-form-item label="患者">
+            <el-select v-model="survey.patientId" clearable filterable remote :remote-method="searchPatients"
+                       placeholder="可匿名，或搜索患者" style="width: 210px">
+              <el-option v-for="p in patients" :key="p.id as number"
+                         :label="`${p.name}（${p.patientNo}）`" :value="p.id as number" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="来源"><el-input v-model="survey.source" maxlength="16" style="width: 100px" /></el-form-item>
+          <el-form-item label="评分"><el-rate v-model="survey.score" /></el-form-item>
+          <el-form-item label="意见"><el-input v-model="survey.comment" maxlength="500" placeholder="患者反馈（选填）" style="width: 240px" /></el-form-item>
+          <el-button type="primary" :loading="submitSatisfactionLoading" @click="submitSatisfaction">代录满意度</el-button>
+        </el-form>
+        <el-button size="small" :loading="satisfactionLoading" @click="loadSatisfaction" style="margin-bottom: 10px">刷新满意度</el-button>
         <el-descriptions :column="2" border size="small" style="margin-bottom: 10px">
           <el-descriptions-item label="收集份数">{{ sat.count ?? 0 }}</el-descriptions-item>
           <el-descriptions-item label="平均分">{{ sat.avgScore ?? '-' }} / 5</el-descriptions-item>
@@ -231,6 +246,32 @@ function canWritePath(row: Record<string, unknown>) {
 const patients = ref<Record<string, unknown>[]>([])
 const followups = ref<Record<string, unknown>[]>([])
 const sat = ref<Record<string, unknown>>({})
+const survey = reactive({ patientId: null as number | null, source: 'OUTP', score: 0, comment: '' })
+const satisfactionScope = computed(() => auth.user?.roles.some(r => ['ADMIN', 'QUALITY'].includes(r))
+  ? '全院满意度汇总；记录人为后台代录人员，匿名评价不代表已核验患者身份。'
+  : '仅显示本人代录的满意度及汇总。')
+const satisfactionLoading = ref(false)
+const submitSatisfactionLoading = ref(false)
+let satisfactionRequest = 0
+async function loadSatisfaction() {
+  const request = ++satisfactionRequest; sat.value = {}; satisfactionLoading.value = true
+  try {
+    const rows = (await client.get('/patientcare/satisfaction/stats')).data.data
+    if (request === satisfactionRequest) sat.value = rows
+  } finally { if (request === satisfactionRequest) satisfactionLoading.value = false }
+}
+async function submitSatisfaction() {
+  if (!canRegister.value || submitSatisfactionLoading.value) return
+  if (survey.score < 1 || survey.score > 5) { ElMessage.warning('请选择1–5分'); return }
+  submitSatisfactionLoading.value = true
+  try {
+    await client.post('/patientcare/satisfaction', { ...survey })
+    survey.patientId = null; survey.score = 0; survey.comment = ''
+    ElMessage.success('满意度已代录')
+    await loadSatisfaction()
+  } catch (error) { ++satisfactionRequest; sat.value = {}; satisfactionLoading.value = false; throw error }
+  finally { submitSatisfactionLoading.value = false }
+}
 const consults = ref<Record<string, unknown>[]>([])
 const examRecords = ref<Record<string, unknown>[]>([])
 const fu = reactive({ patientId: null as number | null, topic: '', dueDate: '' })
@@ -373,7 +414,7 @@ async function loadTab(value: string) {
   if (value === 'followup') await loadFollowups()
   if (value === 'consult') await loadConsults()
   if (value === 'exam') await loadExams()
-  if (value === 'satisfaction') { sat.value = {}; sat.value = (await client.get('/patientcare/satisfaction/stats')).data.data }
+  if (value === 'satisfaction') await loadSatisfaction()
   if (value === 'group') await loadGroups()
   if (value === 'pathway') await loadPathways()
 }

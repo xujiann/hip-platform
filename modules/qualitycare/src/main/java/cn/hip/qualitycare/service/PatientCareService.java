@@ -33,6 +33,32 @@ public class PatientCareService {
     private Long number(Object value){return value==null?null:((Number)value).longValue();}
     private boolean crossRead(){return role("ADMIN")||role("QUALITY");}
 
+    /** Background staff collection; patientId may be anonymous, never an authorization credential. */
+    @Transactional
+    public void submitSatisfaction(Long patient,String source,Integer score,String comment){
+        if(!role("ADMIN")&&!role("DOCTOR_OUTP")&&!role("NURSE"))throw denied();
+        var me=actor(true);
+        if(score==null||score<1||score>5)throw new HipBizException(9902,"评分须为 1-5");
+        if((source!=null&&source.codePointCount(0,source.length())>16)
+                ||(comment!=null&&comment.codePointCount(0,comment.length())>500))
+            throw new HipBizException(9919,"满意度来源最多16字，意见最多500字");
+        if(patient!=null&&jdbc.queryForList("select id from empi_patient where id=? for key share",patient).isEmpty())
+            throw new HipBizException(9919,"满意度关联患者不存在");
+        jdbc.update("insert into pc_satisfaction(patient_id,source,score,comment,creator_id) values (?,?,?,?,?)",
+                patient,source==null?"OUTP":source,score,comment,me.id());
+    }
+
+    @Transactional(readOnly=true)
+    public Map<String,Object> satisfactionStats(){
+        if(!role("ADMIN")&&!role("QUALITY")&&!role("DOCTOR_OUTP")&&!role("NURSE"))throw denied();
+        var me=actor(false);
+        String scope=crossRead()?"":" where creator_id=?";
+        Object[] args=crossRead()?new Object[0]:new Object[]{me.id()};
+        var stats=jdbc.queryForMap("select count(*) as count,coalesce(round(avg(score),2),0) as \"avgScore\" from pc_satisfaction"+scope,args);
+        stats.put("recent",jdbc.queryForList("select score,comment,source,created_at from pc_satisfaction"+scope+" order by id desc limit 20",args));
+        return stats;
+    }
+
     @Transactional
     public void createFollowup(Long patient,String topic,String channel,String dueDate){
         var me=actor(true);

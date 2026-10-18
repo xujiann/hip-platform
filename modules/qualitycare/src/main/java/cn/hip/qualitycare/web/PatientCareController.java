@@ -49,21 +49,15 @@ public class PatientCareController {
     public record SatisfactionReq(Long patientId, String source, Integer score, String comment) {}
 
     @PostMapping("/api/patientcare/satisfaction")
+    @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP','NURSE')")
     public R<Void> submitSatisfaction(@RequestBody SatisfactionReq req) {
-        if (req.score() == null || req.score() < 1 || req.score() > 5) return R.fail(9902, "评分须为 1-5");
-        jdbc.update("insert into pc_satisfaction(patient_id, source, score, comment) values (?,?,?,?)",
-                req.patientId(), req.source() == null ? "OUTP" : req.source(), req.score(), req.comment());
+        patientCareService.submitSatisfaction(req.patientId(),req.source(),req.score(),req.comment());
         return R.ok();
     }
 
     @GetMapping("/api/patientcare/satisfaction/stats")
     public R<Map<String, Object>> satisfactionStats() {
-        return R.ok(Map.of(
-                "count", jdbc.queryForObject("select count(*) from pc_satisfaction", Long.class),
-                "avgScore", jdbc.queryForObject(
-                        "select coalesce(round(avg(score), 2), 0) from pc_satisfaction", Double.class),
-                "recent", jdbc.queryForList(
-                        "select score, comment, source, created_at from pc_satisfaction order by id desc limit 20")));
+        return R.ok(patientCareService.satisfactionStats());
     }
 
     // ---- 院内会诊 ----

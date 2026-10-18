@@ -102,4 +102,15 @@ class V96SatisfactionAccessTest {
         for(Map<String,Object> body:List.<Map<String,Object>>of(Map.of(),Map.of("score",0),Map.of("score",6)))assertEquals(9902,call("POST",BASE,body,a,"NURSE").path("code").asInt());
         assertEquals(before,count());submit(a,1,"V96 lower","NURSE");submit(a,5,"V96 upper","NURSE");
     }
+    @Test void invalidPatientAndOversizeFieldsFailBeforeInsertButColumnBoundariesAreAccepted()throws Exception{
+        String a=person("NURSE");long before=count();
+        for(var body:List.of(Map.of("score",5,"patientId",-96),Map.of("score",5,"source","S".repeat(17)),Map.of("score",5,"comment","评".repeat(501))))
+            assertEquals(9919,call("POST",BASE,body,a,"NURSE").path("code").asInt());
+        assertEquals(before,count());
+        assertEquals(0,call("POST",BASE,Map.of("score",5,"source","S".repeat(16),"comment","评".repeat(500)),a,"NURSE").path("code").asInt());
+        assertEquals(0,call("POST",BASE,Map.of("score",5),a,"NURSE").path("code").asInt());
+        var result=stats(a,"NURSE");assertEquals(2,result.path("count").asInt());assertEquals("OUTP",result.path("recent").get(0).path("source").asText());
+        assertEquals(Set.of("count","avgScore","recent"),om.convertValue(result,Map.class).keySet());
+        assertEquals(Set.of("score","comment","source","created_at"),om.convertValue(result.path("recent").get(0),Map.class).keySet());
+    }
 }
