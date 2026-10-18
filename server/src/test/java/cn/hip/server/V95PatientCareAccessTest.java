@@ -74,4 +74,45 @@ class V95PatientCareAccessTest {
         assertEquals(1005,code("GET","/api/exam/groups/"+id+"/records",null,b,"DOCTOR_OUTP"));
         assertEquals(0,call("GET","/api/exam/groups",null,b,"DOCTOR_OUTP").path("data").size());
     }
+    @Test void taskAndConsultFilteringOccursBeforeTheirLimits()throws Exception{
+        String a=person("DOCTOR_OUTP",1L),b=person("DOCTOR_OUTP",2L);Long own=followup(a),p=patient(),adm=admission(b),visible=consult(admission(a),2L);
+        jdbc.update("insert into pc_followup(patient_id,topic,due_date,creator_id) select ?,'V95bulk',current_date-1,? from generate_series(1,205)",p,uid(b));
+        jdbc.update("insert into inp_consult(admission_id,to_dept_id,question) select ?,2,'V95bulk' from generate_series(1,105)",adm);
+        var rows=call("GET","/api/patientcare/followups",null,a,"DOCTOR_OUTP").path("data");assertEquals(1,rows.size());assertEquals(own,rows.get(0).path("id").asLong());
+        var cons=call("GET","/api/inpatient/consults",null,a,"DOCTOR_OUTP").path("data");assertEquals(1,cons.size());assertEquals(visible,cons.get(0).path("id").asLong());
+    }
+    @Test void assignedExaminerCanFinishButRegistrarOrMixedNursingRoleCannotBypassReassignment()throws Exception{
+        String a=person("DOCTOR_OUTP",1L),b=person("DOCTOR_OUTP",2L);Long patient=patient(),pkg=pkg();
+        assertEquals(0,code("POST","/api/exam/records?patientId="+patient+"&packageId="+pkg,null,a,"DOCTOR_OUTP"));
+        Long id=jdbc.queryForObject("select id from pe_exam_record where patient_id=?",Long.class,patient);
+        assertEquals(1005,code("PUT","/api/exam/records/"+id+"/examiner",Map.of("examinerId",uid(b)),a,"DOCTOR_OUTP"));
+        assertEquals(0,code("PUT","/api/exam/records/"+id+"/examiner",Map.of("examinerId",uid(b)),"admin","ADMIN"));
+        assertEquals(1005,code("PUT","/api/exam/records/"+id+"/complete?summary=V95",Map.of("patientId",patient()),a,"DOCTOR_OUTP","NURSE"));
+        assertEquals(0,code("PUT","/api/exam/records/"+id+"/complete?summary=V95",Map.of("patientId",patient()),b,"DOCTOR_OUTP"));
+        assertEquals(patient,jdbc.queryForObject("select patient_id from pe_exam_record where id=?",Long.class,id));
+        assertEquals(9905,code("PUT","/api/exam/records/"+id+"/examiner",Map.of("examinerId",uid(a)),"admin","ADMIN"));
+    }
+    @Test void groupAggregatesIncludeOnlyVisibleMembersAndNurseOwnershipDoesNotGrantConclusions()throws Exception{
+        String a=person("DOCTOR_OUTP",1L),b=person("DOCTOR_OUTP",2L),n=person("NURSE",1L),other=person("NURSE",1L);Long pkg=pkg();
+        var result=call("POST","/api/exam/groups",Map.of("unitName","V95","packageId",pkg,"examinerId",uid(a),"memberNames",List.of("V95甲","V95乙")),n,"NURSE");assertEquals(0,result.path("code").asInt());Long group=result.path("data").path("groupId").asLong();
+        Long first=jdbc.queryForObject("select min(id) from pe_exam_record where group_id=?",Long.class,group);
+        jdbc.update("update pe_exam_record set examiner_id=?,status='DONE',summary='V95 private',abnormal=true where id=?",uid(b),first);
+        var mine=call("GET","/api/exam/groups",null,a,"DOCTOR_OUTP").path("data");assertEquals(1,mine.size());assertEquals(1,mine.get(0).path("members").asInt());assertEquals(0,mine.get(0).path("abnormal_cnt").asInt());
+        assertEquals(1,call("GET","/api/exam/groups/"+group+"/records",null,a,"DOCTOR_OUTP").path("data").size());
+        assertEquals(2,call("GET","/api/exam/groups/"+group+"/records",null,n,"NURSE").path("data").size());
+        assertEquals(1005,code("GET","/api/exam/groups/"+group+"/records",null,other,"NURSE"));
+        Long pending=jdbc.queryForObject("select max(id) from pe_exam_record where group_id=?",Long.class,group);
+        assertEquals(1005,code("PUT","/api/exam/records/"+pending+"/complete?summary=V95",null,n,"NURSE"));
+        assertEquals(0,code("GET","/api/exam/groups/"+group+"/records",null,n,"QUALITY"));
+    }
+    @Test void targetDoctorsDepartmentsAndRealActorsAreValidated()throws Exception{
+        String a=person("DOCTOR_OUTP",1L),n=person("NURSE",1L),q=person("QUALITY",1L);Long pkg=pkg(),p=patient(),adm=admission(a),c=consult(adm,2L);
+        assertEquals(9916,code("POST","/api/exam/records?patientId="+p+"&packageId="+pkg+"&examinerId="+uid(n),null,n,"NURSE"));
+        assertEquals(1005,code("POST","/api/exam/records?patientId="+p+"&packageId="+pkg,null,q,"QUALITY"));
+        assertEquals(9918,code("POST","/api/inpatient/consults",Map.of("admissionId",adm,"toDeptId",-95,"question","V95"),a,"DOCTOR_OUTP"));
+        assertEquals(1005,code("PUT","/api/inpatient/consults/"+c+"/complete?opinion=V95",null,"v95ghost","ADMIN"));
+        assertEquals(0,code("POST","/api/exam/records?patientId="+p+"&packageId="+pkg,null,a,"DOCTOR_OUTP"));
+        Long id=jdbc.queryForObject("select id from pe_exam_record where patient_id=?",Long.class,p);
+        assertEquals(1005,code("PUT","/api/exam/records/"+id+"/complete?summary=V95",null,"v95ghost","ADMIN"));
+    }
 }

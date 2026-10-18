@@ -2,7 +2,7 @@
   <el-card>
     <el-tabs v-model="tab">
       <el-tab-pane label="患者随访" name="followup">
-        <el-form inline size="small">
+        <el-form v-if="canRegister" inline size="small">
           <el-form-item>
             <el-select v-model="fu.patientId" filterable remote :remote-method="searchPatients"
                        placeholder="搜索患者" style="width: 200px">
@@ -23,7 +23,7 @@
           <el-table-column prop="topic" label="主题" />
           <el-table-column label="操作" width="100">
             <template #default="{ row }">
-              <el-button link type="success" size="small" :loading="doneFollowupBusy === row.id" @click="doneFollowup(row)">完成随访</el-button>
+              <el-button v-if="canFinishFollowup(row)" link type="success" size="small" :loading="doneFollowupBusy === row.id" @click="doneFollowup(row)">完成随访</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -51,7 +51,7 @@
           <el-table-column prop="question" label="会诊问题" show-overflow-tooltip />
           <el-table-column label="状态/意见" width="220">
             <template #default="{ row }">
-              <el-button v-if="row.status === 'REQUESTED'" link type="primary" size="small"
+              <el-button v-if="row.status === 'REQUESTED' && canFinishConsult(row)" link type="primary" size="small"
                          :loading="completeConsultBusy === row.id" @click="completeConsult(row)">
                 书写会诊意见
               </el-button>
@@ -66,6 +66,7 @@
           <el-table-column prop="patient_name" label="体检人" width="100" />
           <el-table-column prop="package_name" label="套餐" width="160" />
           <el-table-column prop="price" label="价格" width="90" />
+          <el-table-column prop="examiner_name" label="总检医生" width="110" />
           <el-table-column label="状态" width="90">
             <template #default="{ row }">
               <el-tag :type="row.status === 'DONE' ? 'success' : 'warning'" size="small">
@@ -74,14 +75,28 @@
             </template>
           </el-table-column>
           <el-table-column prop="summary" label="总检结论" show-overflow-tooltip />
+          <el-table-column label="操作" width="220">
+            <template #default="{ row }">
+              <template v-if="canFinishExam(row)">
+                <el-button link type="success" size="small" :loading="finishExamBusy === row.id" @click="finishExam(row, false)">正常</el-button>
+                <el-button link type="danger" size="small" :loading="finishExamBusy === row.id" @click="finishExam(row, true)">异常</el-button>
+              </template>
+              <el-button v-if="isAdmin && row.status === 'REGISTERED'" link size="small" @click="openExaminer(row)">指定总检医生</el-button>
+            </template>
+          </el-table-column>
         </el-table>
       </el-tab-pane>
 
       <el-tab-pane label="单位团检" name="group">
-        <el-form inline size="small">
+        <el-form v-if="canRegister" inline size="small">
           <el-form-item><el-input v-model="grp.unitName" placeholder="单位名称" style="width: 160px" /></el-form-item>
           <el-form-item><el-input v-model="grp.contact" placeholder="联系人" style="width: 110px" /></el-form-item>
           <el-form-item><el-input v-model="grp.packageId" placeholder="套餐ID" style="width: 90px" /></el-form-item>
+          <el-form-item v-if="canCoordinateRegistration">
+            <el-select v-model="grp.examinerId" filterable clearable placeholder="总检医生（可后补）" style="width: 160px">
+              <el-option v-for="d in doctors" :key="Number(d.id)" :value="Number(d.id)" :label="String(d.real_name)" />
+            </el-select>
+          </el-form-item>
           <el-form-item>
             <el-input v-model="grp.members" placeholder="人员名单（逗号分隔）" style="width: 240px" />
           </el-form-item>
@@ -103,7 +118,7 @@
         </el-table>
         <template v-if="groupRecords.length">
           <h4>团检名单</h4>
-          <el-table :data="groupRecords" size="small" border>
+          <el-table :data="groupRecords.filter(canReadExam)" size="small" border>
             <el-table-column prop="patient_name" label="姓名" width="110" />
             <el-table-column label="状态" width="90">
               <template #default="{ row }">
@@ -112,12 +127,14 @@
               </template>
             </el-table-column>
             <el-table-column prop="summary" label="结论" show-overflow-tooltip />
+            <el-table-column prop="examiner_name" label="总检医生" width="110" />
             <el-table-column label="操作" width="180">
               <template #default="{ row }">
-                <template v-if="row.status !== 'DONE'">
+                <template v-if="canFinishExam(row)">
                   <el-button link type="success" size="small" :loading="finishExamBusy === row.id" @click="finishExam(row, false)">正常</el-button>
                   <el-button link type="danger" size="small" :loading="finishExamBusy === row.id" @click="finishExam(row, true)">异常</el-button>
                 </template>
+                <el-button v-if="isAdmin && row.status === 'REGISTERED'" link size="small" @click="openExaminer(row)">指定总检医生</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -164,17 +181,48 @@
         </el-table>
       </el-tab-pane>
     </el-tabs>
+    <el-dialog v-model="examinerDialog" title="指定总检医生" width="420px" @closed="examinerRecord = null">
+      <el-select v-model="examinerChoice" filterable placeholder="请选择总检医生" style="width: 100%">
+        <el-option v-for="d in doctors" :key="Number(d.id)" :value="Number(d.id)" :label="String(d.real_name)" />
+      </el-select>
+      <template #footer><el-button :loading="assigningExaminer" type="primary" @click="saveExaminer">保存</el-button></template>
+    </el-dialog>
   </el-card>
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
 import { useAuthStore } from '../../stores/auth'
 
 const tab = ref('followup')
 const auth = useAuthStore()
+const isAdmin = computed(() => auth.user?.roles.includes('ADMIN') ?? false)
+const canRegister = computed(() => auth.user?.roles.some(r => ['ADMIN', 'DOCTOR_OUTP', 'NURSE'].includes(r)) ?? false)
+const canCoordinateRegistration = computed(() => auth.user?.roles.some(r => ['ADMIN', 'NURSE'].includes(r)) ?? false)
+function canFinishFollowup(row: Record<string, unknown>) {
+  return row.status === 'PENDING' && (isAdmin.value || (canRegister.value && Number(row.creator_id) === auth.user?.id))
+}
+function canFinishConsult(row: Record<string, unknown>) {
+  return isAdmin.value || (auth.user?.roles.includes('DOCTOR_OUTP') && auth.user.deptId != null
+    && Number(row.to_dept_id) === auth.user.deptId)
+}
+function canReadExam(row: Record<string, unknown>) {
+  const roles = auth.user?.roles ?? []
+  return isAdmin.value || roles.includes('QUALITY')
+    || (roles.includes('DOCTOR_OUTP') && Number(row.examiner_id) === auth.user?.id)
+    || (roles.includes('NURSE') && Number(row.registrar_id) === auth.user?.id)
+}
+function canFinishExam(row: Record<string, unknown>) {
+  return row.status === 'REGISTERED' && (isAdmin.value
+    || (auth.user?.roles.includes('DOCTOR_OUTP') && Number(row.examiner_id) === auth.user.id))
+}
+const doctors = ref<Record<string, unknown>[]>([])
+const examinerDialog = ref(false)
+const examinerRecord = ref<number | null>(null)
+const examinerChoice = ref<number | null>(null)
+const assigningExaminer = ref(false)
 function canWritePath(row: Record<string, unknown>) {
   const roles = auth.user?.roles ?? []
   return roles.includes('ADMIN') || (roles.includes('DOCTOR_OUTP') && !!auth.user?.id
@@ -190,7 +238,7 @@ const groups = ref<Record<string, unknown>[]>([])
 const groupRecords = ref<Record<string, unknown>[]>([])
 const enrollments = ref<Record<string, unknown>[]>([])
 const varStats = ref<Record<string, unknown>[]>([])
-const grp = reactive({ unitName: '', contact: '', packageId: '', members: '' })
+const grp = reactive({ unitName: '', contact: '', packageId: '', members: '', examinerId: null as number | null })
 const createFollowupLoading = ref(false)
 const createGroupLoading = ref(false)
 const doneFollowupBusy = ref<unknown>(null)
@@ -199,7 +247,46 @@ const finishExamBusy = ref<unknown>(null)
 const addVarianceBusy = ref<unknown>(null)
 const completePathwayBusy = ref<unknown>(null)
 
-async function loadGroups() { groups.value = (await client.get('/exam/groups')).data.data }
+let groupsRequest = 0, groupRequest = 0, examsRequest = 0, followupRequest = 0, consultRequest = 0, searchRequest = 0
+function clearGroupRecords() { ++groupRequest; groupRecords.value = []; examinerDialog.value = false; examinerRecord.value = null }
+function clearExams() { ++examsRequest; examRecords.value = []; clearGroupRecords() }
+function clearExamContext() { ++groupsRequest; groups.value = []; clearExams() }
+async function loadGroups() {
+  const request = ++groupsRequest; groups.value = []; clearGroupRecords()
+  const rows = (await client.get('/exam/groups')).data.data
+  if (request === groupsRequest) groups.value = rows
+}
+async function loadExams() {
+  clearExams(); const request = examsRequest
+  const rows = (await client.get('/exam/records')).data.data
+  if (request === examsRequest) examRecords.value = rows
+}
+async function loadFollowups() {
+  const request = ++followupRequest; followups.value = []
+  const rows = (await client.get('/patientcare/followups')).data.data
+  if (request === followupRequest) followups.value = rows
+}
+async function loadConsults() {
+  const request = ++consultRequest; consults.value = []
+  const rows = (await client.get('/inpatient/consults')).data.data
+  if (request === consultRequest) consults.value = rows
+}
+async function loadDoctors() { doctors.value = []; doctors.value = (await client.get('/inpatient/doctors')).data.data }
+function openExaminer(row: Record<string, unknown>) {
+  if (!isAdmin.value || row.status !== 'REGISTERED') return
+  examinerRecord.value = Number(row.id); examinerChoice.value = row.examiner_id == null ? null : Number(row.examiner_id)
+  examinerDialog.value = true
+}
+async function saveExaminer() {
+  if (!isAdmin.value || !examinerRecord.value || !examinerChoice.value) return
+  const id = examinerRecord.value; assigningExaminer.value = true
+  try {
+    await client.put(`/exam/records/${id}/examiner`, { examinerId: examinerChoice.value })
+    examinerDialog.value = false
+    await Promise.all([loadGroups(), loadExams()])
+  } catch (error) { clearExamContext(); throw error }
+  finally { assigningExaminer.value = false }
+}
 let pathwayRequest = 0
 function clearPathways() { ++pathwayRequest; enrollments.value = []; varStats.value = [] }
 async function loadPathways() {
@@ -210,12 +297,13 @@ async function loadPathways() {
   enrollments.value = rows.data.data; varStats.value = stats.data.data
 }
 async function createGroup() {
+  if (!canRegister.value) return
   if (!grp.unitName || !grp.packageId || !grp.members) { ElMessage.warning('请填写单位、套餐和人员名单'); return }
   const names = grp.members.split(/[,，、]/).map((s) => s.trim()).filter(Boolean)
   createGroupLoading.value = true
   try {
     const resp = await client.post('/exam/groups',
-      { unitName: grp.unitName, contact: grp.contact, packageId: Number(grp.packageId), memberNames: names })
+      { unitName: grp.unitName, contact: grp.contact, packageId: Number(grp.packageId), memberNames: names, examinerId: grp.examinerId })
     ElMessage.success(`团检建档成功，${resp.data.data.members} 人`)
     await loadGroups()
   } finally {
@@ -223,19 +311,23 @@ async function createGroup() {
   }
 }
 async function openGroup(row: Record<string, unknown>) {
-  groupRecords.value = (await client.get(`/exam/groups/${row.id}/records`)).data.data
+  clearGroupRecords(); const request = groupRequest
+  try {
+    const rows = (await client.get(`/exam/groups/${row.id}/records`)).data.data
+    if (request === groupRequest) groupRecords.value = rows
+  } catch (error) { clearExamContext(); throw error }
 }
 async function finishExam(row: Record<string, unknown>, abnormal: boolean) {
+  if (!canFinishExam(row)) return
   const res = await ElMessageBox.prompt('总检结论', '完成体检',
     { inputValue: abnormal ? '血压偏高，建议心内科复查' : '各项指标正常' }).catch(() => null)
-  if (!res) return
+  if (!res || !canFinishExam(row)) return
   const { value } = res
   finishExamBusy.value = row.id
   try {
     await client.put(`/exam/records/${row.id}/complete`, null, { params: { summary: value, abnormal } })
-    await loadGroups()
-    groupRecords.value = groupRecords.value.map((r) =>
-      r.id === row.id ? { ...r, status: 'DONE', summary: value, abnormal } : r)
+    await Promise.all([loadGroups(), loadExams()])
+  } catch (error) { clearExamContext(); throw error
   } finally {
     finishExamBusy.value = null
   }
@@ -272,18 +364,22 @@ async function completePathway(row: Record<string, unknown>) {
 }
 
 async function searchPatients(kw: string) {
+  const request = ++searchRequest; patients.value = []
   const resp = await client.get('/patients', { params: { keyword: kw, page: 0, size: 10 } })
-  patients.value = resp.data.data.records
+  if (request === searchRequest) patients.value = resp.data.data.records
 }
 
-async function loadAll() {
-  followups.value = (await client.get('/patientcare/followups')).data.data
-  sat.value = (await client.get('/patientcare/satisfaction/stats')).data.data
-  consults.value = (await client.get('/inpatient/consults')).data.data
-  examRecords.value = (await client.get('/exam/records')).data.data
+async function loadTab(value: string) {
+  if (value === 'followup') await loadFollowups()
+  if (value === 'consult') await loadConsults()
+  if (value === 'exam') await loadExams()
+  if (value === 'satisfaction') { sat.value = {}; sat.value = (await client.get('/patientcare/satisfaction/stats')).data.data }
+  if (value === 'group') await loadGroups()
+  if (value === 'pathway') await loadPathways()
 }
 
 async function createFollowup() {
+  if (!canRegister.value) return
   if (!fu.patientId || !fu.topic || !fu.dueDate) {
     ElMessage.warning('患者、主题、日期必填')
     return
@@ -292,43 +388,44 @@ async function createFollowup() {
   try {
     await client.post('/patientcare/followups', fu)
     ElMessage.success('随访计划已建立')
-    await loadAll()
+    await loadFollowups()
   } finally {
     createFollowupLoading.value = false
   }
 }
 
 async function doneFollowup(row: Record<string, unknown>) {
+  if (!canFinishFollowup(row)) return
   const res = await ElMessageBox.prompt('随访结果', '完成随访', { inputValue: '恢复良好，无异常' }).catch(() => null)
-  if (!res) return
+  if (!res || !canFinishFollowup(row)) return
   const { value } = res
   doneFollowupBusy.value = row.id
   try {
     await client.put(`/patientcare/followups/${row.id}/done`, null, { params: { note: value } })
-    await loadAll()
+    await loadFollowups()
+  } catch (error) { ++followupRequest; followups.value = []; throw error
   } finally {
     doneFollowupBusy.value = null
   }
 }
 
 async function completeConsult(row: Record<string, unknown>) {
+  if (!canFinishConsult(row)) return
   const res = await ElMessageBox.prompt('会诊意见', '书写会诊意见').catch(() => null)
-  if (!res) return
+  if (!res || !canFinishConsult(row)) return
   const { value } = res
   completeConsultBusy.value = row.id
   try {
     await client.put(`/inpatient/consults/${row.id}/complete`, null, { params: { opinion: value } })
-    await loadAll()
+    await loadConsults()
+  } catch (error) { ++consultRequest; consults.value = []; throw error
   } finally {
     completeConsultBusy.value = null
   }
 }
 
-watch(tab, (t) => {
-  if (t === 'group') loadGroups()
-  if (t === 'pathway') loadPathways()
-})
-onMounted(loadAll)
+watch(tab, loadTab)
+onMounted(() => { loadTab(tab.value); if (canRegister.value) loadDoctors() })
 </script>
 
 <style scoped>

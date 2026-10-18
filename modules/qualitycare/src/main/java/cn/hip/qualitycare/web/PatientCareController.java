@@ -2,12 +2,10 @@ package cn.hip.qualitycare.web;
 
 import cn.hip.inpatient.service.InpatientService;
 import cn.hip.platform.core.common.R;
-import cn.hip.platform.core.security.CurrentUserService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.SneakyThrows;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
@@ -22,38 +20,29 @@ import java.util.Map;
 public class PatientCareController {
 
     private final JdbcTemplate jdbc;
-    private final CurrentUserService currentUserService;
+    private final cn.hip.qualitycare.service.PatientCareService patientCareService;
     private final cn.hip.qualitycare.service.PathwayService pathwayService;
-    private final cn.hip.platform.empi.service.PatientService patientService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     // ---- 随访 ----
     public record FollowupReq(Long patientId, String topic, String channel, String dueDate) {}
 
     @PostMapping("/api/patientcare/followups")
+    @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP','NURSE')")
     public R<Void> createFollowup(@RequestBody FollowupReq req, Authentication auth) {
-        jdbc.update("insert into pc_followup(patient_id, topic, channel, due_date, creator_id) values (?,?,?,?::date,?)",
-                req.patientId(), req.topic(), req.channel() == null ? "PHONE" : req.channel(),
-                req.dueDate(), currentUserService.idOf(auth));
+        patientCareService.createFollowup(req.patientId(),req.topic(),req.channel(),req.dueDate());
         return R.ok();
     }
 
     @GetMapping("/api/patientcare/followups")
     public R<List<Map<String, Object>>> followups(@RequestParam(defaultValue = "PENDING") String status) {
-        return R.ok(jdbc.queryForList("""
-                select f.id, f.topic, f.channel, f.due_date, f.status, f.result_note,
-                       p.name as patient_name, p.phone, p.patient_no
-                from pc_followup f join empi_patient p on p.id = f.patient_id
-                where f.status = ? order by f.due_date, f.id limit 200
-                """, status));
+        return R.ok(patientCareService.followups(status));
     }
 
     @PutMapping("/api/patientcare/followups/{id}/done")
+    @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP','NURSE')")
     public R<Void> doneFollowup(@PathVariable Long id, @RequestParam String note) {
-        int n = jdbc.update(
-                "update pc_followup set status = 'DONE', result_note = ?, done_at = now() where id = ? and status = 'PENDING'",
-                note, id);
-        return n == 0 ? R.fail(9901, "任务不存在或已完成") : R.ok();
+        patientCareService.doneFollowup(id,note);return R.ok();
     }
 
     // ---- 满意度 ----
@@ -81,32 +70,20 @@ public class PatientCareController {
     public record ConsultReq(Long admissionId, Long toDeptId, String question) {}
 
     @PostMapping("/api/inpatient/consults")
+    @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP')")
     public R<Void> requestConsult(@RequestBody ConsultReq req, Authentication auth) {
-        jdbc.update("insert into inp_consult(admission_id, from_doctor_id, to_dept_id, question) values (?,?,?,?)",
-                req.admissionId(), currentUserService.idOf(auth), req.toDeptId(), req.question());
-        return R.ok();
+        patientCareService.requestConsult(req.admissionId(),req.toDeptId(),req.question());return R.ok();
     }
 
     @GetMapping("/api/inpatient/consults")
     public R<List<Map<String, Object>>> consults() {
-        return R.ok(jdbc.queryForList("""
-                select c.id, c.question, c.status, c.opinion, c.created_at,
-                       a.admission_no, p.name as patient_name, d.name as to_dept_name
-                from inp_consult c
-                join inp_admission a on a.id = c.admission_id
-                join empi_patient p on p.id = a.patient_id
-                join sys_dept d on d.id = c.to_dept_id
-                order by c.status desc, c.id desc limit 100
-                """));
+        return R.ok(patientCareService.consults());
     }
 
     @PutMapping("/api/inpatient/consults/{id}/complete")
+    @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP')")
     public R<Void> completeConsult(@PathVariable Long id, @RequestParam String opinion, Authentication auth) {
-        int n = jdbc.update("""
-                update inp_consult set status = 'DONE', opinion = ?, consultant_id = ?, done_at = now()
-                where id = ? and status = 'REQUESTED'
-                """, opinion, currentUserService.idOf(auth), id);
-        return n == 0 ? R.fail(9903, "会诊单不存在或已完成") : R.ok();
+        patientCareService.completeConsult(id,opinion);return R.ok();
     }
 
     // ---- 临床路径 ----
@@ -200,6 +177,7 @@ public class PatientCareController {
     public record PackageReq(String name, java.math.BigDecimal price, String items, String hiddenItems) {}
 
     @PostMapping("/api/exam/packages")
+    @PreAuthorize("hasAnyRole('ADMIN','QUALITY')")
     public R<Void> createPackage(@RequestBody PackageReq req) {
         // 1.0.1（1938）：hiddenItems 为不进入总检结果的项目（逗号分隔），须为套餐项目子集
         jdbc.update("insert into pe_exam_package(name, price, items, hidden_items) values (?,?,?,?)",
@@ -213,22 +191,29 @@ public class PatientCareController {
     }
 
     @PostMapping("/api/exam/records")
-    public R<Void> registerExam(@RequestParam Long patientId, @RequestParam Long packageId) {
-        jdbc.update("insert into pe_exam_record(patient_id, package_id) values (?,?)", patientId, packageId);
+    @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP','NURSE')")
+    public R<Void> registerExam(@RequestParam Long patientId, @RequestParam Long packageId,
+                                @RequestParam(required = false) Long examinerId) {
+        patientCareService.registerExam(patientId,packageId,examinerId);
         return R.ok();
     }
 
     @PutMapping("/api/exam/records/{id}/complete")
+    @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP')")
     public R<Void> completeExam(@PathVariable Long id, @RequestParam String summary,
                                 @RequestParam(defaultValue = "false") boolean abnormal) {
-        int n = jdbc.update(
-                "update pe_exam_record set status = 'DONE', summary = ?, abnormal = ? where id = ? and status = 'REGISTERED'",
-                summary, abnormal, id);
-        return n == 0 ? R.fail(9905, "体检记录不存在或已完成") : R.ok();
+        patientCareService.completeExam(id,summary,abnormal);return R.ok();
+    }
+
+    public record ExaminerReq(Long examinerId) {}
+    @PutMapping("/api/exam/records/{id}/examiner")
+    @PreAuthorize("hasRole('ADMIN')")
+    public R<Void> assignExaminer(@PathVariable Long id,@RequestBody ExaminerReq req){
+        patientCareService.assignExaminer(id,req.examinerId());return R.ok();
     }
 
     // ---- 三十期：团检 ----
-    public record GroupReq(String unitName, String contact, Long packageId, List<String> memberNames) {}
+    public record GroupReq(String unitName, String contact, Long packageId, List<String> memberNames,Long examinerId) {}
 
     /**
      * 单位团检建档：批量建患者 + 体检记录。
@@ -238,63 +223,24 @@ public class PatientCareController {
      * 单事务代价可控（2000 人约数千条简单 insert），风险只在超大名单——上限拦截。
      */
     @PostMapping("/api/exam/groups")
-    @Transactional
+    @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP','NURSE')")
     public R<Map<String, Object>> createGroup(@RequestBody GroupReq req) {
-        if (req.memberNames() == null || req.memberNames().isEmpty()) return R.fail(9909, "团检人员名单不能为空");
-        if (req.memberNames().size() > 2000) return R.fail(9915, "单批团检不超过 2000 人，请拆分名单分次提交");
-        Integer pkg = jdbc.queryForObject("select count(*) from pe_exam_package where id = ? and enabled",
-                Integer.class, req.packageId());
-        if (pkg == null || pkg == 0) return R.fail(9912, "体检套餐不存在");
-        // returning id 取主键：max(id) 在并发建档时会拿到别人的团检号，成员挂错单位
-        Long groupId = jdbc.queryForObject("""
-                insert into pe_group(unit_name, contact, package_id) values (?,?,?) returning id
-                """, Long.class, req.unitName(), req.contact(), req.packageId());
-        for (String name : req.memberNames()) {
-            var p = new cn.hip.platform.empi.entity.Patient();
-            p.setName(name);
-            p.setSex("U");
-            Long pid = patientService.register(p).getId();
-            jdbc.update("insert into pe_exam_record(patient_id, package_id, group_id) values (?,?,?)",
-                    pid, req.packageId(), groupId);
-        }
-        return R.ok(Map.of("groupId", groupId, "members", req.memberNames().size()));
+        return R.ok(patientCareService.createGroup(req.unitName(),req.contact(),req.packageId(),req.memberNames(),req.examinerId()));
     }
 
     /** 团检汇总：进度与异常率横向对比 */
     @GetMapping("/api/exam/groups")
     public R<List<Map<String, Object>>> groups() {
-        return R.ok(jdbc.queryForList("""
-                select g.id, g.unit_name, g.contact, k.name as package_name,
-                       count(r.id) as members,
-                       count(r.id) filter (where r.status = 'DONE') as done,
-                       count(r.id) filter (where r.abnormal) as abnormal_cnt,
-                       round(count(r.id) filter (where r.abnormal)::numeric
-                             / nullif(count(r.id) filter (where r.status = 'DONE'), 0) * 100, 1) as abnormal_rate
-                from pe_group g
-                join pe_exam_package k on k.id = g.package_id
-                left join pe_exam_record r on r.group_id = g.id
-                group by g.id, g.unit_name, g.contact, k.name order by g.id desc
-                """));
+        return R.ok(patientCareService.groups());
     }
 
     @GetMapping("/api/exam/groups/{id}/records")
     public R<List<Map<String, Object>>> groupRecords(@PathVariable Long id) {
-        return R.ok(jdbc.queryForList("""
-                select r.id, r.status, r.summary, r.abnormal, p.name as patient_name
-                from pe_exam_record r join empi_patient p on p.id = r.patient_id
-                where r.group_id = ? order by r.id
-                """, id));
+        return R.ok(patientCareService.groupRecords(id));
     }
 
     @GetMapping("/api/exam/records")
     public R<List<Map<String, Object>>> examRecords() {
-        return R.ok(jdbc.queryForList("""
-                select r.id, r.status, r.summary, r.created_at,
-                       p.name as patient_name, k.name as package_name, k.price
-                from pe_exam_record r
-                join empi_patient p on p.id = r.patient_id
-                join pe_exam_package k on k.id = r.package_id
-                order by r.id desc limit 100
-                """));
+        return R.ok(patientCareService.exams());
     }
 }
