@@ -67,9 +67,10 @@ try:
         expect(1005,'PUT',f'/inpatient/surgeries/{s}/op-info',{'roomNo':'NO','asaGrade':'II'},who)
         expect(0,'PUT',f'/inpatient/surgeries/{s}/op-info',{'roomNo':'OR91'},who)
         expect(0,'PUT',f'/inpatient/surgeries/{s}/timepoint',{'stage':'IN_ROOM'},who)
-        new=expect(0,'POST',base+'tubes',{'surgeryId':s,'tubeType':'尿管'},who)['id']
-        expect(0,'PUT',base+f'tubes/{new}',{'surgeryId':s,'tubeType':'尿管','position':'V91'},who)
-        expect(0,'DELETE',base+f'tubes/{new}',who=who)
+        for kind,body in bodies.items():
+            new=expect(0,'POST',base+kind,body,who)['id']
+            expect(0,'PUT',base+kind+'/'+str(new),body,who)
+            expect(0,'DELETE',base+kind+'/'+str(new),who=who)
     expect(0,'POST','/anes/records',{'surgeryId':s,'phase':'PACU','stewardScore':5},'tech')
     assert expect(0,'GET',f'/anes/records/pacu-status?surgeryId={s}',who='tech')['canLeave']
     expect(0,'PUT',f'/inpatient/surgeries/{s}/op-info',{'asaGrade':'II'},'a')
