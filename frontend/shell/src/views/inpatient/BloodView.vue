@@ -1,7 +1,7 @@
 <template>
   <el-card>
-    <h4>用血申请</h4>
-    <el-form inline size="small">
+    <h4 v-if="canDecide">用血申请</h4>
+    <el-form v-if="canDecide" inline size="small">
       <el-form-item><el-input v-model="form.admissionId" placeholder="住院ID" style="width: 110px" /></el-form-item>
       <el-form-item>
         <el-select v-model="form.product" style="width: 140px">
@@ -29,12 +29,12 @@
       </el-table-column>
       <el-table-column label="流转" width="220">
         <template #default="{ row }">
-          <template v-if="row.status === 'APPLIED'">
+          <template v-if="canManage && row.status === 'APPLIED'">
             <el-button link type="success" size="small" :loading="busyId === row.id" @click="review(row, true)">批准</el-button>
             <el-button link type="danger" size="small" :loading="busyId === row.id" @click="review(row, false)">驳回</el-button>
           </template>
-          <el-button v-if="row.status === 'APPROVED'" link type="primary" size="small" :loading="busyId === row.id" @click="issue(row)">发血</el-button>
-          <el-button v-if="row.status === 'ISSUED'" link type="warning" size="small" @click="transfuse(row)">
+          <el-button v-if="canManage && row.status === 'APPROVED'" link type="primary" size="small" :loading="busyId === row.id" @click="issue(row)">发血</el-button>
+          <el-button v-if="canTransfuse && row.status === 'ISSUED'" link type="warning" size="small" @click="transfuse(row)">
             输血记录</el-button>
           <span v-if="row.status === 'TRANSFUSED'">{{ row.transfusion_note }}</span>
         </template>
@@ -61,9 +61,16 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
+import { useAuthStore } from '../../stores/auth'
+
+const auth = useAuthStore()
+const canDecide = computed(() => auth.user?.roles?.some(r => r === 'ADMIN' || r === 'DOCTOR_OUTP') ?? false)
+
+const canManage = computed(() => auth.user?.roles?.includes('ADMIN') ?? false)
+const canTransfuse = computed(() => auth.user?.roles?.some(r => r === 'ADMIN' || r === 'NURSE') ?? false)
 
 const applies = ref<Record<string, unknown>[]>([])
 const form = reactive({ admissionId: '', product: 'RBC', volumeMl: 200, reason: '' })
@@ -78,7 +85,13 @@ const statusMap: Record<string, [string, string]> = {
 const statusText = (s: string) => statusMap[s]?.[0] ?? s
 const tagType = (s: string) => (statusMap[s]?.[1] ?? 'info') as 'info'
 
-async function load() { applies.value = (await client.get('/inpatient/blood/applies')).data.data }
+let listRequest = 0
+async function load() {
+  const request = ++listRequest
+  applies.value = []
+  const rows = (await client.get('/inpatient/blood/applies')).data.data
+  if (request === listRequest) applies.value = rows
+}
 
 async function apply() {
   if (!form.admissionId) { ElMessage.warning('请填写完整'); return }

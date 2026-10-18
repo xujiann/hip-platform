@@ -274,17 +274,29 @@ const rescue = reactive({ temperature: '', pulse: '', respiration: '', sbp: '', 
 const rescueOutcomeText = (o: string) =>
   ({ ONGOING: '进行中', SUCCESS: '抢救成功', DEATH: '死亡', TRANSFERRED: '转院' }[o] ?? o)
 
+let anesRequest = 0
+watch(() => anes.surgeryId, () => {
+  ++anesRequest
+  anesRecords.value = []
+  pacu.value = null
+})
 async function loadAnes() {
-  if (!anes.surgeryId) return
-  // /api/anes 归「手术麻醉」开关，而本页菜单是 /specialty 不随开关消失——
-  // 关闭手麻后此 tab 的请求会 404（v27-B：此前直接弹全局错误，这里给出可读原因）
+  const request = ++anesRequest
+  const selected = anes.surgeryId
+  anesRecords.value = []
+  pacu.value = null
+  if (!selected) return
   try {
-    anesRecords.value = (await client.get('/anes/records', { params: { surgeryId: anes.surgeryId } })).data.data
-    pacu.value = (await client.get('/anes/records/pacu-status', { params: { surgeryId: anes.surgeryId } })).data.data
+    const rows = (await client.get('/anes/records', { params: { surgeryId: selected } })).data.data
+    const status = (await client.get('/anes/records/pacu-status', { params: { surgeryId: selected } })).data.data
+    if (request !== anesRequest || selected !== anes.surgeryId) return
+    anesRecords.value = rows
+    pacu.value = status
   } catch {
+    // The client reports permission/module errors; stale requests must not clear a newer result.
+    if (request !== anesRequest) return
     anesRecords.value = []
     pacu.value = null
-    ElMessage.warning('手术麻醉模块未启用或暂不可用')
   }
 }
 async function recordAnes() {

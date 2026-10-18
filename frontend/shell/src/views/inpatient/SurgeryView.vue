@@ -2,7 +2,7 @@
   <el-card>
     <div class="toolbar">
       <h3>手术麻醉</h3>
-      <el-button type="primary" size="small" @click="dialogVisible = true">手术申请</el-button>
+      <el-button v-if="canDecide" type="primary" size="small" @click="dialogVisible = true">手术申请</el-button>
     </div>
 
     <!--
@@ -70,8 +70,8 @@
                   </template>
                 </el-dropdown>
                 <el-button v-if="row.status !== 'CANCELLED'" link size="small" @click="openEdit(row)">术中信息</el-button>
-                <el-button v-if="actionable(row)" link type="success" size="small" @click="complete(row)">术后记录</el-button>
-                <el-button v-if="actionable(row)" link type="danger" size="small" @click="openCancel(row)">取消</el-button>
+                <el-button v-if="canDecide && actionable(row)" link type="success" size="small" @click="complete(row)">术后记录</el-button>
+                <el-button v-if="canDecide && actionable(row)" link type="danger" size="small" @click="openCancel(row)">取消</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -101,8 +101,8 @@
                 </template>
               </el-dropdown>
               <el-button v-if="row.status !== 'CANCELLED'" link size="small" @click="openEdit(row)">术中信息</el-button>
-              <el-button v-if="actionable(row)" link type="success" size="small" @click="complete(row)">术后记录</el-button>
-              <el-button v-if="actionable(row)" link type="danger" size="small" @click="openCancel(row)">取消</el-button>
+              <el-button v-if="canDecide && actionable(row)" link type="success" size="small" @click="complete(row)">术后记录</el-button>
+              <el-button v-if="canDecide && actionable(row)" link type="danger" size="small" @click="openCancel(row)">取消</el-button>
               <el-tooltip v-if="row.status === 'DONE'" :content="`术中：${row.op_note} / 麻醉：${row.anes_note}`">
                 <el-button link size="small">查看记录</el-button>
               </el-tooltip>
@@ -145,27 +145,27 @@
           <el-input v-model="edit.roomNo" maxlength="16" placeholder="如 OR-01" />
         </el-form-item>
         <el-form-item label="手术级别">
-          <el-select v-model="edit.surgeryLevel" clearable style="width: 100%">
+          <el-select v-model="edit.surgeryLevel" :disabled="!canDecide" clearable style="width: 100%">
             <el-option v-for="v in dict.surgeryLevels" :key="v" :label="v" :value="v" />
           </el-select>
         </el-form-item>
         <el-form-item label="ASA 分级">
-          <el-select v-model="edit.asaGrade" clearable style="width: 100%">
+          <el-select v-model="edit.asaGrade" :disabled="!canDecide" clearable style="width: 100%">
             <el-option v-for="v in dict.asaGrades" :key="v" :label="`ASA ${v} 级`" :value="v" />
           </el-select>
         </el-form-item>
         <el-form-item label="切口等级">
-          <el-select v-model="edit.incisionType" clearable style="width: 100%">
+          <el-select v-model="edit.incisionType" :disabled="!canDecide" clearable style="width: 100%">
             <el-option v-for="v in dict.incisionTypes" :key="v" :label="v" :value="v" />
           </el-select>
         </el-form-item>
         <el-form-item label="手术类别">
-          <el-select v-model="edit.surgeryKind" clearable style="width: 100%">
+          <el-select v-model="edit.surgeryKind" :disabled="!canDecide" clearable style="width: 100%">
             <el-option v-for="o in dict.surgeryKinds" :key="o.code" :label="o.name" :value="o.code" />
           </el-select>
         </el-form-item>
         <el-form-item label="非计划再次手术">
-          <el-switch v-model="edit.unplannedReop" />
+          <el-switch v-model="edit.unplannedReop" :disabled="!canDecide" />
         </el-form-item>
         <el-divider content-position="left">时间点（留空即未采集，平台不推算）</el-divider>
         <el-form-item v-for="s in TP_STAGES" :key="s.code" :label="s.name">
@@ -206,9 +206,13 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
+import { useAuthStore } from '../../stores/auth'
+
+const auth = useAuthStore()
+const canDecide = computed(() => auth.user?.roles?.some(r => r === 'ADMIN' || r === 'DOCTOR_OUTP') ?? false)
 
 type Row = Record<string, unknown>
 interface CodeName { code: string; name: string }
@@ -304,15 +308,26 @@ async function loadDict() {
   dict.cancelStages = (d.cancelStages as CodeName[]) ?? []
 }
 
+let boardRequest = 0
 async function loadBoard() {
-  board.value = (await client.get('/inpatient/surgeries/room-board', {
+  const request = ++boardRequest
+  board.value = []
+  const rows = (await client.get('/inpatient/surgeries/room-board', {
     params: { date: boardDate.value, roomNo: boardRoom.value || undefined },
   })).data.data
+  if (request === boardRequest) board.value = rows
 }
 
+let recordsRequest = 0
 async function load() {
-  records.value = (await client.get('/inpatient/surgeries')).data.data
-  admissions.value = (await client.get('/inpatient/admissions')).data.data
+  const request = ++recordsRequest
+  records.value = []
+  admissions.value = []
+  const rows = (await client.get('/inpatient/surgeries')).data.data
+  const patients = canDecide.value ? (await client.get('/inpatient/admissions')).data.data : []
+  if (request !== recordsRequest) return
+  records.value = rows
+  admissions.value = patients
   await loadBoard()
 }
 
@@ -378,11 +393,13 @@ async function saveEdit() {
     }
     await client.put(`/inpatient/surgeries/${edit.id}/op-info`, {
       roomNo: edit.roomNo || null,
-      surgeryLevel: edit.surgeryLevel || null,
-      asaGrade: edit.asaGrade || null,
-      incisionType: edit.incisionType || null,
-      surgeryKind: edit.surgeryKind || null,
-      unplannedReop: edit.unplannedReop,
+      ...(canDecide.value ? {
+        surgeryLevel: edit.surgeryLevel || null,
+        asaGrade: edit.asaGrade || null,
+        incisionType: edit.incisionType || null,
+        surgeryKind: edit.surgeryKind || null,
+        unplannedReop: edit.unplannedReop,
+      } : {}),
     })
     ElMessage.success('已保存')
     editVisible.value = false

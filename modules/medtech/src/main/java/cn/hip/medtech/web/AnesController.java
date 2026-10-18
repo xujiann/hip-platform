@@ -17,13 +17,16 @@ import java.util.Map;
 public class AnesController {
 
     private final JdbcTemplate jdbc;
+    private final cn.hip.medtech.service.SurgeryAccess access;
 
     public record AnesReq(Long surgeryId, String phase, Integer hr, Integer sbp, Integer dbp,
                           Integer spo2, Integer stewardScore, String note) {}
 
     @PostMapping("/records")
+    @org.springframework.transaction.annotation.Transactional
     public R<Void> record(@RequestBody AnesReq req) {
         if (!"INTRA".equals(req.phase()) && !"PACU".equals(req.phase())) return R.fail(4670, "阶段只能为 INTRA/PACU");
+        if(!access.lockSurgery(req.surgeryId(),false))return R.fail(4671,"手术记录不存在");
         Integer surgery = jdbc.queryForObject("select count(*) from inp_surgery where id = ?",
                 Integer.class, req.surgeryId());
         if (surgery == null || surgery == 0) return R.fail(4671, "手术记录不存在");
@@ -41,6 +44,7 @@ public class AnesController {
     /** 麻醉记录时间轴 */
     @GetMapping("/records")
     public R<List<Map<String, Object>>> records(@RequestParam Long surgeryId) {
+        access.read(surgeryId);
         return R.ok(jdbc.queryForList(
                 "select * from anes_record where surgery_id = ? order by recorded_at", surgeryId));
     }
@@ -48,6 +52,7 @@ public class AnesController {
     /** 出复苏室判定：最近一次 PACU 记录 Steward ≥ 4 可出室 */
     @GetMapping("/records/pacu-status")
     public R<Map<String, Object>> pacuStatus(@RequestParam Long surgeryId) {
+        access.read(surgeryId);
         var rows = jdbc.queryForList("""
                 select steward_score from anes_record
                 where surgery_id = ? and phase = 'PACU' and steward_score is not null

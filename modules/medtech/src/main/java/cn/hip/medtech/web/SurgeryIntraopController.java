@@ -51,6 +51,7 @@ import java.util.Set;
 public class SurgeryIntraopController {
 
     private final JdbcTemplate jdbc;
+    private final cn.hip.medtech.service.SurgeryAccess access;
     private final CurrentUserService currentUserService;
 
     /**
@@ -130,6 +131,7 @@ public class SurgeryIntraopController {
     /** 一次手术的术中记录全貌：抬头 + 三块明细 + 三块汇总（前端一页一请求） */
     @GetMapping("/summary")
     public R<Map<String, Object>> summary(@RequestParam Long surgeryId) {
+        if(!access.read(surgeryId))return R.fail(4926,"手术记录不存在");
         var head = surgeryHead(surgeryId);
         if (head == null) return R.fail(4926, "手术记录不存在");
 
@@ -176,11 +178,14 @@ public class SurgeryIntraopController {
 
     @GetMapping("/tubes")
     public R<List<Map<String, Object>>> tubes(@RequestParam Long surgeryId) {
+        access.read(surgeryId);
         return R.ok(tubeRows(surgeryId));
     }
 
+    @org.springframework.transaction.annotation.Transactional
     @PostMapping("/tubes")
     public R<Map<String, Object>> addTube(@RequestBody TubeReq req, Authentication auth) {
+        if(!access.lockSurgery(req.surgeryId(),false))return R.fail(4926,"手术记录不存在");
         if (surgeryHead(req.surgeryId()) == null) return R.fail(4926, "手术记录不存在");
         if (req.tubeType() == null || !TUBE_TYPES.contains(req.tubeType())) {
             return R.fail(4920, "管路类型非法（" + String.join("/", TUBE_TYPES) + "）");
@@ -202,8 +207,10 @@ public class SurgeryIntraopController {
         return R.ok(Map.of("id", id));
     }
 
+    @org.springframework.transaction.annotation.Transactional
     @PutMapping("/tubes/{id}")
     public R<Void> updateTube(@PathVariable Long id, @RequestBody TubeReq req) {
+        if(!access.lockChild(cn.hip.medtech.service.SurgeryAccess.Child.TUBE,id))return R.fail(4927,"术中记录不存在");
         var rows = jdbc.queryForList("select inserted_at from surg_tube where id = ?", id);
         if (rows.isEmpty()) return R.fail(4927, "管路记录不存在");
         if (req.tubeType() == null || !TUBE_TYPES.contains(req.tubeType())) {
@@ -226,8 +233,10 @@ public class SurgeryIntraopController {
         return R.ok();
     }
 
+    @org.springframework.transaction.annotation.Transactional
     @DeleteMapping("/tubes/{id}")
     public R<Void> deleteTube(@PathVariable Long id) {
+        if(!access.lockChild(cn.hip.medtech.service.SurgeryAccess.Child.TUBE,id))return R.fail(4927,"术中记录不存在");
         return jdbc.update("delete from surg_tube where id = ?", id) == 0
                 ? R.fail(4927, "管路记录不存在") : R.ok();
     }
@@ -241,11 +250,14 @@ public class SurgeryIntraopController {
 
     @GetMapping("/transfusions")
     public R<List<Map<String, Object>>> transfusions(@RequestParam Long surgeryId) {
+        access.read(surgeryId);
         return R.ok(transfusionRows(surgeryId));
     }
 
+    @org.springframework.transaction.annotation.Transactional
     @PostMapping("/transfusions")
     public R<Map<String, Object>> addTransfusion(@RequestBody TransfusionReq req, Authentication auth) {
+        if(!access.lockSurgery(req.surgeryId(),false))return R.fail(4926,"手术记录不存在");
         if (surgeryHead(req.surgeryId()) == null) return R.fail(4926, "手术记录不存在");
         if (req.productType() == null || !PRODUCT_TYPES.contains(req.productType())) {
             return R.fail(4922, "血制品类型非法（RBC 红细胞/PLASMA 血浆/PLT 血小板/CRYO 冷沉淀/WHOLE 全血/AUTO 自体血）");
@@ -265,8 +277,10 @@ public class SurgeryIntraopController {
         return R.ok(Map.of("id", id));
     }
 
+    @org.springframework.transaction.annotation.Transactional
     @PutMapping("/transfusions/{id}")
     public R<Void> updateTransfusion(@PathVariable Long id, @RequestBody TransfusionReq req) {
+        if(!access.lockChild(cn.hip.medtech.service.SurgeryAccess.Child.TRANSFUSION,id))return R.fail(4927,"术中记录不存在");
         var rows = jdbc.queryForList("select transfused_at from surg_transfusion where id = ?", id);
         if (rows.isEmpty()) return R.fail(4927, "输血记录不存在");
         if (req.productType() == null || !PRODUCT_TYPES.contains(req.productType())) {
@@ -286,8 +300,10 @@ public class SurgeryIntraopController {
         return R.ok();
     }
 
+    @org.springframework.transaction.annotation.Transactional
     @DeleteMapping("/transfusions/{id}")
     public R<Void> deleteTransfusion(@PathVariable Long id) {
+        if(!access.lockChild(cn.hip.medtech.service.SurgeryAccess.Child.TRANSFUSION,id))return R.fail(4927,"术中记录不存在");
         return jdbc.update("delete from surg_transfusion where id = ?", id) == 0
                 ? R.fail(4927, "输血记录不存在") : R.ok();
     }
@@ -302,14 +318,17 @@ public class SurgeryIntraopController {
     @GetMapping("/events")
     public R<List<Map<String, Object>>> events(@RequestParam Long surgeryId,
                                                @RequestParam(required = false) String eventType) {
+        access.read(surgeryId);
         if (notBlank(eventType) && !EVENT_TYPES.contains(eventType)) {
             return R.fail(4924, "术中事件类型非法：" + eventType);
         }
         return R.ok(eventRows(surgeryId, eventType));
     }
 
+    @org.springframework.transaction.annotation.Transactional
     @PostMapping("/events")
     public R<Map<String, Object>> addEvent(@RequestBody EventReq req, Authentication auth) {
+        if(!access.lockSurgery(req.surgeryId(),false))return R.fail(4926,"手术记录不存在");
         if (surgeryHead(req.surgeryId()) == null) return R.fail(4926, "手术记录不存在");
         if (req.eventType() == null || !EVENT_TYPES.contains(req.eventType())) {
             return R.fail(4924, "术中事件类型非法（" + String.join("/", EVENT_TYPES) + "）");
@@ -327,8 +346,10 @@ public class SurgeryIntraopController {
         return R.ok(Map.of("id", id));
     }
 
+    @org.springframework.transaction.annotation.Transactional
     @PutMapping("/events/{id}")
     public R<Void> updateEvent(@PathVariable Long id, @RequestBody EventReq req) {
+        if(!access.lockChild(cn.hip.medtech.service.SurgeryAccess.Child.EVENT,id))return R.fail(4927,"术中记录不存在");
         var rows = jdbc.queryForList("select surgery_id, event_time from surg_event where id = ?", id);
         if (rows.isEmpty()) return R.fail(4927, "术中事件不存在");
         Long surgeryId = ((Number) rows.get(0).get("surgery_id")).longValue();
@@ -348,8 +369,10 @@ public class SurgeryIntraopController {
         return R.ok();
     }
 
+    @org.springframework.transaction.annotation.Transactional
     @DeleteMapping("/events/{id}")
     public R<Void> deleteEvent(@PathVariable Long id) {
+        if(!access.lockChild(cn.hip.medtech.service.SurgeryAccess.Child.EVENT,id))return R.fail(4927,"术中记录不存在");
         return jdbc.update("delete from surg_event where id = ?", id) == 0
                 ? R.fail(4927, "术中事件不存在") : R.ok();
     }

@@ -271,12 +271,19 @@ async function loadDict() {
   if (!eventForm.eventType && dict.value.eventTypes.length) eventForm.eventType = dict.value.eventTypes[0].value
 }
 
+let summaryRequest = 0
 async function loadSummary() {
-  if (!surgeryId.value) return
+  const request = ++summaryRequest
+  const selected = surgeryId.value
+  tubes.value = []; transfusions.value = []; events.value = []; eventSummary.value = []
+  tubeSummary.value = {}; transfusionSummary.value = {}
+  tubeDialog.value = false; transfusionDialog.value = false; eventDialog.value = false
+  if (!selected) { loading.value = false; return }
   loading.value = true
   try {
     const d = (await client.get('/surgery/intraop/summary',
-      { params: { surgeryId: surgeryId.value } })).data.data as Record<string, unknown>
+      { params: { surgeryId: selected } })).data.data as Record<string, unknown>
+    if (request !== summaryRequest || selected !== surgeryId.value) return
     tubes.value = (d.tubes ?? []) as Row[]
     transfusions.value = (d.transfusions ?? []) as Row[]
     events.value = (d.events ?? []) as Row[]
@@ -284,7 +291,7 @@ async function loadSummary() {
     tubeSummary.value = (d.tubeSummary ?? {}) as Row
     transfusionSummary.value = (d.transfusionSummary ?? {}) as Row
   } finally {
-    loading.value = false
+    if (request === summaryRequest) loading.value = false
   }
 }
 

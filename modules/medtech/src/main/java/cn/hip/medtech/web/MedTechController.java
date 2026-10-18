@@ -22,6 +22,7 @@ import java.util.Map;
 public class MedTechController {
 
     private final JdbcTemplate jdbc;
+    private final cn.hip.medtech.service.SurgeryAccess surgeryAccess;
     private final CurrentUserService currentUserService;
     private final ApplicationEventPublisher eventPublisher;
     private final cn.hip.platform.core.service.ConfigReader configReader;
@@ -341,7 +342,10 @@ public class MedTechController {
                              String opIcd) {}
 
     @PostMapping("/api/inpatient/surgeries")
+    @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP')")
+    @Transactional
     public R<Map<String, Object>> requestSurgery(@RequestBody SurgeryReq req, Authentication auth) {
+        surgeryAccess.lockAdmission(req.admissionId(),true);
         String status = req.scheduledAt() == null ? "REQUESTED" : "SCHEDULED";
         // v34 知情同意 gate（试点期可配 emr.gate.consent.surgery：off 旁路 / warn 警告放行 / block 硬拦）。
         // 默认 warn——不挡历史不合规流，仅提示；院内规范落地后改 block 硬拦（改 sys_config 即时生效）。
@@ -372,20 +376,27 @@ public class MedTechController {
 
     @GetMapping("/api/inpatient/surgeries")
     public R<List<Map<String, Object>>> surgeries() {
-        return R.ok(jdbc.queryForList("""
+        var sql=new StringBuilder("""
                 select s.id, s.admission_id, s.procedure_name, s.anesthesia_type, s.scheduled_at, s.status,
                        s.op_icd, s.op_note, s.anes_note, a.admission_no, p.name as patient_name
                 from inp_surgery s
                 join inp_admission a on a.id = s.admission_id
                 join empi_patient p on p.id = a.patient_id
-                order by case s.status when 'DONE' then 1 else 0 end, s.id desc limit 100
-                """));
+                where 1=1
+                """);
+        var args=new java.util.ArrayList<Object>();
+        surgeryAccess.scope().appendSql(sql,args);
+        sql.append(" order by case s.status when 'DONE' then 1 else 0 end, s.id desc limit 100");
+        return R.ok(jdbc.queryForList(sql.toString(),args.toArray()));
     }
 
     public record SurgeryDoneReq(String opNote, String anesNote) {}
 
     @PutMapping("/api/inpatient/surgeries/{id}/complete")
+    @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP')")
+    @Transactional
     public R<Void> completeSurgery(@PathVariable Long id, @RequestBody SurgeryDoneReq req) {
+        if(!surgeryAccess.lockSurgery(id,true))return R.fail(9946,"手术不存在或已完成");
         int n = jdbc.update("""
                 update inp_surgery set status = 'DONE', op_note = ?, anes_note = ?
                 where id = ? and status in ('REQUESTED', 'SCHEDULED')
@@ -396,7 +407,7 @@ public class MedTechController {
     // ==================================================================
     // 手术域地基（v46 车道K：1397★/1426★/1428★/1429★/1438★/1439★/1441★）
     //
-    // **上面那三条端点是 v17 起的冻结契约，本版一个字节没动**——请求体、返回体、SQL、
+    // v91：三个旧入口补岗位/对象授权；请求体、返回体以及原有业务状态机保持。原v46约束：
     // 状态机口径全部原样。尤其是 completeSurgery 的 `status='DONE'` 与 op_note：
     // v35 出院/归档完整性 gate（EmrIntegrityService:93-100）判"手术病例是否缺手术记录"
     // 正是查 `status='DONE' and op_note is not null` 与 `status <> 'CANCELLED'`，
@@ -422,6 +433,7 @@ public class MedTechController {
 
     /** 取消手术（1426★ 四阶段）。**取消不删除记录**——统计要按阶段计数；已完成的手术不可取消 */
     @PutMapping("/api/inpatient/surgeries/{id}/cancel")
+    @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP')")
     public R<Void> cancelSurgery(
             @PathVariable Long id, @RequestBody cn.hip.medtech.service.SurgeryService.CancelReq req) {
         return surgeryService.cancel(id, req);

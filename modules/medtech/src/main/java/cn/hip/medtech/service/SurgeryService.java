@@ -27,10 +27,10 @@ import java.util.Map;
  * 无 ASA 分级、无切口等级、无手术类别、无取消阶段。而偏离表 1424–1450 那 27 条麻醉与手术
  * 质控指标全部要读这些列——不补地基，指标就是拿空表算出来的漂亮数字。
  *
- * <h3>一、契约保护：既有三个端点一个字节没动</h3>
+ * <h3>一、业务契约保护（v91补权限，状态/分量不变）</h3>
  * {@code POST /api/inpatient/surgeries}、{@code GET /api/inpatient/surgeries}、
  * {@code PUT /api/inpatient/surgeries/{id}/complete} 三条自 v17 起的老端点<b>全部留在
- * {@code MedTechController} 原处，请求体、返回体、SQL 一行未改</b>；本类只提供
+ * {@code MedTechController} 原处，请求体、返回体保持；v91补岗位/对象权限</b>；本类提供
  * <b>新开的</b> 时间点登记 / 术中信息维护 / 取消手术 / 手术间排程视图四组能力。
  *
  * <p>最要紧的一条是 <b>status 与 op_note 的语义不可动</b>：v35 出院与归档完整性 gate
@@ -78,6 +78,7 @@ import java.util.Map;
 public class SurgeryService {
 
     private final JdbcTemplate jdbc;
+    private final SurgeryAccess access;
 
     // ===================== 白名单（唯一真源，前端经 /dict 端点取，杜绝两头漂移） =====================
 
@@ -170,6 +171,7 @@ public class SurgeryService {
             if (at == null) return R.fail(4909, "手术时间点时间格式非法，请用 ISO-8601（如 2026-09-04T09:30:00+08:00）");
         }
 
+        if(!access.lockSurgery(id,false))return R.fail(4900,"手术记录不存在");
         var rows = jdbc.queryForList("""
                 select status, in_room_at, start_at, end_at, out_room_at
                 from inp_surgery where id = ?
@@ -255,6 +257,8 @@ public class SurgeryService {
             sets.add("is_unplanned_reop = ?");
             args.add(req.unplannedReop());
         }
+        boolean decision=req.surgeryLevel()!=null || req.asaGrade()!=null || req.incisionType()!=null || req.surgeryKind()!=null || req.unplannedReop()!=null;
+        if(!access.lockSurgery(id,decision))return R.fail(4900,"手术记录不存在");
         if (sets.isEmpty()) return R.ok();
 
         args.add(id);
@@ -296,6 +300,7 @@ public class SurgeryService {
             cancelledAt = cancelledAt.truncatedTo(java.time.temporal.ChronoUnit.MICROS);
         }
 
+        if(!access.lockSurgery(id,true))return R.fail(4900,"手术记录不存在");
         var rows = jdbc.queryForList("select status, scheduled_at, in_room_at, start_at, end_at, out_room_at from inp_surgery where id = ? for update", id);
         // 状态不允许仍先报 4900，不被阶段校验抢先（既有 e2e 与用例按 4900 断言）
         if (rows.isEmpty() || !List.of("REQUESTED", "SCHEDULED").contains(String.valueOf(rows.get(0).get("status")))) {
@@ -388,6 +393,7 @@ public class SurgeryService {
             sql.append(" and s.room_no = ? ");
             args.add(roomNo.trim());
         }
+        access.scope().appendSql(sql,args);
         sql.append(" order by s.room_no nulls last, coalesce(s.in_room_at, s.scheduled_at, s.created_at), s.id ");
 
         var rows = jdbc.queryForList(sql.toString(), args.toArray());
@@ -428,6 +434,7 @@ public class SurgeryService {
      * 加列就是改契约。术中信息维护对话框需要回填当前值，就从这里取。
      */
     public R<Map<String, Object>> detail(Long id) {
+        if(!access.read(id))return R.fail(4900,"手术记录不存在");
         var rows = jdbc.queryForList("""
                 select s.id, s.admission_id, s.procedure_name, s.anesthesia_type, s.op_icd,
                        s.scheduled_at, s.status, s.op_note, s.anes_note,
