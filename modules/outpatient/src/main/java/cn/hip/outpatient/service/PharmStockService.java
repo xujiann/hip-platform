@@ -565,8 +565,10 @@ public class PharmStockService {
             sql.append(" and f.flow_type = ?"); args.add(flowType.toUpperCase(Locale.ROOT));
         }
         // 日窗口用 `>= 起始日 00:00` 与 `< 次日 00:00`：写成 `<= 结束日` 会漏掉当天的全部流水
-        if (from != null) { sql.append(" and f.occurred_at >= ?"); args.add(java.sql.Date.valueOf(from)); }
-        if (to != null)   { sql.append(" and f.occurred_at <  ?"); args.add(java.sql.Date.valueOf(to.plusDays(1))); }
+        // Cast calendar labels in the pinned business DB timezone; JDBC Date can be inferred as
+        // timestamptz and shift midnight to the JVM timezone (UTC runners omit the first 8 hours).
+        if (from != null) { sql.append(" and f.occurred_at >= ?::date"); args.add(from.toString()); }
+        if (to != null)   { sql.append(" and f.occurred_at <  ?::date"); args.add(to.plusDays(1).toString()); }
         sql.append(" order by f.id desc limit ?");
         args.add(size);
         return jdbc.queryForList(sql.toString(), args.toArray());

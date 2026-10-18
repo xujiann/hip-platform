@@ -47,6 +47,12 @@ mine=expect(0,'GET',BASE+f'/stats?creatorId={ids["b"]}&patientId={p["id"]}&sourc
 assert mine['count']==2 and mine['avgScore']==3 and len(mine['recent'])==2,mine
 foreign=stats('b');assert foreign['count']==23 and len(foreign['recent'])==20 and foreign['avgScore']==1,foreign
 assert stats('q')['count']==before+27 and stats('admin')['count']==before+27
+# Existing JWTs use current account duties; a normal committed role change must take effect.
+name='e2e96n'+suffix
+expect(0,'PUT',f'/system/users/{ids["n"]}',{'username':name,'realName':'V96n','roleCodes':['CASHIER']})
+expect(1005,'GET',BASE+'/stats',who='n');expect(1005,'POST',BASE,{'score':5},'n')
+expect(0,'PUT',f'/system/users/{ids["n"]}',{'username':name,'realName':'V96n','roleCodes':['NURSE']})
+assert stats('n')['count']==1
 for who in tokens:
     expect(0,'GET','/auth/me',who=who)
     expect(0,'GET','/stats/overview',who=who)

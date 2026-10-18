@@ -637,7 +637,7 @@ class V45EmrRefTest {
 
         // ② 只看最近 7 天：陈年那条被挡在外面
         var recent = emrRefController.ref(curRid, null, "LAB",
-                java.time.LocalDate.now().minusDays(7), java.time.LocalDate.now(), doc);
+                BusinessDates.today().minusDays(7), BusinessDates.today(), doc);
         assertEquals(0, recent.getCode(), recent.getMessage());
         String recentText = texts(recent.getData());
         assertTrue(recentText.contains("血红蛋白"), "窗内的要在：" + recentText);
@@ -645,7 +645,7 @@ class V45EmrRefTest {
 
         // ③ 只给上界：同样生效（单边窗）
         var before = emrRefController.ref(curRid, null, "LAB",
-                null, java.time.LocalDate.now().minusDays(15), doc);
+                null, BusinessDates.today().minusDays(15), doc);
         assertEquals(0, before.getCode());
         String beforeText = texts(before.getData());
         assertTrue(beforeText.contains("白细胞"), "上界之前的要在：" + beforeText);
@@ -659,6 +659,6 @@ class V45EmrRefTest {
         Long pid = newPatient();
         Long rid = visitFor(pid, userId("v70doc_bad"));
         assertEquals(4000, emrRefController.ref(rid, null, "LAB",
-                java.time.LocalDate.now(), java.time.LocalDate.now().minusDays(3), doc).getCode());
+                BusinessDates.today(), BusinessDates.today().minusDays(3), doc).getCode());
     }
 }

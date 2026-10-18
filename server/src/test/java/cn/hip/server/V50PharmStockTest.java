@@ -35,7 +35,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * </ol>
  *
  * <p>**时区**：全部日期取 {@link BusinessDates#today()}，无任何裸 {@code LocalDate.now()}
- * 与硬编码日期字面量。本仓已因时区/精度炸过四次，测试须在
+ * 驱动动态数据；日界线回归另用固定绝对时刻避免依赖当前钟点。本仓已因时区/精度炸过四次，测试须在
  * {@code -DargLine="-Duser.timezone=UTC"} 下同样为绿。
  *
  * <p>**配置隔离**：改 sys_config 的用例在 {@link #restoreConfig()} 里逐键还原并
@@ -564,6 +564,23 @@ class V50PharmStockTest {
     }
 
     // ================= ⑦ 查询与参数守门 =================
+
+    /** Fixed instants straddle Beijing midnight, independent of the wall clock and JVM zone. */
+    @Test
+    void flowDayWindowUsesBusinessMidnightsWithInclusiveStartAndExclusiveEnd() {
+        Long drugId=seeds.drug("日界线测试药").getId();
+        StockInResult in=pharmStockService.stockIn(drugId,10,"V96-DAY",null,
+                BusinessDates.today().plusYears(1),null,null,null,LOC,null);
+        for(int i=0;i<3;i++)pharmStockService.scrap(in.batchId(),LOC,1,"日界线",null);
+        var ids=jdbc.queryForList("select id from pharm_stock_flow where batch_id=? order by id",Long.class,in.batchId());
+        String[] instants={"2026-10-18T15:59:59Z","2026-10-18T16:00:00Z","2026-10-19T15:59:59Z","2026-10-19T16:00:00Z"};
+        for(int i=0;i<4;i++)jdbc.update("update pharm_stock_flow set occurred_at=? where id=?",java.time.OffsetDateTime.parse(instants[i]),ids.get(i));
+        LocalDate day=LocalDate.of(2026,10,19);
+        var rows=pharmStockService.flows(drugId,null,null,day,day,50);
+        assertEquals(List.of(ids.get(2),ids.get(1)),rows.stream().map(x->((Number)x.get("id")).longValue()).toList());
+        assertEquals(3,pharmStockService.flows(drugId,null,null,day,null,50).size());
+        assertEquals(3,pharmStockService.flows(drugId,null,null,null,day,50).size());
+    }
 
     @Test
     void batchAndFlowQueriesWork() {
