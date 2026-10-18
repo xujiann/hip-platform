@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """Real JWT checks for nursing execution, quality management and global report boundaries."""
-import json,time,urllib.error
+import json,time,urllib.error,urllib.parse
 from e2elib import call,ok,login,provision_user,new_patient,find_free_bed,discharge_cleanup,today_bj
 
 t=login();tokens={'admin':t};ids={};admissions=[];suffix=str(time.time_ns())[-10:]
@@ -10,6 +10,7 @@ for key,role in [('n','NURSE'),('b','NURSE'),('q','QUALITY'),('d','DOCTOR_OUTP')
     if key in ['n','b','q']:assert '/nursing-plus' in {m['path'] for m in me['menus']}
 
 def expect(code,method,path,body=None,who='admin'):
+    path=urllib.parse.quote(path,safe='/?=&%')
     try:r=call(method,path,body,tokens[who])
     except urllib.error.HTTPError as e:
         assert e.code==403,(path,e.code)
