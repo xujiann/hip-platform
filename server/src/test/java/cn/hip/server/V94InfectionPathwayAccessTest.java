@@ -21,7 +21,7 @@ class V94InfectionPathwayAccessTest {
     String person(){String n="v94"+System.nanoTime();jdbc.update("insert into sys_user(username,password,real_name,enabled) values (?,'x',?,true)",n,n);return n;}
     Long uid(String n){return jdbc.queryForObject("select id from sys_user where username=?",Long.class,n);}
     Long admission(String owner){String n="V94"+System.nanoTime();Long p=jdbc.queryForObject("insert into empi_patient(patient_no,name,sex) values (?,?,'U') returning id",Long.class,n,n);return jdbc.queryForObject("insert into inp_admission(admission_no,patient_id,dept_id,ward_id,bed_id,status,admit_at,doctor_id) select ?,?,1,ward_id,id,'IN_HOSPITAL',now(),? from inp_bed order by id limit 1 returning id",Long.class,n,p,owner==null?null:uid(owner));}
-    Long template(){return jdbc.queryForObject("insert into cp_pathway_template(name,items) values (?,'[]') returning id",Long.class,"V94"+System.nanoTime());}
+    Long template(){return jdbc.queryForObject("insert into cp_pathway_template(name,icd_prefix,items) values (?,'V94','[]') returning id",Long.class,"V94"+System.nanoTime());}
     Long enrollment(Long adm){return jdbc.queryForObject("insert into cp_enrollment(admission_id,template_id) values (?,?) returning id",Long.class,adm,template());}
     Long catheter(Long adm){return jdbc.queryForObject("insert into inf_catheter(admission_id,line_type) values (?,'VENT') returning id",Long.class,adm);}
     JsonNode call(String method,String path,Object body,String who,String...roles)throws Exception{
@@ -68,6 +68,15 @@ class V94InfectionPathwayAccessTest {
         assertEquals(9908,code("POST","/api/pathways/enrollments/"+id+"/variances",variance(),b,"DOCTOR_OUTP"));
         assertEquals(0,code("PUT","/api/pathways/enrollments/"+enrollment(admission(null))+"/complete",null,a,"DOCTOR_OUTP"));
         assertEquals(0,code("PUT","/api/pathways/enrollments/"+enrollment(admission(b))+"/complete",null,a,"ADMIN"));
+    }
+    @Test void filteringPrecedesTheHundredRowLimitAndMixedRolesDoNotGrantPhysicianWriting()throws Exception{
+        String a=person(),b=person();Long own=enrollment(admission(a)),foreignAdmission=admission(b),foreign=enrollment(foreignAdmission);
+        for(int i=0;i<101;i++)enrollment(foreignAdmission);
+        var mine=call("GET","/api/pathways/enrollments",null,a,"DOCTOR_OUTP").path("data");
+        assertEquals(1,mine.size());assertEquals(own,mine.get(0).path("id").asLong());assertEquals(uid(a),mine.get(0).path("doctor_id").asLong());
+        assertEquals(9018,code("PUT","/api/pathways/enrollments/"+foreign+"/complete",null,a,"DOCTOR_OUTP","NURSE"));
+        assertEquals(9018,code("POST","/api/pathways/enrollments/"+foreign+"/variances",Map.of("dayNo",1,"varType","EXIT","reason","V94","admissionId",own),a,"DOCTOR_OUTP","QUALITY"));
+        assertEquals("ACTIVE",jdbc.queryForObject("select status from cp_enrollment where id=?",String.class,foreign));
     }
     @Test void qualityMonitorsButCannotPerformBedsideCatheterWrites()throws Exception{
         String q=person();Long adm=admission(null),id=catheter(adm);

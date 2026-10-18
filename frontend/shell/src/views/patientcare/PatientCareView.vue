@@ -154,7 +154,7 @@
           </el-table-column>
           <el-table-column label="操作" width="220">
             <template #default="{ row }">
-              <template v-if="row.status === 'ACTIVE'">
+              <template v-if="row.status === 'ACTIVE' && canWritePath(row)">
                 <el-button link type="warning" size="small" :loading="addVarianceBusy === row.id" @click="addVariance(row, 'DELAY')">记变异</el-button>
                 <el-button link type="danger" size="small" :loading="addVarianceBusy === row.id" @click="addVariance(row, 'EXIT')">退出路径</el-button>
                 <el-button link type="success" size="small" :loading="completePathwayBusy === row.id" @click="completePathway(row)">完成</el-button>
@@ -171,8 +171,15 @@
 import { onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
+import { useAuthStore } from '../../stores/auth'
 
 const tab = ref('followup')
+const auth = useAuthStore()
+function canWritePath(row: Record<string, unknown>) {
+  const roles = auth.user?.roles ?? []
+  return roles.includes('ADMIN') || (roles.includes('DOCTOR_OUTP') && !!auth.user?.id
+    && (row.doctor_id === null || Number(row.doctor_id) === auth.user.id))
+}
 const patients = ref<Record<string, unknown>[]>([])
 const followups = ref<Record<string, unknown>[]>([])
 const sat = ref<Record<string, unknown>>({})
@@ -193,9 +200,14 @@ const addVarianceBusy = ref<unknown>(null)
 const completePathwayBusy = ref<unknown>(null)
 
 async function loadGroups() { groups.value = (await client.get('/exam/groups')).data.data }
+let pathwayRequest = 0
+function clearPathways() { ++pathwayRequest; enrollments.value = []; varStats.value = [] }
 async function loadPathways() {
-  enrollments.value = (await client.get('/pathways/enrollments')).data.data
-  varStats.value = (await client.get('/pathways/variance-stats')).data.data
+  clearPathways()
+  const request = pathwayRequest
+  const [rows, stats] = await Promise.all([client.get('/pathways/enrollments'), client.get('/pathways/variance-stats')])
+  if (request !== pathwayRequest) return
+  enrollments.value = rows.data.data; varStats.value = stats.data.data
 }
 async function createGroup() {
   if (!grp.unitName || !grp.packageId || !grp.members) { ElMessage.warning('请填写单位、套餐和人员名单'); return }
@@ -229,23 +241,31 @@ async function finishExam(row: Record<string, unknown>, abnormal: boolean) {
   }
 }
 async function addVariance(row: Record<string, unknown>, varType: string) {
+  if (!canWritePath(row)) return
   const res = await ElMessageBox.prompt('变异原因', varType === 'EXIT' ? '退出路径' : '变异登记',
     { inputValue: varType === 'EXIT' ? '病情变化，转出路径' : '检查延迟一天完成' }).catch(() => null)
-  if (!res) return
+  if (!res || !canWritePath(row)) return
   const { value } = res
   addVarianceBusy.value = row.id
   try {
     await client.post(`/pathways/enrollments/${row.id}/variances`, { dayNo: 1, varType, reason: value })
     await loadPathways()
+  } catch (error) {
+    clearPathways()
+    throw error
   } finally {
     addVarianceBusy.value = null
   }
 }
 async function completePathway(row: Record<string, unknown>) {
+  if (!canWritePath(row)) return
   completePathwayBusy.value = row.id
   try {
     await client.put(`/pathways/enrollments/${row.id}/complete`)
     await loadPathways()
+  } catch (error) {
+    clearPathways()
+    throw error
   } finally {
     completePathwayBusy.value = null
   }

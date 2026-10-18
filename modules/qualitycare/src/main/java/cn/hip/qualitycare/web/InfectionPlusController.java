@@ -21,6 +21,7 @@ import cn.hip.platform.core.config.BusinessDates;
 public class InfectionPlusController {
 
     private final JdbcTemplate jdbc;
+    private final cn.hip.qualitycare.service.NursingWriteAccess nursingAccess;
 
     private static final Set<String> LINE_TYPES = Set.of("VENT", "CVC", "URINARY");
 
@@ -28,12 +29,12 @@ public class InfectionPlusController {
     public record LineReq(Long admissionId, String lineType, String note) {}
 
     @PostMapping("/catheters")
+    @PreAuthorize("hasAnyRole('ADMIN','NURSE')")
+    @Transactional
     public R<Void> insertLine(@RequestBody LineReq req) {
         if (!LINE_TYPES.contains(req.lineType())) return R.fail(4750, "置管类型只能为 VENT/CVC/URINARY");
-        Integer inHosp = jdbc.queryForObject(
-                "select count(*) from inp_admission where id = ? and status = 'IN_HOSPITAL'",
-                Integer.class, req.admissionId());
-        if (inHosp == null || inHosp == 0) return R.fail(4751, "住院记录不存在或已出院");
+        requireActor();
+        if (!nursingAccess.lockActiveAdmission(req.admissionId())) return R.fail(4751, "住院记录不存在或已出院");
         Integer active = jdbc.queryForObject("""
                 select count(*) from inf_catheter where admission_id = ? and line_type = ? and status = 'ACTIVE'
                 """, Integer.class, req.admissionId(), req.lineType());
@@ -45,11 +46,12 @@ public class InfectionPlusController {
 
     /** 日评估（每日一次，评估是否可拔管） */
     @PostMapping("/catheters/{id}/assess")
+    @PreAuthorize("hasAnyRole('ADMIN','NURSE')")
+    @Transactional
     public R<Void> assess(@PathVariable Long id, @RequestParam boolean keepLine,
                           @RequestParam(required = false) String note) {
-        Integer active = jdbc.queryForObject(
-                "select count(*) from inf_catheter where id = ? and status = 'ACTIVE'", Integer.class, id);
-        if (active == null || active == 0) return R.fail(4753, "置管不存在或已结束");
+        requireActor();
+        if (lockActiveCatheter(id)==null) return R.fail(4753, "置管不存在或已结束");
         int n = jdbc.update("""
                 insert into inf_catheter_assess(catheter_id, keep_line, note) values (?,?,?)
                 on conflict (catheter_id, assess_date) do update set keep_line = excluded.keep_line,
@@ -60,7 +62,11 @@ public class InfectionPlusController {
 
     /** 拔管 */
     @PutMapping("/catheters/{id}/remove")
+    @PreAuthorize("hasAnyRole('ADMIN','NURSE')")
+    @Transactional
     public R<Void> remove(@PathVariable Long id) {
+        requireActor();
+        if (lockActiveCatheter(id)==null) return R.fail(4753, "置管不存在或已结束");
         int n = jdbc.update(
                 "update inf_catheter set status = 'REMOVED', end_at = now() where id = ? and status = 'ACTIVE'", id);
         return n == 0 ? R.fail(4753, "置管不存在或已结束") : R.ok();
@@ -70,9 +76,9 @@ public class InfectionPlusController {
     @PutMapping("/catheters/{id}/infect")
     @Transactional
     public R<Void> infect(@PathVariable Long id, @RequestParam(required = false) String pathogen) {
-        var rows = jdbc.queryForList("select * from inf_catheter where id = ? and status = 'ACTIVE'", id);
-        if (rows.isEmpty()) return R.fail(4753, "置管不存在或已结束");
-        var c = rows.get(0);
+        requireActor();
+        var c = lockActiveCatheter(id);
+        if (c==null) return R.fail(4753, "置管不存在或已结束");
         // v32 P3：条件更新+判定行数作为并发裁决点。原 update 缺 `and status='ACTIVE'`，
         // 而 qc_infection_case 无唯一约束——并发双 infect 都先读到 ACTIVE 就各插一条病例，
         // 院感登记/现患率重复计数（remove() 即标准范式）。只有抢到跃迁的一方（n==1）才登记病例。
@@ -91,6 +97,22 @@ public class InfectionPlusController {
                 values (?,?,?,current_date,'三管监测判定')
                 """, c.get("admission_id"), site, pathogen);
         return R.ok();
+    }
+
+    private void requireActor() {
+        nursingAccess.requireActor(org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication());
+    }
+
+    /** Persisted parent first, child second; historical active lines remain reportable after discharge. */
+    private Map<String,Object> lockActiveCatheter(Long id) {
+        var parents=jdbc.queryForList("select admission_id from inf_catheter where id=?",id);
+        if(parents.isEmpty())return null;
+        Long admission=((Number)parents.getFirst().get("admission_id")).longValue();
+        if(jdbc.queryForList("select id from inp_admission where id=? for update",admission).isEmpty())return null;
+        var rows=jdbc.queryForList("select * from inf_catheter where id=? for update",id);
+        if(rows.isEmpty() || !admission.equals(((Number)rows.getFirst().get("admission_id")).longValue())
+                || !"ACTIVE".equals(rows.getFirst().get("status")))return null;
+        return rows.getFirst();
     }
 
     @GetMapping("/catheters")

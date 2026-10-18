@@ -3,7 +3,6 @@ package cn.hip.qualitycare.web;
 import cn.hip.inpatient.service.InpatientService;
 import cn.hip.platform.core.common.R;
 import cn.hip.platform.core.security.CurrentUserService;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.SneakyThrows;
@@ -24,7 +23,7 @@ public class PatientCareController {
 
     private final JdbcTemplate jdbc;
     private final CurrentUserService currentUserService;
-    private final InpatientService inpatientService;
+    private final cn.hip.qualitycare.service.PathwayService pathwayService;
     private final cn.hip.platform.empi.service.PatientService patientService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -115,6 +114,7 @@ public class PatientCareController {
                              List<InpatientService.OrderLine> items) {}
 
     @PostMapping("/api/pathways")
+    @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP','QUALITY')")
     @SneakyThrows
     public R<Void> createPathway(@RequestBody PathwayReq req) {
         jdbc.update("insert into cp_pathway_template(name, icd_prefix, description, items) values (?,?,?,?)",
@@ -129,22 +129,11 @@ public class PatientCareController {
 
     /** 入径：按模板批量开立住院医嘱 */
     @PostMapping("/api/pathways/{id}/apply/{admissionId}")
-    @SneakyThrows
-    @Transactional
+    @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP')")
     public R<Object> applyPathway(@PathVariable Long id, @PathVariable Long admissionId, Authentication auth) {
-        var rows = jdbc.queryForList("select items from cp_pathway_template where id = ?", id);
-        if (rows.isEmpty()) return R.fail(9904, "路径模板不存在");
-        List<InpatientService.OrderLine> lines = objectMapper.readValue(
-                (String) rows.get(0).get("items"), new TypeReference<>() {});
         try {
-            // 先占入径记录（借 uq_cp_enroll 唯一约束当锁）再开医嘱：
-            // 反序会让双击的两次请求都把路径医嘱计了费，第二次才在约束上失败
-            jdbc.update("insert into cp_enrollment(admission_id, template_id) values (?,?)", admissionId, id);
-            var orders = inpatientService.createOrders(admissionId, lines, currentUserService.idOf(auth));
-            return R.ok(Map.of("orders", orders.size()));
-        } catch (org.springframework.dao.DuplicateKeyException e) {
-            return R.fail(9906, "该住院已入此路径");
-        } catch (InpatientService.InpException e) {
+            return R.ok(Map.of("orders", pathwayService.apply(id,admissionId)));
+        } catch (cn.hip.platform.core.common.HipBizException e) {
             return R.fail(e.code, e.getMessage());
         }
     }
@@ -153,51 +142,44 @@ public class PatientCareController {
 
     @GetMapping("/api/pathways/enrollments")
     public R<List<Map<String, Object>>> enrollments() {
-        return R.ok(jdbc.queryForList("""
-                select e.*, t.name as pathway_name, a.admission_no, p.name as patient_name,
+        var args=new java.util.ArrayList<Object>();
+        var sql=new StringBuilder("""
+                select e.*, t.name as pathway_name, a.admission_no, a.doctor_id, p.name as patient_name,
                        (select count(*) from cp_variance v where v.enrollment_id = e.id) as variances
                 from cp_enrollment e
                 join cp_pathway_template t on t.id = e.template_id
                 join inp_admission a on a.id = e.admission_id
                 join empi_patient p on p.id = a.patient_id
-                order by e.id desc limit 100
-                """));
+                where 1=1
+                """);
+        pathwayService.readScope().appendSql(sql,args);
+        sql.append(" order by e.id desc limit 100");
+        return R.ok(jdbc.queryForList(sql.toString(),args.toArray()));
     }
 
     public record VarianceReq(Integer dayNo, String varType, String reason) {}
 
     /** 变异登记：EXIT 同步退出路径 */
     @PostMapping("/api/pathways/enrollments/{id}/variances")
-    @Transactional   // v32：EXIT 分支要"插变异+改状态"原子——抢占失败须连变异行一并回滚
+    @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP')")
     public R<Void> addVariance(@PathVariable Long id, @RequestBody VarianceReq req) {
         if (!List.of("DELAY", "EXIT", "OTHER").contains(req.varType())) return R.fail(9907, "类型只能为 DELAY/EXIT/OTHER");
-        Integer active = jdbc.queryForObject(
-                "select count(*) from cp_enrollment where id = ? and status = 'ACTIVE'", Integer.class, id);
-        if (active == null || active == 0) return R.fail(9908, "入径不存在或已结束");
-        jdbc.update("insert into cp_variance(enrollment_id, day_no, var_type, reason) values (?,?,?,?)",
-                id, req.dayNo(), req.varType(), req.reason());
-        if ("EXIT".equals(req.varType())) {
-            // v32 P4：EXIT 跃迁补状态守卫。原 update 缺 `and status='ACTIVE'`，与并发的
-            // completeEnrollment 竞争时会把 COMPLETED 覆盖成 EXITED、ended_at 重置、varianceStats
-            // 失真（completeEnrollment 即标准范式）。n==0 说明期间已被 complete/exit，整体回滚。
-            int n = jdbc.update(
-                    "update cp_enrollment set status = 'EXITED', ended_at = now() where id = ? and status = 'ACTIVE'", id);
-            if (n == 0) return R.fail(9908, "入径不存在或已结束");
-        }
-        return R.ok();
+        try {pathwayService.addVariance(id,req.dayNo(),req.varType(),req.reason());return R.ok();}
+        catch(cn.hip.platform.core.common.HipBizException e){return R.fail(e.code,e.getMessage());}
     }
 
     @PutMapping("/api/pathways/enrollments/{id}/complete")
+    @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP')")
     public R<Void> completeEnrollment(@PathVariable Long id) {
-        int n = jdbc.update(
-                "update cp_enrollment set status = 'COMPLETED', ended_at = now() where id = ? and status = 'ACTIVE'", id);
-        return n == 0 ? R.fail(9908, "入径不存在或已结束") : R.ok();
+        try {pathwayService.complete(id);return R.ok();}
+        catch(cn.hip.platform.core.common.HipBizException e){return R.fail(e.code,e.getMessage());}
     }
 
     /** 路径变异统计：完成率 / 退出率 / 变异率（有变异记录的入径占比） */
     @GetMapping("/api/pathways/variance-stats")
     public R<List<Map<String, Object>>> varianceStats() {
-        return R.ok(jdbc.queryForList("""
+        var args=new java.util.ArrayList<Object>();
+        var sql=new StringBuilder("""
                 select t.name as pathway_name, count(*) as enrolled,
                        count(*) filter (where e.status = 'COMPLETED') as completed,
                        count(*) filter (where e.status = 'EXITED') as exited,
@@ -206,8 +188,12 @@ public class PatientCareController {
                              / count(*) * 100, 1) as variance_rate
                 from cp_enrollment e
                 join cp_pathway_template t on t.id = e.template_id
-                group by t.name order by enrolled desc
-                """));
+                join inp_admission a on a.id=e.admission_id
+                where 1=1
+                """);
+        pathwayService.readScope().appendSql(sql,args);
+        sql.append(" group by t.name order by enrolled desc");
+        return R.ok(jdbc.queryForList(sql.toString(),args.toArray()));
     }
 
     // ---- 健康体检 ----
