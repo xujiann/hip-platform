@@ -129,7 +129,12 @@
 
       <el-tab-pane v-if="canEmergency" label="ICU 记录" name="icu">
         <el-form inline size="small">
-          <el-form-item><el-input v-model="icu.admissionId" placeholder="住院ID" style="width: 100px" /></el-form-item>
+          <el-form-item><el-input v-model="icuKeyword" placeholder="姓名或住院号" maxlength="64" @keyup.enter="loadIcuChoices" style="width: 160px" /></el-form-item>
+          <el-button size="small" @click="loadIcuChoices">检索住院</el-button>
+          <el-form-item><el-select v-model="icu.admissionId" placeholder="选择授权住院病例" filterable clearable style="width: 290px">
+            <el-option v-for="a in icuChoices" :key="String(a.id)" :value="String(a.id)"
+                       :label="`${a.admission_no} · ${a.patient_name} · ${a.status === 'IN_HOSPITAL' ? '在院' : '已出院'}`" />
+          </el-select></el-form-item>
           <el-form-item label="T"><el-input v-model="icu.temperature" style="width: 70px" /></el-form-item>
           <el-form-item label="P"><el-input v-model="icu.pulse" style="width: 70px" /></el-form-item>
           <el-form-item label="R"><el-input v-model="icu.respiration" style="width: 70px" /></el-form-item>
@@ -139,9 +144,11 @@
           <el-form-item label="入量"><el-input v-model="icu.intakeMl" style="width: 75px" /></el-form-item>
           <el-form-item label="出量"><el-input v-model="icu.outputMl" style="width: 75px" /></el-form-item>
           <el-form-item><el-checkbox v-model="icu.ventilator">呼吸机</el-checkbox></el-form-item>
-          <el-button type="primary" size="small" @click="recordIcu" :loading="recordIcuLoading">记录</el-button>
+          <el-form-item><el-input v-model="icu.note" placeholder="ICU观察备注" maxlength="500" style="width: 220px" /></el-form-item>
+          <el-button type="primary" size="small" @click="recordIcu" :loading="recordIcuLoading" :disabled="selectedIcu?.status !== 'IN_HOSPITAL'">记录</el-button>
           <el-button size="small" @click="loadIcu">查询</el-button>
         </el-form>
+        <el-alert v-if="selectedIcu && selectedIcu.status !== 'IN_HOSPITAL'" title="已出院病例仅供调阅" :closable="false" type="info" />
         <el-descriptions v-if="balance" :column="3" border size="small" style="margin: 8px 0">
           <el-descriptions-item label="24h 入量">{{ balance.intake }} ml</el-descriptions-item>
           <el-descriptions-item label="24h 出量">{{ balance.output }} ml</el-descriptions-item>
@@ -282,7 +289,28 @@ const icuRecords = ref<Record<string, unknown>[]>([])
 const balance = ref<Record<string, unknown> | null>(null)
 const er = reactive({ triageId: String(route.query.triageId ?? ''), bedNo: '' })
 const icu = reactive({ admissionId: '', temperature: '', pulse: '', respiration: '', sbp: '', dbp: '',
-  spo2: '', gcs: '', intakeMl: '', outputMl: '', ventilator: false })
+  spo2: '', gcs: '', intakeMl: '', outputMl: '', ventilator: false, note: '' })
+const icuKeyword = ref('')
+const icuChoices = ref<Record<string, unknown>[]>([])
+const selectedIcu = computed(() => icuChoices.value.find(a => String(a.id) === icu.admissionId))
+let icuRequest = 0
+let icuChoiceRequest = 0
+function clearIcuContent() {
+  ++icuRequest; icuRecords.value = []; balance.value = null
+  Object.assign(icu, { temperature: '', pulse: '', respiration: '', sbp: '', dbp: '',
+    spo2: '', gcs: '', intakeMl: '', outputMl: '', ventilator: false, note: '' })
+}
+function clearIcuScope() { ++icuChoiceRequest; icuChoices.value = []; icu.admissionId = ''; clearIcuContent() }
+async function loadIcuChoices() {
+  clearIcuScope()
+  if (!canEmergency.value) return
+  const seq = icuChoiceRequest
+  try {
+    const rows = (await client.get('/inpatient/icu-records/admissions', { params: { keyword: icuKeyword.value } })).data.data
+    if (seq === icuChoiceRequest && tab.value === 'icu') icuChoices.value = rows
+  } catch { if (seq === icuChoiceRequest) clearIcuScope() }
+}
+watch(() => icu.admissionId, () => { clearIcuContent(); if (icu.admissionId) loadIcu() })
 const anesRecords = ref<Record<string, unknown>[]>([])
 const pacu = ref<{ latestScore: number; canLeave: boolean } | null>(null)
 const anes = reactive({ surgeryId: '', phase: 'INTRA', hr: '', sbp: '', dbp: '', spo2: '', stewardScore: '' })
@@ -358,9 +386,18 @@ async function loadEr() {
   } catch { if (seq === erRequest) clearEr() }
 }
 async function loadIcu() {
-  if (!icu.admissionId) return
-  icuRecords.value = (await client.get('/inpatient/icu-records', { params: { admissionId: icu.admissionId } })).data.data
-  balance.value = (await client.get('/inpatient/icu-records/balance', { params: { admissionId: icu.admissionId } })).data.data
+  clearIcuContent()
+  const selected = icu.admissionId
+  const seq = icuRequest
+  if (!selected) return
+  try {
+    const [rows, fluid] = await Promise.all([
+      client.get('/inpatient/icu-records', { params: { admissionId: selected } }),
+      client.get('/inpatient/icu-records/balance', { params: { admissionId: selected } }),
+    ])
+    if (seq !== icuRequest || selected !== icu.admissionId || tab.value !== 'icu') return
+    icuRecords.value = rows.data.data; balance.value = fluid.data.data
+  } catch { if (seq === icuRequest) clearIcuScope() }
 }
 
 async function writeReport(row: Record<string, unknown>) {
@@ -511,18 +548,20 @@ async function endEr(row: Record<string, unknown>, outcome: string) {
   } catch { clearEr() } finally { busyId.value = null }
 }
 async function recordIcu() {
-  if (!icu.admissionId) { ElMessage.warning('请填写住院ID'); return }
+  const selected = icu.admissionId
+  if (recordIcuLoading.value) return
+  if (!selected || selectedIcu.value?.status !== 'IN_HOSPITAL') { ElMessage.warning('请选择在院病例'); return }
   const num = (v: string) => (v === '' ? null : Number(v))
   recordIcuLoading.value = true
   try {
     await client.post('/inpatient/icu-records', {
-      admissionId: Number(icu.admissionId), temperature: num(icu.temperature), pulse: num(icu.pulse),
+      admissionId: Number(selected), temperature: num(icu.temperature), pulse: num(icu.pulse),
       respiration: num(icu.respiration), sbp: num(icu.sbp), dbp: num(icu.dbp), spo2: num(icu.spo2),
-      gcs: num(icu.gcs), intakeMl: num(icu.intakeMl), outputMl: num(icu.outputMl), ventilator: icu.ventilator,
+      gcs: num(icu.gcs), intakeMl: num(icu.intakeMl), outputMl: num(icu.outputMl), ventilator: icu.ventilator, note: icu.note || null,
     })
     ElMessage.success('已记录')
-    await loadIcu()
-  } finally { recordIcuLoading.value = false }
+    if (selected === icu.admissionId) await loadIcu()
+  } catch { clearIcuScope() } finally { recordIcuLoading.value = false }
 }
 
 // 车道B 收尾③：抢救记录——以留观记录 observationId 为入口，后端反查分诊/患者名
@@ -576,6 +615,8 @@ async function endRescue(row: Record<string, unknown>, outcome: string) {
 
 watch(tab, (t) => {
   clearEr()
+  clearIcuScope()
+  if (t === 'icu') loadIcuChoices()
   if (t === 'path') { loadPathPending(); loadSpecimens() }
   if (t === 'er') loadEr()
 })

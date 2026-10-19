@@ -30,4 +30,46 @@ class V99IcuAccessTest {
     @Test void foreignWriteCannotUseForgedRecorderOrAnotherAdmission()throws Exception{String a=person("DOCTOR_OUTP"),b=person("DOCTOR_OUTP");Long other=admission(b);long before=jdbc.queryForObject("select count(*) from inp_icu_record",Long.class);assertEquals(9018,code("POST",BASE,Map.of("admissionId",other,"note","denied","recorderId",uid(b)),a,"DOCTOR_OUTP"));assertEquals(before,jdbc.queryForObject("select count(*) from inp_icu_record",Long.class));}
     @Test void ghostsCannotUseSharedOrNursingScopes()throws Exception{Long adm=admission(null);for(String role:List.of("ADMIN","NURSE","DOCTOR_OUTP")){assertEquals(1005,code("GET",BASE+"?admissionId="+adm,null,"v99ghost",role));assertEquals(1005,code("POST",BASE,Map.of("admissionId",adm),"v99ghost",role));}}
     @Test void existingNursingWorkflowAndGcsValidationStayUsable()throws Exception{String a=person("DOCTOR_OUTP"),n=person("NURSE");Long adm=admission(a);assertEquals(4571,code("POST",BASE,Map.of("admissionId",adm,"gcs",20),n,"NURSE"));assertEquals(0,code("POST",BASE,Map.of("admissionId",adm,"gcs",15,"intakeMl",700,"outputMl",300),n,"NURSE"));var rows=call("GET",BASE+"?admissionId="+adm,null,a,"DOCTOR_OUTP").path("data");assertEquals(1,rows.size());assertEquals(uid(n),rows.get(0).path("recorder_id").asLong());assertEquals(400,call("GET",BASE+"/balance?admissionId="+adm,null,a,"DOCTOR_OUTP").path("data").path("balance").asInt());}
+    @Test void selectorFiltersBeforeCapAndMatchesItsExactConsumerContract()throws Exception {
+        String a=person("DOCTOR_OUTP"),b=person("DOCTOR_OUTP");Long own=admission(a),other=admission(b);seed(own);
+        jdbc.update("insert into inp_admission(admission_no,patient_id,dept_id,ward_id,bed_id,doctor_id,status) select 'V99bulk'||?||x,patient_id,dept_id,ward_id,bed_id,doctor_id,'DISCHARGED' from inp_admission cross join generate_series(1,205) x where id=?",System.nanoTime(),other);
+        var choices=call("GET",BASE+"/admissions?keyword=V99",null,a,"DOCTOR_OUTP").path("data");assertEquals(1,choices.size());assertEquals(own,choices.get(0).path("id").asLong());
+        assertEquals(Set.of("id","admission_no","patient_name","status"),om.convertValue(choices.get(0),Map.class).keySet());
+        assertEquals(200,call("GET",BASE+"/admissions?keyword=V99",null,"admin","ADMIN").path("data").size());
+        jdbc.update("update empi_patient set name='V99_needle%' where id=(select patient_id from inp_admission where id=?)",own);
+        var literal=mvc.perform(get(BASE+"/admissions").param("keyword","V99_needle%").with(user(a).roles("DOCTOR_OUTP"))).andReturn().getResponse();
+        assertEquals(1,om.readTree(literal.getContentAsString(StandardCharsets.UTF_8)).path("data").size());
+        assertEquals(4880,code("GET",BASE+"/admissions?keyword="+"x".repeat(65),null,a,"DOCTOR_OUTP"));
+    }
+    @Test void historicalAndUnknownAdmissionContractsRemainReadableButNeverWritable()throws Exception {
+        String a=person("DOCTOR_OUTP");Long adm=admission(a);seed(adm);jdbc.update("update inp_admission set status='DISCHARGED',discharged_at=now() where id=?",adm);
+        assertEquals(1,call("GET",BASE+"?admissionId="+adm,null,a,"DOCTOR_OUTP").path("data").size());
+        assertEquals(400,call("GET",BASE+"/balance?admissionId="+adm,null,a,"DOCTOR_OUTP").path("data").path("balance").asInt());
+        assertEquals(4570,code("POST",BASE,Map.of("admissionId",adm),a,"DOCTOR_OUTP"));
+        assertEquals(0,call("GET",BASE+"?admissionId=-99",null,a,"DOCTOR_OUTP").path("data").size());
+        assertEquals(0,call("GET",BASE+"/balance?admissionId=-99",null,a,"DOCTOR_OUTP").path("data").path("balance").asInt());
+        assertEquals(4570,code("POST",BASE,Map.of("admissionId",-99),a,"DOCTOR_OUTP"));
+    }
+    @Test void ownershipIsPerAdmissionAndCanBeTransferredWithoutCreatorOrPatientBypass()throws Exception {
+        String a=person("DOCTOR_OUTP"),b=person("DOCTOR_OUTP");Long own=admission(a),other=admission(b);seed(other);
+        jdbc.update("update inp_admission set status='DISCHARGED',discharged_at=now(),patient_id=(select patient_id from inp_admission where id=?) where id=?",own,other);
+        jdbc.update("update inp_icu_record set recorder_id=? where admission_id=?",uid(a),other);
+        assertEquals(1005,code("GET",BASE+"?admissionId="+other,null,a,"DOCTOR_OUTP"));
+        jdbc.update("update inp_admission set doctor_id=? where id=?",uid(a),other);
+        assertEquals(0,code("GET",BASE+"?admissionId="+other,null,a,"DOCTOR_OUTP"));
+        assertEquals(1005,code("GET",BASE+"/balance?admissionId="+other,null,b,"DOCTOR_OUTP"));
+        assertEquals(4570,code("POST",BASE,Map.of("admissionId",other,"note","V99current"),a,"DOCTOR_OUTP"));
+        assertEquals(0,code("POST",BASE,Map.of("admissionId",own,"note","V99current"),a,"DOCTOR_OUTP"));
+    }
+    @Test void unassignedMixedRolesAndEnabledActorPolicyDoNotExpandOtherDuties()throws Exception {
+        String a=person("DOCTOR_OUTP"),b=person("DOCTOR_OUTP");Long adm=admission(b),free=admission(null);
+        assertEquals(0,code("POST",BASE,Map.of("admissionId",free),a,"DOCTOR_OUTP"));
+        assertEquals(0,code("POST",BASE,Map.of("admissionId",adm),a,"DOCTOR_OUTP","NURSE"));
+        for(String role:List.of("QUALITY","TECHNICIAN","CASHIER"))for(String path:List.of(BASE+"?admissionId="+adm,BASE+"/balance?admissionId="+adm,BASE+"/admissions"))assertEquals(1005,code("GET",path,null,a,role));
+        jdbc.update("update sys_user set enabled=false where username=?",a);
+        for(String role:List.of("ADMIN","NURSE","DOCTOR_OUTP")){
+            assertEquals(1005,code("GET",BASE+"/admissions",null,a,role));
+            assertEquals(1005,code("POST",BASE,Map.of("admissionId",free),a,role));
+        }
+    }
 }
