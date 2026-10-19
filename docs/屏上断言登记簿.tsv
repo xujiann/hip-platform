@@ -309,3 +309,4 @@ cee21a03f649	默认	modules/medtech/src/main/java/cn/hip/medtech/web/AnesQcContr
 20d672ff3b32	默认	modules/medtech/src/main/java/cn/hip/medtech/web/AnesQcController.java:795	v81 审阅修补（--baseline 腿，1424 note 中句；D10 改写同段后指纹变化）。阈值配置键口径未改。
 0749a603828e	默认	frontend/shell/src/views/patientcare/PatientCareView.vue:satisfactionScope	v96 开发复核：ADMIN/QUALITY全域统计，其他医护creator_id过滤；V96SatisfactionAccessTest覆盖历史空归属、本人代录及跨人汇总隔离。匿名只指patient_id可空，操作人仍真实记录，不宣称患者认证。
 687e75c2428e	默认	frontend/shell/src/views/inpatient/ConsentView.vue:revoke	v97 开发复核：沿用作废确认文案；请求绑定当前可见文书与打开时就诊，服务端按真实父就诊和状态校验，角色拒绝清空旧结果。非临床签认。
+6cd95ddc3eb6	默认	frontend/shell/src/views/quality/QualityCenterView.vue:adverseScope	v98开发复核：管理员/质控横向读取，护士仅本人实名，匿名和历史无主行不向护士回显；V98EmergencyPrivacyTest覆盖过滤先于上限及匿名历史异常行，不宣称安全审计不可追溯。
