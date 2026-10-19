@@ -195,7 +195,17 @@ class V62TechRemarkTest {
 
     /** 给评委看的正屏上不该出现的开发者视角内容：配置键 / 错误码 / 英文档位名 */
     static final Pattern DEV_FACING = Pattern.compile(
-            "emr\\.[a-z.]+|(?<![0-9])5[0-9]{3}(?![0-9])|(?<![A-Za-z])(?:block|warn|off)(?![A-Za-z])");
+            "emr\\.[a-z.]+|(?<![#0-9])5[0-9]{3}(?![0-9])|(?<![A-Za-z])(?:block|warn|off)(?![A-Za-z])");
+
+    @Test
+    void developerTextDetectorDistinguishesOrderIdentifiersFromErrorCodes() {
+        assertFalse(DEV_FACING.matcher("确认完成特检医嘱 #5000").find());
+        assertFalse(DEV_FACING.matcher("确认完成特检医嘱 #5999").find());
+        assertTrue(DEV_FACING.matcher("错误 5273").find());
+        assertTrue(DEV_FACING.matcher("医嘱 #5090，错误5273").find());
+        assertTrue(DEV_FACING.matcher("emr.path.gate=warn").find());
+        assertTrue(DEV_FACING.matcher("block 档").find());
+    }
 
     /** 活的对照组：v63 ⑤ 工作台那句成功提示的原文（TechOrderPanel.vue:259-260，自己挑字段拼的） */
     static final String V63_TECH_SUCCESS =
