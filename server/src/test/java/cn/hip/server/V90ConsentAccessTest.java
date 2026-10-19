@@ -92,6 +92,11 @@ class V90ConsentAccessTest {
         assertEquals(0,call("POST","/api/emr/consents",Map.of("registrationId",reg,"consentType","SELF_PAY","content","门诊兼容"),a,"DOCTOR_OUTP").path("code").asInt());
         jdbc.update("update inp_admission set status='DISCHARGED' where id=?",own);
         jdbc.update("update inp_admission set patient_id=? where id=?",patient,foreign);
+        // v97: filtering by a foreign historical outpatient ID cannot override admission scope.
+        Long ownMixed=consent(own,"DRAFT");jdbc.update("update emr_consent set registration_id=? where id=?",reg,ownMixed);
+        jdbc.update("update outp_registration set doctor_id=?,visit_date=current_date-2 where id=?",uid(b),reg);
+        var admissionScoped=call("GET","/api/emr/consents?registrationId="+reg,null,a,"DOCTOR_OUTP").path("data");
+        assertEquals(1,admissionScoped.size());assertEquals(ownMixed.longValue(),admissionScoped.get(0).path("id").asLong());
         assertEquals(1005,call("GET","/api/emr/consents/"+mixed,null,a,"DOCTOR_OUTP").path("code").asInt());
     }
 

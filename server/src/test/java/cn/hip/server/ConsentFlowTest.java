@@ -24,7 +24,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** v34：知情同意书双签流转 + 手术/输血同意 gate（试点期可配 warn/block）。 */
 @SpringBootTest
 @Transactional
-@org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
+@org.springframework.security.test.context.support.WithMockUser(username = "admin", roles = "ADMIN")
 class ConsentFlowTest {
 
     @Autowired ConsentController consentController;

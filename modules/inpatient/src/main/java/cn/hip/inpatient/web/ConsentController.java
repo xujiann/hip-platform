@@ -28,8 +28,6 @@ public class ConsentController {
     private final CurrentUserService currentUserService;
     private final SignatureAdapter signatureAdapter;
     private final cn.hip.inpatient.service.ConsentAccess consentAccess;
-    private final cn.hip.inpatient.service.InpatientReadAccess readAccess;
-    private final cn.hip.inpatient.service.InpatientWriteAccess writeAccess;
 
     private static final Set<String> TYPES = Set.of(
             "SURGERY", "TRANSFUSION", "ANESTHESIA", "SPECIAL_EXAM", "SELF_PAY", "PROXY");
@@ -53,7 +51,7 @@ public class ConsentController {
                 && (blank(req.agentName()) || blank(req.agentRelation()) || blank(req.agentReason()))) {
             return R.fail(9113, "委托人姓名/关系/原因必填");
         }
-        if (req.admissionId() != null) writeAccess.assertCanCoordinateCare(req.admissionId());
+        Long creator=consentAccess.assertCanCreate(req.admissionId(),req.registrationId());
         var kh = new org.springframework.jdbc.support.GeneratedKeyHolder();
         jdbc.update(con -> {
             var ps = con.prepareStatement("""
@@ -70,7 +68,7 @@ public class ConsentController {
             ps.setString(7, req.agentRelation());
             ps.setString(8, req.agentReason());
             ps.setObject(9, req.refBizId());
-            ps.setObject(10, currentUserService.idOf(auth));
+            ps.setObject(10, creator);
             return ps;
         }, kh);
         return R.ok(Map.of("id", kh.getKey().longValue()));
@@ -79,21 +77,13 @@ public class ConsentController {
     @GetMapping
     public R<List<Map<String, Object>>> list(@RequestParam(required = false) Long admissionId,
                                              @RequestParam(required = false) Long registrationId) {
-        if (admissionId != null) readAccess.assertCanRead(admissionId);
-        var sql = new StringBuilder("select c.* from emr_consent c left join inp_admission a on a.id=c.admission_id where 1=1");
-        var args = new java.util.ArrayList<Object>();
-        if (admissionId != null) {sql.append(" and c.admission_id=?");args.add(admissionId);}
-        else if (registrationId != null) {sql.append(" and c.registration_id=?");args.add(registrationId);}
-        var scope=readAccess.clinicalScope();
-        if (!scope.all()) {
-            // Outpatient-only documents retain their contract; dual-scope history is inpatient-scoped.
-            sql.append(" and (c.admission_id is null or (a.id is not null");
-            scope.appendSql(sql,args);
-            sql.append("))");
-        }
-        sql.append(" order by c.id desc");
-        if(admissionId==null && registrationId==null)sql.append(" limit 100");
-        return R.ok(jdbc.queryForList(sql.toString(),args.toArray()));
+        return R.ok(consentAccess.list(admissionId,registrationId));
+    }
+
+    @GetMapping("/registrations")
+    public R<List<Map<String,Object>>> registrations(@RequestParam(required=false)
+            @org.springframework.format.annotation.DateTimeFormat(iso=org.springframework.format.annotation.DateTimeFormat.ISO.DATE) java.time.LocalDate date){
+        return R.ok(consentAccess.registrations(date));
     }
 
     @GetMapping("/{id}")
