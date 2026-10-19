@@ -21,6 +21,7 @@ import cn.hip.platform.core.config.BusinessDates;
 public class InfectionPlusController {
 
     private final JdbcTemplate jdbc;
+    private final cn.hip.qualitycare.service.PreventiveAccess preventiveAccess;
     private final cn.hip.qualitycare.service.NursingWriteAccess nursingAccess;
 
     private static final Set<String> LINE_TYPES = Set.of("VENT", "CVC", "URINARY");
@@ -76,7 +77,7 @@ public class InfectionPlusController {
     @PutMapping("/catheters/{id}/infect")
     @Transactional
     public R<Void> infect(@PathVariable Long id, @RequestParam(required = false) String pathogen) {
-        requireActor();
+        preventiveAccess.actor();
         var c = lockActiveCatheter(id);
         if (c==null) return R.fail(4753, "置管不存在或已结束");
         // v32 P3：条件更新+判定行数作为并发裁决点。原 update 缺 `and status='ACTIVE'`，
@@ -93,9 +94,9 @@ public class InfectionPlusController {
             default -> "导尿管相关泌尿系感染(CAUTI)";
         };
         jdbc.update("""
-                insert into qc_infection_case(admission_id, site, pathogen, confirmed_on, note)
-                values (?,?,?,current_date,'三管监测判定')
-                """, c.get("admission_id"), site, pathogen);
+                insert into qc_infection_case(admission_id, site, pathogen, confirmed_on, note, reporter_id)
+                values (?,?,?,current_date,'三管监测判定',?)
+                """, c.get("admission_id"), site, pathogen, preventiveAccess.actor().id());
         return R.ok();
     }
 

@@ -95,6 +95,7 @@
       </el-tab-pane>
 
       <el-tab-pane label="院感监测" name="infection">
+        <el-button size="small" @click="loadInf">刷新院感监测</el-button>
         <el-descriptions :column="2" border size="small" style="margin-bottom: 10px">
           <el-descriptions-item label="登记感染病例">{{ (inf.cases as unknown[])?.length ?? 0 }}</el-descriptions-item>
           <el-descriptions-item label="抗菌药物已执行医嘱">{{ inf.antibioticOrderCount ?? 0 }} 条</el-descriptions-item>
@@ -106,6 +107,9 @@
           <el-table-column prop="pathogen" label="病原体" width="120" />
           <el-table-column prop="confirmed_on" label="确诊日期" width="110" />
           <el-table-column prop="note" label="备注" />
+          <el-table-column label="报告人" width="140">
+            <template #default="{ row }">{{ row.reporter_id == null ? '历史未归属' : (row.reporter_name || '账号姓名缺失') }}</template>
+          </el-table-column>
         </el-table>
       </el-tab-pane>
     </el-tabs>
@@ -113,7 +117,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
 import { useAuthStore } from '../../stores/auth'
@@ -150,9 +154,21 @@ async function loadAe() {
   } catch { if (seq === aeRequest) aeList.value = [] }
 }
 function clearAe() { ++aeRequest; aeList.value = [] }
+let infRequest = 0
+function clearInf() { ++infRequest; inf.value = {} }
 async function loadInf() {
-  inf.value = (await client.get('/quality/infections')).data.data
+  clearInf()
+  const seq = infRequest
+  try {
+    const data = (await client.get('/quality/infections')).data.data
+    if (seq === infRequest && tab.value === 'infection') inf.value = data
+  } catch { if (seq === infRequest) clearInf() }
 }
+watch(tab, (t, old) => {
+  if (old === 'infection') clearInf()
+  if (t === 'infection') loadInf()
+})
+onBeforeUnmount(clearInf)
 
 async function reportAe() {
   if (!ae.occurredOn || !ae.description) {
@@ -183,7 +199,6 @@ async function handleAe(row: Record<string, unknown>) {
 onMounted(() => {
   loadEmr()
   loadAe()
-  loadInf()
   loadDepts()
 })
 </script>

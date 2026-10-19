@@ -18,6 +18,7 @@ import java.util.Map;
 public class NursingQualityController {
 
     private final JdbcTemplate jdbc;
+    private final cn.hip.qualitycare.service.PreventiveAccess preventiveAccess;
     private final cn.hip.qualitycare.service.NursingWriteAccess nursingAccess;
     private final CurrentUserService currentUserService;
     private final cn.hip.platform.core.service.ConfigReader configReader;
@@ -610,20 +611,44 @@ public class NursingQualityController {
     public record InfectionReq(Long admissionId, String site, String pathogen, String confirmedOn, String note) {}
 
     @PostMapping("/api/quality/infections")
+    @org.springframework.transaction.annotation.Transactional
     public R<Void> reportInfection(@RequestBody InfectionReq req) {
-        jdbc.update("insert into qc_infection_case(admission_id, site, pathogen, confirmed_on, note) values (?,?,?,?::date,?)",
-                req.admissionId(), req.site(), req.pathogen(), req.confirmedOn(), req.note());
+        preventiveAccess.actor();
+        if (req.site()==null || req.site().isBlank() || req.site().length()>64
+                || (req.pathogen()!=null && req.pathogen().length()>64)
+                || (req.note()!=null && req.note().length()>500))
+            return R.fail(9806, "感染部位须为1–64字，病原体最多64字，备注最多500字");
+        java.time.LocalDate date;
+        try { date=java.time.LocalDate.parse(req.confirmedOn()==null ? "" : req.confirmedOn()); }
+        catch (java.time.format.DateTimeParseException ex) { return R.fail(9806, "确认日期须为有效日期"); }
+        // Same parent lock as discharge. Re-read dates after any lock wait.
+        var rows=jdbc.queryForList("""
+                select admit_at::date as start_date, discharged_at::date as end_date
+                from inp_admission where id=? for update
+                """,req.admissionId());
+        if(rows.isEmpty()) return R.fail(9003,"住院记录不存在");
+        var row=rows.getFirst();
+        var start=((java.sql.Date)row.get("start_date")).toLocalDate();
+        var end=row.get("end_date")==null ? cn.hip.platform.core.config.BusinessDates.today()
+                : ((java.sql.Date)row.get("end_date")).toLocalDate();
+        if(date.isBefore(start) || date.isAfter(end) || date.isAfter(cn.hip.platform.core.config.BusinessDates.today()))
+            return R.fail(9806,"确认日期须在住院期间且不晚于今天");
+        var actor=preventiveAccess.actor();
+        jdbc.update("insert into qc_infection_case(admission_id,site,pathogen,confirmed_on,note,reporter_id) values (?,?,?,?,?,?)",
+                req.admissionId(),req.site(),req.pathogen(),date,req.note(),actor.id());
         return R.ok();
     }
 
     /** 院感统计：登记病例 + 抗菌药物使用监测 */
     @GetMapping("/api/quality/infections")
     public R<Map<String, Object>> infections() {
+        preventiveAccess.actor();
         return R.ok(Map.of(
                 "cases", jdbc.queryForList("""
-                        select c.id, c.site, c.pathogen, c.confirmed_on, c.note,
+                        select c.id, c.site, c.pathogen, c.confirmed_on, c.note, c.reporter_id, u.real_name as reporter_name,
                                a.admission_no, p.name as patient_name
                         from qc_infection_case c
+                        left join sys_user u on u.id=c.reporter_id
                         join inp_admission a on a.id = c.admission_id
                         join empi_patient p on p.id = a.patient_id
                         order by c.id desc limit 100

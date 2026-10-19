@@ -189,7 +189,10 @@
       </el-tab-pane>
 
       <el-tab-pane label="预防保健" name="phc">
-        <el-form inline size="small">
+        <el-alert :closable="false" type="info" :title="canQuality ? '全院调阅范围（含历史未归属记录）' : '仅显示本人登记的保健记录和统计'" />
+        <el-button size="small" @click="loadPhc">刷新保健记录</el-button>
+        <p>当前可见范围统计：{{ phcStats.map(x => `${phcText(x.record_type)} ${x.cnt}条`).join(' / ') || '暂无记录' }}</p>
+        <el-form v-if="canNurse" inline size="small">
           <el-form-item><el-input v-model="phc.patientId" placeholder="患者ID" style="width: 100px" /></el-form-item>
           <el-form-item>
             <el-select v-model="phc.recordType" style="width: 130px">
@@ -198,7 +201,7 @@
               <el-option label="健康宣教" value="EDUCATION" />
             </el-select>
           </el-form-item>
-          <el-form-item><el-input v-model="phc.content" placeholder="内容（如 流感疫苗第1剂）" style="width: 220px" /></el-form-item>
+          <el-form-item><el-input v-model="phc.content" maxlength="500" placeholder="内容（如 流感疫苗第1剂）" style="width: 220px" /></el-form-item>
           <el-button type="primary" size="small" @click="addPhc" :loading="addPhcLoading">登记</el-button>
         </el-form>
         <el-table :data="phcRecords" size="small" border>
@@ -208,6 +211,9 @@
           </el-table-column>
           <el-table-column prop="content" label="内容" show-overflow-tooltip />
           <el-table-column prop="occurred_date" label="日期" width="120" />
+          <el-table-column label="登记人" width="140">
+            <template #default="{ row }">{{ row.recorder_id == null ? '历史未归属' : (row.recorder_name || '账号姓名缺失') }}</template>
+          </el-table-column>
         </el-table>
       </el-tab-pane>
     </el-tabs>
@@ -215,7 +221,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { todayLocal } from '../../utils/date'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
@@ -236,6 +242,8 @@ const privileges = ref<Record<string, unknown>[]>([])
 const abxDrugs = ref<Record<string, unknown>[]>([])
 const cssdPackages = ref<Record<string, unknown>[]>([])
 const phcRecords = ref<Record<string, unknown>[]>([])
+const phcStats = ref<{ record_type: string; cnt: number }[]>([])
+let phcRequest = 0
 const shiftQueryDate = ref(today)
 const cssdName = ref('')
 const addShiftLoading = ref(false)
@@ -293,7 +301,21 @@ async function loadAbx() {
   abxDrugs.value = (await client.get('/outpatient/abx-privileges/drugs')).data.data
 }
 async function loadCssd() { cssdPackages.value = (await client.get('/cssd/packages')).data.data }
-async function loadPhc() { phcRecords.value = (await client.get('/phc/records')).data.data }
+function clearPhc() {
+  ++phcRequest
+  phcRecords.value = []; phcStats.value = []
+  phc.patientId = ''; phc.content = ''; phc.recordType = 'VACCINATION'
+}
+async function loadPhc() {
+  clearPhc()
+  const seq = phcRequest
+  try {
+    const [rows, stats] = await Promise.all([client.get('/phc/records'), client.get('/phc/stats')])
+    if (seq === phcRequest && tab.value === 'phc') {
+      phcRecords.value = rows.data.data; phcStats.value = stats.data.data
+    }
+  } catch { if (seq === phcRequest) clearPhc() }
+}
 
 async function addShift() {
   if (!canNurse.value) return
@@ -375,16 +397,17 @@ async function showTrace(row: Record<string, unknown>) {
   ElMessageBox.alert(chain.map((c) => `${c.action} @ ${c.at}`).join('\n'), `追溯链 ${row.pkg_no}`)
 }
 async function addPhc() {
+  if (!canNurse.value || addPhcLoading.value) return
   if (!phc.patientId || !phc.content) { ElMessage.warning('请填写完整'); return }
   addPhcLoading.value = true
   try {
     await client.post('/phc/records', { ...phc, patientId: Number(phc.patientId) })
-    phc.content = ''
-    await loadPhc()
-  } finally { addPhcLoading.value = false }
+    if (tab.value === 'phc') await loadPhc()
+  } catch { clearPhc() } finally { addPhcLoading.value = false }
 }
 
-watch(tab, (t) => {
+watch(tab, (t, old) => {
+  if (old === 'phc') clearPhc()
   if (t === 'score') loadScores()
   if (t === 'credential') loadCreds()
   if (t === 'abx') loadAbx()
@@ -392,5 +415,6 @@ watch(tab, (t) => {
   if (t === 'phc') loadPhc()
   if (t === 'deptMonthly' && !deptMonthly.value) loadDeptMonthly()
 })
+onBeforeUnmount(clearPhc)
 onMounted(loadShifts)
 </script>
