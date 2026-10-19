@@ -18,6 +18,38 @@ import cn.hip.platform.core.config.BusinessDates;
 public class PatientService {
 
     private final PatientRepository patientRepository;
+    private final PatientAccess access;
+    private final org.springframework.jdbc.core.JdbcTemplate jdbc;
+    private final jakarta.persistence.EntityManager entityManager;
+
+    @Transactional
+    public Patient registerFromApi(Patient data) {
+        var actor=access.writer();
+        if(!actor.clinical() && (nonblank(data.getBloodType()) || nonblank(data.getAllergyHistory())))
+            throw new org.springframework.security.access.AccessDeniedException("当前岗位不能登记血型或过敏史");
+        if(data.getInsuranceType()==null) data.setInsuranceType("SELF");
+        return register(data);
+    }
+
+    @Transactional
+    public Patient updateFromApi(Long id, Patient data) {
+        access.writer();
+        Patient p=lockPatient(id);
+        var actor=access.writer();
+        return apply(p,data,actor.admin(),actor.clinical());
+    }
+
+    private boolean nonblank(String value) { return value!=null && !value.isBlank(); }
+
+    private Patient lockPatient(Long id) {
+        entityManager.flush();
+        if(jdbc.queryForList("select id from empi_patient where id=? for update",id).isEmpty())
+            throw new cn.hip.platform.core.common.HipBizException(2002,"患者不存在");
+        Patient p=patientRepository.findById(id).orElseThrow();
+        entityManager.refresh(p);
+        return p;
+    }
+
 
     public Page<Patient> search(String keyword, int page, int size) {
         return patientRepository.search(keyword, PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "id")));
@@ -68,12 +100,19 @@ public class PatientService {
      *   门户读其报告/账单；改证件/姓名是身份冒用。故非管理员**只能改临床与地址类字段**，
      *   身份三项若发生实际变更即拒绝。临床字段（血型/过敏史）仍放开——医生护士要合法维护。
      */
+    @Transactional
     public Patient update(Long id, Patient data, boolean canEditIdentity) {
-        Patient p = patientRepository.findById(id).orElseThrow();
+        return apply(lockPatient(id),data,canEditIdentity,true);
+    }
+
+    private Patient apply(Patient p, Patient data, boolean canEditIdentity, boolean canEditClinical) {
         if (!canEditIdentity && identityChanged(p, data)) {
             throw new cn.hip.platform.core.common.HipBizException(2005,
                     "修改患者姓名/证件/手机需管理员权限");
         }
+        if(!canEditClinical && (changed(data.getSex(),p.getSex()) || changed(data.getBirthDate(),p.getBirthDate())
+                || changed(data.getBloodType(),p.getBloodType()) || changed(data.getAllergyHistory(),p.getAllergyHistory())))
+            throw new org.springframework.security.access.AccessDeniedException("当前岗位不能修改人口学及临床资料");
         if (data.getName() != null) p.setName(data.getName());
         if (data.getSex() != null) p.setSex(data.getSex());
         if (data.getBirthDate() != null) p.setBirthDate(data.getBirthDate());
@@ -95,7 +134,7 @@ public class PatientService {
                 || changed(data.getPhone(), cur.getPhone());
     }
 
-    private boolean changed(String incoming, String current) {
+    private boolean changed(Object incoming, Object current) {
         return incoming != null && !incoming.equals(current);
     }
 

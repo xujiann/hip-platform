@@ -6,10 +6,11 @@
         <el-input v-model="keyword" placeholder="姓名 / 患者号 / 身份证号 / 手机号" clearable
                   style="width: 300px" @keyup.enter="search" @clear="search" />
         <el-button type="primary" @click="search">查询</el-button>
-        <el-button type="success" @click="openCreate">新建档案</el-button>
+        <el-button v-if="canWrite" type="success" @click="openCreate">新建档案</el-button>
       </div>
     </div>
 
+    <el-alert v-if="!canWrite" title="当前岗位仅可查询" type="info" :closable="false" />
     <el-table :data="records" v-loading="loading" border stripe>
       <el-table-column prop="patientNo" label="患者号" width="110" />
       <el-table-column prop="name" label="姓名" width="100" />
@@ -25,19 +26,20 @@
       <el-table-column prop="address" label="住址" show-overflow-tooltip />
       <el-table-column label="操作" width="80">
         <template #default="{ row }">
-          <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
+          <el-button v-if="canWrite" link type="primary" @click="openEdit(row)">编辑</el-button>
         </template>
       </el-table-column>
     </el-table>
     <el-pagination v-model:current-page="pageNo" :page-size="pageSize" :total="total"
                    layout="total, prev, pager, next" style="margin-top: 12px" @current-change="load" />
 
-    <el-dialog v-model="dialogVisible" :title="form.id ? '编辑档案' : '新建档案'" width="560px">
+    <el-dialog v-model="dialogVisible" :title="form.id ? '编辑档案' : '新建档案'" width="560px" @close="closeEdit">
+      <el-alert v-if="form.id && !isAdmin" title="编辑身份及联系方式需管理员权限" type="info" :closable="false" />
       <el-form ref="formRef" :model="form" :rules="rules" label-width="90px">
         <el-row :gutter="12">
           <el-col :span="12">
             <el-form-item label="证件类型">
-              <el-select v-model="form.idType" style="width: 100%">
+              <el-select v-model="form.idType" :disabled="!!form.id && !isAdmin" style="width: 100%">
                 <el-option label="身份证" value="ID_CARD" />
                 <el-option label="护照" value="PASSPORT" />
                 <el-option label="其他" value="OTHER" />
@@ -46,15 +48,15 @@
           </el-col>
           <el-col :span="12">
             <el-form-item label="证件号" prop="idNo">
-              <el-input v-model="form.idNo" placeholder="身份证可自动带出生日/性别" />
+              <el-input v-model="form.idNo" :disabled="!!form.id && !isAdmin" placeholder="身份证可自动带出生日/性别" />
             </el-form-item>
           </el-col>
           <el-col :span="12">
-            <el-form-item label="姓名" prop="name"><el-input v-model="form.name" /></el-form-item>
+            <el-form-item label="姓名" prop="name"><el-input v-model="form.name" :disabled="!!form.id && !isAdmin" /></el-form-item>
           </el-col>
           <el-col :span="12">
             <el-form-item label="性别">
-              <el-radio-group v-model="form.sex">
+              <el-radio-group v-model="form.sex" :disabled="!!form.id && !canClinical">
                 <el-radio value="M">男</el-radio>
                 <el-radio value="F">女</el-radio>
                 <el-radio value="U">未知</el-radio>
@@ -63,11 +65,11 @@
           </el-col>
           <el-col :span="12">
             <el-form-item label="出生日期">
-              <el-date-picker v-model="form.birthDate" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
+              <el-date-picker v-model="form.birthDate" :disabled="!!form.id && !canClinical" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
             </el-form-item>
           </el-col>
           <el-col :span="12">
-            <el-form-item label="手机号" prop="phone"><el-input v-model="form.phone" /></el-form-item>
+            <el-form-item label="手机号" prop="phone"><el-input v-model="form.phone" :disabled="!!form.id && !isAdmin" /></el-form-item>
           </el-col>
           <el-col :span="12">
             <el-form-item label="医保类型">
@@ -78,7 +80,7 @@
           </el-col>
           <el-col :span="12">
             <el-form-item label="血型">
-              <el-select v-model="form.bloodType" clearable style="width: 100%">
+              <el-select v-model="form.bloodType" :disabled="!canClinical" clearable style="width: 100%">
                 <el-option v-for="t in ['A', 'B', 'O', 'AB', 'RH-']" :key="t" :label="t" :value="t" />
               </el-select>
             </el-form-item>
@@ -88,13 +90,13 @@
           </el-col>
           <el-col :span="24">
             <el-form-item label="过敏史">
-              <el-input v-model="form.allergyHistory" type="textarea" :rows="2" placeholder="无则留空" />
+              <el-input v-model="form.allergyHistory" :disabled="!canClinical" type="textarea" :rows="2" placeholder="无则留空" />
             </el-form-item>
           </el-col>
         </el-row>
       </el-form>
       <template #footer>
-        <el-button @click="dialogVisible = false">取消</el-button>
+        <el-button @click="closeEdit">取消</el-button>
         <el-button type="primary" :loading="saving" @click="save">保存</el-button>
       </template>
     </el-dialog>
@@ -102,9 +104,14 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import client from '../../api/client'
+import { useAuthStore } from '../../stores/auth'
+const auth=useAuthStore()
+const isAdmin=computed(() => auth.user?.roles.includes('ADMIN') ?? false)
+const canClinical=computed(() => auth.user?.roles.some(r=>['ADMIN','DOCTOR_OUTP','NURSE'].includes(r)) ?? false)
+const canWrite=computed(() => canClinical.value || (auth.user?.roles.includes('CASHIER') ?? false))
 
 interface PatientRow {
   id: number | null
@@ -133,6 +140,8 @@ const pageSize = 20
 const loading = ref(false)
 const saving = ref(false)
 const dialogVisible = ref(false)
+let patientRequest=0
+let formVersion=0
 
 const emptyForm: PatientRow = {
   id: null, name: '', sex: 'U', birthDate: null, idType: 'ID_CARD', idNo: null,
@@ -140,41 +149,56 @@ const emptyForm: PatientRow = {
 }
 const form = reactive<PatientRow>({ ...emptyForm })
 
+function closeEdit() {
+  ++formVersion
+  dialogVisible.value=false
+  Object.assign(form,emptyForm)
+}
+function clearPatients() {
+  ++patientRequest
+  records.value=[]; total.value=0; loading.value=false
+  closeEdit()
+}
 async function load() {
+  clearPatients()
+  const seq=patientRequest
   loading.value = true
   try {
     const resp = await client.get('/patients', {
       params: { keyword: keyword.value, page: pageNo.value - 1, size: pageSize },
     })
-    records.value = resp.data.data.records
-    total.value = resp.data.data.total
-  } finally {
-    loading.value = false
-  }
+    if(seq===patientRequest) {
+      records.value = resp.data.data.records
+      total.value = resp.data.data.total
+    }
+  } catch { if(seq===patientRequest) clearPatients() }
+  finally { if(seq===patientRequest) loading.value = false }
 }
-
-function search() {
-  pageNo.value = 1
-  load()
-}
-
+function search() { pageNo.value=1; load() }
 function openCreate() {
-  Object.assign(form, emptyForm)
-  dialogVisible.value = true
+  if(!canWrite.value || saving.value) return
+  closeEdit()
+  formRef.value?.clearValidate()
+  dialogVisible.value=true
 }
-
 function openEdit(row: PatientRow) {
-  Object.assign(form, row)
-  dialogVisible.value = true
+  if(!canWrite.value || saving.value || !records.value.some(x=>x.id===row.id)) return
+  closeEdit()
+  Object.assign(form,row)
+  formRef.value?.clearValidate()
+  dialogVisible.value=true
 }
+watch(keyword,clearPatients)
+onBeforeUnmount(clearPatients)
 
 const formRef = ref()
 // 1.2.1：格式错误在表单内就地提示，不再等后端 2003/4000 整表打回。
 // 含 * 的脱敏值禁止提交（原样回存会把真实号码永久覆盖成掩码，1.0.9 A-2 的前端侧防线）
 const rules = {
-  name: [{ required: true, message: '请填写姓名', trigger: 'blur' }],
+  name: [{ validator: (_r: unknown, v: string, cb: (e?: Error)=>void) => { if(form.id && !isAdmin.value) return cb(); cb(v?.trim() ? undefined : new Error('请填写姓名')) }, trigger: 'blur' }],
   idNo: [{
     validator: (_r: unknown, v: string, cb: (e?: Error) => void) => {
+      if (form.id && !isAdmin.value) return cb()
       if (!v) return cb()
       if (v.includes('*')) return cb(new Error('脱敏值不能提交，请重新录入完整证件号'))
       if (form.idType === 'ID_CARD' && !/^\d{17}[\dXx]$/.test(v)) return cb(new Error('身份证须为 18 位'))
@@ -183,6 +207,7 @@ const rules = {
   }],
   phone: [{
     validator: (_r: unknown, v: string, cb: (e?: Error) => void) => {
+      if (form.id && !isAdmin.value) return cb()
       if (!v) return cb()
       if (v.includes('*')) return cb(new Error('脱敏值不能提交，请重新录入完整手机号'))
       if (!/^1\d{10}$/.test(v)) return cb(new Error('手机号须为 11 位数字'))
@@ -192,25 +217,28 @@ const rules = {
 }
 
 async function save() {
+  if(!canWrite.value || saving.value || !dialogVisible.value) return
+  const version=formVersion
+  const target=form.id
+  const snapshot={...form}
+  try { await formRef.value?.validate() } catch { return }
+  if(version!==formVersion || !dialogVisible.value) return
+  const payload: Record<string, unknown> = { address:snapshot.address, insuranceType:snapshot.insuranceType }
+  if(!target || isAdmin.value) Object.assign(payload,{ name:snapshot.name,idType:snapshot.idType,idNo:snapshot.idNo,phone:snapshot.phone })
+  if(!target || canClinical.value) Object.assign(payload,{sex:snapshot.sex,birthDate:snapshot.birthDate})
+  if(canClinical.value) Object.assign(payload,{bloodType:snapshot.bloodType,allergyHistory:snapshot.allergyHistory})
+  saving.value=true
   try {
-    await formRef.value?.validate()
-  } catch {
-    return
-  }
-  saving.value = true
-  try {
-    if (form.id) {
-      await client.put(`/patients/${form.id}`, form)
+    if(target) {
+      await client.put(`/patients/${target}`,payload)
       ElMessage.success('已保存')
     } else {
-      const resp = await client.post('/patients', form)
+      const resp=await client.post('/patients',payload)
       ElMessage.success(`建档成功，患者号 ${resp.data.data.patientNo}`)
     }
-    dialogVisible.value = false
-    await load()
-  } finally {
-    saving.value = false
-  }
+    if(version===formVersion && dialogVisible.value) await load()
+  } catch { if(version===formVersion) clearPatients() }
+  finally { saving.value=false }
 }
 
 onMounted(load)

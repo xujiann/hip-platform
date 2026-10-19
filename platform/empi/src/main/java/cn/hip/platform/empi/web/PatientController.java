@@ -16,7 +16,22 @@ import java.util.Map;
 public class PatientController {
 
     private final PatientService patientService;
+    private final cn.hip.platform.empi.service.PatientAccess access;
     private final cn.hip.platform.core.service.ConfigReader configReader;
+
+    /** API input allowlist: persistence identifiers, lifecycle and timestamps are server-owned. */
+    @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown=true)
+    public record PatientReq(String name, String sex, java.time.LocalDate birthDate, String idType,
+                             String idNo, String phone, String address, String insuranceType,
+                             String bloodType, String allergyHistory) {
+        Patient patient() {
+            var p=new Patient();
+            p.setName(name); p.setSex(sex); p.setBirthDate(birthDate); p.setIdType(idType);
+            p.setIdNo(idNo); p.setPhone(phone); p.setAddress(address); p.setInsuranceType(insuranceType);
+            p.setBloodType(bloodType); p.setAllergyHistory(allergyHistory);
+            return p;
+        }
+    }
 
     /** 身份证校验位校验（empi_idcard_checksum=0 可关，供存量迁移含历史假号的医院） */
     private String idCardError(Patient p) {
@@ -31,8 +46,9 @@ public class PatientController {
                                          @RequestParam(defaultValue = "0") int page,
                                          @RequestParam(defaultValue = "20") int size,
                                          org.springframework.security.core.Authentication auth) {
+        var actor=access.actor();
         var p = patientService.search(keyword, page, size);
-        boolean admin = isAdmin(auth);
+        boolean admin = actor.admin();
         return R.ok(Map.of(
                 "total", p.getTotalElements(),
                 "records", p.getContent().stream()
@@ -41,11 +57,6 @@ public class PatientController {
 
     /** 等保：手机号/证件号仅 ADMIN 见明文——**所有**返回患者的出口都要过这道，
      *  否则一个空 PUT 就能绕过列表脱敏读到明文（A-3）。 */
-    private boolean isAdmin(org.springframework.security.core.Authentication auth) {
-        return auth != null && auth.getAuthorities().stream()
-                .anyMatch(a -> "ROLE_ADMIN".equals(a.getAuthority()));
-    }
-
     /** 手机号保留前3后4，证件号保留前4后3 */
     private Map<String, Object> maskSensitive(Map<String, Object> dto) {
         dto.computeIfPresent("phone", (k, v) -> cn.hip.platform.core.common.Masking.phone(String.valueOf(v)));
@@ -62,8 +73,11 @@ public class PatientController {
     }
 
     @PostMapping
-    public R<Map<String, Object>> register(@RequestBody Patient patient,
+    @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP','NURSE','CASHIER')")
+    public R<Map<String, Object>> register(@RequestBody PatientReq req,
                                            org.springframework.security.core.Authentication auth) {
+        var actor=access.writer();
+        Patient patient=req.patient();
         if (patient.getName() == null || patient.getName().isBlank()) {
             return R.fail(2001, "患者姓名不能为空");
         }
@@ -72,20 +86,23 @@ public class PatientController {
         String idErr = idCardError(patient);
         if (idErr != null) return R.fail(2003, idErr);
         if (patient.getSex() == null) patient.setSex("U");
-        var dto = toDto(patientService.register(patient));
-        return R.ok(isAdmin(auth) ? dto : maskSensitive(dto));
+        var dto = toDto(patientService.registerFromApi(patient));
+        return R.ok(actor.admin() ? dto : maskSensitive(dto));
     }
 
     @PutMapping("/{id}")
-    public R<Map<String, Object>> update(@PathVariable Long id, @RequestBody Patient patient,
+    @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP','NURSE','CASHIER')")
+    public R<Map<String, Object>> update(@PathVariable Long id, @RequestBody PatientReq req,
                                          org.springframework.security.core.Authentication auth) {
+        var actor=access.writer();
+        Patient patient=req.patient();
         String maskErr = maskedValueError(patient);
         if (maskErr != null) return R.fail(2004, maskErr);
         String idErr = idCardError(patient);
         if (idErr != null) return R.fail(2003, idErr);
         // 身份三项（姓名/证件/手机）修改限管理员（上线前审查 P2-2）：非管理员改手机=门户接管跳板
-        var dto = toDto(patientService.update(id, patient, isAdmin(auth)));
-        return R.ok(isAdmin(auth) ? dto : maskSensitive(dto));
+        var dto = toDto(patientService.updateFromApi(id, patient));
+        return R.ok(actor.admin() ? dto : maskSensitive(dto));
     }
 
     private Map<String, Object> toDto(Patient p) {
