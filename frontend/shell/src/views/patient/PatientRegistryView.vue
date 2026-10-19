@@ -6,7 +6,7 @@
         <el-input v-model="keyword" placeholder="姓名 / 患者号 / 身份证号 / 手机号" clearable
                   style="width: 300px" @keyup.enter="search" @clear="search" />
         <el-button type="primary" @click="search">查询</el-button>
-        <el-button v-if="canWrite" type="success" @click="openCreate">新建档案</el-button>
+        <el-button v-if="canWrite" type="success" :disabled="dialogClosing" @click="openCreate">新建档案</el-button>
       </div>
     </div>
 
@@ -26,14 +26,15 @@
       <el-table-column prop="address" label="住址" show-overflow-tooltip />
       <el-table-column label="操作" width="80">
         <template #default="{ row }">
-          <el-button v-if="canWrite" link type="primary" @click="openEdit(row)">编辑</el-button>
+          <el-button v-if="canWrite" link type="primary" :disabled="dialogClosing" @click="openEdit(row)">编辑</el-button>
         </template>
       </el-table-column>
     </el-table>
     <el-pagination v-model:current-page="pageNo" :page-size="pageSize" :total="total"
                    layout="total, prev, pager, next" style="margin-top: 12px" @current-change="load" />
 
-    <el-dialog v-model="dialogVisible" :title="form.id ? '编辑档案' : '新建档案'" width="560px">
+    <el-dialog v-model="dialogVisible" :title="form.id ? '编辑档案' : '新建档案'" width="560px"
+               @close="onDialogClose" @closed="onDialogClosed">
       <el-alert v-if="form.id && !isAdmin" title="编辑身份及联系方式需管理员权限" type="info" :closable="false" />
       <el-form ref="formRef" :model="form" :rules="rules" label-width="90px">
         <el-row :gutter="12">
@@ -140,6 +141,7 @@ const pageSize = 20
 const loading = ref(false)
 const saving = ref(false)
 const dialogVisible = ref(false)
+const dialogClosing = ref(false)
 let patientRequest=0
 let formVersion=0
 
@@ -157,9 +159,12 @@ watch(dialogVisible, (visible) => {
 
 function closeEdit() {
   ++formVersion
+  if (dialogVisible.value) dialogClosing.value = true
   dialogVisible.value=false
   Object.assign(form,emptyForm)
 }
+function onDialogClose() { dialogClosing.value = true }
+function onDialogClosed() { dialogClosing.value = false }
 function clearPatients() {
   ++patientRequest
   records.value=[]; total.value=0; loading.value=false
@@ -182,13 +187,13 @@ async function load() {
 }
 function search() { pageNo.value=1; load() }
 function openCreate() {
-  if(!canWrite.value || saving.value) return
+  if(!canWrite.value || saving.value || dialogClosing.value || dialogVisible.value) return
   closeEdit()
   formRef.value?.clearValidate()
   dialogVisible.value=true
 }
 function openEdit(row: PatientRow) {
-  if(!canWrite.value || saving.value || !records.value.some(x=>x.id===row.id)) return
+  if(!canWrite.value || saving.value || dialogClosing.value || dialogVisible.value || !records.value.some(x=>x.id===row.id)) return
   closeEdit()
   Object.assign(form,row)
   formRef.value?.clearValidate()
@@ -223,7 +228,7 @@ const rules = {
 }
 
 async function save() {
-  if(!canWrite.value || saving.value || !dialogVisible.value) return
+  if(!canWrite.value || saving.value || dialogClosing.value || !dialogVisible.value) return
   const version=formVersion
   const target=form.id
   const snapshot={...form}
