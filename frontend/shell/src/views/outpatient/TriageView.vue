@@ -51,11 +51,21 @@
         <el-table-column label="状态" width="90">
           <template #default="{ row }">{{ statusNames[row.status as string] }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="170">
+        <el-table-column label="责任医生" width="180">
           <template #default="{ row }">
+            <el-select v-if="canCoordinate" :model-value="row.doctorId" clearable filterable placeholder="待接诊"
+                       :disabled="busy" @change="assignDoctor(row, $event)">
+              <el-option v-for="d in doctors" :key="d.id" :label="d.name" :value="d.id" />
+            </el-select>
+            <span v-else>{{ row.doctorId ? '本人负责' : '待接诊' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="220">
+          <template #default="{ row }">
+            <el-button link @click="router.push({ path: '/specialty', query: { triageId: String(row.id) } })">留观/抢救</el-button>
             <el-button v-if="row.status === 'TRIAGED'" link type="primary" @click="setStatus(row, 'IN_TREATMENT')">开始救治</el-button>
-            <el-button v-if="row.status === 'IN_TREATMENT'" link type="warning" @click="setStatus(row, 'ADMITTED')">收住院</el-button>
-            <el-button v-if="row.status === 'IN_TREATMENT'" link @click="setStatus(row, 'DISCHARGED')">离院</el-button>
+            <el-button v-if="row.status === 'IN_TREATMENT' && canDecide(row)" link type="warning" @click="setStatus(row, 'ADMITTED')">收住院</el-button>
+            <el-button v-if="row.status === 'IN_TREATMENT' && canDecide(row)" link @click="setStatus(row, 'DISCHARGED')">离院</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -64,10 +74,27 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { useAuthStore } from '../../stores/auth'
 import { ElMessage } from 'element-plus'
 import client from '../../api/client'
 
+const auth = useAuthStore()
+const router = useRouter()
+const canCoordinate = computed(() => auth.user?.roles.some(r => ['ADMIN','NURSE'].includes(r)) ?? false)
+const doctors = ref<{ id: number; name: string }[]>([])
+const busy = ref(false)
+function canDecide(row: Record<string, unknown>) {
+  return auth.user?.roles.includes('ADMIN') || (auth.user?.roles.includes('DOCTOR_OUTP') && (!row.doctorId || row.doctorId === auth.user.id))
+}
+async function assignDoctor(row: Record<string, unknown>, id: number | undefined) {
+  if (busy.value || !canCoordinate.value) return
+  busy.value = true
+  try { await client.put(`/outpatient/triage/${row.id}/doctor`, { doctorId: id ?? null }); await load() }
+  catch { records.value = []; ++request }
+  finally { busy.value = false }
+}
 const levels = [
   { value: 1, label: 'I 濒危' }, { value: 2, label: 'II 危重' },
   { value: 3, label: 'III 急症' }, { value: 4, label: 'IV 非急症' },
@@ -86,13 +113,16 @@ const form = reactive({
   temperature: 36.5, pulse: 80, sbp: 120, dbp: 80, spo2: 98, destDeptId: null as number | null,
 })
 
+let request = 0
 async function load() {
+  const seq = ++request
+  records.value = []
   loading.value = true
   try {
     const resp = await client.get('/outpatient/triage')
-    records.value = resp.data.data
+    if (seq === request) records.value = resp.data.data
   } finally {
-    loading.value = false
+    if (seq === request) loading.value = false
   }
 }
 
@@ -114,13 +144,17 @@ async function save() {
 }
 
 async function setStatus(row: Record<string, unknown>, status: string) {
-  await client.put(`/outpatient/triage/${row.id}/status`, null, { params: { status } })
-  await load()
+  if (busy.value) return
+  busy.value = true
+  try { await client.put(`/outpatient/triage/${row.id}/status`, null, { params: { status } }); await load() }
+  catch { records.value = []; ++request }
+  finally { busy.value = false }
 }
 
 onMounted(async () => {
   const resp = await client.get('/system/depts')
   depts.value = resp.data.data.filter((d: { type: string }) => d.type === 'CLINICAL')
+  if (canCoordinate.value) doctors.value = (await client.get('/outpatient/triage/doctors')).data.data
   await load()
 })
 </script>

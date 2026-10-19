@@ -57,6 +57,10 @@
       </el-tab-pane>
 
       <el-tab-pane label="不良事件" name="adverse">
+        <el-alert :closable="false" type="info" style="margin-bottom: 10px"
+          :title="canQuality ? '质控范围：全院实名及匿名报告' : '仅显示本人实名报告；匿名报告提交后由管理员和质控处理，本人列表不回显。'" />
+        <p>匿名报告不保存报告人身份；安全审计仍记录登录请求。描述中请避免填写可识别报告人的信息。</p>
+        <el-button size="small" @click="loadAe">刷新事件</el-button>
         <el-form inline size="small">
           <el-form-item><el-select v-model="ae.type" style="width: 130px">
             <el-option v-for="x in ['跌倒', '给药错误', '压疮', '管路滑脱', '其他']" :key="x" :label="x" :value="x" />
@@ -136,9 +140,16 @@ async function loadEmr() {
   if (!canQuality.value) return
   emr.value = (await client.get('/quality/emr-timeliness')).data.data
 }
+let aeRequest = 0
 async function loadAe() {
-  aeList.value = (await client.get('/quality/adverse-events')).data.data
+  const seq = ++aeRequest
+  aeList.value = []
+  try {
+    const rows = (await client.get('/quality/adverse-events')).data.data
+    if (seq === aeRequest) aeList.value = rows
+  } catch { if (seq === aeRequest) aeList.value = [] }
 }
+function clearAe() { ++aeRequest; aeList.value = [] }
 async function loadInf() {
   inf.value = (await client.get('/quality/infections')).data.data
 }
@@ -151,22 +162,22 @@ async function reportAe() {
   reportAeLoading.value = true
   try {
     await client.post('/quality/adverse-events', ae)
-    ElMessage.success('已上报')
+    ElMessage.success(ae.anonymous ? '匿名报告已提交，仅管理员和质控可查阅' : '已上报')
     ae.description = ''
     await loadAe()
-  } finally { reportAeLoading.value = false }
+  } catch { clearAe() } finally { reportAeLoading.value = false }
 }
 
 async function handleAe(row: Record<string, unknown>) {
   if (!canQuality.value) return
   const res = await ElMessageBox.prompt('处理意见', '处理不良事件', { inputValue: '已核实并整改' }).catch(() => null)
-  if (!res) return
+  if (!res || !aeList.value.some(x => x.id === row.id)) return
   const { value } = res
   busyId.value = row.id
   try {
     await client.put(`/quality/adverse-events/${row.id}/handle`, null, { params: { note: value } })
     await loadAe()
-  } finally { busyId.value = null }
+  } catch { clearAe() } finally { busyId.value = null }
 }
 
 onMounted(() => {

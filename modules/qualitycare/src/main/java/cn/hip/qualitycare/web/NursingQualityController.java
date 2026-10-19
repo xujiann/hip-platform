@@ -556,33 +556,55 @@ public class NursingQualityController {
             return R.fail(9804, "发生日期须为有效日期（YYYY-MM-DD）");
         }
         if (req.level() == null || req.level() < 1 || req.level() > 4) return R.fail(9804, "事件分级须为 1-4");
+        Long actor=adverseActor();
+        if(req.description()==null || req.description().isBlank() || req.description().length()>1000)
+            return R.fail(9804,"事件描述须为1–1000字");
+        if(req.deptId()!=null && !Boolean.TRUE.equals(jdbc.queryForObject("select exists(select 1 from sys_dept where id=?)",Boolean.class,req.deptId())))
+            return R.fail(9804,"发生科室不存在");
         boolean anon = Boolean.TRUE.equals(req.anonymous());
         jdbc.update("""
                 insert into qc_adverse_event(type, level, occurred_on, dept_id, description, anonymous, reporter_id)
                 values (?,?,?::date,?,?,?,?)
                 """, req.type(), req.level(), req.occurredOn(), req.deptId(), req.description(), anon,
-                anon ? null : currentUserService.idOf(auth));
+                anon ? null : actor);
         return R.ok();
     }
 
     @GetMapping("/api/quality/adverse-events")
     public R<List<Map<String, Object>>> adverseEvents() {
+        Long actor=adverseActor();
+        var roles=org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication().getAuthorities();
+        boolean cross=roles.stream().anyMatch(x->java.util.Set.of("ROLE_ADMIN","ROLE_QUALITY").contains(x.getAuthority()));
         return R.ok(jdbc.queryForList("""
                 select e.id, e.type, e.level, e.occurred_on, e.description, e.anonymous, e.status, e.handle_note,
                        d.name as dept_name
                 from qc_adverse_event e left join sys_dept d on d.id = e.dept_id
+                where (? or (not e.anonymous and e.reporter_id=?))
                 order by case e.status when 'NEW' then 0 else 1 end, e.level, e.id desc limit 100
-                """));
+                """,cross,actor));
     }
 
     @PutMapping("/api/quality/adverse-events/{id}/handle")
     @PreAuthorize("hasAnyRole('ADMIN','QUALITY')")
     public R<Void> handleAdverse(@PathVariable Long id, @RequestParam String note, Authentication auth) {
+        Long actor=adverseActor();
+        if(note==null || note.isBlank() || note.length()>500)return R.fail(9804,"处理意见须为1–500字");
         int n = jdbc.update("""
                 update qc_adverse_event set status = 'HANDLED', handle_note = ?, handler_id = ?
                 where id = ? and status = 'NEW'
-                """, note, currentUserService.idOf(auth), id);
+                """, note, actor, id);
         return n == 0 ? R.fail(9805, "事件不存在或已处理") : R.ok();
+    }
+
+    private Long adverseActor() {
+        var auth=org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+        if(auth==null)throw new org.springframework.security.access.AccessDeniedException("无法识别事件操作人");
+        var roles=auth.getAuthorities().stream().map(x->x.getAuthority()).toList();
+        if(roles.stream().noneMatch(x->java.util.Set.of("ROLE_ADMIN","ROLE_NURSE","ROLE_QUALITY").contains(x)))
+            throw new org.springframework.security.access.AccessDeniedException("无事件操作权限");
+        var ids=jdbc.queryForList("select id from sys_user where username=? and enabled=true",Long.class,auth.getName());
+        if(ids.isEmpty())throw new org.springframework.security.access.AccessDeniedException("无法识别事件操作人");
+        return ids.getFirst();
     }
 
     public record InfectionReq(Long admissionId, String site, String pathogen, String confirmedOn, String note) {}

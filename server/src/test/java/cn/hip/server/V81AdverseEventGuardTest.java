@@ -12,7 +12,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 @SpringBootTest
 @Transactional
-@WithMockUser(roles = {"ADMIN", "QUALITY"})
+@WithMockUser(username = "admin", roles = {"ADMIN", "QUALITY"})
 class V81AdverseEventGuardTest {
     @Autowired NursingQualityController controller;
     @Autowired JdbcTemplate jdbc;

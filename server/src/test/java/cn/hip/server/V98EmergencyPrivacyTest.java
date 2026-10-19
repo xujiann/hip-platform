@@ -68,4 +68,82 @@ class V98EmergencyPrivacyTest {
         assertEquals("IN",jdbc.queryForObject("select status from er_observation where id=?",String.class,o));
         assertNull(jdbc.queryForObject("select rescue_end from er_rescue_record where id=?",Object.class,r));
     }
+    void owner(Long t,String who){jdbc.update("update outp_triage set doctor_id=? where id=?",who==null?null:uid(who),t);}
+    @Test void foreignDoctorCannotReadOrWriteActualEmergencyParent()throws Exception {
+        String a=person("DOCTOR_OUTP"),b=person("DOCTOR_OUTP");Long t=triage(),o=observation(t),r=rescue(t),own=triage();owner(t,b);owner(own,a);
+        jdbc.update("insert into er_observation_note(observation_id,note) values (?,'V98全文')",o);
+        assertEquals(1005,code("GET","/api/outpatient/er-observation/"+o+"/notes",null,a,"DOCTOR_OUTP"));
+        assertEquals(1005,code("POST","/api/outpatient/er-observation",Map.of("triageId",t,"bedNo","V98denied"),a,"DOCTOR_OUTP"));
+        assertEquals(1005,code("POST","/api/outpatient/er-observation/"+o+"/notes?note=denied",Map.of("triageId",own),a,"DOCTOR_OUTP"));
+        assertEquals(1005,code("POST","/api/outpatient/er-rescue",Map.of("observationId",o,"triageId",own),a,"DOCTOR_OUTP"));
+        assertEquals(1005,code("POST","/api/outpatient/er-rescue",Map.of("triageId",t),a,"DOCTOR_OUTP"));
+        assertEquals(1005,code("PUT","/api/outpatient/er-rescue/"+r+"/end",Map.of("outcome","SUCCESS","triageId",own),a,"DOCTOR_OUTP"));
+        assertEquals(1005,code("PUT","/api/outpatient/er-observation/"+o+"/end?outcome=DISCHARGED",null,a,"DOCTOR_OUTP"));
+        assertEquals(1,jdbc.queryForObject("select count(*) from er_rescue_record where triage_id=?",Integer.class,t));
+        assertEquals(1,jdbc.queryForObject("select count(*) from er_observation_note where observation_id=?",Integer.class,o));
+        assertNull(jdbc.queryForObject("select rescue_end from er_rescue_record where id=?",Object.class,r));
+    }
+    @Test void allListsFilterBeforeLimitAndOwnershipChangesImmediately()throws Exception {
+        String a=person("DOCTOR_OUTP"),b=person("DOCTOR_OUTP");Long t=triage(),other=triage(),o=observation(t),r=rescue(t);owner(t,a);owner(other,b);
+        jdbc.update("insert into er_rescue_record(triage_id,measures) select ?,'V98secret' from generate_series(1,105)",other);
+        jdbc.update("insert into er_observation(triage_id,bed_no,status) select ?, 'V98bulk'||x, 'OUT' from generate_series(1,105) x",other);
+        for(int i=0;i<105;i++)owner(triage(),b);
+        var tri=call("GET","/api/outpatient/triage",null,a,"DOCTOR_OUTP").path("data");assertEquals(1,tri.size());assertEquals(uid(a),tri.get(0).path("doctorId").asLong());
+        var obs=call("GET","/api/outpatient/er-observation",null,a,"DOCTOR_OUTP").path("data");assertEquals(1,obs.size());assertEquals(o,obs.get(0).path("id").asLong());
+        var rows=call("GET","/api/outpatient/er-rescue",null,a,"DOCTOR_OUTP").path("data");assertEquals(1,rows.size());assertEquals(r,rows.get(0).path("id").asLong());
+        assertEquals(0,call("GET","/api/outpatient/er-rescue?triageId="+other,null,a,"DOCTOR_OUTP").path("data").size());
+        owner(t,b);assertEquals(1005,code("GET","/api/outpatient/er-observation/"+o+"/notes",null,a,"DOCTOR_OUTP"));
+        assertEquals(0,code("PUT","/api/outpatient/er-rescue/"+r+"/end",Map.of("outcome","SUCCESS"),b,"DOCTOR_OUTP"));
+    }
+    @Test void claimAndCoordinatorAssignmentValidateRealDoctorsAndIgnoreCreationForgery()throws Exception {
+        String a=person("DOCTOR_OUTP"),b=person("DOCTOR_OUTP"),n=person("NURSE");Long t=triage();
+        assertEquals(0,code("PUT","/api/outpatient/triage/"+t+"/status?status=IN_TREATMENT",null,a,"DOCTOR_OUTP"));
+        assertEquals(uid(a),jdbc.queryForObject("select doctor_id from outp_triage where id=?",Long.class,t));
+        assertEquals(1005,code("PUT","/api/outpatient/triage/"+t+"/status?status=IN_TREATMENT",null,b,"DOCTOR_OUTP"));
+        assertEquals(1005,code("PUT","/api/outpatient/triage/"+t+"/doctor",Map.of("doctorId",uid(b)),a,"DOCTOR_OUTP"));
+        assertEquals(9706,code("PUT","/api/outpatient/triage/"+t+"/doctor",Map.of("doctorId",uid(n)),n,"NURSE"));
+        assertEquals(0,code("PUT","/api/outpatient/triage/"+t+"/doctor",Map.of("doctorId",uid(b)),n,"NURSE"));
+        assertEquals(1005,code("PUT","/api/outpatient/triage/"+t+"/status?status=DISCHARGED",null,a,"DOCTOR_OUTP"));
+        var created=call("POST","/api/outpatient/triage",Map.of("patientName","V98","level",1,"chiefComplaint","V98","doctorId",uid(b),"nurseId",uid(b),"status","DISCHARGED"),a,"DOCTOR_OUTP").path("data");
+        assertEquals(uid(a),created.path("doctorId").asLong());assertEquals(uid(a),created.path("nurseId").asLong());assertEquals("TRIAGED",created.path("status").asText());
+        var doctors=call("GET","/api/outpatient/triage/doctors",null,n,"NURSE").path("data");assertTrue(doctors.findValues("id").stream().anyMatch(x->x.asLong()==uid(b)));assertFalse(doctors.findValues("id").stream().anyMatch(x->x.asLong()==uid(n)));
+    }
+    @Test void nursingCoordinationDoesNotGrantForeignPhysicianDecisions()throws Exception {
+        String a=person("DOCTOR_OUTP"),b=person("DOCTOR_OUTP"),n=person("NURSE");Long t=triage(),o=observation(t),r=rescue(t);owner(t,b);
+        assertEquals(0,code("POST","/api/outpatient/er-rescue",Map.of("observationId",o),n,"NURSE"));
+        assertEquals(1005,code("POST","/api/outpatient/er-rescue",Map.of("observationId",o,"outcome","DEATH"),n,"NURSE"));
+        assertEquals(0,code("GET","/api/outpatient/er-observation/"+o+"/notes",null,a,"NURSE","DOCTOR_OUTP"));
+        assertEquals(1005,code("PUT","/api/outpatient/er-observation/"+o+"/end?outcome=DISCHARGED",null,a,"NURSE","DOCTOR_OUTP"));
+        assertEquals(1005,code("POST","/api/outpatient/er-rescue",Map.of("triageId",t,"outcome","SUCCESS"),a,"NURSE","DOCTOR_OUTP"));
+        assertEquals(0,code("PUT","/api/outpatient/er-rescue/"+r+"/end",Map.of("outcome","SUCCESS"),b,"DOCTOR_OUTP"));
+        assertEquals(4566,code("PUT","/api/outpatient/er-rescue/"+r+"/end",Map.of("outcome","DEATH"),b,"DOCTOR_OUTP"));
+        assertEquals(0,code("PUT","/api/outpatient/er-observation/"+o+"/end?outcome=DISCHARGED",null,b,"DOCTOR_OUTP"));
+        assertEquals(4563,code("POST","/api/outpatient/er-observation/"+o+"/notes?note=denied",null,n,"NURSE"));
+        assertEquals(0,code("POST","/api/outpatient/er-rescue",Map.of("observationId",o),n,"NURSE"));
+    }
+    @Test void anonymousLegacyRowsAndReporterFieldsStayPrivateEvenWhenMalformed()throws Exception {
+        String n=person("NURSE"),q=person("QUALITY");Long u=uid(n);
+        jdbc.update("insert into qc_adverse_event(type,level,occurred_on,description,anonymous,reporter_id) values ('其他',1,current_date,'V98旧匿名',true,?),('其他',1,current_date,'V98旧无主',false,null)",u);
+        assertEquals(0,call("GET","/api/quality/adverse-events",null,n,"NURSE").path("data").size());
+        assertEquals(0,code("POST","/api/quality/adverse-events",report(false),n,"NURSE"));Long own=jdbc.queryForObject("select max(id) from qc_adverse_event",Long.class);
+        jdbc.update("insert into qc_adverse_event(type,level,occurred_on,description,anonymous) select '其他',1,current_date,'V98bulk',true from generate_series(1,105)");
+        var mine=call("GET","/api/quality/adverse-events",null,n,"NURSE").path("data");assertEquals(1,mine.size());assertEquals(own,mine.get(0).path("id").asLong());
+        assertEquals(100,call("GET","/api/quality/adverse-events",null,q,"QUALITY").path("data").size());
+        assertEquals(1005,code("PUT","/api/quality/adverse-events/"+own+"/handle?note=denied",null,n,"NURSE"));
+        assertEquals(0,code("PUT","/api/quality/adverse-events/"+own+"/handle?note=V98",null,q,"QUALITY"));
+        assertEquals(9805,code("PUT","/api/quality/adverse-events/"+own+"/handle?note=V98",null,q,"QUALITY"));
+        for(String key:List.of("reporter_id","handler_id","created_at"))assertFalse(mine.get(0).has(key));
+    }
+    @Test void invalidActorsRolesParentsAndInputsPreserveExistingErrors()throws Exception {
+        String n=person("NURSE"),a=person("DOCTOR_OUTP");
+        jdbc.update("update sys_user set enabled=false where username=?",a);
+        for(String path:List.of("/api/outpatient/triage","/api/outpatient/er-observation","/api/outpatient/er-rescue")) {
+            assertEquals(1005,code("GET",path,null,a,"DOCTOR_OUTP"));assertEquals(1005,code("GET",path,null,n,"QUALITY"));
+        }
+        assertEquals(4560,code("POST","/api/outpatient/er-observation",Map.of("triageId",-98,"bedNo","V98"),n,"NURSE"));
+        assertEquals(4565,code("POST","/api/outpatient/er-rescue",Map.of("observationId",-98),n,"NURSE"));
+        assertEquals(0,call("GET","/api/outpatient/er-observation/-98/notes",null,n,"NURSE").path("data").size());
+        var bad=new HashMap<>(report(true));bad.put("deptId",-98);assertEquals(9804,code("POST","/api/quality/adverse-events",bad,n,"NURSE"));
+        bad.remove("deptId");bad.put("description"," ");assertEquals(9804,code("POST","/api/quality/adverse-events",bad,n,"NURSE"));
+    }
 }

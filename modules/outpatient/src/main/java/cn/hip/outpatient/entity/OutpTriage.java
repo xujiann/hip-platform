@@ -48,6 +48,9 @@ public class OutpTriage {
 
     private Long nurseId;
 
+    /** v98: current emergency physician; null is the shared unassigned queue. */
+    private Long doctorId;
+
     @Column(nullable = false, updatable = false)
     private Instant createdAt = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
 }

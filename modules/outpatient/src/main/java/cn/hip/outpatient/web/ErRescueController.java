@@ -24,7 +24,7 @@ import java.util.Set;
 public class ErRescueController {
 
     private final JdbcTemplate jdbc;
-    private final CurrentUserService currentUserService;
+    private final cn.hip.outpatient.service.EmergencyAccess access;
 
     private static final Set<String> OUTCOMES = Set.of("ONGOING", "SUCCESS", "DEATH", "TRANSFERRED");
 
@@ -36,23 +36,24 @@ public class ErRescueController {
                             String measures, String participants, String outcome, String note) {}
 
     @PostMapping
+    @org.springframework.transaction.annotation.Transactional
     public R<Map<String, Object>> record(@RequestBody RescueReq req, Authentication auth) {
+        var me=access.actor();
         Long triageId = req.triageId();
         Long observationId = req.observationId();
-        // 留观入口：由 observation 反查其 triage_id（前端留观页只持有 observationId）
-        if (observationId != null) {
-            var obs = jdbc.queryForList("select triage_id from er_observation where id = ?", observationId);
-            if (obs.isEmpty()) return R.fail(4565, "留观记录不存在");
-            triageId = ((Number) obs.get(0).get("triage_id")).longValue();
+        // The actual observation parent wins over any client-supplied triage id.
+        if (observationId!=null) {
+            var obs=access.observation(observationId,4565,true,false);
+            triageId=access.number(obs.get("triage_id"));
         }
-        if (triageId == null) return R.fail(4565, "须指定留观记录或分诊记录");
-        // 患者名取自分诊（冗余入抢救记录，便于抢救台快速识别）
-        var tri = jdbc.queryForList("select patient_name from outp_triage where id = ?", triageId);
-        if (tri.isEmpty()) return R.fail(4565, "分诊记录不存在");
-        String patientName = (String) tri.get(0).get("patient_name");
+        if(triageId==null)return R.fail(4565,"须指定留观记录或分诊记录");
+        var tri=access.lockTriage(triageId,4565,false);
+        String patientName=(String)tri.get("patient_name");
         if (req.gcs() != null && (req.gcs() < 3 || req.gcs() > 15)) return R.fail(4567, "GCS 评分范围 3-15");
         String outcome = req.outcome() == null ? "ONGOING" : req.outcome();
         if (!OUTCOMES.contains(outcome)) return R.fail(4568, "转归只能为 ONGOING/SUCCESS/DEATH/TRANSFERRED");
+        // An initial terminal outcome is also a medical decision, not a nursing bypass.
+        if (!"ONGOING".equals(outcome)) access.lockTriage(triageId,4565,true);
 
         Long id = jdbc.queryForObject("""
                 insert into er_rescue_record(triage_id, observation_id, patient_name,
@@ -63,7 +64,7 @@ public class ErRescueController {
                 """, Long.class, triageId, observationId, patientName,
                 req.temperature(), req.pulse(), req.respiration(), req.sbp(), req.dbp(), req.spo2(),
                 req.gcs(), req.intakeMl(), req.outputMl(), req.measures(), req.participants(),
-                outcome, req.note(), currentUserService.idOf(auth));
+                outcome, req.note(), me.id());
         return R.ok(Map.of("id", id));
     }
 
@@ -71,7 +72,10 @@ public class ErRescueController {
 
     /** 抢救结束：置结束时间 + 终态转归（结束时转归不得为 ONGOING） */
     @PutMapping("/{id}/end")
+    @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP')")
+    @org.springframework.transaction.annotation.Transactional
     public R<Void> end(@PathVariable Long id, @RequestBody EndReq req) {
+        access.lockRescue(id);
         String outcome = req.outcome();
         if (outcome == null || !OUTCOMES.contains(outcome) || "ONGOING".equals(outcome)) {
             return R.fail(4568, "结束时转归须为 SUCCESS/DEATH/TRANSFERRED");
@@ -88,14 +92,12 @@ public class ErRescueController {
     @GetMapping
     public R<List<Map<String, Object>>> list(@RequestParam(required = false) Long observationId,
                                              @RequestParam(required = false) Long triageId) {
-        if (observationId != null) {
-            return R.ok(jdbc.queryForList(
-                    "select * from er_rescue_record where observation_id = ? order by id desc", observationId));
-        }
-        if (triageId != null) {
-            return R.ok(jdbc.queryForList(
-                    "select * from er_rescue_record where triage_id = ? order by id desc", triageId));
-        }
-        return R.ok(jdbc.queryForList("select * from er_rescue_record order by id desc limit 100"));
+        var me=access.actor();var args=new java.util.ArrayList<Object>();
+        String sql="select r.*,t.doctor_id from er_rescue_record r join outp_triage t on t.id=r.triage_id left join er_observation o on o.id=r.observation_id where (r.observation_id is null or o.triage_id=r.triage_id) and "+access.scope(me,args);
+        if(observationId!=null){sql+=" and r.observation_id=?";args.add(observationId);}
+        else if(triageId!=null){sql+=" and r.triage_id=?";args.add(triageId);}
+        sql+=" order by r.id desc";
+        if(observationId==null&&triageId==null)sql+=" limit 100";
+        return R.ok(jdbc.queryForList(sql,args.toArray()));
     }
 }

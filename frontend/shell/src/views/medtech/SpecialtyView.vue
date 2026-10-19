@@ -1,7 +1,7 @@
 <template>
   <el-card>
     <el-tabs v-model="tab">
-      <el-tab-pane label="心电/内镜报告" name="ecg">
+      <el-tab-pane v-if="canTech" label="心电/内镜报告" name="ecg">
         <el-radio-group v-model="modality" size="small" @change="loadRis">
           <el-radio-button value="ECG">心电</el-radio-button>
           <el-radio-button value="ENDO">内镜</el-radio-button>
@@ -23,7 +23,7 @@
         </el-table>
       </el-tab-pane>
 
-      <el-tab-pane label="病理" name="path">
+      <el-tab-pane v-if="canTech" label="病理" name="path">
         <h4>待取材 <el-button link type="primary" size="small" @click="loadPathPending">刷新</el-button></h4>
         <el-table :data="pathPending" size="small" border>
           <el-table-column prop="patient_name" label="患者" width="90" />
@@ -53,12 +53,15 @@
         </el-table>
       </el-tab-pane>
 
-      <el-tab-pane label="急诊留观" name="er">
+      <el-tab-pane v-if="canEmergency" label="急诊留观" name="er">
         <el-form inline size="small">
-          <el-form-item><el-input v-model="er.triageId" placeholder="分诊ID" style="width: 110px" /></el-form-item>
+          <el-form-item><el-select v-model="er.triageId" placeholder="选择分诊病例" filterable clearable style="width: 260px">
+            <el-option v-for="t in triages" :key="String(t.id)" :value="String(t.id)" :label="`${t.id} · ${t.patientName}`" />
+          </el-select></el-form-item>
           <el-form-item><el-input v-model="er.bedNo" placeholder="留观床号（如 L01）" style="width: 150px" /></el-form-item>
           <el-button type="primary" size="small" @click="startEr" :loading="startErLoading">入留观</el-button>
         </el-form>
+        <el-button size="small" @click="loadEr">刷新留观</el-button>
         <el-table :data="observations" size="small" border>
           <el-table-column prop="patient_name" label="患者" width="90" />
           <el-table-column prop="level" label="分级" width="60" />
@@ -75,8 +78,8 @@
             <template #default="{ row }">
               <template v-if="row.status === 'IN'">
                 <el-button link type="primary" size="small" :loading="busyId === row.id" @click="addErNote(row)">记观察</el-button>
-                <el-button link type="success" size="small" :loading="busyId === row.id" @click="endEr(row, 'DISCHARGED')">离院</el-button>
-                <el-button link type="warning" size="small" :loading="busyId === row.id" @click="endEr(row, 'ADMITTED')">收住院</el-button>
+                <el-button v-if="canDecide(row)" link type="success" size="small" :loading="busyId === row.id" @click="endEr(row, 'DISCHARGED')">离院</el-button>
+                <el-button v-if="canDecide(row)" link type="warning" size="small" :loading="busyId === row.id" @click="endEr(row, 'ADMITTED')">收住院</el-button>
               </template>
               <!-- 车道B 收尾③：抢救记录录入/查看（危重可随时记，不限留观中，故置于状态判断外） -->
               <el-button link type="danger" size="small" @click="openRescue(row)">抢救记录</el-button>
@@ -85,7 +88,7 @@
         </el-table>
       </el-tab-pane>
 
-      <el-tab-pane label="麻醉记录" name="anes">
+      <el-tab-pane v-if="canAnes" label="麻醉记录" name="anes">
         <el-form inline size="small">
           <el-form-item><el-input v-model="anes.surgeryId" placeholder="手术ID" style="width: 100px" /></el-form-item>
           <el-form-item>
@@ -124,7 +127,7 @@
         </el-table>
       </el-tab-pane>
 
-      <el-tab-pane label="ICU 记录" name="icu">
+      <el-tab-pane v-if="canEmergency" label="ICU 记录" name="icu">
         <el-form inline size="small">
           <el-form-item><el-input v-model="icu.admissionId" placeholder="住院ID" style="width: 100px" /></el-form-item>
           <el-form-item label="T"><el-input v-model="icu.temperature" style="width: 70px" /></el-form-item>
@@ -203,7 +206,7 @@
         <template #default="{ row }">
           <el-tag v-if="row.rescue_end" :type="row.outcome === 'DEATH' ? 'danger' : 'success'" size="small">
             {{ rescueOutcomeText(row.outcome) }}</el-tag>
-          <span v-else>
+          <span v-else-if="canDecide(row)">
             <el-button link type="success" size="small" @click="endRescue(row, 'SUCCESS')">成功</el-button>
             <el-button link type="danger" size="small" @click="endRescue(row, 'DEATH')">死亡</el-button>
             <el-button link type="warning" size="small" @click="endRescue(row, 'TRANSFERRED')">转院</el-button>
@@ -229,6 +232,9 @@
         <el-input v-model="erNoteText" type="textarea" :rows="6" :maxlength="ER_NOTE_MAX" show-word-limit />
       </el-form-item>
     </el-form>
+    <el-table :data="erNotes" size="small" max-height="180">
+      <el-table-column prop="note" label="已有观察记录" />
+    </el-table>
     <template #footer>
       <el-button @click="erNoteDialog = false">取消</el-button>
       <el-button type="primary" :loading="erNoteSaving" @click="saveErNote">记录</el-button>
@@ -237,15 +243,36 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { useAuthStore } from '../../stores/auth'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
 import { fmtDateTime } from '../../utils/date'
 import { outpTemplatesOnly } from '../../utils/emr-template'
 
 const router = useRouter()
-const tab = ref('ecg')
+const auth = useAuthStore()
+const route = useRoute()
+const hasRole = (...roles: string[]) => auth.user?.roles.some(r => roles.includes(r)) ?? false
+const canTech = computed(() => hasRole('ADMIN','TECHNICIAN'))
+const canEmergency = computed(() => hasRole('ADMIN','NURSE','DOCTOR_OUTP'))
+const canAnes = computed(() => hasRole('ADMIN','DOCTOR_OUTP','TECHNICIAN'))
+function canDecide(row: Record<string, unknown>) {
+  return hasRole('ADMIN') || (hasRole('DOCTOR_OUTP') && (!row.doctor_id || row.doctor_id === auth.user?.id))
+}
+const tab = ref(route.query.triageId || !canTech.value ? 'er' : 'ecg')
+const triages = ref<Record<string, unknown>[]>([])
+const erNotes = ref<Record<string, unknown>[]>([])
+let erRequest = 0
+let rescueRequest = 0
+function closeErDialogs() {
+  ++rescueRequest
+  rescueDialog.value = false; rescueTarget.value = null; rescues.value = []
+  erNoteDialog.value = false; erNoteTarget.value = null; erNoteText.value = ''; erNotes.value = []
+}
+function clearEr() { ++erRequest; observations.value = []; triages.value = []; closeErDialogs() }
+
 const modality = ref('ECG')
 const risList = ref<Record<string, unknown>[]>([])
 const pathPending = ref<Record<string, unknown>[]>([])
@@ -253,7 +280,7 @@ const specimens = ref<Record<string, unknown>[]>([])
 const observations = ref<Record<string, unknown>[]>([])
 const icuRecords = ref<Record<string, unknown>[]>([])
 const balance = ref<Record<string, unknown> | null>(null)
-const er = reactive({ triageId: '', bedNo: '' })
+const er = reactive({ triageId: String(route.query.triageId ?? ''), bedNo: '' })
 const icu = reactive({ admissionId: '', temperature: '', pulse: '', respiration: '', sbp: '', dbp: '',
   spo2: '', gcs: '', intakeMl: '', outputMl: '', ventilator: false })
 const anesRecords = ref<Record<string, unknown>[]>([])
@@ -263,6 +290,7 @@ const busyId = ref<unknown>(null)
 const startErLoading = ref(false)
 const recordAnesLoading = ref(false)
 const recordIcuLoading = ref(false)
+watch(() => er.triageId, closeErDialogs)
 
 // 车道B 收尾③：急诊抢救记录
 const rescueDialog = ref(false)
@@ -318,7 +346,17 @@ const outcomeText = (o: string) => ({ DISCHARGED: '已离院', ADMITTED: '已住
 async function loadRis() { risList.value = (await client.get('/ris/worklist', { params: { modality: modality.value } })).data.data }
 async function loadPathPending() { pathPending.value = (await client.get('/pathology/pending')).data.data }
 async function loadSpecimens() { specimens.value = (await client.get('/pathology/specimens')).data.data }
-async function loadEr() { observations.value = (await client.get('/outpatient/er-observation')).data.data }
+async function loadEr() {
+  clearEr()
+  if (!canEmergency.value) return
+  const seq = erRequest
+  try {
+    const [obs, tri] = await Promise.all([client.get('/outpatient/er-observation'), client.get('/outpatient/triage')])
+    if (seq !== erRequest || tab.value !== 'er') return
+    observations.value = obs.data.data; triages.value = tri.data.data
+    if (!triages.value.some(t => String(t.id) === er.triageId)) er.triageId = ''
+  } catch { if (seq === erRequest) clearEr() }
+}
 async function loadIcu() {
   if (!icu.admissionId) return
   icuRecords.value = (await client.get('/inpatient/icu-records', { params: { admissionId: icu.admissionId } })).data.data
@@ -360,13 +398,14 @@ async function receive(row: Record<string, unknown>) {
 // 病理工作台（菜单 168）书写——那里会预填既有大体所见再提交。
 function goWorkbench() { router.push('/pathology/workbench') }
 async function startEr() {
+  if (startErLoading.value) return
   if (!er.triageId || !er.bedNo) { ElMessage.warning('请填写分诊ID与留观床号'); return }
   startErLoading.value = true
   try {
     await client.post('/outpatient/er-observation', { triageId: Number(er.triageId), bedNo: er.bedNo })
     ElMessage.success('已入留观')
     await loadEr()
-  } finally { startErLoading.value = false }
+  } catch { clearEr() } finally { startErLoading.value = false }
 }
 // v79 车道B（1101★）：留观观察记录接病历模板。原 prompt 的预填句原样保留为初值；
 // 它被视为「未书写」——选模板时不为它弹覆盖确认，医生改过一个字才确认。
@@ -396,15 +435,24 @@ async function loadErTemplates() {
 }
 
 async function addErNote(row: Record<string, unknown>) {
+  if (busyId.value || erNoteSaving.value || rescueSaving.value) return
+  closeErDialogs()
   erNoteTarget.value = row
   erNoteText.value = ER_NOTE_DEFAULT
   erTplId.value = null
-  erNoteDialog.value = true
-  await loadErTemplates()
+  const seq = erRequest
+  try {
+    const rows = (await client.get(`/outpatient/er-observation/${row.id}/notes`)).data.data
+    if (seq !== erRequest || erNoteTarget.value?.id !== row.id) return
+    erNotes.value = rows; erNoteDialog.value = true
+    await loadErTemplates()
+  } catch { if (seq === erRequest) clearEr() }
 }
 
 async function applyErTemplate(id: number | undefined) {
-  if (!id) return
+  const target = erNoteTarget.value?.id
+  const seq = erRequest
+  if (!id || !target) return
   const t = erTemplates.value.find((x) => x.id === id)
   if (!t) return
   let content = t.content as string | null | undefined
@@ -412,6 +460,7 @@ async function applyErTemplate(id: number | undefined) {
     // 列表行不带正文时按 id 取一次（只读端点；不可见/已停用 4066 由拦截器提示）
     content = (await client.get(`/emr-templates/${t.id}`)).data.data?.content as string | null | undefined
   }
+  if (seq !== erRequest || erNoteTarget.value?.id !== target) return
   const text = (content ?? '').trim()
   if (!text) {
     ElMessage.warning(`模板「${t.name}」没有正文可插入`)
@@ -424,12 +473,13 @@ async function applyErTemplate(id: number | undefined) {
       { type: 'warning' }).then(() => true, () => false)
     if (!ok) { erTplId.value = null; return }
   }
+  if (seq !== erRequest || erNoteTarget.value?.id !== target) return
   erNoteText.value = text
 }
 
 async function saveErNote() {
   const row = erNoteTarget.value
-  if (!row) return
+  if (!row || erNoteSaving.value || !observations.value.some(x => x.id === row.id)) return
   const note = erNoteText.value.trim()
   if (!note) { ElMessage.warning('请填写观察情况'); return }
   if ([...note].length > ER_NOTE_MAX) {
@@ -447,17 +497,18 @@ async function saveErNote() {
     await client.post(`/outpatient/er-observation/${row.id}/notes`, null, { params: { note } })
     erNoteDialog.value = false
     await loadEr()
-  } finally {
+  } catch { clearEr() } finally {
     erNoteSaving.value = false
     busyId.value = null
   }
 }
 async function endEr(row: Record<string, unknown>, outcome: string) {
+  if (busyId.value || !canDecide(row)) return
   busyId.value = row.id
   try {
     await client.put(`/outpatient/er-observation/${row.id}/end`, null, { params: { outcome } })
     await loadEr()
-  } finally { busyId.value = null }
+  } catch { clearEr() } finally { busyId.value = null }
 }
 async function recordIcu() {
   if (!icu.admissionId) { ElMessage.warning('请填写住院ID'); return }
@@ -476,43 +527,57 @@ async function recordIcu() {
 
 // 车道B 收尾③：抢救记录——以留观记录 observationId 为入口，后端反查分诊/患者名
 async function openRescue(row: Record<string, unknown>) {
+  if (busyId.value || erNoteSaving.value || rescueSaving.value) return
+  closeErDialogs()
   rescueTarget.value = row
   Object.assign(rescue, { temperature: '', pulse: '', respiration: '', sbp: '', dbp: '',
     spo2: '', gcs: '', intakeMl: '', outputMl: '', measures: '', participants: '' })
   await loadRescues()
-  rescueDialog.value = true
+  if (rescueTarget.value?.id === row.id) rescueDialog.value = true
 }
 async function loadRescues() {
-  if (!rescueTarget.value) { rescues.value = []; return }
-  rescues.value = (await client.get('/outpatient/er-rescue',
-    { params: { observationId: rescueTarget.value.id } })).data.data
+  const target = rescueTarget.value?.id
+  const seq = ++rescueRequest
+  rescues.value = []
+  if (!target) return
+  try {
+    const rows = (await client.get('/outpatient/er-rescue', { params: { observationId: target } })).data.data
+    if (seq === rescueRequest && rescueTarget.value?.id === target) rescues.value = rows
+  } catch { if (seq === rescueRequest) clearEr() }
 }
 async function saveRescue() {
-  if (!rescueTarget.value) return
+  const target = rescueTarget.value?.id
+  if (!target || rescueSaving.value || !observations.value.some(x => x.id === target)) return
   const num = (v: string) => (v === '' ? null : Number(v))
   rescueSaving.value = true
   try {
     // 业务错误（4567 GCS 越界等）由拦截器统一红字提示
     await client.post('/outpatient/er-rescue', {
-      observationId: rescueTarget.value.id,
+      observationId: target,
       temperature: num(rescue.temperature), pulse: num(rescue.pulse), respiration: num(rescue.respiration),
       sbp: num(rescue.sbp), dbp: num(rescue.dbp), spo2: num(rescue.spo2), gcs: num(rescue.gcs),
       intakeMl: num(rescue.intakeMl), outputMl: num(rescue.outputMl),
       measures: rescue.measures || null, participants: rescue.participants || null,
     })
     ElMessage.success('抢救记录已录入')
-    await loadRescues()
-  } finally { rescueSaving.value = false }
+    if (rescueTarget.value?.id === target) await loadRescues()
+  } catch { clearEr() } finally { rescueSaving.value = false }
 }
 async function endRescue(row: Record<string, unknown>, outcome: string) {
-  await client.put(`/outpatient/er-rescue/${row.id}/end`, { outcome })
-  ElMessage.success('抢救已结束')
-  await loadRescues()
+  if (rescueSaving.value || !canDecide(row) || !rescues.value.some(x => x.id === row.id)) return
+  const target = rescueTarget.value?.id
+  rescueSaving.value = true
+  try {
+    await client.put(`/outpatient/er-rescue/${row.id}/end`, { outcome })
+    ElMessage.success('抢救已结束')
+    if (rescueTarget.value?.id === target) await loadRescues()
+  } catch { clearEr() } finally { rescueSaving.value = false }
 }
 
 watch(tab, (t) => {
+  clearEr()
   if (t === 'path') { loadPathPending(); loadSpecimens() }
   if (t === 'er') loadEr()
 })
-onMounted(loadRis)
+onMounted(() => { if (tab.value === 'er') loadEr(); else if (canTech.value) loadRis() })
 </script>
