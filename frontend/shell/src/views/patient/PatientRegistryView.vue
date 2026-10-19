@@ -33,7 +33,7 @@
     <el-pagination v-model:current-page="pageNo" :page-size="pageSize" :total="total"
                    layout="total, prev, pager, next" style="margin-top: 12px" @current-change="load" />
 
-    <el-dialog v-model="dialogVisible" :title="form.id ? '编辑档案' : '新建档案'" width="560px" @close="closeEdit">
+    <el-dialog v-model="dialogVisible" :title="form.id ? '编辑档案' : '新建档案'" width="560px">
       <el-alert v-if="form.id && !isAdmin" title="编辑身份及联系方式需管理员权限" type="info" :closable="false" />
       <el-form ref="formRef" :model="form" :rules="rules" label-width="90px">
         <el-row :gutter="12">
@@ -148,6 +148,12 @@ const emptyForm: PatientRow = {
   phone: null, address: null, insuranceType: 'SELF', bloodType: null, allergyHistory: null,
 }
 const form = reactive<PatientRow>({ ...emptyForm })
+watch(dialogVisible, (visible) => {
+  if (!visible) {
+    ++formVersion
+    Object.assign(form, emptyForm)
+  }
+})
 
 function closeEdit() {
   ++formVersion
