@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Preventive recording ownership, surveillance duties and real actor attribution."""
 import json,time,urllib.error
+from datetime import timedelta
 from e2elib import call,ok,login,provision_user,new_patient,find_free_bed,discharge_cleanup,today_bj
 
 t=login();tokens={'admin':t};ids={};suffix=str(time.time_ns())[-10:];admission=None;discharged=False
@@ -34,7 +35,7 @@ try:
  expect(0,'POST',f'/inpatient/admissions/{admission}/discharge',{'payMethod':'CASH'});discharged=True
  body['note']='V100出院追溯'+suffix;expect(0,'POST','/quality/infections',body,'q')
  rows=expect(0,'GET','/quality/infections',who='n')['cases'];row=next(x for x in rows if x['note']==body['note']);assert row['reporter_id']==ids['q']
- body['confirmedOn']='1900-01-01';expect(9806,'POST','/quality/infections',body,'n')
+ body['confirmedOn']=str(today_bj()+timedelta(days=1));expect(9806,'POST','/quality/infections',body,'n')
  body['admissionId']=-1;body['confirmedOn']=str(today_bj());expect(9003,'POST','/quality/infections',body,'n')
  for who in ['doctor','tech','cash']:
   for path in ['/phc/records','/phc/stats','/quality/infections']:expect(1005,'GET',path,who=who)

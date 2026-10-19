@@ -59,9 +59,11 @@ class V100PhcInfectionAccessTest {
         var body=new HashMap<String,Object>(infection(a));body.put("confirmedOn",cn.hip.platform.core.config.BusinessDates.today().minusDays(5).toString());body.put("reporterId",uid(q));body.put("note","V100追溯");
         assertEquals(0,call("POST","/api/quality/infections",body,n,"NURSE").path("code").asInt());
         var row=call("GET","/api/quality/infections",null,q,"QUALITY").path("data").path("cases").get(0);assertEquals(uid(n),row.path("reporter_id").asLong());assertEquals(n,row.path("reporter_name").asText());
-        for(String date:List.of("bad",cn.hip.platform.core.config.BusinessDates.today().toString(),cn.hip.platform.core.config.BusinessDates.today().minusDays(11).toString())){body.put("confirmedOn",date);assertEquals(9806,call("POST","/api/quality/infections",body,n,"NURSE").path("code").asInt());}
-        body.put("confirmedOn",cn.hip.platform.core.config.BusinessDates.today().minusDays(5).toString());body.put("admissionId",-1);assertEquals(9003,call("POST","/api/quality/infections",body,n,"NURSE").path("code").asInt());
-        assertEquals(1,jdbc.queryForObject("select count(*) from qc_infection_case where admission_id=?",Integer.class,a));
+        for(String date:List.of("bad",cn.hip.platform.core.config.BusinessDates.today().plusDays(1).toString())){body.put("confirmedOn",date);assertEquals(9806,call("POST","/api/quality/infections",body,n,"NURSE").path("code").asInt());}
+        body.put("confirmedOn",cn.hip.platform.core.config.BusinessDates.today().toString());
+        assertEquals(0,call("POST","/api/quality/infections",body,n,"NURSE").path("code").asInt());
+        body.put("admissionId",-1);assertEquals(9003,call("POST","/api/quality/infections",body,n,"NURSE").path("code").asInt());
+        assertEquals(2,jdbc.queryForObject("select count(*) from qc_infection_case where admission_id=?",Integer.class,a));
     }
     @Test void infectionFieldValidationAndForbiddenRolesAreStable()throws Exception {
         String n=person("NURSE");Long a=admission();

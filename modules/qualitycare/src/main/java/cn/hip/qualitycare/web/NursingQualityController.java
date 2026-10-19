@@ -621,18 +621,12 @@ public class NursingQualityController {
         java.time.LocalDate date;
         try { date=java.time.LocalDate.parse(req.confirmedOn()==null ? "" : req.confirmedOn()); }
         catch (java.time.format.DateTimeParseException ex) { return R.fail(9806, "确认日期须为有效日期"); }
-        // Same parent lock as discharge. Re-read dates after any lock wait.
-        var rows=jdbc.queryForList("""
-                select admit_at::date as start_date, discharged_at::date as end_date
-                from inp_admission where id=? for update
-                """,req.admissionId());
+        if(date.isAfter(cn.hip.platform.core.config.BusinessDates.today()))
+            return R.fail(9806,"确认日期不能晚于今天");
+        // Preserve retrospective reporting, including confirmation after discharge.
+        // This permission boundary does not classify a report as hospital-acquired.
+        var rows=jdbc.queryForList("select id from inp_admission where id=? for update",req.admissionId());
         if(rows.isEmpty()) return R.fail(9003,"住院记录不存在");
-        var row=rows.getFirst();
-        var start=((java.sql.Date)row.get("start_date")).toLocalDate();
-        var end=row.get("end_date")==null ? cn.hip.platform.core.config.BusinessDates.today()
-                : ((java.sql.Date)row.get("end_date")).toLocalDate();
-        if(date.isBefore(start) || date.isAfter(end) || date.isAfter(cn.hip.platform.core.config.BusinessDates.today()))
-            return R.fail(9806,"确认日期须在住院期间且不晚于今天");
         var actor=preventiveAccess.actor();
         jdbc.update("insert into qc_infection_case(admission_id,site,pathogen,confirmed_on,note,reporter_id) values (?,?,?,?,?,?)",
                 req.admissionId(),req.site(),req.pathogen(),date,req.note(),actor.id());
