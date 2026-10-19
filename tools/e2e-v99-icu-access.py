@@ -46,4 +46,7 @@ try:
  for who in tokens:expect(0,'GET','/auth/me',who=who);expect(0,'GET','/stats/overview',who=who)
  print('e2e-v99-icu-access passed: same-patient admissions, attending transfer, nursing recording, historical reads, aggregate isolation and role usability')
 finally:
- for adm in admissions:discharge_cleanup(t,adm)
+ states={row['id']:row['status'] for row in expect(0,'GET',BASE+'/admissions')}
+ for adm in admissions:
+  assert states[adm] in ['IN_HOSPITAL','DISCHARGED'],states[adm]
+  if states[adm]=='IN_HOSPITAL':discharge_cleanup(t,adm)
