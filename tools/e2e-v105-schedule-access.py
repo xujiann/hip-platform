@@ -31,7 +31,7 @@ expect(1000,'POST',base,body,'revoked');expect(1000,'PUT',f'{base}/{s}/enabled?e
 expect(1000,'GET',base+'?date='+day+'&includeDisabled=true',who='revoked')
 expect(3102,'PUT',base+'/-1/enabled?enabled=false')
 
-pa,pb=patient('普通'),patient('预约')
+pa,pb,pc=patient('普通'),patient('预约'),patient('停诊新患者')
 expect(0,'POST',f'{base}/{s}/slots',{'slots':[{'timeBegin':'08:00','timeEnd':'08:30','capacity':2}]})
 sl=expect(0,'GET',f'{base}/{s}/slots')[0]['id']
 def pools(total,slot):
@@ -43,8 +43,9 @@ expect(0,'PUT',f'{base}/{s}/enabled?enabled=false',who='a2');assert not row(s)['
 assert not any(x['id']==s for x in catalog('c'))
 tokens['p']=ok(call('POST','/portal/login',{'patientNo':pa['patientNo'],'phone':'13800001111'}),'portal')['token']
 assert not any(x['id']==s for x in expect(0,'GET','/portal/schedules?date='+day,who='p'))
-expect(3003,'POST','/outpatient/registrations',{'patientId':pb['id'],'scheduleId':s},'c')
-expect(3111,'POST','/outpatient/appointments',{'patientId':pa['id'],'slotId':sl},'c');pools(2,1)
+# Use an eligible patient to isolate the disabled-schedule gate from pending-visit rejection.
+expect(3003,'POST','/outpatient/registrations',{'patientId':pc['id'],'scheduleId':s},'c')
+expect(3111,'POST','/outpatient/appointments',{'patientId':pc['id'],'slotId':sl},'c');pools(2,1)
 expect(0,'PUT',f'/outpatient/registrations/{reg}/cancel',who='c');pools(1,1)
 expect(0,'POST',f'/outpatient/appointments/{a}/cancel',who='c');pools(0,0)
 expect(0,'PUT',f'{base}/{s}/enabled?enabled=true');assert row(s)['enabled'] and any(x['id']==s for x in catalog('c'))
