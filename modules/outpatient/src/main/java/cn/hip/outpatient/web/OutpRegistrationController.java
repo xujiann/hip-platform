@@ -24,6 +24,7 @@ import java.util.Map;
 public class OutpRegistrationController {
 
     private final RegistrationService registrationService;
+    private final cn.hip.outpatient.service.RegistrationAccess access;
     private final OutpRegistrationRepository registrationRepository;
     private final PatientRepository patientRepository;
     private final SysDeptRepository deptRepository;
@@ -34,7 +35,7 @@ public class OutpRegistrationController {
     @PostMapping
     public R<Map<String, Object>> register(@RequestBody RegisterRequest req) {
         try {
-            return R.ok(toDto(registrationService.register(req.patientId(), req.scheduleId())));
+            return R.ok(toDto(registrationService.registerFromDesk(req.patientId(), req.scheduleId())));
         } catch (RegistrationService.BizException e) {
             return R.fail(e.code, e.getMessage());
         }
@@ -43,7 +44,7 @@ public class OutpRegistrationController {
     @PutMapping("/{id}/cancel")
     public R<Map<String, Object>> cancel(@PathVariable Long id) {
         try {
-            return R.ok(toDto(registrationService.cancel(id)));
+            return R.ok(toDto(registrationService.cancelFromDesk(id)));
         } catch (RegistrationService.BizException e) {
             return R.fail(e.code, e.getMessage());
         }
@@ -52,6 +53,7 @@ public class OutpRegistrationController {
     @GetMapping
     public R<List<Map<String, Object>>> listByDate(
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
+        access.staff();
         return R.ok(registrationRepository.findByVisitDateOrderByIdDesc(date)
                 .stream().map(this::toDto).toList());
     }

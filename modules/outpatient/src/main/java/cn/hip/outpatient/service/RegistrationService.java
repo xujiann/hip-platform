@@ -16,6 +16,9 @@ import java.math.BigDecimal;
 @RequiredArgsConstructor
 public class RegistrationService {
 
+    private final org.springframework.jdbc.core.JdbcTemplate jdbc;
+    private final jakarta.persistence.EntityManager em;
+    private final RegistrationAccess access;
     private final OutpScheduleRepository scheduleRepository;
     private final OutpRegistrationRepository registrationRepository;
     private final OutpOrderRepository orderRepository;
@@ -68,14 +71,31 @@ public class RegistrationService {
     /** 挂号：占号成功后以占号后的 booked 值作为叫号序号 */
     @Transactional
     public OutpRegistration register(Long patientId, Long scheduleId) {
+        return registerInternal(patientId, scheduleId, false);
+    }
+
+    @Transactional
+    public OutpRegistration registerFromDesk(Long patientId, Long scheduleId) {
+        access.staff();
+        return registerInternal(patientId, scheduleId, true);
+    }
+
+    private OutpRegistration registerInternal(Long patientId, Long scheduleId, boolean desk) {
         OutpSchedule schedule = scheduleRepository.findById(scheduleId)
                 .orElseThrow(() -> new BizException(3001, "号源不存在"));
+        em.flush();
+        var patients = jdbc.queryForList("select active from empi_patient where id=? for share", Boolean.class, patientId);
+        if (patients.isEmpty() || !Boolean.TRUE.equals(patients.get(0))) {
+            throw new BizException(3007, "挂号患者不存在或已停用");
+        }
+        if (desk) access.staff();
         // 查重仅为友好提示；真正的防线是 uq_outp_reg_active 唯一索引（并发下 find-then-insert 会双挂）
         registrationRepository.findByScheduleIdAndPatientIdAndStatus(scheduleId, patientId, "REGISTERED")
                 .ifPresent(r -> { throw new BizException(3002, "该患者已挂此号，勿重复挂号"); });
         if (scheduleRepository.occupySlot(scheduleId) == 0) {
             throw new BizException(3003, "号源已满");
         }
+        if (desk) access.staff();
         OutpSchedule after = scheduleRepository.findById(scheduleId).orElseThrow();
 
         OutpRegistration reg = new OutpRegistration();
@@ -110,27 +130,68 @@ public class RegistrationService {
         return reg;
     }
 
-    /** 退号：仅未就诊可退，释放号源 */
+    /** Trusted internal caller; desk authorization is applied by the separate entry point. */
     @Transactional
     public OutpRegistration cancel(Long registrationId) {
-        OutpRegistration reg = registrationRepository.findById(registrationId)
-                .orElseThrow(() -> new BizException(3004, "挂号记录不存在"));
-        if (!"REGISTERED".equals(reg.getStatus())) {
+        return cancelInternal(registrationId, false);
+    }
+
+    @Transactional
+    public OutpRegistration cancelFromDesk(Long registrationId) {
+        access.staff();
+        return cancelInternal(registrationId, true);
+    }
+
+    private OutpRegistration cancelInternal(Long registrationId, boolean desk) {
+        em.flush();
+        if (jdbc.queryForList("select id from outp_registration where id=? for update", Long.class, registrationId).isEmpty()) {
+            throw new BizException(3004, "挂号记录不存在");
+        }
+        var reg = registrationRepository.findById(registrationId).orElseThrow();
+        // A caller may have loaded this entity before waiting for the database lock.
+        em.refresh(reg);
+        if (desk) access.staff();
+        if (!"REGISTERED".equals(reg.getStatus())) throw new BizException(3005, "当前状态不可退号");
+
+        // Registration -> appointment -> orders -> slot -> schedule. Both appointment
+        // booking and cancellation also take the slot before the schedule.
+        var links = jdbc.queryForList("select patient_id,schedule_id,slot_id,status from outp_appointment where registration_id=? order by id for update", registrationId);
+        Long slotId = null;
+        if (!links.isEmpty()) {
+            var link = links.get(0);
+            if (links.size() != 1 || !"CHECKED_IN".equals(link.get("status"))
+                    || !reg.getPatientId().equals(((Number) link.get("patient_id")).longValue())
+                    || !reg.getScheduleId().equals(((Number) link.get("schedule_id")).longValue())) throw inconsistent();
+            slotId = ((Number) link.get("slot_id")).longValue();
+        }
+        var orders = jdbc.queryForList("select status from outp_order where registration_id=? order by id for update", String.class, registrationId);
+        if (desk) access.staff();
+        if (orders.stream().anyMatch(status -> !"CREATED".equals(status) && !"CANCELLED".equals(status))) {
+            throw new BizException(3006, "存在已收费或已执行项目，请先按流程退费再退号");
+        }
+        if (slotId != null) {
+            var slots = jdbc.queryForList("select schedule_id,booked from outp_schedule_slot where id=? for update", slotId);
+            if (slots.size() != 1 || !reg.getScheduleId().equals(((Number) slots.get(0).get("schedule_id")).longValue())
+                    || ((Number) slots.get(0).get("booked")).intValue() <= 0) throw inconsistent();
+        }
+        var schedules = jdbc.queryForList("select booked from outp_schedule where id=? for update", Integer.class, reg.getScheduleId());
+        if (schedules.size() != 1 || schedules.get(0) <= 0) throw inconsistent();
+        if (desk) access.staff();
+
+        // Validate every object before the first mutation. The transaction still rolls
+        // back all claims if a conditional update ever fails.
+        if (jdbc.update("update outp_registration set status='CANCELLED',cancelled_at=current_timestamp where id=? and status='REGISTERED'", registrationId) != 1) {
             throw new BizException(3005, "当前状态不可退号");
         }
-        // 挂号费已收费须先退费；未收费自动作废
-        for (OutpOrder o : orderRepository.findByRegistrationIdOrderByIdAsc(registrationId)) {
-            if ("CHARGED".equals(o.getStatus())) {
-                throw new BizException(3006, "存在已收费项目，请先退费再退号");
-            }
-            if ("CREATED".equals(o.getStatus())) {
-                o.setStatus("CANCELLED");
-                orderRepository.save(o);
-            }
-        }
-        reg.setStatus("CANCELLED");
-        reg.setCancelledAt(java.time.Instant.now());
-        scheduleRepository.releaseSlot(reg.getScheduleId());
-        return registrationRepository.save(reg);
+        jdbc.update("update outp_order set status='CANCELLED' where registration_id=? and status='CREATED'", registrationId);
+        if (slotId != null && jdbc.update("update outp_schedule_slot set booked=booked-1 where id=? and booked>0", slotId) != 1) throw inconsistent();
+        if (jdbc.update("update outp_schedule set booked=booked-1 where id=? and booked>0", reg.getScheduleId()) != 1) throw inconsistent();
+        // Preserve CHECKED_IN and registration_id as the appointment audit trail.
+        em.clear();
+        return registrationRepository.findById(registrationId).orElseThrow();
+    }
+
+    private BizException inconsistent() {
+        return new BizException(3008, "预约关联或号源计数不一致，请核对后处理");
     }
 }
