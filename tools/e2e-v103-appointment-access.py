@@ -38,12 +38,15 @@ expect(0,'POST',f'/outpatient/appointments/{second}/cancel',who='c2')
 assert expect(0,'GET',path)[0]['booked']==1
 # Portal book takes its patient solely from its token; another patient's cancellation is denied.
 for who,patient_row in [('p',p),('p2',p2)]:tokens[who]=ok(call('POST','/portal/login',{'patientNo':patient_row['patientNo'],'phone':'13800001111'}),'portal login')['token']
-portal=expect(0,'POST','/portal/appointments',{'slotId':slot,'patientId':p2['id']},'p')['id']
+# p remains pending after checkin: a forged body must not switch the token's eligibility.
+expect(3112,'POST','/portal/appointments',{'slotId':slot,'patientId':p2['id']},'p')
+# p2's previous appointment was cancelled, so use that eligible token for ownership checks.
+portal=expect(0,'POST','/portal/appointments',{'slotId':slot,'patientId':p['id']},'p2')['id']
 row=next(x for x in expect(0,'GET',f'/outpatient/appointments?scheduleId={schedule}',who='c') if x['id']==portal)
-assert row['patient_no']==p['patientNo']
-expect(9506,'POST',f'/portal/my/appointments/{portal}/cancel',who='p2')
-expect(1005,'POST',f'/outpatient/appointments/{portal}/cancel',who='p')
-expect(0,'POST',f'/portal/my/appointments/{portal}/cancel',who='p')
+assert row['patient_no']==p2['patientNo']
+expect(9506,'POST',f'/portal/my/appointments/{portal}/cancel',who='p')
+expect(1005,'POST',f'/outpatient/appointments/{portal}/cancel',who='p2')
+expect(0,'POST',f'/portal/my/appointments/{portal}/cancel',who='p2')
 assert expect(0,'GET',path)[0]['booked']==1  # The checked-in registration still consumes its original slot.
 for who in ['a','c','c2','n','d','q','tech']:
  expect(0,'GET','/auth/me',who=who);expect(0,'GET','/stats/overview',who=who)
