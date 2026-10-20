@@ -88,4 +88,35 @@ class V106OutpatientNumberTest {
    assertEquals(2,registrations.register(other,s).getRegNo());pools(2,kind);
   }finally{pool.shutdown();assertTrue(pool.awaitTermination(20,TimeUnit.SECONDS));}
  }
+ @Test void exhaustedIntegerCursorRejectsWithoutPartialOccupancy(){
+  jdbc.update("update outp_schedule set last_issued_no=2147483646 where id=?",s);
+  assertEquals(Integer.MAX_VALUE,registrations.register(patient(),s).getRegNo());
+  assertEquals(3003,assertThrows(HipBizException.class,()->registrations.register(patient(),s)).code);
+  assertEquals(3111,assertThrows(HipBizException.class,()->appointments.book(sl,patient(),null)).code);pools(1,0);
+  assertEquals(Integer.MAX_VALUE,jdbc.queryForObject("select last_issued_no from outp_schedule where id=?",Integer.class,s));
+ }
+ @Test void lastCapacityMixedCompetitionHasOneWinnerAndOneBusinessRejection()throws Exception{
+  jdbc.update("update outp_schedule set capacity=1 where id=?",s);Long p=patient(),q=patient();var pool=Executors.newFixedThreadPool(2);var fs=new ArrayList<Future<Integer>>();
+  try{new TransactionTemplate(manager).execute(tx->{jdbc.queryForObject("select id from outp_schedule where id=? for update",Long.class,s);
+   for(int i=0;i<2;i++){boolean walk=i==0;var pid=new AtomicInteger();var f=worker(pool,pid,()->walk?registrations.register(p,s).getRegNo():appointments.book(sl,q,null).apptNo());fs.add(f);assertTrue(waits(pid,f));}return true;});
+   var values=List.of(fs.get(0).get(10,TimeUnit.SECONDS),fs.get(1).get(10,TimeUnit.SECONDS));assertEquals(1,values.stream().filter(x->x==1).count());assertEquals(1,values.stream().filter(x->x==-3003||x==-3111).count());
+   pools(1,values.get(1)==1?1:0);assertEquals(1,jdbc.queryForObject("select last_issued_no from outp_schedule where id=?",Integer.class,s));
+  }finally{pool.shutdown();assertTrue(pool.awaitTermination(20,TimeUnit.SECONDS));}
+ }
+ @Test void actualMigrationSeedsAllHistoricalStatusesWithoutRewritingReceipts(){
+  new TransactionTemplate(manager).execute(tx->{
+   String schema="v106_migration_"+System.nanoTime();jdbc.execute("create schema "+schema);jdbc.execute("set local search_path to "+schema);
+   jdbc.execute("create table outp_schedule(id bigint primary key,booked integer)");
+   jdbc.execute("create table outp_registration(schedule_id bigint,reg_no integer,status text)");
+   jdbc.execute("create table outp_appointment(schedule_id bigint,appt_no integer,status text)");
+   jdbc.execute("insert into outp_schedule values (1,0),(2,15),(3,0),(4,0)");
+   jdbc.execute("insert into outp_registration values (1,9,'CANCELLED'),(1,3,'REGISTERED'),(1,3,'VISITED'),(4,2147483647,'CANCELLED')");
+   jdbc.execute("insert into outp_appointment values (1,12,'CANCELLED'),(1,11,'CHECKED_IN'),(2,10,'BOOKED')");
+   jdbc.execute((org.springframework.jdbc.core.ConnectionCallback<Void>)connection->{org.springframework.jdbc.datasource.init.ScriptUtils.executeSqlScript(connection,new org.springframework.core.io.ClassPathResource("db/migration/V184__outp_schedule_issued_number.sql"));return null;});
+   assertEquals(List.of(12,15,0,Integer.MAX_VALUE),jdbc.queryForList("select last_issued_no from outp_schedule order by id",Integer.class));
+   assertEquals(List.of(9,3,3,Integer.MAX_VALUE),jdbc.queryForList("select reg_no from outp_registration order by schedule_id,reg_no desc",Integer.class));
+   assertEquals(15,jdbc.queryForObject("select booked from outp_schedule where id=2",Integer.class));
+   tx.setRollbackOnly();return true;
+  });
+ }
 }

@@ -19,6 +19,7 @@ public class RegistrationService {
     private final org.springframework.jdbc.core.JdbcTemplate jdbc;
     private final jakarta.persistence.EntityManager em;
     private final RegistrationAccess access;
+    private final ScheduleNumberService numbers;
     private final OutpScheduleRepository scheduleRepository;
     private final OutpRegistrationRepository registrationRepository;
     private final OutpOrderRepository orderRepository;
@@ -68,7 +69,7 @@ public class RegistrationService {
         return reg;
     }
 
-    /** 挂号：占号成功后以占号后的 booked 值作为叫号序号 */
+    /** 挂号：占用容量与发出排班单调号码在同一事务完成。 */
     @Transactional
     public OutpRegistration register(Long patientId, Long scheduleId) {
         return registerInternal(patientId, scheduleId, false);
@@ -92,14 +93,11 @@ public class RegistrationService {
         // 查重仅为友好提示；真正的防线是 uq_outp_reg_active 唯一索引（并发下 find-then-insert 会双挂）
         registrationRepository.findByScheduleIdAndPatientIdAndStatus(scheduleId, patientId, "REGISTERED")
                 .ifPresent(r -> { throw new BizException(3002, "该患者已挂此号，勿重复挂号"); });
-        if (scheduleRepository.occupySlot(scheduleId) == 0) {
-            throw new BizException(3003, "号源已满");
-        }
+        int regNo = numbers.occupy(scheduleId, 3003);
         if (desk) access.staff();
-        OutpSchedule after = scheduleRepository.findById(scheduleId).orElseThrow();
 
         OutpRegistration reg = new OutpRegistration();
-        reg.setRegNo(after.getBooked());
+        reg.setRegNo(regNo);
         reg.setPatientId(patientId);
         reg.setScheduleId(scheduleId);
         reg.setDeptId(schedule.getDeptId());

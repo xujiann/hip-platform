@@ -31,6 +31,7 @@ public class AppointmentService {
 
     private final JdbcTemplate jdbc;
     private final AppointmentAccess access;
+    private final ScheduleNumberService numbers;
 
     /** code==0 为成功；否则为业务码（3110/3111/3112），由调用方转成各自入口的响应体 */
     public record BookResult(int code, String message, Long apptId, Integer apptNo) {
@@ -118,12 +119,7 @@ public class AppointmentService {
                 slotId) == 0) {
             return BookResult.fail(3111, "该时段号源已满");
         }
-        if (jdbc.update("update outp_schedule set booked = booked + 1 where id = ? and booked < capacity and enabled",
-                scheduleId) == 0) {
-            throw new RegistrationService.BizException(3111, "排班号源已满");   // throw 回滚 slot 占号
-        }
-        Integer booked = jdbc.queryForObject("select booked from outp_schedule where id = ?", Integer.class, scheduleId);
-        int apptNo = booked == null ? 0 : booked;
+        int apptNo = numbers.occupy(scheduleId, 3111); // failure must escape and roll back slot occupancy
         if(desk) access.staff();
         try {
             var kh = new GeneratedKeyHolder();

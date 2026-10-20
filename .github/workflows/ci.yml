@@ -260,6 +260,7 @@ jobs:
           python3 tools/e2e-v103-appointment-access.py
           python3 tools/e2e-v104-registration-access.py
           python3 tools/e2e-v105-schedule-access.py
+          python3 tools/e2e-v106-outpatient-number.py
           # v81 车道B：麻醉质控演示造数 + 六条 ★（1424/1425/1426/1428/1436/1450）自检，纯走 API、幂等。
           # 置于全部 E2E 之后：它往过去 1–7 天落手术与不良事件，放前面会被按日窗计数的套件算进去
           python3 tools/demo-anes.py --quiet
