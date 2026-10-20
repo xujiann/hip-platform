@@ -144,9 +144,10 @@ async function loadDetail(id: number, version: number) {
   finally { if (current(id, version)) loadingDetail.value = false }
 }
 async function pickSchedule(row: Row | null) {
-  if (busy.value) return
+  // Clearing the table during a reload emits current-change(null); it must not cancel that reload.
+  if (busy.value || !row) return
   clearSelection()
-  if (!row || !schedules.value.some(s => s.id === row.id)) return
+  if (!schedules.value.some(s => s.id === row.id)) return
   scheduleId.value = Number(row.id)
   await loadDetail(scheduleId.value, viewVersion)
 }
