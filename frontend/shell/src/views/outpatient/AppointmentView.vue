@@ -136,10 +136,15 @@ async function loadDetail(id: number, version: number) {
   if (!current(id, version)) return
   slots.value = []; appointments.value = []; loadingDetail.value = true
   try {
-    const [slotResp, apptResp] = await Promise.all([
+    const [slotResp, apptResp, scheduleResp] = await Promise.all([
       client.get(`/outpatient/schedules/${id}/slots`), client.get('/outpatient/appointments', { params: { scheduleId: id } }),
+      client.get('/outpatient/schedules', { params: { date: date.value } }),
     ])
-    if (current(id, version)) { slots.value = slotResp.data.data; appointments.value = apptResp.data.data }
+    if (current(id, version)) {
+      const latest: Row[] = scheduleResp.data.data
+      if (!latest.some(s => Number(s.id) === id)) { clearAll(); return }
+      schedules.value = latest; slots.value = slotResp.data.data; appointments.value = apptResp.data.data
+    }
   } catch { if (current(id, version)) clearSelection() }
   finally { if (current(id, version)) loadingDetail.value = false }
 }
