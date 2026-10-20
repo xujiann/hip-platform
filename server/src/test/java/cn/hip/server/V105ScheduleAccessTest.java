@@ -47,7 +47,8 @@ class V105ScheduleAccessTest {
  @Test void otherRolesRetainSharedCatalogButCannotManageSchedules()throws Exception {
   long s=schedule();String who=actor();
   for(String role:List.of("CASHIER","DOCTOR_OUTP","NURSE","QUALITY","TECHNICIAN","PHARMACIST","OPERATION","PORTAL")){
-   ok("GET",BASE+"?date="+day(),null,who,role);
+   if(role.equals("PORTAL"))assertEquals(1005,call("GET",BASE+"?date="+day(),null,who,role).path("code").asInt());
+   else ok("GET",BASE+"?date="+day(),null,who,role);
    assertEquals(1005,call("POST",BASE,body(),who,role).path("code").asInt());assertEquals(1005,call("PUT",BASE+"/"+s+"/enabled?enabled=false",null,who,role).path("code").asInt());
    assertEquals(1005,call("GET",BASE+"?date="+day()+"&includeDisabled=true",null,who,role).path("code").asInt());
   }
