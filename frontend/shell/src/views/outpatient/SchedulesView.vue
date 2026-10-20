@@ -3,19 +3,20 @@
     <div class="toolbar">
       <h3>医生排班</h3>
       <div class="filters">
-        <el-button size="small" @click="shiftWeek(-7)">上一周</el-button>
-        <el-date-picker v-model="date" type="date" value-format="YYYY-MM-DD" :clearable="false" @change="load" />
-        <el-button size="small" @click="shiftWeek(7)">下一周</el-button>
-        <el-select v-model="deptId" placeholder="全部科室" clearable style="width: 160px" @change="load">
+        <el-button size="small" :disabled="busy" @click="shiftWeek(-7)">上一周</el-button>
+        <el-date-picker v-model="date" type="date" value-format="YYYY-MM-DD" :clearable="false" :disabled="busy" />
+        <el-button size="small" :disabled="busy" @click="shiftWeek(7)">下一周</el-button>
+        <el-select v-model="deptId" placeholder="全部科室" clearable style="width: 160px" :disabled="busy">
           <el-option v-for="d in clinicalDepts" :key="d.id" :label="d.name" :value="d.id" />
         </el-select>
-        <el-button type="primary" @click="openCreate">新增排班</el-button>
+        <el-button :disabled="busy || loading" @click="load">刷新</el-button>
+        <el-button v-if="isAdmin" type="primary" :disabled="busy || loading || closing" @click="openCreate">新增排班</el-button>
       </div>
     </div>
 
     <el-table :data="records" v-loading="loading" border stripe>
-      <el-table-column prop="deptName" label="科室" width="140" />
-      <el-table-column prop="doctorName" label="医生" width="120">
+      <el-table-column prop="deptName" label="科室" min-width="120" />
+      <el-table-column prop="doctorName" label="医生" min-width="100">
         <template #default="{ row }">{{ row.doctorName || '（普通号）' }}</template>
       </el-table-column>
       <el-table-column label="时段" width="80">
@@ -28,15 +29,18 @@
       <el-table-column prop="capacity" label="号源" width="70" />
       <el-table-column prop="booked" label="已挂" width="70" />
       <el-table-column prop="remaining" label="余号" width="70" />
-      <el-table-column label="操作" width="100">
+      <el-table-column label="状态" width="80">
+        <template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停诊' }}</el-tag></template>
+      </el-table-column>
+      <el-table-column v-if="isAdmin" label="操作" width="100">
         <template #default="{ row }">
-          <el-button link type="danger" @click="disable(row)">停诊</el-button>
+          <el-button link :type="row.enabled ? 'danger' : 'primary'" :disabled="busy || loading" @click="toggle(row)">{{ row.enabled ? '停诊' : '启用' }}</el-button>
         </template>
       </el-table-column>
     </el-table>
 
-    <el-dialog v-model="dialogVisible" title="新增排班" width="440px">
-      <el-form :model="form" label-width="90px">
+    <el-dialog v-model="dialogVisible" title="新增排班" width="440px" :close-on-click-modal="!busy" :close-on-press-escape="!busy" :show-close="!busy" @closed="closing = false">
+      <el-form :model="form" label-width="90px" :disabled="busy">
         <el-form-item label="日期" required>
           <el-date-picker v-model="form.scheduleDate" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
         </el-form-item>
@@ -71,94 +75,102 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="save">保存</el-button>
+        <el-button :disabled="busy" @click="closeCreate">取消</el-button>
+        <el-button type="primary" :loading="busy" :disabled="busy" @click="save">保存</el-button>
       </template>
     </el-dialog>
   </el-card>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { todayLocal } from '../../utils/date'
 import { ElMessage } from 'element-plus'
 import client from '../../api/client'
+import { useAuthStore } from '../../stores/auth'
 
+const auth = useAuthStore()
+const isAdmin = computed(() => auth.user?.roles.includes('ADMIN') ?? false)
 const shiftNames: Record<string, string> = { AM: '上午', PM: '下午', FULL: '全天' }
-
-const today = todayLocal()
-const date = ref(today)
-
-/** 1.0.1（893）：按周快捷切换（本地日期拼串，避免 toISOString 的 UTC 偏移跨日） */
-function shiftWeek(days: number) {
-  const d = new Date(date.value + 'T00:00:00')
-  d.setDate(d.getDate() + days)
-  date.value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-  load()
-}
+type Row = Record<string, unknown>
+type Dept = { id: number; name: string; type: string; enabled: boolean }
+type Doctor = { id: number; realName: string; enabled: boolean; roleCodes: string[] }
+const date = ref(todayLocal())
 const deptId = ref<number | null>(null)
-const records = ref<Record<string, unknown>[]>([])
-const depts = ref<{ id: number; name: string; type: string }[]>([])
-const doctors = ref<{ id: number; realName: string }[]>([])
+const records = ref<Row[]>([])
+const depts = ref<Dept[]>([])
+const doctors = ref<Doctor[]>([])
 const loading = ref(false)
-const saving = ref(false)
+const busy = ref(false)
 const dialogVisible = ref(false)
-
-const clinicalDepts = computed(() => depts.value.filter((d) => d.type === 'CLINICAL'))
-
-const form = reactive({
-  scheduleDate: today, deptId: null as number | null, doctorId: null as number | null,
-  shift: 'FULL', regType: 'GENERAL', fee: 10, capacity: 50,
-})
-
+const closing = ref(false)
+let viewVersion = 0
+let dialogVersion = -1
+const clinicalDepts = computed(() => depts.value.filter(d => d.type === 'CLINICAL' && d.enabled))
+const defaults = () => ({ scheduleDate: date.value, deptId: null as number | null, doctorId: null as number | null, shift: 'FULL', regType: 'GENERAL', fee: 10, capacity: 50 })
+const form = reactive(defaults())
+function resetForm() { dialogVersion = -1; Object.assign(form, defaults()) }
+function closeCreate() { if (dialogVisible.value) closing.value = true; dialogVisible.value = false; resetForm() }
+watch(dialogVisible, visible => { if (!visible) { closing.value = true; resetForm() } })
+function clearAll() { ++viewVersion; records.value = []; depts.value = []; doctors.value = []; loading.value = false; closeCreate() }
+function shiftWeek(days: number) {
+  if (busy.value) return
+  const d = new Date(date.value + 'T00:00:00'); d.setDate(d.getDate() + days)
+  date.value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+async function loadDoctors(version: number) {
+  const result: Doctor[] = []
+  for (let page = 0; version === viewVersion; page++) {
+    const response = await client.get('/system/users', { params: { page, size: 100 } })
+    const rows: Doctor[] = response.data.data.records
+    result.push(...rows.filter(u => u.enabled && u.roleCodes.includes('DOCTOR_OUTP')))
+    if (!rows.length || (page + 1) * 100 >= Number(response.data.data.total)) break
+  }
+  return result
+}
 async function load() {
+  clearAll()
+  const version = viewVersion, scheduleDate = date.value, department = deptId.value, admin = isAdmin.value
   loading.value = true
   try {
-    const resp = await client.get('/outpatient/schedules', {
-      params: { date: date.value, deptId: deptId.value ?? undefined },
-    })
-    records.value = resp.data.data
-  } finally {
-    loading.value = false
-  }
+    const [r, d, u] = await Promise.all([
+      client.get('/outpatient/schedules', { params: { date: scheduleDate, deptId: department ?? undefined, ...(admin ? { includeDisabled: true } : {}) } }),
+      client.get('/system/depts'), admin ? loadDoctors(version) : Promise.resolve([]),
+    ])
+    if (version === viewVersion) { records.value = r.data.data; depts.value = d.data.data; doctors.value = u }
+  } catch { if (version === viewVersion) clearAll() }
+  finally { if (version === viewVersion) loading.value = false }
 }
-
 function openCreate() {
-  form.scheduleDate = date.value
-  dialogVisible.value = true
+  if (!isAdmin.value || busy.value || loading.value || closing.value || dialogVisible.value) return
+  resetForm(); form.deptId = clinicalDepts.value.some(d => d.id === deptId.value) ? deptId.value : null
+  dialogVersion = viewVersion; dialogVisible.value = true
 }
-
 async function save() {
-  if (!form.deptId) {
-    ElMessage.warning('请选择科室')
-    return
-  }
-  saving.value = true
+  if (!isAdmin.value || busy.value || !dialogVisible.value || dialogVersion !== viewVersion) return
+  if (!form.deptId || !clinicalDepts.value.some(d => d.id === form.deptId)) { ElMessage.warning('请选择科室'); return }
+  if (form.doctorId && !doctors.value.some(u => u.id === form.doctorId)) return
+  const payload = { ...form }, version = viewVersion
+  busy.value = true
   try {
-    await client.post('/outpatient/schedules', form)
-    ElMessage.success('排班已创建')
-    dialogVisible.value = false
-    await load()
-  } finally {
-    saving.value = false
-  }
+    await client.post('/outpatient/schedules', payload)
+    if (version === viewVersion) { ElMessage.success('排班已创建'); closeCreate(); await load() }
+  } catch { if (version === viewVersion) clearAll() }
+  finally { busy.value = false }
 }
-
-async function disable(row: Record<string, unknown>) {
-  await client.put(`/outpatient/schedules/${row.id}/enabled`, null, { params: { enabled: false } })
-  ElMessage.success('已停诊')
-  await load()
+async function toggle(row: Row) {
+  if (!isAdmin.value || busy.value || loading.value || !records.value.some(r => r.id === row.id)) return
+  const id = Number(row.id), enabled = !row.enabled, version = viewVersion
+  busy.value = true
+  try {
+    await client.put(`/outpatient/schedules/${id}/enabled`, null, { params: { enabled } })
+    if (version === viewVersion) { ElMessage.success(enabled ? '已启用' : '已停诊'); await load() }
+  } catch { if (version === viewVersion) clearAll() }
+  finally { busy.value = false }
 }
-
-onMounted(async () => {
-  const [d, u] = await Promise.all([
-    client.get('/system/depts'),
-    client.get('/system/users', { params: { page: 0, size: 100 } }),
-  ])
-  depts.value = d.data.data
-  doctors.value = u.data.data.records
-  await load()
-})
+watch([date, deptId], load)
+onBeforeUnmount(clearAll)
+onMounted(load)
 </script>
 
 <style scoped>
@@ -167,7 +179,8 @@ onMounted(async () => {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 12px;
+  flex-wrap: wrap; gap: 8px;
 }
 .toolbar h3 { margin: 0; }
-.filters { display: flex; gap: 8px; }
+.filters { display: flex; gap: 8px; flex-wrap: wrap; }
 </style>

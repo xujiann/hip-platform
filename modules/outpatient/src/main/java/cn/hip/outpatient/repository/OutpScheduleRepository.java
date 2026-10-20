@@ -15,6 +15,10 @@ public interface OutpScheduleRepository extends JpaRepository<OutpSchedule, Long
 
     List<OutpSchedule> findByScheduleDateAndDeptIdAndEnabledTrueOrderByIdAsc(LocalDate date, Long deptId);
 
+    List<OutpSchedule> findByScheduleDateOrderByDeptIdAscIdAsc(LocalDate date);
+
+    List<OutpSchedule> findByScheduleDateAndDeptIdOrderByIdAsc(LocalDate date, Long deptId);
+
     /** 并发安全占号：只有还有余号时才自增，返回受影响行数。clearAutomatically 使随后的 findById 读到最新 booked */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("update OutpSchedule s set s.booked = s.booked + 1 where s.id = :id and s.booked < s.capacity and s.enabled = true")

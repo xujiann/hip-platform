@@ -20,6 +20,8 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class OutpScheduleController {
 
+    private final cn.hip.outpatient.service.ScheduleService service;
+    private final cn.hip.outpatient.service.ScheduleAccess access;
     private final OutpScheduleRepository scheduleRepository;
     private final SysDeptRepository deptRepository;
     private final SysUserRepository userRepository;
@@ -27,8 +29,13 @@ public class OutpScheduleController {
     @GetMapping
     public R<List<Map<String, Object>>> list(
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,
-            @RequestParam(required = false) Long deptId) {
-        var schedules = deptId == null
+            @RequestParam(required = false) Long deptId,
+            @RequestParam(defaultValue = "false") boolean includeDisabled) {
+        if (includeDisabled) access.admin();
+        var schedules = includeDisabled
+                ? (deptId == null ? scheduleRepository.findByScheduleDateOrderByDeptIdAscIdAsc(date)
+                    : scheduleRepository.findByScheduleDateAndDeptIdOrderByIdAsc(date, deptId))
+                : deptId == null
                 ? scheduleRepository.findByScheduleDateAndEnabledTrueOrderByDeptIdAscIdAsc(date)
                 : scheduleRepository.findByScheduleDateAndDeptIdAndEnabledTrueOrderByIdAsc(date, deptId);
         return R.ok(schedules.stream().map(this::toDto).toList());
@@ -36,24 +43,23 @@ public class OutpScheduleController {
 
     @PostMapping
     @PreAuthorize("hasRole('ADMIN')")
-    public R<Map<String, Object>> create(@RequestBody OutpSchedule schedule) {
-        if (schedule.getDeptId() == null || schedule.getScheduleDate() == null
-                || schedule.getCapacity() == null || schedule.getCapacity() <= 0) {
-            return R.fail(3101, "科室、日期、号源数量为必填项");
+    public R<Map<String, Object>> create(@RequestBody cn.hip.outpatient.service.ScheduleService.CreateRequest req) {
+        try {
+            return R.ok(toDto(service.create(req)));
+        } catch (cn.hip.outpatient.service.RegistrationService.BizException e) {
+            return R.fail(e.code, e.getMessage());
         }
-        schedule.setId(null);
-        schedule.setBooked(0);
-        return R.ok(toDto(scheduleRepository.save(schedule)));
     }
 
     @PutMapping("/{id}/enabled")
     @PreAuthorize("hasRole('ADMIN')")
     public R<Void> setEnabled(@PathVariable Long id, @RequestParam boolean enabled) {
-        var s = scheduleRepository.findById(id).orElse(null);
-        if (s == null) return R.fail(3102, "排班不存在");
-        s.setEnabled(enabled);
-        scheduleRepository.save(s);
-        return R.ok();
+        try {
+            service.setEnabled(id, enabled);
+            return R.ok();
+        } catch (cn.hip.outpatient.service.RegistrationService.BizException e) {
+            return R.fail(e.code, e.getMessage());
+        }
     }
 
     private Map<String, Object> toDto(OutpSchedule s) {
