@@ -3,12 +3,12 @@
     <div class="toolbar">
       <h3 style="margin:0">分时段预约挂号</h3>
       <div style="display:flex; gap:8px">
-        <el-date-picker v-model="date" type="date" value-format="YYYY-MM-DD" style="width:140px" @change="loadSchedules" />
-        <el-button size="small" @click="loadSchedules">刷新</el-button>
+        <el-date-picker v-model="date" type="date" value-format="YYYY-MM-DD" style="width:140px" :clearable="false" :disabled="busy" />
+        <el-button size="small" :disabled="busy" @click="loadSchedules">刷新</el-button>
       </div>
     </div>
 
-    <el-table :data="schedules" size="small" border highlight-current-row @current-change="pickSchedule">
+    <el-table :data="schedules" v-loading="loadingSchedules" size="small" border highlight-current-row @current-change="pickSchedule">
       <el-table-column prop="id" label="排班" width="70" />
       <el-table-column prop="deptName" label="科室" width="120" />
       <el-table-column prop="fee" label="挂号费" width="80" />
@@ -20,7 +20,7 @@
     <template v-if="scheduleId">
       <div class="toolbar" style="margin-top:14px">
         <h4 style="margin:0">时段（排班 {{ scheduleId }}）</h4>
-        <el-button type="primary" size="small" @click="slotDialog = true">设时段</el-button>
+        <el-button v-if="isAdmin" type="primary" size="small" :disabled="busy || loadingDetail || slotClosing" @click="openSlots">设时段</el-button>
       </div>
       <el-table :data="slots" size="small" border>
         <el-table-column label="时段" width="150">
@@ -33,7 +33,7 @@
         </el-table-column>
         <el-table-column label="操作" width="110">
           <template #default="{ row }">
-            <el-button link type="primary" size="small" :disabled="row.remaining <= 0" @click="openBook(row)">预约</el-button>
+            <el-button link type="primary" size="small" :disabled="busy || loadingDetail || bookClosing || !row.enabled || row.remaining <= 0" @click="openBook(row)">预约</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -54,14 +54,14 @@
         </el-table-column>
         <el-table-column label="操作" width="150">
           <template #default="{ row }">
-            <el-button v-if="row.status === 'BOOKED'" link type="success" size="small" @click="checkin(row)">签到挂号</el-button>
-            <el-button v-if="row.status === 'BOOKED'" link type="danger" size="small" @click="cancelAppt(row)">取消</el-button>
+            <el-button v-if="row.status === 'BOOKED'" link type="success" size="small" :disabled="busy || loadingDetail" @click="changeAppointment(row, true)">签到挂号</el-button>
+            <el-button v-if="row.status === 'BOOKED'" link type="danger" size="small" :disabled="busy || loadingDetail" @click="changeAppointment(row, false)">取消</el-button>
           </template>
         </el-table-column>
       </el-table>
     </template>
 
-    <el-dialog v-model="slotDialog" title="设时段（容量合计不得超排班总号量）" width="520px">
+    <el-dialog v-model="slotDialog" title="设时段（容量合计不得超排班总号量）" width="520px" @closed="slotClosing = false">
       <el-table :data="slotForm" size="small">
         <el-table-column label="开始"><template #default="{ row }"><el-input v-model="row.timeBegin" size="small" placeholder="08:00" /></template></el-table-column>
         <el-table-column label="结束"><template #default="{ row }"><el-input v-model="row.timeEnd" size="small" placeholder="08:30" /></template></el-table-column>
@@ -69,82 +69,145 @@
       </el-table>
       <el-button size="small" style="margin-top:6px" @click="slotForm.push({ timeBegin: '', timeEnd: '', capacity: 5 })">加一行</el-button>
       <template #footer>
-        <el-button @click="slotDialog = false">取消</el-button>
-        <el-button type="primary" @click="saveSlots">保存时段</el-button>
+        <el-button @click="closeSlots">取消</el-button>
+        <el-button type="primary" :loading="busy" @click="saveSlots">保存时段</el-button>
       </template>
     </el-dialog>
 
-    <el-dialog v-model="bookDialog" title="预约" width="420px">
+    <el-dialog v-model="bookDialog" title="预约" width="420px" @closed="bookClosing = false">
       <el-select v-model="bookPatientId" filterable remote :remote-method="searchPatients" placeholder="搜索患者" style="width:100%">
         <el-option v-for="p in patients" :key="p.id" :label="`${p.patientNo} ${p.name}`" :value="p.id" />
       </el-select>
       <template #footer>
-        <el-button @click="bookDialog = false">取消</el-button>
-        <el-button type="primary" :disabled="!bookPatientId" @click="book">预约</el-button>
+        <el-button @click="closeBook">取消</el-button>
+        <el-button type="primary" :disabled="!bookPatientId || busy" :loading="busy" @click="book">预约</el-button>
       </template>
     </el-dialog>
   </el-card>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
 import { todayLocal } from '../../utils/date'
-
+import { useAuthStore } from '../../stores/auth'
+const auth = useAuthStore()
+const isAdmin = computed(() => auth.user?.roles.includes('ADMIN') ?? false)
+type Row = Record<string, unknown>
+type SlotLine = { timeBegin: string; timeEnd: string; capacity: number }
+const defaultSlots = (): SlotLine[] => [{ timeBegin: '08:00', timeEnd: '08:30', capacity: 5 }]
 const date = ref(todayLocal())
-const schedules = ref<Record<string, unknown>[]>([])
+const schedules = ref<Row[]>([])
 const scheduleId = ref<number | null>(null)
-const slots = ref<Record<string, unknown>[]>([])
-const appointments = ref<Record<string, unknown>[]>([])
+const slots = ref<Row[]>([])
+const appointments = ref<Row[]>([])
 const slotDialog = ref(false)
-const slotForm = ref<{ timeBegin: string; timeEnd: string; capacity: number }[]>([{ timeBegin: '08:00', timeEnd: '08:30', capacity: 5 }])
+const slotClosing = ref(false)
+const slotForm = ref<SlotLine[]>(defaultSlots())
 const bookDialog = ref(false)
-const bookSlot = ref<Record<string, unknown> | null>(null)
+const bookClosing = ref(false)
+const bookTarget = ref<{ schedule: number; slot: number; view: number } | null>(null)
 const bookPatientId = ref<number | null>(null)
-const patients = ref<Record<string, unknown>[]>([])
+const patients = ref<Row[]>([])
+const loadingSchedules = ref(false)
+const loadingDetail = ref(false)
+const busy = ref(false)
+let viewVersion = 0
+let searchVersion = 0
 
+function resetBook() { ++searchVersion; bookTarget.value = null; bookPatientId.value = null; patients.value = [] }
+watch(bookDialog, visible => { if (!visible) { bookClosing.value = true; resetBook() } })
+watch(slotDialog, visible => { if (!visible) { slotClosing.value = true; slotForm.value = defaultSlots() } })
+function closeBook() { if (bookDialog.value) bookClosing.value = true; bookDialog.value = false; resetBook() }
+function closeSlots() { if (slotDialog.value) slotClosing.value = true; slotDialog.value = false; slotForm.value = defaultSlots() }
+function clearSelection() { ++viewVersion; scheduleId.value = null; slots.value = []; appointments.value = []; loadingDetail.value = false; closeBook(); closeSlots() }
+function clearAll() { clearSelection(); schedules.value = []; loadingSchedules.value = false }
+function current(id: number, version: number) { return scheduleId.value === id && viewVersion === version }
 async function loadSchedules() {
-  schedules.value = (await client.get('/outpatient/schedules', { params: { date: date.value } })).data.data
-  scheduleId.value = null
+  clearAll(); const version = viewVersion; loadingSchedules.value = true
+  try {
+    const resp = await client.get('/outpatient/schedules', { params: { date: date.value } })
+    if (version === viewVersion) schedules.value = resp.data.data
+  } catch { if (version === viewVersion) clearAll() }
+  finally { if (version === viewVersion) loadingSchedules.value = false }
 }
-async function pickSchedule(row: Record<string, unknown> | null) {
-  scheduleId.value = row ? Number(row.id) : null
-  if (scheduleId.value) await Promise.all([loadSlots(), loadAppointments()])
+async function loadDetail(id: number, version: number) {
+  if (!current(id, version)) return
+  slots.value = []; appointments.value = []; loadingDetail.value = true
+  try {
+    const [slotResp, apptResp] = await Promise.all([
+      client.get(`/outpatient/schedules/${id}/slots`), client.get('/outpatient/appointments', { params: { scheduleId: id } }),
+    ])
+    if (current(id, version)) { slots.value = slotResp.data.data; appointments.value = apptResp.data.data }
+  } catch { if (current(id, version)) clearSelection() }
+  finally { if (current(id, version)) loadingDetail.value = false }
 }
-async function loadSlots() { slots.value = (await client.get(`/outpatient/schedules/${scheduleId.value}/slots`)).data.data }
-async function loadAppointments() { appointments.value = (await client.get('/outpatient/appointments', { params: { scheduleId: scheduleId.value } })).data.data }
-
+async function pickSchedule(row: Row | null) {
+  if (busy.value) return
+  clearSelection()
+  if (!row || !schedules.value.some(s => s.id === row.id)) return
+  scheduleId.value = Number(row.id)
+  await loadDetail(scheduleId.value, viewVersion)
+}
+function openSlots() {
+  if (!isAdmin.value || busy.value || loadingDetail.value || slotClosing.value || slotDialog.value || !scheduleId.value) return
+  slotForm.value = defaultSlots(); slotDialog.value = true
+}
 async function saveSlots() {
-  const rows = slotForm.value.filter(s => s.timeBegin && s.timeEnd)
+  if (!isAdmin.value || busy.value || !slotDialog.value || !scheduleId.value) return
+  const id = scheduleId.value, version = viewVersion
+  const rows = slotForm.value.map(s => ({ ...s })).filter(s => s.timeBegin && s.timeEnd)
   if (!rows.length) { ElMessage.warning('请填时段'); return }
-  await client.post(`/outpatient/schedules/${scheduleId.value}/slots`, { slots: rows })
-  ElMessage.success('时段已保存')
-  slotDialog.value = false
-  await loadSlots()
+  busy.value = true
+  try {
+    await client.post(`/outpatient/schedules/${id}/slots`, { slots: rows })
+    ElMessage.success('时段已保存')
+    if (current(id, version)) { closeSlots(); await loadDetail(id, version) }
+  } catch { if (current(id, version)) clearSelection() }
+  finally { busy.value = false }
 }
-
+function openBook(row: Row) {
+  if (busy.value || loadingDetail.value || bookClosing.value || bookDialog.value || !scheduleId.value || !row.enabled || Number(row.remaining) <= 0 || !slots.value.some(s => s.id === row.id)) return
+  resetBook(); bookTarget.value = { schedule: scheduleId.value, slot: Number(row.id), view: viewVersion }; bookDialog.value = true
+}
 async function searchPatients(kw: string) {
-  if (!kw) return
-  patients.value = (await client.get('/patients', { params: { keyword: kw } })).data.data
+  const seq = ++searchVersion, target = bookTarget.value
+  patients.value = []; bookPatientId.value = null
+  if (!kw.trim() || !bookDialog.value || !target) return
+  try {
+    const resp = await client.get('/patients', { params: { keyword: kw, page: 0, size: 20 } })
+    if (seq === searchVersion && bookDialog.value && bookTarget.value === target) patients.value = resp.data.data.records
+  } catch { if (seq === searchVersion) { patients.value = []; bookPatientId.value = null } }
 }
-function openBook(row: Record<string, unknown>) { bookSlot.value = row; bookPatientId.value = null; bookDialog.value = true }
 async function book() {
-  await client.post('/outpatient/appointments', { slotId: bookSlot.value!.id, patientId: bookPatientId.value, source: '窗口' })
-  ElMessage.success('预约成功')
-  bookDialog.value = false
-  await Promise.all([loadSlots(), loadAppointments()])
+  const target = bookTarget.value, patient = bookPatientId.value
+  if (busy.value || !bookDialog.value || !target || !patient || !current(target.schedule, target.view) || !patients.value.some(p => p.id === patient)) return
+  busy.value = true
+  try {
+    await client.post('/outpatient/appointments', { slotId: target.slot, patientId: patient, source: '窗口' })
+    ElMessage.success('预约成功')
+    if (current(target.schedule, target.view)) { closeBook(); await loadDetail(target.schedule, target.view) }
+  } catch { if (current(target.schedule, target.view)) clearSelection() }
+  finally { busy.value = false }
 }
-async function checkin(row: Record<string, unknown>) {
-  const r = (await client.post(`/outpatient/appointments/${row.id}/checkin`)).data.data
-  ElMessage.success(`签到成功，号序 ${r.regNo}`)
-  await loadAppointments()
+async function changeAppointment(row: Row, checkin: boolean) {
+  if (busy.value || loadingDetail.value || !scheduleId.value || row.status !== 'BOOKED' || !appointments.value.some(a => a.id === row.id)) return
+  const id = scheduleId.value, version = viewVersion, appointment = Number(row.id)
+  busy.value = true
+  try {
+    if (!checkin) {
+      try { await ElMessageBox.confirm('取消该预约？号源将释放。', '确认', { type: 'warning' }) } catch { return }
+      if (!current(id, version)) return
+    }
+    const resp = await client.post(`/outpatient/appointments/${appointment}/${checkin ? 'checkin' : 'cancel'}`)
+    ElMessage.success(checkin ? `签到成功，号序 ${resp.data.data.regNo}` : '已取消')
+    if (current(id, version)) await loadDetail(id, version)
+  } catch { if (current(id, version)) clearSelection() }
+  finally { busy.value = false }
 }
-async function cancelAppt(row: Record<string, unknown>) {
-  await ElMessageBox.confirm('取消该预约？号源将释放。', '确认', { type: 'warning' }).catch(() => null)
-    .then(async (ok) => { if (ok) { await client.post(`/outpatient/appointments/${row.id}/cancel`); ElMessage.success('已取消'); await Promise.all([loadSlots(), loadAppointments()]) } })
-}
-
+watch(date, loadSchedules)
+onBeforeUnmount(clearAll)
 onMounted(loadSchedules)
 </script>
 

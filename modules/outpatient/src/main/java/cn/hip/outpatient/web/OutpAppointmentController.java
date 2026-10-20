@@ -28,6 +28,7 @@ public class OutpAppointmentController {
     private final JdbcTemplate jdbc;
     private final RegistrationService registrationService;
     private final AppointmentService appointmentService;
+    private final cn.hip.outpatient.service.AppointmentAccess access;
 
     public record SlotLine(String timeBegin, String timeEnd, Integer capacity) {}
     public record SlotsReq(List<SlotLine> slots) {}
@@ -37,22 +38,27 @@ public class OutpAppointmentController {
     @PreAuthorize("hasRole('ADMIN')")
     @Transactional
     public R<Void> createSlots(@PathVariable Long scheduleId, @RequestBody SlotsReq req) {
+        access.admin();
         if (req.slots() == null || req.slots().isEmpty()) return R.fail(3120, "时段列表不能为空");
-        var cap = jdbc.queryForList("select capacity from outp_schedule where id = ?", Integer.class, scheduleId);
+        var cap = jdbc.queryForList("select capacity from outp_schedule where id=? for update", Integer.class, scheduleId);
         if (cap.isEmpty()) return R.fail(3001, "号源不存在");
-        int sum = 0;
-        for (var s : req.slots()) {
-            if (s.timeBegin() == null || s.timeEnd() == null || s.capacity() == null || s.capacity() <= 0) {
-                return R.fail(3120, "时段起止时间与容量必填且容量>0");
-            }
-            sum += s.capacity();
+        access.admin();
+        long sum = 0;
+        var begins = new java.util.HashSet<java.time.LocalTime>();
+        for(var existing:jdbc.queryForList("select time_begin::text from outp_schedule_slot where schedule_id=?",String.class,scheduleId))
+            begins.add(java.time.LocalTime.parse(existing));
+        for (var line : req.slots()) {
+            if(line==null || line.timeBegin()==null || line.timeEnd()==null || line.capacity()==null || line.capacity()<=0)
+                return R.fail(3120,"时段起止时间与容量必填且容量>0");
+            try {
+                var begin=java.time.LocalTime.parse(line.timeBegin());
+                var end=java.time.LocalTime.parse(line.timeEnd());
+                if(!end.isAfter(begin) || !begins.add(begin))return R.fail(3120,"时段结束须晚于开始且开始时间不能重复");
+            } catch(java.time.format.DateTimeParseException ex) {return R.fail(3120,"时段时间格式非法");}
+            sum += line.capacity();
         }
-        Integer existing = jdbc.queryForObject(
-                "select coalesce(sum(capacity),0) from outp_schedule_slot where schedule_id = ? and enabled",
-                Integer.class, scheduleId);
-        if (sum + (existing == null ? 0 : existing) > cap.get(0)) {
-            return R.fail(3120, "时段容量合计超过排班总号量");
-        }
+        Long existing = jdbc.queryForObject("select coalesce(sum(capacity),0) from outp_schedule_slot where schedule_id=? and enabled",Long.class,scheduleId);
+        if(sum+(existing==null?0:existing)>cap.getFirst())return R.fail(3120,"时段容量合计超过排班总号量");
         int seq = 0;
         for (var s : req.slots()) {
             jdbc.update("""
@@ -66,6 +72,7 @@ public class OutpAppointmentController {
     /** 时段列表 + 余号（院内需看到停用时段，故 onlyEnabled=false） */
     @GetMapping("/api/outpatient/schedules/{scheduleId}/slots")
     public R<List<Map<String, Object>>> slots(@PathVariable Long scheduleId) {
+        access.staff();
         return R.ok(appointmentService.slots(scheduleId, false));
     }
 
@@ -74,7 +81,7 @@ public class OutpAppointmentController {
     /** 预约：两级原子占号（slot 满 3111；schedule 池满同样 3111 回滚；同患者同排班重复 3112） */
     @PostMapping("/api/outpatient/appointments")
     public R<Map<String, Object>> book(@RequestBody ApptReq req) {
-        var r = appointmentService.book(req.slotId(), req.patientId(), req.source());
+        var r = appointmentService.bookFromDesk(req.slotId(), req.patientId(), req.source());
         if (!r.ok()) return R.fail(r.code(), r.message());
         return R.ok(Map.of("id", r.apptId(), "apptNo", r.apptNo()));
     }
@@ -83,9 +90,14 @@ public class OutpAppointmentController {
     @PostMapping("/api/outpatient/appointments/{id}/checkin")
     @Transactional
     public R<Map<String, Object>> checkin(@PathVariable Long id) {
+        access.staff();
         var rows = jdbc.queryForList(
-                "select schedule_id, patient_id, appt_no, status from outp_appointment where id = ?", id);
+                "select schedule_id, patient_id, appt_no, status from outp_appointment where id = ? for update", id);
         if (rows.isEmpty()) return R.fail(3113, "预约不存在");
+        access.staff();
+        if(!"BOOKED".equals(rows.getFirst().get("status")))return R.fail(3114,"预约状态不允许签到（已签到或已取消）");
+        appointmentService.requireActivePatient(((Number) rows.getFirst().get("patient_id")).longValue());
+        access.staff();
         // 条件更新抢占：并发双签到只有一方成功
         if (jdbc.update("update outp_appointment set status = 'CHECKED_IN' where id = ? and status = 'BOOKED'", id) == 0) {
             return R.fail(3114, "预约状态不允许签到（已签到或已取消）");
@@ -102,13 +114,14 @@ public class OutpAppointmentController {
     /** 取消预约：抢占 BOOKED→CANCELLED，两级释放号源 */
     @PostMapping("/api/outpatient/appointments/{id}/cancel")
     public R<Void> cancel(@PathVariable Long id) {
-        var r = appointmentService.cancel(id);
+        var r = appointmentService.cancelFromDesk(id);
         return r.ok() ? R.ok() : R.fail(r.code(), r.message());
     }
 
     /** 签到台列表：某排班的预约（含患者姓名与状态） */
     @GetMapping("/api/outpatient/appointments")
     public R<List<Map<String, Object>>> list(@RequestParam Long scheduleId) {
+        access.staff();
         return R.ok(jdbc.queryForList("""
                 select a.id, a.appt_no, a.status, a.source, a.registration_id, a.created_at,
                        p.name as patient_name, p.patient_no,

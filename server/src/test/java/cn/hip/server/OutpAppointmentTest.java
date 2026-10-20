@@ -23,7 +23,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** v37：门诊分时段预约挂号（两级占号/签到转挂号/取消回落）+ 病历连续调阅。 */
 @SpringBootTest
 @Transactional
-@org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
+@org.springframework.security.test.context.support.WithMockUser(username = "admin", roles = "ADMIN")
 class OutpAppointmentTest {
 
     @Autowired OutpAppointmentController appt;

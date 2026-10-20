@@ -30,6 +30,7 @@ import java.util.Map;
 public class AppointmentService {
 
     private final JdbcTemplate jdbc;
+    private final AppointmentAccess access;
 
     /** code==0 为成功；否则为业务码（3110/3111/3112），由调用方转成各自入口的响应体 */
     public record BookResult(int code, String message, Long apptId, Integer apptNo) {
@@ -51,6 +52,30 @@ public class AppointmentService {
 
     private static final OpResult OK = new OpResult(0, null);
 
+    /** Mandatory shared patient guard; no staff dependency on the trusted portal entry. */
+    @Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public void requireActivePatient(Long patientId) {
+        var rows=jdbc.queryForList("select active from empi_patient where id=? for share",Boolean.class,patientId);
+        if(rows.isEmpty() || !Boolean.TRUE.equals(rows.getFirst()))
+            throw new RegistrationService.BizException(3115,"预约患者不存在或已停用");
+    }
+
+    @Transactional
+    public BookResult bookFromDesk(Long slotId,Long patientId,String source) {
+        access.staff();
+        return bookInternal(slotId,patientId,source,true);
+    }
+
+    @Transactional
+    public OpResult cancelFromDesk(Long id) {
+        access.staff();
+        jdbc.queryForList("select id from outp_appointment where id=? for update",id);
+        access.staff();
+        var result=cancel(id);
+        access.staff();
+        return result;
+    }
+
     /**
      * 时段列表 + 余号。
      *
@@ -70,10 +95,18 @@ public class AppointmentService {
      */
     @Transactional
     public BookResult book(Long slotId, Long patientId, String source) {
+        return bookInternal(slotId,patientId,source,false);
+    }
+
+    private BookResult bookInternal(Long slotId, Long patientId, String source, boolean desk) {
         var slot = jdbc.queryForList(
                 "select schedule_id from outp_schedule_slot where id = ? and enabled", slotId);
         if (slot.isEmpty()) return BookResult.fail(3110, "时段不存在或已停用");
         Long scheduleId = ((Number) slot.get(0).get("schedule_id")).longValue();
+        requireActivePatient(patientId);
+        if(desk) access.staff();
+        if(source!=null && source.codePointCount(0,source.length())>16)
+            return BookResult.fail(3116,"预约来源不能超过16字符");
         // 查重仅为友好提示（占号前早退零副作用）；真正防线是 uq_appt_active 部分唯一索引
         // （并发下 find-then-insert 会双约——撞索引时 throw 回滚两级占号）。与 register() 同范式。
         Integer dup = jdbc.queryForObject(
@@ -91,6 +124,7 @@ public class AppointmentService {
         }
         Integer booked = jdbc.queryForObject("select booked from outp_schedule where id = ?", Integer.class, scheduleId);
         int apptNo = booked == null ? 0 : booked;
+        if(desk) access.staff();
         try {
             var kh = new GeneratedKeyHolder();
             jdbc.update(con -> {
