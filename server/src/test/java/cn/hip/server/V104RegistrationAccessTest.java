@@ -42,7 +42,7 @@ class V104RegistrationAccessTest {
  @Test void disabledAndUnknownStaffCannotReadRegisterOrCancel()throws Exception {
   long s=schedule(),p=patient(true);String good=actor(),disabled=actor();long r=register(p,s,good);jdbc.update("update sys_user set enabled=false where username=?",disabled);
   for(String who:List.of(disabled,"v104ghost"))for(String role:List.of("ADMIN","CASHIER")){
-   assertEquals(1005,call("GET",BASE+"?date="+java.time.LocalDate.now(),null,who,role).path("code").asInt());
+   assertEquals(1005,call("GET",BASE+"?date="+cn.hip.platform.core.config.BusinessDates.today(),null,who,role).path("code").asInt());
    assertEquals(1005,call("POST",BASE,Map.of("patientId",patient(true),"scheduleId",s),who,role).path("code").asInt());
    assertEquals(1005,call("PUT",BASE+"/"+r+"/cancel",null,who,role).path("code").asInt());
   }assertEquals(1,count("outp_schedule",s));assertEquals("REGISTERED",jdbc.queryForObject("select status from outp_registration where id=?",String.class,r));
@@ -51,7 +51,7 @@ class V104RegistrationAccessTest {
  @Test void missingPatientHasAnObjectErrorBeforeAnyInsert()throws Exception {long s=schedule();assertEquals(3007,call("POST",BASE,Map.of("patientId",-1,"scheduleId",s),actor(),"ADMIN").path("code").asInt());assertEquals(0,count("outp_schedule",s));}
  @Test void cashiersCollaborateAndCanCancelAnInactivePatientsExistingRegistration()throws Exception {
   long s=schedule(),sl=slot(s),p=patient(true);String one=actor(),two=actor();long r=register(p,s,one);
-  assertTrue(ok("GET",BASE+"?date="+java.time.LocalDate.now(),null,two,"CASHIER").toString().contains("\"id\":"+r));
+  assertTrue(ok("GET",BASE+"?date="+cn.hip.platform.core.config.BusinessDates.today(),null,two,"CASHIER").toString().contains("\"id\":"+r));
   jdbc.update("update empi_patient set active=false where id=?",p);ok("PUT",BASE+"/"+r+"/cancel",null,two,"CASHIER");
   assertEquals(0,count("outp_schedule",s));assertEquals(0,count("outp_schedule_slot",sl));assertEquals("CANCELLED",jdbc.queryForObject("select status from outp_order where registration_id=?",String.class,r));
  }
@@ -77,7 +77,7 @@ class V104RegistrationAccessTest {
  @Test void otherRolesCannotReadOrWriteTheDesk()throws Exception {
   long s=schedule(),p=patient(true);String who=actor();long r=register(p,s,who);
   for(String role:List.of("DOCTOR_OUTP","NURSE","QUALITY","TECHNICIAN","PHARMACIST","OPERATION","PORTAL")){
-   assertEquals(1005,call("GET",BASE+"?date="+java.time.LocalDate.now(),null,who,role).path("code").asInt());
+   assertEquals(1005,call("GET",BASE+"?date="+cn.hip.platform.core.config.BusinessDates.today(),null,who,role).path("code").asInt());
    assertEquals(1005,call("POST",BASE,Map.of("patientId",p,"scheduleId",s),who,role).path("code").asInt());
    assertEquals(1005,call("PUT",BASE+"/"+r+"/cancel",null,who,role).path("code").asInt());
   }assertEquals(1,count("outp_schedule",s));
