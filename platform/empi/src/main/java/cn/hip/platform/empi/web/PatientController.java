@@ -2,6 +2,7 @@ package cn.hip.platform.empi.web;
 
 import cn.hip.platform.core.common.R;
 import cn.hip.platform.empi.entity.Patient;
+import cn.hip.platform.empi.service.PatientAccess;
 import cn.hip.platform.empi.service.PatientService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -16,7 +17,7 @@ import java.util.Map;
 public class PatientController {
 
     private final PatientService patientService;
-    private final cn.hip.platform.empi.service.PatientAccess access;
+    private final PatientAccess access;
     private final cn.hip.platform.core.service.ConfigReader configReader;
 
     /** API input allowlist: persistence identifiers, lifecycle and timestamps are server-owned. */
@@ -48,11 +49,10 @@ public class PatientController {
                                          org.springframework.security.core.Authentication auth) {
         var actor=access.actor();
         var p = patientService.search(keyword, page, size);
-        boolean admin = actor.admin();
         return R.ok(Map.of(
                 "total", p.getTotalElements(),
                 "records", p.getContent().stream()
-                        .map(x -> admin ? toDto(x) : maskSensitive(toDto(x))).toList()));
+                        .map(x -> toDto(x, actor)).toList()));
     }
 
     /** 等保：手机号/证件号仅 ADMIN 见明文——**所有**返回患者的出口都要过这道，
@@ -86,8 +86,7 @@ public class PatientController {
         String idErr = idCardError(patient);
         if (idErr != null) return R.fail(2003, idErr);
         if (patient.getSex() == null) patient.setSex("U");
-        var dto = toDto(patientService.registerFromApi(patient));
-        return R.ok(actor.admin() ? dto : maskSensitive(dto));
+        return R.ok(toDto(patientService.registerFromApi(patient), actor));
     }
 
     @PutMapping("/{id}")
@@ -101,11 +100,12 @@ public class PatientController {
         String idErr = idCardError(patient);
         if (idErr != null) return R.fail(2003, idErr);
         // 身份三项（姓名/证件/手机）修改限管理员（上线前审查 P2-2）：非管理员改手机=门户接管跳板
-        var dto = toDto(patientService.updateFromApi(id, patient));
-        return R.ok(actor.admin() ? dto : maskSensitive(dto));
+        return R.ok(toDto(patientService.updateFromApi(id, patient), actor));
     }
 
-    private Map<String, Object> toDto(Patient p) {
+    /** Shared-index field scope applies to every exit, including idempotent POST and no-op PUT.
+     * Null keeps the existing key contract; it does not describe the persisted clinical value. */
+    private Map<String, Object> toDto(Patient p, PatientAccess.Actor actor) {
         var m = new java.util.LinkedHashMap<String, Object>();
         m.put("id", p.getId());
         m.put("patientNo", p.getPatientNo());
@@ -116,10 +116,10 @@ public class PatientController {
         m.put("idType", p.getIdType());
         m.put("idNo", p.getIdNo());
         m.put("phone", p.getPhone());
-        m.put("address", p.getAddress());
-        m.put("insuranceType", p.getInsuranceType());
-        m.put("bloodType", p.getBloodType());
-        m.put("allergyHistory", p.getAllergyHistory());
-        return m;
+        m.put("address", actor.writer() ? p.getAddress() : null);
+        m.put("insuranceType", actor.writer() ? p.getInsuranceType() : null);
+        m.put("bloodType", actor.clinical() ? p.getBloodType() : null);
+        m.put("allergyHistory", actor.clinical() ? p.getAllergyHistory() : null);
+        return actor.admin() ? m : maskSensitive(m);
     }
 }

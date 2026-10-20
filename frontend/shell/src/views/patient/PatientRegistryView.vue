@@ -20,10 +20,10 @@
       <el-table-column prop="age" label="年龄" width="60" />
       <el-table-column prop="idNo" label="证件号" width="180" />
       <el-table-column prop="phone" label="手机号" width="130" />
-      <el-table-column label="医保" width="90">
+      <el-table-column v-if="canWrite" label="医保" width="90">
         <template #default="{ row }">{{ insuranceNames[row.insuranceType] ?? row.insuranceType }}</template>
       </el-table-column>
-      <el-table-column prop="address" label="住址" show-overflow-tooltip />
+      <el-table-column v-if="canWrite" prop="address" label="住址" show-overflow-tooltip />
       <el-table-column label="操作" width="80">
         <template #default="{ row }">
           <el-button v-if="canWrite" link type="primary" :disabled="dialogClosing" @click="openEdit(row)">编辑</el-button>
@@ -79,7 +79,7 @@
               </el-select>
             </el-form-item>
           </el-col>
-          <el-col :span="12">
+          <el-col v-if="canClinical" :span="12">
             <el-form-item label="血型">
               <el-select v-model="form.bloodType" :disabled="!canClinical" clearable style="width: 100%">
                 <el-option v-for="t in ['A', 'B', 'O', 'AB', 'RH-']" :key="t" :label="t" :value="t" />
@@ -89,7 +89,7 @@
           <el-col :span="24">
             <el-form-item label="住址"><el-input v-model="form.address" /></el-form-item>
           </el-col>
-          <el-col :span="24">
+          <el-col v-if="canClinical" :span="24">
             <el-form-item label="过敏史">
               <el-input v-model="form.allergyHistory" :disabled="!canClinical" type="textarea" :rows="2" placeholder="无则留空" />
             </el-form-item>
@@ -124,7 +124,7 @@ interface PatientRow {
   idNo: string | null
   phone: string | null
   address: string | null
-  insuranceType: string
+  insuranceType: string | null
   bloodType: string | null
   allergyHistory: string | null
   age?: number
