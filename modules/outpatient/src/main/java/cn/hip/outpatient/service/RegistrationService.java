@@ -20,6 +20,7 @@ public class RegistrationService {
     private final jakarta.persistence.EntityManager em;
     private final RegistrationAccess access;
     private final ScheduleNumberService numbers;
+    private final RegistrationEligibilityService eligibility;
     private final OutpScheduleRepository scheduleRepository;
     private final OutpRegistrationRepository registrationRepository;
     private final OutpOrderRepository orderRepository;
@@ -39,6 +40,8 @@ public class RegistrationService {
     public OutpRegistration registerFromAppointment(Long patientId, Long scheduleId, int regNo) {
         OutpSchedule schedule = scheduleRepository.findById(scheduleId)
                 .orElseThrow(() -> new BizException(3001, "号源不存在"));
+        eligibility.lock(scheduleId, patientId);
+        if (eligibility.hasPending(scheduleId, patientId)) throw duplicate();
         OutpRegistration reg = new OutpRegistration();
         reg.setRegNo(regNo);
         reg.setPatientId(patientId);
@@ -90,9 +93,9 @@ public class RegistrationService {
             throw new BizException(3007, "挂号患者不存在或已停用");
         }
         if (desk) access.staff();
-        // 查重仅为友好提示；真正的防线是 uq_outp_reg_active 唯一索引（并发下 find-then-insert 会双挂）
-        registrationRepository.findByScheduleIdAndPatientIdAndStatus(scheduleId, patientId, "REGISTERED")
-                .ifPresent(r -> { throw new BizException(3002, "该患者已挂此号，勿重复挂号"); });
+        eligibility.lock(scheduleId, patientId);
+        if (desk) access.staff();
+        if (eligibility.hasPending(scheduleId, patientId)) throw duplicate();
         int regNo = numbers.occupy(scheduleId, 3003);
         if (desk) access.staff();
 
@@ -126,6 +129,10 @@ public class RegistrationService {
             orderRepository.save(regFee);
         }
         return reg;
+    }
+
+    private BizException duplicate() {
+        return new BizException(3002, "该患者此排班已有预约或待接诊挂号，请勿重复挂号");
     }
 
     /** Trusted internal caller; desk authorization is applied by the separate entry point. */

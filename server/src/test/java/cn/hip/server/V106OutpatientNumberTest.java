@@ -83,7 +83,7 @@ class V106OutpatientNumberTest {
  void simultaneousDuplicateLoserRollsBackCapacityAndNumber(int kind)throws Exception{
   Long p=patient();Long other=patient();var pool=Executors.newFixedThreadPool(2);var fs=new ArrayList<Future<Integer>>();
   try{new TransactionTemplate(manager).execute(tx->{jdbc.queryForObject("select id from outp_schedule where id=? for update",Long.class,s);
-   for(int i=0;i<2;i++){Long target=i==0?sl:sl2;var pid=new AtomicInteger();var f=worker(pool,pid,()->kind==0?registrations.register(p,s).getRegNo():appointments.book(target,p,null).apptNo());fs.add(f);assertTrue(waits(pid,f),"both must pass duplicate precheck before waiting");}return true;});
+   for(int i=0;i<2;i++){Long target=i==0?sl:sl2;var pid=new AtomicInteger();var f=worker(pool,pid,()->{if(kind==0)return registrations.register(p,s).getRegNo();var result=appointments.book(target,p,null);return result.ok()?result.apptNo():-result.code();});fs.add(f);assertTrue(waits(pid,f),"both must really wait before the holder releases its lock");}return true;});
    var values=List.of(fs.get(0).get(10,TimeUnit.SECONDS),fs.get(1).get(10,TimeUnit.SECONDS));assertEquals(1,values.stream().filter(x->x==1).count());assertEquals(1,values.stream().filter(x->x==-(kind==0?3002:3112)).count());pools(1,kind);
    assertEquals(2,registrations.register(other,s).getRegNo());pools(2,kind);
   }finally{pool.shutdown();assertTrue(pool.awaitTermination(20,TimeUnit.SECONDS));}

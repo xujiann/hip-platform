@@ -32,6 +32,7 @@ public class AppointmentService {
     private final JdbcTemplate jdbc;
     private final AppointmentAccess access;
     private final ScheduleNumberService numbers;
+    private final RegistrationEligibilityService eligibility;
 
     /** code==0 为成功；否则为业务码（3110/3111/3112），由调用方转成各自入口的响应体 */
     public record BookResult(int code, String message, Long apptId, Integer apptNo) {
@@ -108,12 +109,11 @@ public class AppointmentService {
         if(desk) access.staff();
         if(source!=null && source.codePointCount(0,source.length())>16)
             return BookResult.fail(3116,"预约来源不能超过16字符");
-        // 查重仅为友好提示（占号前早退零副作用）；真正防线是 uq_appt_active 部分唯一索引
-        // （并发下 find-then-insert 会双约——撞索引时 throw 回滚两级占号）。与 register() 同范式。
-        Integer dup = jdbc.queryForObject(
-                "select count(*) from outp_appointment where schedule_id = ? and patient_id = ? and status = 'BOOKED'",
-                Integer.class, scheduleId, patientId);
-        if (dup != null && dup > 0) return BookResult.fail(3112, "该患者此排班已有有效预约");
+        eligibility.lock(scheduleId, patientId);
+        if (desk) access.staff();
+        // A rejected precheck still returns without writes or a rollback-only transaction.
+        if (eligibility.hasPending(scheduleId, patientId))
+            return BookResult.fail(3112, "该患者此排班已有预约或待接诊挂号");
         // 两级占号：先 slot 后 schedule，任一失败整体回滚（同一事务）
         if (jdbc.update("update outp_schedule_slot set booked = booked + 1 where id = ? and booked < capacity",
                 slotId) == 0) {

@@ -24,6 +24,7 @@ import java.util.Map;
 @PreAuthorize("hasAnyRole('ADMIN','CASHIER')")
 @RequiredArgsConstructor
 public class OutpAppointmentController {
+    private final cn.hip.outpatient.service.RegistrationEligibilityService eligibility;
 
     private final JdbcTemplate jdbc;
     private final RegistrationService registrationService;
@@ -97,6 +98,8 @@ public class OutpAppointmentController {
         access.staff();
         if(!"BOOKED".equals(rows.getFirst().get("status")))return R.fail(3114,"预约状态不允许签到（已签到或已取消）");
         appointmentService.requireActivePatient(((Number) rows.getFirst().get("patient_id")).longValue());
+        eligibility.lock(((Number) rows.getFirst().get("schedule_id")).longValue(),
+                ((Number) rows.getFirst().get("patient_id")).longValue());
         access.staff();
         // 条件更新抢占：并发双签到只有一方成功
         if (jdbc.update("update outp_appointment set status = 'CHECKED_IN' where id = ? and status = 'BOOKED'", id) == 0) {
