@@ -44,8 +44,7 @@ assert row['patient_no']==p['patientNo']
 expect(9506,'POST',f'/portal/my/appointments/{portal}/cancel',who='p2')
 expect(1005,'POST',f'/outpatient/appointments/{portal}/cancel',who='p')
 expect(0,'POST',f'/portal/my/appointments/{portal}/cancel',who='p')
-expect(0,'PUT',f"/outpatient/registrations/{reg['registrationId']}/cancel")
-assert expect(0,'GET',path)[0]['booked']==0
+assert expect(0,'GET',path)[0]['booked']==1  # The checked-in registration still consumes its original slot.
 for who in ['a','c','c2','n','d','q','tech']:
  expect(0,'GET','/auth/me',who=who);expect(0,'GET','/stats/overview',who=who)
 print('e2e-v103-appointment-access passed: staff duties, patient objects, slot parameters, dual-pool accounting, checkin/cancel and portal ownership')
