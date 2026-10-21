@@ -482,7 +482,7 @@
             </el-table-column>
             <el-table-column label="" width="70">
               <template #default="{ row }">
-                <el-button v-if="row.status === 'CREATED'" link type="danger" @click="cancelOrder(row)">作废</el-button>
+                <el-button v-if="row.status === 'CREATED'" link type="danger" :disabled="cancellingOrder !== null" @click="cancelOrder(row)">作废</el-button>
                 <!-- v74 复核补入口：检验发布后医嘱置 EXECUTED，此时报告可打。此前 lab-report 打印页全前端零入口。 -->
                 <el-button v-if="row.orderType === 'LAB' && row.status === 'EXECUTED'" link type="primary"
                            @click="printLabReport(row)">报告</el-button>
@@ -656,7 +656,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { fmtDateTime, todayLocal } from '../../utils/date'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client, { type BizError } from '../../api/client'
@@ -684,6 +684,10 @@ const orderStatusTag: Record<string, string> = {
 const today = ref(todayLocal())
 const worklist = ref<Record<string, unknown>[]>([])
 const current = ref<Record<string, unknown> | null>(null)
+let workspaceGeneration = 0
+let workspaceAlive = true
+const cancellingOrder = ref<number | null>(null)
+onUnmounted(() => { workspaceAlive = false; workspaceGeneration++ })
 const historyVisible = ref(false)
 const history = ref<Record<string, unknown>[]>([])
 /** v80 审阅修补二（R2-2）：打开的这次就诊被 4036 拒（非当日且非本人接诊）——工作区空态换一句说明 */
@@ -1196,6 +1200,7 @@ async function loadWorklist() {
 }
 
 async function openPatient(row: Record<string, unknown> | null) {
+  workspaceGeneration++
   warnIfLeavingUnsigned(row)
   current.value = row
   currentEmrId.value = null   // v55：切患者先清，别让上一位的 id 挂在这一位的按钮上
@@ -1705,9 +1710,28 @@ async function submitOrders(kind: 'rx' | 'lab') {
 }
 
 async function cancelOrder(row: Record<string, unknown>) {
-  await client.put(`/outpatient/doctor/orders/${row.id}/cancel`)
-  ElMessage.success('已作废')
-  await openPatient(current.value)
+  const visit = current.value
+  if (!workspaceAlive || !visit || cancellingOrder.value !== null || row.status !== 'CREATED'
+      || row.registrationId !== visit.registrationId || !orders.value.includes(row)) return
+  const generation = workspaceGeneration
+  const stillCurrent = () => workspaceAlive && generation === workspaceGeneration && current.value === visit
+  cancellingOrder.value = row.id as number
+  try {
+    try {
+      await client.put(`/outpatient/doctor/orders/${row.id}/cancel`)
+      if (stillCurrent()) ElMessage.success('已作废')
+    } catch (error) {
+      // The API client displays the business error. Refresh charged state after the old CREATED row is rejected.
+      if ((error as BizError).bizCode !== 4007) throw error
+    }
+    if (!stillCurrent()) return
+    orders.value = []
+    const resp = await client.get(`/outpatient/doctor/${visit.registrationId}/workspace`)
+    if (stillCurrent()) orders.value = resp.data.data.orders ?? []
+    // Refreshing orders must not overwrite unsaved EMR/diagnosis edits or reopen another patient.
+  } finally {
+    cancellingOrder.value = null
+  }
 }
 
 onMounted(async () => {
