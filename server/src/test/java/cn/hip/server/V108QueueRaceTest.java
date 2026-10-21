@@ -52,7 +52,7 @@ class V108QueueRaceTest {
 
     @BeforeEach
     void setup() {
-        String tag = "v108qr" + System.nanoTime();
+        String tag = "Q108" + Long.toUnsignedString(System.nanoTime(), 36);
         username = tag;
         dept = jdbc.queryForObject("insert into sys_dept(code,name,type) values (?,?,'CLINICAL') returning id",
                 Long.class, tag, tag);
