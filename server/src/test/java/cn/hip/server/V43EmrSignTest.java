@@ -18,12 +18,15 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -46,7 +49,7 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @SpringBootTest
 @Transactional
-@WithMockUser(roles = "ADMIN")
+@WithMockUser(username = "admin", roles = "ADMIN")
 class V43EmrSignTest {
 
     @Autowired DoctorStationController doctorStationController;
@@ -61,7 +64,28 @@ class V43EmrSignTest {
     private Authentication userAuth(String username) {
         jdbc.update("insert into sys_user(username, password, real_name, enabled) "
                 + "values (?, 'x', ?, true) on conflict (username) do nothing", username, username + "医生");
-        return new UsernamePasswordAuthenticationToken(username, null, List.of());
+        return new UsernamePasswordAuthenticationToken(username, null,
+                List.of(new SimpleGrantedAuthority("ROLE_DOCTOR_OUTP")));
+    }
+
+    /** Direct controller calls must use the same real doctor in the argument and security context. */
+    private <T> T asUser(Authentication auth, Supplier<T> operation) {
+        Authentication previous = SecurityContextHolder.getContext().getAuthentication();
+        SecurityContextHolder.getContext().setAuthentication(auth);
+        try { return operation.get(); }
+        finally { SecurityContextHolder.getContext().setAuthentication(previous); }
+    }
+
+    private cn.hip.platform.core.common.R<OutpEmr> saveEmrAs(Long rid, SaveEmrRequest req, Authentication auth) {
+        return asUser(auth, () -> doctorStationController.saveEmr(rid, req, auth));
+    }
+
+    private cn.hip.platform.core.common.R<Object> signEmrAs(Long rid, Authentication auth) {
+        return asUser(auth, () -> doctorStationController.signEmr(rid, auth));
+    }
+
+    private cn.hip.platform.core.common.R<Void> amendEmrAs(Long rid, AmendRequest req, Authentication auth) {
+        return asUser(auth, () -> doctorStationController.amendEmr(rid, req, auth));
     }
 
     /** 建患者 + 排班 + 挂号 + 接诊，返回 registrationId */
@@ -110,10 +134,10 @@ class V43EmrSignTest {
         Authentication doc = userAuth("v43doc_a");
         Long rid = visitedRegistration();
 
-        assertEquals(0, doctorStationController.saveEmr(rid,
+        assertEquals(0, saveEmrAs(rid,
                 new SaveEmrRequest(emrOf("咽痛发热2天"), List.of()), doc).getCode());
 
-        var signed = doctorStationController.signEmr(rid, doc);
+        var signed = signEmrAs(rid, doc);
         assertEquals(0, signed.getCode(), signed.getMessage());
 
         var row = emrRow(rid);
@@ -121,7 +145,7 @@ class V43EmrSignTest {
         assertNotNull(row.get("signed_at"), "签名时间必须落库");
 
         // 签名前这一步返 4018；签名后才通——这正是本条要证明的「路径可达」
-        var amend = doctorStationController.amendEmr(rid,
+        var amend = amendEmrAs(rid,
                 new AmendRequest("主诉应为「咽痛发热3天」", "录入笔误"), doc);
         assertEquals(0, amend.getCode(), amend.getMessage());
 
@@ -136,9 +160,9 @@ class V43EmrSignTest {
     void signSuccessBodyShapeUnchanged() {
         Authentication doc = userAuth("v43doc_b");
         Long rid = visitedRegistration();
-        doctorStationController.saveEmr(rid, new SaveEmrRequest(emrOf("头痛1天"), List.of()), doc);
+        saveEmrAs(rid, new SaveEmrRequest(emrOf("头痛1天"), List.of()), doc);
 
-        var r = doctorStationController.signEmr(rid, doc);
+        var r = signEmrAs(rid, doc);
         assertEquals(0, r.getCode());
         @SuppressWarnings("unchecked")
         var body = (Map<String, Object>) r.getData();
@@ -151,8 +175,8 @@ class V43EmrSignTest {
     void workspaceCarriesSignerNameForFrozenView() {
         Authentication doc = userAuth("v43doc_c");
         Long rid = visitedRegistration();
-        doctorStationController.saveEmr(rid, new SaveEmrRequest(emrOf("咳嗽3天"), List.of()), doc);
-        doctorStationController.signEmr(rid, doc);
+        saveEmrAs(rid, new SaveEmrRequest(emrOf("咳嗽3天"), List.of()), doc);
+        signEmrAs(rid, doc);
 
         var ws = doctorStationController.workspace(rid).getData();
         assertEquals("v43doc_c医生", ws.get("emrSignerName"), "冻结态要能显示谁签的");
@@ -165,7 +189,7 @@ class V43EmrSignTest {
     void worklistFlagsWrittenButUnsignedEmr() {
         Authentication doc = userAuth("v43doc_d");
         Long rid = visitedRegistration();
-        doctorStationController.saveEmr(rid, new SaveEmrRequest(emrOf("腹痛半日"), List.of()), doc);
+        saveEmrAs(rid, new SaveEmrRequest(emrOf("腹痛半日"), List.of()), doc);
         entityManager.flush();
 
         var mine = doctorStationController.worklist(BusinessDates.today(), null, null, null, null, null).getData().stream()
@@ -181,10 +205,10 @@ class V43EmrSignTest {
     void repeatedSignRejected() {
         Authentication doc = userAuth("v43doc_e");
         Long rid = visitedRegistration();
-        doctorStationController.saveEmr(rid, new SaveEmrRequest(emrOf("发热1天"), List.of()), doc);
-        assertEquals(0, doctorStationController.signEmr(rid, doc).getCode());
+        saveEmrAs(rid, new SaveEmrRequest(emrOf("发热1天"), List.of()), doc);
+        assertEquals(0, signEmrAs(rid, doc).getCode());
 
-        assertEquals(4010, doctorStationController.signEmr(rid, doc).getCode(), "已签名不可重复签名");
+        assertEquals(4010, signEmrAs(rid, doc).getCode(), "已签名不可重复签名");
     }
 
     /** 非书写医师本人签名被拒（v43 新增 4023） */
@@ -193,9 +217,9 @@ class V43EmrSignTest {
         Authentication author = userAuth("v43doc_f");
         Authentication other = userAuth("v43doc_g");
         Long rid = visitedRegistration();
-        doctorStationController.saveEmr(rid, new SaveEmrRequest(emrOf("胸闷2天"), List.of()), author);
+        saveEmrAs(rid, new SaveEmrRequest(emrOf("胸闷2天"), List.of()), author);
 
-        var r = doctorStationController.signEmr(rid, other);
+        var r = signEmrAs(rid, other);
         assertEquals(4023, r.getCode(), "别人写的病历不能替签");
         assertNull(emrRow(rid).get("signature"), "被拒时不得落任何签名值");
     }
@@ -208,10 +232,10 @@ class V43EmrSignTest {
         // 五段正文全空（含只有空白字符）也算空——签白纸不成立
         OutpEmr blank = new OutpEmr();
         blank.setChiefComplaint("   ");
-        assertEquals(0, doctorStationController.saveEmr(rid,
+        assertEquals(0, saveEmrAs(rid,
                 new SaveEmrRequest(blank, List.of()), doc).getCode());
 
-        assertEquals(4022, doctorStationController.signEmr(rid, doc).getCode(), "空病历不可签名");
+        assertEquals(4022, signEmrAs(rid, doc).getCode(), "空病历不可签名");
     }
 
     /** 病历不存在时签名被拒（既有 4009，本版未改码） */
@@ -219,7 +243,7 @@ class V43EmrSignTest {
     void signWithoutEmrRejected() {
         Authentication doc = userAuth("v43doc_i");
         Long rid = visitedRegistration();
-        assertEquals(4009, doctorStationController.signEmr(rid, doc).getCode());
+        assertEquals(4009, signEmrAs(rid, doc).getCode());
     }
 
     /** 签名即冻结原文（既有 4008，签名入口上线后这条守卫才真正会被触发） */
@@ -227,10 +251,10 @@ class V43EmrSignTest {
     void signedEmrIsFrozenForEdit() {
         Authentication doc = userAuth("v43doc_j");
         Long rid = visitedRegistration();
-        doctorStationController.saveEmr(rid, new SaveEmrRequest(emrOf("眩晕3天"), List.of()), doc);
-        assertEquals(0, doctorStationController.signEmr(rid, doc).getCode());
+        saveEmrAs(rid, new SaveEmrRequest(emrOf("眩晕3天"), List.of()), doc);
+        assertEquals(0, signEmrAs(rid, doc).getCode());
 
-        assertEquals(4008, doctorStationController.saveEmr(rid,
+        assertEquals(4008, saveEmrAs(rid,
                 new SaveEmrRequest(emrOf("篡改"), List.of()), doc).getCode(), "签名后原文不可改");
     }
 }

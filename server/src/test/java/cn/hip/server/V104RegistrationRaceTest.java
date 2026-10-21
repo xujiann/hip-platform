@@ -29,6 +29,10 @@ class V104RegistrationRaceTest {
  @Autowired jakarta.persistence.EntityManager em;
  Long p,s,sl,a,r,u;String username;
  void auth(){SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(username,null,List.of(new SimpleGrantedAuthority("ROLE_CASHIER"))));}
+ /** Only the clinical side of this desk/doctor race receives the doctor's duty. */
+ <T> T asDoctor(Supplier<T> operation){var previous=SecurityContextHolder.getContext().getAuthentication();
+  SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(username,null,List.of(new SimpleGrantedAuthority("ROLE_DOCTOR_OUTP"))));
+  try{return operation.get();}finally{SecurityContextHolder.getContext().setAuthentication(previous);}}
  void fixture(boolean registered){
   String tag="V104R"+System.nanoTime();username=tag.toLowerCase();
   u=jdbc.queryForObject("insert into sys_user(username,password,real_name,enabled) values (?,'x',?,true) returning id",Long.class,username,username);
@@ -98,8 +102,8 @@ class V104RegistrationRaceTest {
   fixture(true);var pool=Executors.newSingleThreadExecutor();var pid=new AtomicInteger();var results=new ArrayList<Future<Integer>>();
   try {
    new TransactionTemplate(manager).execute(tx->{
-    if(visitFirst==1){doctor.startVisit(r,u);em.flush();}else service.cancel(r);
-    var f=worker(pool,pid,()->visitFirst==1?service.cancelFromDesk(r):doctor.startVisit(r,u));results.add(f);assertTrue(waits(pid,f));return true;
+    if(visitFirst==1){asDoctor(()->doctor.startVisit(r,u));em.flush();}else service.cancel(r);
+    var f=worker(pool,pid,()->visitFirst==1?service.cancelFromDesk(r):asDoctor(()->doctor.startVisit(r,u)));results.add(f);assertTrue(waits(pid,f));return true;
    });
    assertEquals(visitFirst==1?3005:4002,results.get(0).get(10,TimeUnit.SECONDS));counts(visitFirst);
    assertEquals(visitFirst==1?"VISITED":"CANCELLED",jdbc.queryForObject("select status from outp_registration where id=?",String.class,r));

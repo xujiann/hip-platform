@@ -20,19 +20,22 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /** 审方状态机 + LIS 标本流转 + RIS 报告流转 */
 @SpringBootTest
 @Transactional
-@org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
+@org.springframework.security.test.context.support.WithMockUser(username = "admin", roles = "ADMIN")
 class LisRisReviewFlowTest {
 
     @Autowired cn.hip.server.support.TestSeeds seeds;
@@ -61,6 +64,17 @@ class LisRisReviewFlowTest {
         return new UsernamePasswordAuthenticationToken(username, null, List.of());
     }
 
+    /** Clinical setup runs as its real doctor, then restores the reviewer/technician test identity. */
+    private <T> T asFixtureDoctor(Function<Long, T> operation) {
+        Authentication previous = SecurityContextHolder.getContext().getAuthentication();
+        Authentication doctor = userAuth("flowFixtureDoctor");
+        Long doctorId = jdbc.queryForObject("select id from sys_user where username=?", Long.class, doctor.getName());
+        SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(doctor.getName(), null,
+                List.of(new SimpleGrantedAuthority("ROLE_DOCTOR_OUTP"))));
+        try { return operation.apply(doctorId); }
+        finally { SecurityContextHolder.getContext().setAuthentication(previous); }
+    }
+
     /** JPA 写入在事务内未 flush 时对 JdbcTemplate 不可见，混用前显式刷盘 */
     private void flush() {
         entityManager.flush();
@@ -78,21 +92,22 @@ class LisRisReviewFlowTest {
         s.setCapacity(5);
         s = scheduleRepository.save(s);
         Long rid = registrationService.register(pid, s.getId()).getId();
-        userAuth("flowFixtureDoctor");
-        Long doctorId = jdbc.queryForObject("select id from sys_user where username='flowFixtureDoctor'", Long.class);
-        doctorStationService.startVisit(rid, doctorId);
-        flush(); // 后续夹具通过 JDBC 读取真实书写人，不能读到尚未刷盘的旧 null。
+        asFixtureDoctor(doctorId -> {
+            doctorStationService.startVisit(rid, doctorId);
+            flush(); // 后续夹具通过 JDBC 读取真实书写人，不能读到尚未刷盘的旧 null。
+            return rid;
+        });
         return rid;
     }
 
     @Test
-    @org.springframework.security.test.context.support.WithMockUser(roles = "PHARMACIST")
+    @org.springframework.security.test.context.support.WithMockUser(username = "admin", roles = "PHARMACIST")
     void rejectedPrescriptionIsCancelledAndCannotBeReviewedTwice() {
         Long rid = visitedRegistration();
         Long drugId = seeds.drug("布洛芬").getId();
-        Long orderId = doctorStationService.createOrders(rid,
+        Long orderId = asFixtureDoctor(doctorId -> doctorStationService.createOrders(rid,
                 List.of(new OrderLine("DRUG", drugId, 1, "口服", "bid", "1粒", 3)),
-                jdbc.queryForObject("select doctor_id from outp_registration where id=?", Long.class, rid)).get(0).getId();
+                doctorId).get(0).getId());
 
         assertEquals(0, reviewController.reject(orderId, "用量不适宜", admin).getCode());
         var order = orderRepository.findById(orderId).orElseThrow();
@@ -106,8 +121,8 @@ class LisRisReviewFlowTest {
     void lisSampleFlowExecutesOrderAndRaisesCriticalAlert() {
         Long rid = visitedRegistration();
         Long labItem = seeds.chargeItem("血常规", "LAB").getId();
-        Long orderId = doctorStationService.createOrders(rid,
-                List.of(new OrderLine("LAB", labItem, 1, null, null, null, null)), null).get(0).getId();
+        Long orderId = asFixtureDoctor(doctorId -> doctorStationService.createOrders(rid,
+                List.of(new OrderLine("LAB", labItem, 1, null, null, null, null)), doctorId).get(0).getId());
         chargeService.settle(rid, "CASH", null);
         flush();
 
@@ -129,8 +144,8 @@ class LisRisReviewFlowTest {
     void risReportMustBeWrittenBeforeVerify() {
         Long rid = visitedRegistration();
         Long examItem = seeds.chargeItem("心电图", "EXAM").getId();
-        Long orderId = doctorStationService.createOrders(rid,
-                List.of(new OrderLine("EXAM", examItem, 1, null, null, null, null)), null).get(0).getId();
+        Long orderId = asFixtureDoctor(doctorId -> doctorStationService.createOrders(rid,
+                List.of(new OrderLine("EXAM", examItem, 1, null, null, null, null)), doctorId).get(0).getId());
         chargeService.settle(rid, "CASH", null);
         flush();
 
