@@ -503,12 +503,18 @@ assert r['code'] == 5275 and '待执行' in (r.get('message') or ''), f'已完�
 assert len(blocks_of(sA)) == 4, '5275 不加块'
 # 旧世界路径（不传 techOrderId）逐字照旧：新块不挂、医嘱 block_id 仍空、进度恒待切片
 rs2 = tech_order(sA, None, 'RESAMPLE', None)
+# Identify this action by its newly appended node, not by wall-clock order: the clock can move backwards.
+_grossing_before = {x['id'] for x in trail(sA)['nodes']}
 gl = ok(api('POST', '/pathology/process/grossing', {'specimenId': sA, 'append': True, 'blocks': [{'tissueDesc': '旧世界补取材'}]}), '补取材（不带 techOrderId）')
 assert gl.get('techOrderId') is None and gl.get('techOrderBlockBackfilled') is False and gl['blocks'][0].get('tech_order_id') is None, f'{gl}'
 assert tech_row(sA, rs2).get('block_id') is None
 assert_progress(sA, rs2, 'PENDING_SECTION', '待切片', 0, 0)
 assert_derived(sA, rs2, None, 0, None)
-assert '补取材医嘱' not in str([x for x in trail(sA)['nodes'] if x.get('node') == 'GROSSING'][-1].get('remark')), '不挂接的节点备注不提医嘱'
+_grossing_added = [x for x in trail(sA)['nodes'] if x['id'] not in _grossing_before and x.get('node') == 'GROSSING']
+assert len(_grossing_added) == 1, f'本次补取材须且只追加一条GROSSING节点：{_grossing_added}'
+_grossing_remark = _grossing_added[0].get('remark')
+assert isinstance(_grossing_remark, str) and _grossing_remark, '本次取材节点须带真实备注'
+assert '补取材医嘱' not in _grossing_remark, f'不挂接的本次节点备注不提医嘱：{_grossing_added[0]}'
 
 # ---------------------------------------------------------------------------
 # v62（2563 复核第二条）：完成 gate 认「补取材已出块」——三档 gate 下「已出块、未切片」的 RESAMPLE 医嘱都能完成。
