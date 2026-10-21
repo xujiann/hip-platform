@@ -437,6 +437,7 @@ ok(api('POST', '/pathology/process/grossing', {'specimenId': sC, 'grossText': '�
 
 # 正向：append=true 带 techOrderId → 两块都挂医嘱、医嘱 block_id 回写首块、GROSSING 节点备注带医嘱、SAMPLED、
 # blocks_derived 列出**为本医嘱补出的每一块**（v60 复核修补：旧写法被回写的 block_id 短路，只显示第 1 块）
+_linked_grossing_before = {x['id'] for x in trail(sA)['nodes']}
 ga = ok(api('POST', '/pathology/process/grossing',
             {'specimenId': sA, 'grossText': '补取材灰白组织两块 ' + uniq('G'), 'append': True, 'remark': '补切缘',
              'blocks': [{'tissueDesc': '切缘一'}, {'tissueDesc': '切缘二'}], 'techOrderId': rs}), '补取材挂接 RESAMPLE（修复前无此入参）')
@@ -451,8 +452,11 @@ assert row.get('block_id') == nb1 and row.get('block_code') == code1, f'**医嘱
 assert_progress(sA, rs, 'SAMPLED', '已补取材待切片', 0, 0)
 assert_derived(sA, rs, code1 + '、' + code2, 2, None)
 gn = [x for x in trail(sA).get('nodes') or [] if x.get('node') == 'GROSSING']
-assert len(gn) == 2 and f'补取材医嘱#{rs}' in str(gn[-1].get('remark')) and '取材产出 2 块' in str(gn[-1].get('remark')), f'GROSSING 节点备注带医嘱：{gn}'
-assert gn[-1].get('occurred_at') and gn[-1].get('operator_id'), f'节点带人与时刻（库端 now()）：{gn[-1]}'
+_linked_grossing_added = [x for x in gn if x['id'] not in _linked_grossing_before]
+assert len(gn) == 2 and len(_linked_grossing_added) == 1, f'GROSSING总数及本次新增节点唯一：{gn}'
+_linked_grossing_node = _linked_grossing_added[0]
+assert f'补取材医嘱#{rs}' in str(_linked_grossing_node.get('remark')) and '取材产出 2 块' in str(_linked_grossing_node.get('remark')), f'本次GROSSING节点备注带医嘱：{_linked_grossing_node}'
+assert _linked_grossing_node.get('occurred_at') and _linked_grossing_node.get('operator_id'), f'节点带人与时刻（库端 now()）：{_linked_grossing_node}'
 # 再补一块：block_id 已有值不覆盖，挂接蜡块数 3
 ga2 = ok(api('POST', '/pathology/process/grossing', {'specimenId': sA, 'append': True, 'blocks': [{'tissueDesc': '切缘三'}], 'techOrderId': rs}), '再补一块')
 assert ga2.get('techOrderBlockBackfilled') is False and ga2['blocks'][0].get('tech_order_id') == rs, f'{ga2}'
