@@ -329,7 +329,7 @@ public class PortalController {
 
     // ===== v40 ① 分时段预约（院内 v37 能力的患者端入口，占号逻辑同一份 AppointmentService） =====
 
-    /** 某排班的可约时段 + 余号（患者端只看在用时段） */
+    /** 某排班的可约时段 + 余号（患者端只看启用排班下的启用时段；停诊或缺失返回空列表） */
     @GetMapping("/schedules/{scheduleId}/slots")
     public R<List<Map<String, Object>>> scheduleSlots(@PathVariable Long scheduleId) {
         return R.ok(appointmentService.slots(scheduleId, true));

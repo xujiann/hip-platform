@@ -8,7 +8,9 @@
     <el-tabs v-model="tab" class="tabs" stretch>
       <el-tab-pane label="预约挂号" name="book">
         <el-date-picker v-model="date" type="date" value-format="YYYY-MM-DD" :clearable="false"
-                        style="width: 100%; margin-bottom: 8px" @change="loadSchedules" />
+                        style="width: 100%; margin-bottom: 8px" @change="loadSchedules()" />
+        <el-button link :disabled="schedulesLoading" @click="loadSchedules()">刷新号源</el-button>
+        <el-empty v-if="!schedulesLoading && !schedules.length" description="暂无可预约号源，请刷新或更换日期" />
         <el-card v-for="s in schedules" :key="s.id as number" class="item" shadow="never">
           <div class="row">
             <div>
@@ -17,20 +19,21 @@
                 · {{ s.regType === 'EXPERT' ? '专家号' : '普通号' }} · ¥{{ s.fee }}</span>
             </div>
             <div>
-              <el-button size="small" :disabled="Number(s.remaining) <= 0" @click="openSlots(s)">
+              <el-button size="small" :disabled="schedulesLoading || Number(s.remaining) <= 0" @click="openSlots(s)">
                 {{ Number(s.remaining) > 0 ? `选时段(余${s.remaining})` : '已约满' }}
               </el-button>
-              <el-button type="success" size="small" :disabled="Number(s.remaining) <= 0" @click="book(s)">
+              <el-button type="success" size="small" :disabled="booking || schedulesLoading || Number(s.remaining) <= 0" @click="book(s)">
                 直接挂号
               </el-button>
             </div>
           </div>
           <!-- 分时段预约：选中该排班后展开时段与余号（避免到院集中候诊） -->
           <div v-if="slotScheduleId === s.id" class="slots">
-            <el-empty v-if="!slots.length" description="该号源未开放分时段，可直接挂号" :image-size="60" />
+            <div v-if="slotsLoading" class="muted">正在加载时段…</div>
+            <el-empty v-else-if="!slots.length" description="暂无可预约时段，请刷新号源" :image-size="60" />
             <div v-for="t in slots" :key="t.id as number" class="row slot-line">
               <span>{{ String(t.time_begin).slice(0, 5) }} - {{ String(t.time_end).slice(0, 5) }}</span>
-              <el-button type="primary" size="small" :disabled="Number(t.remaining) <= 0"
+              <el-button type="primary" size="small" :disabled="booking || slotsLoading || schedulesLoading || Number(t.remaining) <= 0"
                          @click="bookSlot(t)">
                 {{ Number(t.remaining) > 0 ? `预约(余${t.remaining})` : '已约满' }}
               </el-button>
@@ -49,7 +52,7 @@
             </div>
             <div>
               <el-tag size="small" :type="apptTag[a.status as string]">{{ apptNames[a.status as string] }}</el-tag>
-              <el-button v-if="a.status === 'BOOKED'" type="danger" link size="small"
+              <el-button v-if="a.status === 'BOOKED'" type="danger" link size="small" :disabled="booking"
                          @click="cancelAppt(a)">取消</el-button>
             </div>
           </div>
@@ -201,7 +204,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { fmtDate, todayLocal } from '../../utils/date'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
@@ -225,6 +228,12 @@ const guided = ref(false)
 const slots = ref<Record<string, unknown>[]>([])
 const slotScheduleId = ref<unknown>(null)
 const appts = ref<Record<string, unknown>[]>([])
+const schedulesLoading = ref(false)
+const slotsLoading = ref(false)
+const booking = ref(false)
+let alive = true
+let catalogRequest = 0
+let slotRequest = 0
 // v40 我的住院
 const admissions = ref<Record<string, unknown>[]>([])
 const admission = ref<Record<string, unknown> | null>(null)
@@ -238,8 +247,32 @@ const regTag: Record<string, string> = { REGISTERED: 'success', CANCELLED: 'info
 const apptNames: Record<string, string> = { BOOKED: '待就诊', CHECKED_IN: '已签到', CANCELLED: '已取消' }
 const apptTag: Record<string, string> = { BOOKED: 'success', CHECKED_IN: '', CANCELLED: 'info' }
 
-async function loadSchedules() {
-  schedules.value = (await portal.get('/schedules', { params: { date: date.value } })).data.data
+function clearSlots() {
+  slotRequest++
+  slotScheduleId.value = null
+  slots.value = []
+  slotsLoading.value = false
+}
+function currentSlot(request: number, sid: unknown, day: string) {
+  return alive && request === slotRequest && sid === slotScheduleId.value && day === date.value
+}
+
+async function loadSchedules(keepSelection = false) {
+  if (!alive) return
+  const request = ++catalogRequest
+  const day = date.value
+  schedulesLoading.value = true
+  if (!keepSelection) { schedules.value = []; clearSlots() }
+  try {
+    const resp = await portal.get('/schedules', { params: { date: day } })
+    if (!alive || request !== catalogRequest || day !== date.value) return
+    schedules.value = resp.data.data
+    if (slotScheduleId.value !== null && !schedules.value.some(s => s.id === slotScheduleId.value)) clearSlots()
+  } catch {
+    if (alive && request === catalogRequest) { schedules.value = []; clearSlots() }
+  } finally {
+    if (alive && request === catalogRequest) schedulesLoading.value = false
+  }
 }
 
 async function loadMine() {
@@ -277,41 +310,77 @@ async function doGuide() {
 }
 
 async function book(s: Record<string, unknown>) {
-  const resp = await portal.post('/register', { scheduleId: s.id })
-  const d = resp.data.data
-  ElMessage.success(`预约成功：${d.deptName} ${d.visitDate} 第 ${d.regNo} 号`)
-  await Promise.all([loadSchedules(), loadMine()])
-  tab.value = 'regs'
+  if (!alive || booking.value || schedulesLoading.value || !schedules.value.some(row => row.id === s.id)) return
+  const day = date.value, request = catalogRequest, sid = s.id
+  booking.value = true
+  clearSlots()
+  try {
+    const resp = await portal.post('/register', { scheduleId: sid })
+    if (!alive) return
+    const mine = loadMine()
+    if (request !== catalogRequest || day !== date.value) { await mine; return }
+    const d = resp.data.data
+    ElMessage.success(`预约成功：${d.deptName} ${d.visitDate} 第 ${d.regNo} 号`)
+    const refreshed = loadSchedules(), stamp = catalogRequest
+    await Promise.all([refreshed, mine])
+    if (alive && stamp === catalogRequest && day === date.value) tab.value = 'regs'
+  } catch {
+    if (alive && request === catalogRequest && day === date.value) await loadSchedules()
+  } finally { booking.value = false }
 }
 
-/** 展开/收起某排班的时段（再次点击同一排班即收起） */
+/** Slot rows are bound to the catalog/date that opened them; late replies cannot replace another panel. */
 async function openSlots(s: Record<string, unknown>) {
-  if (slotScheduleId.value === s.id) {
-    slotScheduleId.value = null
-    slots.value = []
-    return
+  if (!alive || schedulesLoading.value || !schedules.value.some(row => row.id === s.id)) return
+  if (slotScheduleId.value === s.id) { clearSlots(); return }
+  clearSlots()
+  const sid = s.id, day = date.value, request = slotRequest
+  slotScheduleId.value = sid
+  slotsLoading.value = true
+  try {
+    const resp = await portal.get(`/schedules/${sid}/slots`)
+    if (!currentSlot(request, sid, day)) return
+    slots.value = resp.data.data
+    // Empty can mean unconfigured, disabled or missing. Refresh the catalog without guessing which.
+    if (!slots.value.length) await loadSchedules(true)
+  } catch {
+    if (currentSlot(request, sid, day)) { clearSlots(); await loadSchedules() }
+  } finally {
+    if (currentSlot(request, sid, day)) slotsLoading.value = false
   }
-  slotScheduleId.value = s.id
-  slots.value = (await portal.get(`/schedules/${s.id}/slots`)).data.data
 }
 
-/** 分时段预约：只传 slotId——患者身份由后端从令牌取，前端不传也不该传 */
+/** Patient identity remains token-only; capture this slot before submitting. */
 async function bookSlot(t: Record<string, unknown>) {
-  const resp = await portal.post('/appointments', { slotId: t.id })
-  ElMessage.success(`预约成功：第 ${resp.data.data.apptNo} 号，请按时段到院`)
-  const sid = slotScheduleId.value
-  slots.value = (await portal.get(`/schedules/${sid}/slots`)).data.data
-  await Promise.all([loadSchedules(), loadMine()])
-  tab.value = 'appts'
+  if (!alive || booking.value || slotsLoading.value || schedulesLoading.value || slotScheduleId.value === null
+      || !slots.value.some(row => row.id === t.id)) return
+  const sid = slotScheduleId.value, id = t.id, request = slotRequest, day = date.value
+  booking.value = true
+  try {
+    const resp = await portal.post('/appointments', { slotId: id })
+    if (!alive) return
+    const mine = loadMine()
+    if (!currentSlot(request, sid, day)) { await mine; return }
+    ElMessage.success(`预约成功：第 ${resp.data.data.apptNo} 号，请按时段到院`)
+    const refreshed = loadSchedules(), stamp = catalogRequest
+    await Promise.all([refreshed, mine])
+    if (alive && stamp === catalogRequest && day === date.value) tab.value = 'appts'
+  } catch {
+    if (currentSlot(request, sid, day)) { clearSlots(); await loadSchedules() }
+  } finally { booking.value = false }
 }
 
 async function cancelAppt(a: Record<string, unknown>) {
-  await portal.post(`/my/appointments/${a.id}/cancel`)
-  ElMessage.success('已取消，号源已释放')
-  await Promise.all([loadSchedules(), loadMine()])
-  if (slotScheduleId.value !== null) {
-    slots.value = (await portal.get(`/schedules/${slotScheduleId.value}/slots`)).data.data
-  }
+  if (!alive || booking.value) return
+  const id = a.id, request = catalogRequest, day = date.value
+  booking.value = true
+  try {
+    await portal.post(`/my/appointments/${id}/cancel`)
+    if (!alive) return
+    ElMessage.success('已取消，号源已释放')
+    await Promise.all([loadMine(), request === catalogRequest && day === date.value ? loadSchedules() : Promise.resolve()])
+  } catch { /* The shared client displays the refusal; do not redirect the old action to another panel. */ }
+  finally { booking.value = false }
 }
 
 async function pickAdmission(a: Record<string, unknown>) {
@@ -336,6 +405,8 @@ function logout() {
   localStorage.removeItem('hip_portal_token')
   router.push('/portal')
 }
+
+onUnmounted(() => { alive = false; catalogRequest++; clearSlots() })
 
 onMounted(() => {
   loadSchedules()

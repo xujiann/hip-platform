@@ -81,13 +81,16 @@ public class AppointmentService {
     /**
      * 时段列表 + 余号。
      *
-     * @param onlyEnabled 患者端只应看到在用时段；院内排班管理需要连停用时段一并看到
+     * @param onlyEnabled 患者端只看到启用排班下的启用时段；院内仍需回读停诊排班及停用时段
      */
     public List<Map<String, Object>> slots(Long scheduleId, boolean onlyEnabled) {
+        // One statement snapshot: do not precheck the parent in a separate query or lock this read path.
         return jdbc.queryForList("""
-                select id, time_begin, time_end, capacity, booked, (capacity - booked) as remaining, enabled
-                from outp_schedule_slot where schedule_id = ?
-                """ + (onlyEnabled ? " and enabled" : "") + " order by time_begin", scheduleId);
+                select sl.id, sl.time_begin, sl.time_end, sl.capacity, sl.booked,
+                       (sl.capacity - sl.booked) as remaining, sl.enabled
+                from outp_schedule_slot sl where sl.schedule_id = ?
+                """ + (onlyEnabled ? " and sl.enabled and exists (select 1 from outp_schedule s where s.id=sl.schedule_id and s.enabled)" : "")
+                + " order by sl.time_begin", scheduleId);
     }
 
     /**
