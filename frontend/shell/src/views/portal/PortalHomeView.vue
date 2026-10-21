@@ -314,18 +314,19 @@ async function book(s: Record<string, unknown>) {
   const day = date.value, request = catalogRequest, sid = s.id
   booking.value = true
   clearSlots()
+  const panel = slotRequest
   try {
     const resp = await portal.post('/register', { scheduleId: sid })
     if (!alive) return
     const mine = loadMine()
-    if (request !== catalogRequest || day !== date.value) { await mine; return }
+    if (request !== catalogRequest || day !== date.value || panel !== slotRequest) { await mine; return }
     const d = resp.data.data
     ElMessage.success(`预约成功：${d.deptName} ${d.visitDate} 第 ${d.regNo} 号`)
-    const refreshed = loadSchedules(), stamp = catalogRequest
+    const refreshed = loadSchedules(), stamp = catalogRequest, refreshedPanel = slotRequest
     await Promise.all([refreshed, mine])
-    if (alive && stamp === catalogRequest && day === date.value) tab.value = 'regs'
+    if (alive && stamp === catalogRequest && refreshedPanel === slotRequest && day === date.value) tab.value = 'regs'
   } catch {
-    if (alive && request === catalogRequest && day === date.value) await loadSchedules()
+    if (alive && request === catalogRequest && panel === slotRequest && day === date.value) await loadSchedules()
   } finally { booking.value = false }
 }
 
@@ -362,9 +363,9 @@ async function bookSlot(t: Record<string, unknown>) {
     const mine = loadMine()
     if (!currentSlot(request, sid, day)) { await mine; return }
     ElMessage.success(`预约成功：第 ${resp.data.data.apptNo} 号，请按时段到院`)
-    const refreshed = loadSchedules(), stamp = catalogRequest
+    const refreshed = loadSchedules(), stamp = catalogRequest, refreshedPanel = slotRequest
     await Promise.all([refreshed, mine])
-    if (alive && stamp === catalogRequest && day === date.value) tab.value = 'appts'
+    if (alive && stamp === catalogRequest && refreshedPanel === slotRequest && day === date.value) tab.value = 'appts'
   } catch {
     if (currentSlot(request, sid, day)) { clearSlots(); await loadSchedules() }
   } finally { booking.value = false }
@@ -372,13 +373,13 @@ async function bookSlot(t: Record<string, unknown>) {
 
 async function cancelAppt(a: Record<string, unknown>) {
   if (!alive || booking.value) return
-  const id = a.id, request = catalogRequest, day = date.value
+  const id = a.id, request = catalogRequest, day = date.value, panel = slotRequest
   booking.value = true
   try {
     await portal.post(`/my/appointments/${id}/cancel`)
     if (!alive) return
     ElMessage.success('已取消，号源已释放')
-    await Promise.all([loadMine(), request === catalogRequest && day === date.value ? loadSchedules() : Promise.resolve()])
+    await Promise.all([loadMine(), request === catalogRequest && panel === slotRequest && day === date.value ? loadSchedules() : Promise.resolve()])
   } catch { /* The shared client displays the refusal; do not redirect the old action to another panel. */ }
   finally { booking.value = false }
 }

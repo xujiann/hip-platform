@@ -12,7 +12,7 @@ function setup(get: ReturnType<typeof vi.fn>, post = vi.fn()) {
   const box: Record<string, any> = { ref, onMounted: () => {}, onUnmounted: (f: () => void) => dispose.push(f),
     useRouter: () => ({ push: vi.fn() }), localStorage: { getItem: () => 'test', removeItem: vi.fn() },
     ElMessage: { success: vi.fn(), info: vi.fn() }, portal: { get, post }, fmtDate: () => '', todayLocal: () => '2026-10-21' }
-  const expose = '\nglobalThis.view = { schedules, date, slots, slotScheduleId, tab, openSlots, loadSchedules, bookSlot };'
+  const expose = '\nglobalThis.view = { schedules, date, slots, slotScheduleId, tab, openSlots, loadSchedules, bookSlot, book, cancelAppt };'
   runInNewContext(ts.transpileModule(source + expose, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText, box)
   return { v: box.view, dispose: () => dispose.forEach(f => f()) }
 }
@@ -65,4 +65,26 @@ describe('portal slot browsing against the real view setup', () => {
     const request = v.openSlots(a); dispose(); pending.resolve([sa]); await request
     expect(v.slots.value).toEqual([])
   })
+  it.each(['register', 'cancel'])('a pending %s does not reset a newly opened panel', async (kind) => {
+    const pending = deferred(), post = vi.fn(() => pending.promise)
+    const get = vi.fn((path: string) => response(path === '/schedules/22/slots' ? [sb] : path === '/schedules' ? [a, b] : []))
+    const { v } = setup(get, post); v.schedules.value = [a, b]; v.slotScheduleId.value = 11; v.slots.value = [sa]
+    const operation = kind === 'register' ? v.book(a) : v.cancelAppt({ id: 900 })
+    await v.openSlots(b); pending.resolve({ regNo: 1 }); await operation
+    expect(v.slotScheduleId.value).toBe(22); expect(v.slots.value).toEqual([sb]); expect(v.tab.value).toBe('book')
+  })
+  it.each(['register', 'slot'])('a slow mine refresh after %s never moves away from a new panel', async (kind) => {
+    const mine = deferred(), post = vi.fn(() => response({ regNo: 1, apptNo: 1 }))
+    const get = vi.fn((path: string) => path === '/my/appointments' ? mine.promise
+      : response(path === '/schedules/22/slots' ? [sb] : path === '/schedules' ? [a, b] : []))
+    const { v } = setup(get, post); v.schedules.value = [a, b]; v.slotScheduleId.value = 11; v.slots.value = [sa]
+    const operation = kind === 'register' ? v.book(a) : v.bookSlot(sa)
+    await vi.waitFor(() => {
+      expect(get.mock.calls.some(c => c[0] === '/schedules')).toBe(true)
+      expect(v.schedules.value).toEqual([a, b])
+    })
+    await v.openSlots(b); mine.resolve([]); await operation
+    expect(v.slotScheduleId.value).toBe(22); expect(v.slots.value).toEqual([sb]); expect(v.tab.value).toBe('book')
+  })
+
 })
