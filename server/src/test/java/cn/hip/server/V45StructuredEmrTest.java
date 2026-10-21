@@ -66,7 +66,7 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @SpringBootTest
 @Transactional
-@WithMockUser(roles = "ADMIN")
+@WithMockUser(username = "admin", roles = "ADMIN")
 class V45StructuredEmrTest {
 
     @Autowired DoctorStationController doctorStationController;
@@ -97,6 +97,10 @@ class V45StructuredEmrTest {
     private Authentication userAuth(String username) {
         jdbc.update("insert into sys_user(username, password, real_name, enabled) "
                 + "values (?, 'x', ?, true) on conflict (username) do nothing", username, username + "医生");
+        // Preserve this test's existing authority while using the real fixture actor for medical writes.
+        var context = org.springframework.security.core.context.SecurityContextHolder.getContext();
+        context.setAuthentication(new UsernamePasswordAuthenticationToken(username, null,
+                context.getAuthentication().getAuthorities()));
         return new UsernamePasswordAuthenticationToken(username, null, List.of());
     }
 

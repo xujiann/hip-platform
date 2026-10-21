@@ -37,7 +37,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>**本类不加 @Transactional**：各线程需各自提交事务才能形成真实并发写。
  */
 @SpringBootTest
-@org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
+@org.springframework.security.test.context.support.WithMockUser(username = "admin", roles = "ADMIN")
 class Phase128ClaimConcurrencyTest {
 
     private static final int THREADS = 6;

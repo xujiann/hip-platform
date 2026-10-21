@@ -32,7 +32,7 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @SpringBootTest
 @Transactional
-@org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
+@org.springframework.security.test.context.support.WithMockUser(username = "admin", roles = "ADMIN")
 class V43PrintDocsTest {
 
     @Autowired PrintReportController printController;

@@ -32,7 +32,7 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @SpringBootTest
 @Transactional
-@org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
+@org.springframework.security.test.context.support.WithMockUser(username = "admin", roles = "ADMIN")
 class V33CriticalValueTest {
 
     @Autowired cn.hip.server.support.TestSeeds seeds;
@@ -53,6 +53,13 @@ class V33CriticalValueTest {
         jdbc.update("insert into sys_user(username, password, real_name, enabled) "
                 + "values (?, 'x', ?, true) on conflict (username) do nothing", username, username);
         return jdbc.queryForObject("select id from sys_user where username = ?", Long.class, username);
+    }
+
+    private void clinicalActor(Long doctorId) {
+        var context = org.springframework.security.core.context.SecurityContextHolder.getContext();
+        String username = jdbc.queryForObject("select username from sys_user where id=?", String.class, doctorId);
+        context.setAuthentication(new UsernamePasswordAuthenticationToken(username, null,
+                context.getAuthentication().getAuthorities()));
     }
 
     private Authentication authOf(String username) {
@@ -94,6 +101,7 @@ class V33CriticalValueTest {
         s.setCapacity(5);
         s = scheduleRepository.save(s);
         Long rid = registrationService.register(pid, s.getId()).getId();
+        clinicalActor(doctorId);
         doctorStationService.startVisit(rid, doctorId);
         Long labItem = seeds.chargeItem("血常规", "LAB").getId();
         var order = doctorStationService.createOrders(rid,
@@ -173,6 +181,7 @@ class V33CriticalValueTest {
         s.setCapacity(5);
         s = scheduleRepository.save(s);
         Long rid = registrationService.register(pid, s.getId()).getId();
+        clinicalActor(doctorId);
         doctorStationService.startVisit(rid, doctorId);
         Long examItem = seeds.chargeItem("心电图", "EXAM").getId();
         var order = doctorStationService.createOrders(rid,

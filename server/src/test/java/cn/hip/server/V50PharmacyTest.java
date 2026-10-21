@@ -105,7 +105,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 @SpringBootTest
 @AutoConfigureMockMvc
 @Transactional
-@WithMockUser(roles = {"ADMIN", "PHARMACIST"})
+@WithMockUser(username = "admin", roles = {"ADMIN", "PHARMACIST"})
 class V50PharmacyTest {
 
     private static final String UNDELIVERED = "[V50-未交付] ";

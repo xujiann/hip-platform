@@ -25,7 +25,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** 1.1.3 B 批回归：账务口径（退费归集/退费操作员）、对账比金额、住院结算冲销、配置校验 */
 @SpringBootTest
 @Transactional
-@org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
+@org.springframework.security.test.context.support.WithMockUser(username = "admin", roles = "ADMIN")
 class Phase113FinanceTest {
 
     @Autowired cn.hip.server.support.TestSeeds seeds;

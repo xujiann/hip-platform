@@ -50,7 +50,7 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @SpringBootTest
 @Transactional
-@org.springframework.security.test.context.support.WithMockUser(roles = {"ADMIN", "PHARMACIST"})
+@org.springframework.security.test.context.support.WithMockUser(username = "admin", roles = {"ADMIN", "PHARMACIST"})
 class V43DrugDisableTest {
 
     @Autowired MasterDataController masterDataController;

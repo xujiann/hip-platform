@@ -37,7 +37,7 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @SpringBootTest
 @Transactional
-@WithMockUser(roles = "ADMIN")
+@WithMockUser(username = "admin", roles = "ADMIN")
 class V74DiagnosisVersionTest {
 
     @Autowired DoctorStationService doctorStationService;

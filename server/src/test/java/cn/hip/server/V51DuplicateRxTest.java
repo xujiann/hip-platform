@@ -48,7 +48,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 @SpringBootTest
 @Transactional
-@org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
+@org.springframework.security.test.context.support.WithMockUser(username = "admin", roles = "ADMIN")
 class V51DuplicateRxTest {
 
     @Autowired cn.hip.server.support.TestSeeds seeds;

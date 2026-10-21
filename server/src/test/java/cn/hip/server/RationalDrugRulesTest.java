@@ -24,7 +24,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** 合理用药前置拦截规则 */
 @SpringBootTest
 @Transactional
-@org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
+@org.springframework.security.test.context.support.WithMockUser(username = "admin", roles = "ADMIN")
 class RationalDrugRulesTest {
 
     @Autowired DoctorStationService doctorStationService;

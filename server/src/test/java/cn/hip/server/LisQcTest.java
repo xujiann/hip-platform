@@ -29,7 +29,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** v36 LIS 质控轮：微生物药敏 / 室内质控 IQC(Westgard) / TAT。 */
 @SpringBootTest
 @Transactional
-@org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
+@org.springframework.security.test.context.support.WithMockUser(username = "admin", roles = "ADMIN")
 class LisQcTest {
 
     @Autowired LisQcController lisQc;

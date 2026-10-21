@@ -46,7 +46,7 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @SpringBootTest
 @Transactional
-@WithMockUser(roles = "ADMIN")
+@WithMockUser(username = "admin", roles = "ADMIN")
 class V79EmrRefMicroPathTest {
 
     @Autowired EmrRefController emrRefController;
@@ -65,6 +65,10 @@ class V79EmrRefMicroPathTest {
         jdbc.update("insert into sys_user(username, password, real_name, enabled) "
                 + "values (?, 'x', ?, true) on conflict (username) do nothing", username, username + "医生");
         jdbc.update("insert into sys_user_role(user_id,role_id) select u.id,r.id from sys_user u cross join sys_role r where u.username=? and r.code='DOCTOR_OUTP' on conflict do nothing",username);
+        // Preserve this test's existing authority while using the real fixture actor for medical writes.
+        var context = org.springframework.security.core.context.SecurityContextHolder.getContext();
+        context.setAuthentication(new UsernamePasswordAuthenticationToken(username, null,
+                context.getAuthentication().getAuthorities()));
         return new UsernamePasswordAuthenticationToken(username, null,
                 List.of(new SimpleGrantedAuthority("ROLE_DOCTOR_OUTP")));
     }

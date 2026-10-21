@@ -24,7 +24,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** v38 RIS 体验轮：到检登记态 / 结果互认提醒 / 报告模板 type 过滤。 */
 @SpringBootTest
 @Transactional
-@org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
+@org.springframework.security.test.context.support.WithMockUser(username = "admin", roles = "ADMIN")
 class V38RisExpTest {
 
     @Autowired MedTechController medTech;

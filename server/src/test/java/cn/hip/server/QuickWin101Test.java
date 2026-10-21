@@ -25,7 +25,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** 1.0.1 快赢包：单据前缀配置化 / 审方待审上限 / 住院每日费用清单 */
 @SpringBootTest
 @Transactional
-@org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
+@org.springframework.security.test.context.support.WithMockUser(username = "admin", roles = "ADMIN")
 class QuickWin101Test {
 
     /** 事务内直写的配置值会被 ConfigReader 缓存，回滚后缓存带毒——测后必须移除（1.1.6） */

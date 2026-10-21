@@ -24,7 +24,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** v40：票据补打检索与打印留痕（收费台此前只能打刚结算那一单，重打无入口）。 */
 @SpringBootTest
 @Transactional
-@org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
+@org.springframework.security.test.context.support.WithMockUser(username = "admin", roles = "ADMIN")
 class V40PrintReprintTest {
 
     @Autowired PrintReportController printController;

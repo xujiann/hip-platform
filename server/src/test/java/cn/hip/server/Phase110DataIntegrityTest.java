@@ -21,7 +21,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** 1.1.0 B 批回归：重复入院唯一约束 / ORU 多 OBR 分组 / 留痕截断 / 任务选主 */
 @SpringBootTest
 @Transactional
-@org.springframework.security.test.context.support.WithMockUser(roles = "ADMIN")
+@org.springframework.security.test.context.support.WithMockUser(username = "admin", roles = "ADMIN")
 class Phase110DataIntegrityTest {
 
     @Autowired cn.hip.server.support.TestSeeds seeds;
