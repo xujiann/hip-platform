@@ -35,10 +35,12 @@ MANUAL = {
     # 2002 is new; 2005 was already enforced but missing from the support lookup table.
     '2002': ('患者不存在（锁定真实患者的更新入口）', '患者主索引'),
     '2005': ('修改患者姓名/证件/手机需管理员权限', '患者主索引'),
+    # v110: the shared number service uses a qualified exception; retain its existing code in regeneration.
+    '3003': ('排班号源不可用（满号/停诊/号码用尽）', '门诊挂号'),
     # v103: qualified BizException and BookResult.fail are outside the literal scanner.
     '3110': ('时段不存在或已停用（补录既有码）', '门诊预约'),
-    '3111': ('时段或排班号源已满（补录既有码）', '门诊预约'),
-    '3112': ('同患者同排班已有有效预约（补录既有码）', '门诊预约'),
+    '3111': ('时段或排班号源不可用（满号/停诊/号码用尽）', '门诊预约'),
+    '3112': ('同患者同排班已有预约或待接诊挂号', '门诊预约'),
     '3115': ('预约患者不存在或已停用', '门诊预约'),
     '3116': ('预约来源不能超过16字符', '门诊预约'),
     '4634': ('数据治理：数据元/术语校验不通过', '数据治理'),

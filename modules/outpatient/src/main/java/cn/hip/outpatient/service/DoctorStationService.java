@@ -47,21 +47,34 @@ public class DoctorStationService {
     private final org.springframework.jdbc.core.JdbcTemplate jdbc;
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
 
-    /** v82：锁与校验位于业务事务内部，异常正常回滚后仍由控制器返回原业务码。 */
-    private void guardWrite(Long registrationId, Long actorId, boolean checkAuthor) {
-        jdbc.queryForList("select id from outp_registration where id = ? for update", registrationId);
+    /** Recheck live identity after every business-row wait; token roles alone cannot authorize a disabled employee. */
+    private Long requireWriteActor(Long actorId) {
         var auth = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
-        if (auth == null) return; // 可信服务层调用；所有 HTTP 写入口均受类级身份校验保护。
-        if (auth.getAuthorities().stream().anyMatch(a -> "ROLE_ADMIN".equals(a.getAuthority()))) return;
-        Long me = actorId;
-        if (me == null) {
-            var users = jdbc.queryForList("select id from sys_user where username = ?", Long.class, auth.getName());
-            if (!users.isEmpty()) me = users.getFirst();
-        }
-        if (me == null) throw new BizException(4036, "无权写入该次就诊（无法识别当前医师）");
+        if (auth == null) return null; // Existing trusted in-process calls; HTTP entry points require authentication.
+        if (!auth.isAuthenticated() || auth.getAuthorities().stream().noneMatch(a ->
+                "ROLE_ADMIN".equals(a.getAuthority()) || "ROLE_DOCTOR_OUTP".equals(a.getAuthority())))
+            throw new org.springframework.security.access.AccessDeniedException("无权写入门诊医生站");
+        var users = jdbc.queryForList("select id from sys_user where username = ? and enabled = true", Long.class, auth.getName());
+        if (users.isEmpty()) throw new org.springframework.security.access.AccessDeniedException("当前门诊操作人不存在或已停用");
+        Long me = users.getFirst();
+        if (actorId != null && !actorId.equals(me))
+            throw new BizException(4036, "门诊写入操作人与当前登录医师不一致");
+        return me;
+    }
+
+    /** All six visit writes use registration -> order locking; refresh managed snapshots after the registration wait. */
+    private void guardWrite(Long registrationId, Long actorId, boolean checkAuthor) {
+        requireWriteActor(actorId);
+        entityManager.flush();
+        jdbc.queryForList("select id from outp_registration where id = ? for update", registrationId);
+        Long me = requireWriteActor(actorId);
         var reg = registrationRepository.findById(registrationId).orElse(null);
-        if (reg == null) return; // 由原业务路径返回记录不存在的错误码。
+        if (reg == null) return; // Original business paths retain their not-found codes.
+        entityManager.refresh(reg);
         var emr = emrRepository.findByRegistrationId(registrationId).orElse(null);
+        if (emr != null) entityManager.refresh(emr);
+        var auth = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null || auth.getAuthorities().stream().anyMatch(a -> "ROLE_ADMIN".equals(a.getAuthority()))) return;
         boolean allowed = BusinessDates.today().equals(reg.getVisitDate()) || reg.getDoctorId() == null
                 || me.equals(reg.getDoctorId()) || (emr != null && me.equals(emr.getDoctorId()));
         if (!allowed) throw new BizException(4036, "无权写入该次就诊（非当日就诊且非本人接诊）");
@@ -1360,11 +1373,20 @@ public class DoctorStationService {
     public void cancelOrder(Long orderId) {
         OutpOrder o = orderRepository.findById(orderId)
                 .orElseThrow(() -> new BizException(4006, "医嘱不存在"));
-        guardWrite(o.getRegistrationId(), null, false);
-        if (!"CREATED".equals(o.getStatus())) {
+        Long registrationId = o.getRegistrationId();
+        guardWrite(registrationId, null, false);
+        var locked = jdbc.queryForList("select id from outp_order where id = ? for update", Long.class, orderId);
+        if (locked.isEmpty()) throw new BizException(4006, "医嘱不存在");
+        requireWriteActor(null); // Charging may hold this row after the registration lock was acquired.
+        entityManager.refresh(o);
+        if (!registrationId.equals(o.getRegistrationId()))
+            throw new BizException(4036, "医嘱所属就诊已变化，请刷新后重试");
+        if (!"CREATED".equals(o.getStatus()) || o.getChargeId() != null) {
             throw new BizException(4007, "已收费/已执行的医嘱不能作废，请先退费");
         }
-        o.setStatus("CANCELLED");
-        orderRepository.save(o);
+        if (jdbc.update("update outp_order set status = 'CANCELLED' where id = ? and registration_id = ? "
+                + "and status = 'CREATED' and charge_id is null", orderId, registrationId) != 1)
+            throw new BizException(4007, "已收费/已执行的医嘱不能作废，请先退费");
+        entityManager.refresh(o);
     }
 }
