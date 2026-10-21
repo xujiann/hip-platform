@@ -57,8 +57,24 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @SpringBootTest
 @Transactional
-@WithMockUser(roles = "ADMIN")
+@WithMockUser(username = "admin", roles = "ADMIN")
 class V79ReviewFixTest {
+
+    private DoctorStationController writer(Authentication actor) {
+        writer(jdbc.queryForObject("select id from sys_user where username=? and enabled", Long.class, actor.getName()));
+        return doctorStationController;
+    }
+
+    /** Keep the class's original mock privileges, while binding writes to the real enabled fixture actor. */
+    private DoctorStationService writer(Long actorId) {
+        if (actorId != null) {
+            String name = jdbc.queryForObject("select username from sys_user where id=? and enabled", String.class, actorId);
+            var roles = List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_ADMIN"));
+            org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(
+                    new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(name, null, roles));
+        }
+        return doctorStationService;
+    }
 
     @Autowired EmrRefController emrRefController;
     @Autowired EmrVersionController emrVersionController;
@@ -110,7 +126,7 @@ class V79ReviewFixTest {
         s.setCapacity(50);
         s = scheduleRepository.save(s);
         Long rid = registrationService.register(patientId, s.getId()).getId();
-        doctorStationService.startVisit(rid, doctorId);
+        writer(doctorId).startVisit(rid, doctorId);
         return rid;
     }
 
@@ -213,7 +229,7 @@ class V79ReviewFixTest {
         Long rid = visitFor(newPatient("钟"), docId);
         Timestamp txNow = jdbc.queryForObject("select now()", Timestamp.class);
 
-        OutpEmr saved = doctorStationService.saveEmr(rid, emr("咳嗽", "起病三天"),
+        OutpEmr saved = writer(docId).saveEmr(rid, emr("咳嗽", "起病三天"),
                 List.of(diag("J06.9", "急性上呼吸道感染")), docId, null, null);
         em.flush();
 
@@ -257,7 +273,7 @@ class V79ReviewFixTest {
                 default -> e.setAdvice(over);
             }
             var ex = assertThrows(HipBizException.class,
-                    () -> doctorStationService.saveEmr(rid, e, List.of(diag("J06.9", "上感")), docId, null, null), c[0]);
+                    () -> writer(docId).saveEmr(rid, e, List.of(diag("J06.9", "上感")), docId, null, null), c[0]);
             assertEquals(4000, ex.code, c[0] + "：" + ex.getMessage());
             assertEquals("请求参数不正确：" + c[1] + "超过 " + max + " 字（当前 " + (max + 1) + " 字）", ex.getMessage());
         }
@@ -271,11 +287,11 @@ class V79ReviewFixTest {
     void overlongSecondSaveLeavesExistingBodyAndVersionsUntouched() {
         Long docId = userId("admin");
         Long rid = visitFor(newPatient("留"), docId);
-        OutpEmr first = doctorStationService.saveEmr(rid, emr("咳嗽", "起病三天"), List.of(), docId, null, null);
+        OutpEmr first = writer(docId).saveEmr(rid, emr("咳嗽", "起病三天"), List.of(), docId, null, null);
         em.flush();
         em.clear();
 
-        var ex = assertThrows(HipBizException.class, () -> doctorStationService.saveEmr(rid,
+        var ex = assertThrows(HipBizException.class, () -> writer(docId).saveEmr(rid,
                 emr("咳嗽", "起病三天" + "引".repeat(2000)), List.of(), docId, null, null));
         assertEquals(4000, ex.code);
         assertTrue(ex.getMessage().contains("现病史超过 2000 字（当前 2004 字）"), ex.getMessage());
@@ -295,7 +311,7 @@ class V79ReviewFixTest {
         e.setPastHistory("史".repeat(1000));
         e.setPhysicalExam("查".repeat(1000));
         e.setAdvice("嘱".repeat(1000));
-        doctorStationService.saveEmr(rid, e, List.of(), docId, null, null);
+        writer(docId).saveEmr(rid, e, List.of(), docId, null, null);
         em.flush();
         assertEquals(2000, count("select char_length(present_illness) from outp_emr where registration_id = ?", rid));
         assertEquals(512, count("select char_length(chief_complaint) from outp_emr where registration_id = ?", rid));
@@ -444,7 +460,7 @@ class V79ReviewFixTest {
         Long docId = userId("admin");
         Long pid = newPatient("源");
         Long rid = visitFor(pid, docId);
-        OutpEmr saved = doctorStationService.saveEmr(rid, emr("咳嗽", "起病三天"), List.of(), docId, null, null);
+        OutpEmr saved = writer(docId).saveEmr(rid, emr("咳嗽", "起病三天"), List.of(), docId, null, null);
         em.flush();
         String name = jdbc.queryForObject("select name from empi_patient where id = ?", String.class, pid);
 
@@ -492,11 +508,11 @@ class V79ReviewFixTest {
         Authentication author = doctorAuth("v79fix3_author");
         Authentication other = doctorAuth("v79fix3_other");
         Long rid = visitFor(newPatient("签他"), userId("v79fix3_author"));
-        assertEquals(0, doctorStationController.saveEmr(rid,
+        assertEquals(0, writer(author).saveEmr(rid,
                 new DoctorStationController.SaveEmrRequest(emr("胸闷", "两天"), List.of()), author).getCode());
         em.flush();
 
-        var r = doctorStationController.signEmr(rid, other);
+        var r = writer(other).signEmr(rid, other);
         assertEquals(4023, r.getCode(), "非书写医师直接签名须 4023");
         em.flush();
         em.clear();
@@ -561,9 +577,9 @@ class V79ReviewFixTest {
     void compareCurrentNoticeSaysMismatchOnlyWhenCurrentDiffersFromLastVersion() {
         Long docId = userId("admin");
         Long rid = visitFor(newPatient("比"), docId);
-        Long emrId = doctorStationService.saveEmr(rid, emr("咳嗽", "起病三天"), List.of(), docId, null, null).getId();
+        Long emrId = writer(docId).saveEmr(rid, emr("咳嗽", "起病三天"), List.of(), docId, null, null).getId();
         em.flush();
-        doctorStationService.saveEmr(rid, emr("咳嗽", "起病五天"), List.of(), docId, null, null);
+        writer(docId).saveEmr(rid, emr("咳嗽", "起病五天"), List.of(), docId, null, null);
         em.flush();
 
         var same = emrVersionController.compareCurrent("OUTP", emrId, 2);
@@ -603,7 +619,7 @@ class V79ReviewFixTest {
     void savedOnComesFromTheSameDatabaseClockAsSavedAt() {
         Long docId = userId("admin");
         Long rid = visitFor(newPatient("日"), docId);
-        Long emrId = doctorStationService.saveEmr(rid, emr("咳嗽", "起病三天"), List.of(), docId, null, null).getId();
+        Long emrId = writer(docId).saveEmr(rid, emr("咳嗽", "起病三天"), List.of(), docId, null, null).getId();
         em.flush();
         assertEquals(Boolean.TRUE, jdbc.queryForObject("""
                 select saved_on = (saved_at at time zone 'Asia/Shanghai')::date from emr_version

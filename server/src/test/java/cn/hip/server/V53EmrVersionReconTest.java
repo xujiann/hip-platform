@@ -96,8 +96,24 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 @SpringBootTest
 @AutoConfigureMockMvc
 @Transactional
-@WithMockUser(roles = "ADMIN")
+@WithMockUser(username = "admin", roles = "ADMIN")
 class V53EmrVersionReconTest {
+
+    private DoctorStationController writer(Authentication actor) {
+        writer(jdbc.queryForObject("select id from sys_user where username=? and enabled", Long.class, actor.getName()));
+        return doctorStationController;
+    }
+
+    /** Keep the class's original mock privileges, while binding writes to the real enabled fixture actor. */
+    private DoctorStationService writer(Long actorId) {
+        if (actorId != null) {
+            String name = jdbc.queryForObject("select username from sys_user where id=? and enabled", String.class, actorId);
+            var roles = List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_ADMIN"));
+            org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(
+                    new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(name, null, roles));
+        }
+        return doctorStationService;
+    }
 
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager em;
@@ -417,7 +433,7 @@ class V53EmrVersionReconTest {
         String v2 = "受凉后起病2天，咳嗽咳痰，无发热。今日晨起体温37.8度。";
         String v3 = "受凉后起病2天，咳嗽咳痰。体温37.8度，查体双肺呼吸音粗，未闻及干湿罗音。";
         for (String s : List.of(v1, v2, v3)) {
-            var r = doctorStationController.saveEmr(rid, new SaveEmrRequest(emrOf(s), List.of()), doc);
+            var r = writer(doc).saveEmr(rid, new SaveEmrRequest(emrOf(s), List.of()), doc);
             assertEquals(0, r.getCode(), r.getMessage());
         }
 
@@ -496,7 +512,7 @@ class V53EmrVersionReconTest {
         Long rid = visit();
         String same = "患者一般情况可，无发热，继续观察。";
         for (int i = 0; i < 3; i++) {
-            var r = doctorStationController.saveEmr(rid, new SaveEmrRequest(emrOf(same), List.of()), doc);
+            var r = writer(doc).saveEmr(rid, new SaveEmrRequest(emrOf(same), List.of()), doc);
             assertEquals(0, r.getCode(), r.getMessage());
         }
         var rows = versionsOf("OUTP", outpEmrId(rid));
@@ -1066,7 +1082,7 @@ class V53EmrVersionReconTest {
         Long rid = visit();
         String pi = "受凉后起病2天，咳嗽咳痰，无发热。";
 
-        var saved = doctorStationController.saveEmr(rid, new SaveEmrRequest(emrOf(pi), List.of()), doc);
+        var saved = writer(doc).saveEmr(rid, new SaveEmrRequest(emrOf(pi), List.of()), doc);
         assertEquals(0, saved.getCode(), saved.getMessage());
 
         var body = objectMapper.convertValue(saved.getData(), new TypeReference<Map<String, Object>>() {});

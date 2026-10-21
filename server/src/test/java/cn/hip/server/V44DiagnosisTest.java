@@ -53,8 +53,24 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @SpringBootTest
 @Transactional
-@WithMockUser(roles = "ADMIN")
+@WithMockUser(username = "admin", roles = "ADMIN")
 class V44DiagnosisTest {
+
+    private DoctorStationController writer(Authentication actor) {
+        writer(jdbc.queryForObject("select id from sys_user where username=? and enabled", Long.class, actor.getName()));
+        return doctorStationController;
+    }
+
+    /** Keep the class's original mock privileges, while binding writes to the real enabled fixture actor. */
+    private DoctorStationService writer(Long actorId) {
+        if (actorId != null) {
+            String name = jdbc.queryForObject("select username from sys_user where id=? and enabled", String.class, actorId);
+            var roles = List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_ADMIN"));
+            org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(
+                    new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(name, null, roles));
+        }
+        return doctorStationService;
+    }
 
     @Autowired DoctorStationController doctorStationController;
     @Autowired DoctorStationService doctorStationService;
@@ -169,7 +185,7 @@ class V44DiagnosisTest {
         Authentication doc = userAuth("v44doc_contract");
         Visit v = visit();
 
-        var saved = doctorStationController.saveEmr(v.registrationId(), new SaveEmrRequest(
+        var saved = writer(doc).saveEmr(v.registrationId(), new SaveEmrRequest(
                 emrOf("咳嗽3天"),
                 List.of(legacyDiag("J06.900", "急性上呼吸道感染"), legacyDiag("R05.X00", "咳嗽"))), doc);
         assertEquals(0, saved.getCode(), saved.getMessage());
@@ -236,7 +252,7 @@ class V44DiagnosisTest {
         d.setDiagSystem(OutpDiagnosis.SYSTEM_ICD10);
         d.setCustomName("高血压3级（很高危）");
 
-        assertEquals(0, doctorStationController.saveEmr(v.registrationId(),
+        assertEquals(0, writer(doc).saveEmr(v.registrationId(),
                 new SaveEmrRequest(emrOf("头晕1周"), List.of(d)), doc).getCode());
 
         var row = diagRows(v.registrationId()).get(0);
@@ -261,7 +277,7 @@ class V44DiagnosisTest {
         OutpDiagnosis d = legacyDiag("J02.900", "急性咽炎");
         d.setCertainty("MAYBE");
 
-        var r = doctorStationController.saveEmr(v.registrationId(),
+        var r = writer(doc).saveEmr(v.registrationId(),
                 new SaveEmrRequest(emrOf("咽痛2天"), List.of(d)), doc);
         assertEquals(4033, r.getCode(), r.getMessage());
         assertEquals(0, count("select count(*) from outp_diagnosis where registration_id = ?",
@@ -276,7 +292,7 @@ class V44DiagnosisTest {
         OutpDiagnosis d = legacyDiag("J02.900", "急性咽炎");
         d.setDiagSystem("WESTERN");
 
-        var r = doctorStationController.saveEmr(v.registrationId(),
+        var r = writer(doc).saveEmr(v.registrationId(),
                 new SaveEmrRequest(emrOf("咽痛2天"), List.of(d)), doc);
         assertEquals(4034, r.getCode(), r.getMessage());
     }
@@ -290,7 +306,7 @@ class V44DiagnosisTest {
         d.setCertainty("");
         d.setDiagSystem("");
 
-        assertEquals(0, doctorStationController.saveEmr(v.registrationId(),
+        assertEquals(0, writer(doc).saveEmr(v.registrationId(),
                 new SaveEmrRequest(emrOf("头痛1天"), List.of(d)), doc).getCode());
         var row = diagRows(v.registrationId()).get(0);
         assertEquals("", row.get("certainty"), "空串原样落库，不做任何回填");
@@ -316,10 +332,10 @@ class V44DiagnosisTest {
 
         // 十天前 + 今天两次就诊，同一条诊断——高频段应统计成 2 次
         Long oldRid = visitFor(pid, BusinessDates.today().minusDays(10));
-        assertEquals(0, doctorStationController.saveEmr(oldRid,
+        assertEquals(0, writer(doc).saveEmr(oldRid,
                 new SaveEmrRequest(emrOf("既往就诊"), List.of(legacyDiag("Z00.001", histName))), doc).getCode());
         Long newRid = visitFor(pid, BusinessDates.today());
-        assertEquals(0, doctorStationController.saveEmr(newRid,
+        assertEquals(0, writer(doc).saveEmr(newRid,
                 new SaveEmrRequest(emrOf("本次就诊"), List.of(legacyDiag("Z00.001", histName))), doc).getCode());
         // 一条纯手工加星的常用诊断（未出现在该患者历史里，用于区分 favorite 与 history）
         doctorStationService.upsertFavorite(uid, "Z00.002", favName, "ICD10");
@@ -359,9 +375,9 @@ class V44DiagnosisTest {
         Visit v1 = visit();
         Visit v2 = visit();
 
-        doctorStationController.saveEmr(v1.registrationId(),
+        writer(doc).saveEmr(v1.registrationId(),
                 new SaveEmrRequest(emrOf("首诊"), List.of(legacyDiag(code, name))), doc);
-        doctorStationController.saveEmr(v2.registrationId(),
+        writer(doc).saveEmr(v2.registrationId(),
                 new SaveEmrRequest(emrOf("复诊"), List.of(legacyDiag(code, name))), doc);
         em.flush();
 
@@ -419,7 +435,7 @@ class V44DiagnosisTest {
         d.setDiagSystem(OutpDiagnosis.SYSTEM_TCM);
         d.setCustomName(tcm + "（风寒束表证）");
         d.setSuffix("初起");
-        assertEquals(0, doctorStationController.saveEmr(v.registrationId(),
+        assertEquals(0, writer(doc).saveEmr(v.registrationId(),
                 new SaveEmrRequest(emrOf("恶寒无汗2天"), List.of(d)), doc).getCode());
 
         var row = diagRows(v.registrationId()).get(0);
@@ -517,7 +533,7 @@ class V44DiagnosisTest {
         OutpDiagnosis d = legacyDiag("E11.900", "2型糖尿病");
         d.setCertainty(OutpDiagnosis.CERTAINTY_CONFIRMED);
         d.setDiagSystem(OutpDiagnosis.SYSTEM_ICD10);
-        doctorStationController.saveEmr(v.registrationId(),
+        writer(doc).saveEmr(v.registrationId(),
                 new SaveEmrRequest(emrOf("多饮多尿"), List.of(d)), doc);
         em.flush();
 

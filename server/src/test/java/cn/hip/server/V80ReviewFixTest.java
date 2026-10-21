@@ -63,8 +63,19 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 @SpringBootTest
 @AutoConfigureMockMvc
 @Transactional
-@WithMockUser(roles = "ADMIN")
+@WithMockUser(username = "admin", roles = "ADMIN")
 class V80ReviewFixTest {
+
+    /** Keep the class's original mock privileges, while binding writes to the real enabled fixture actor. */
+    private DoctorStationService writer(Long actorId) {
+        if (actorId != null) {
+            String name = jdbc.queryForObject("select username from sys_user where id=? and enabled", String.class, actorId);
+            var roles = List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_ADMIN"));
+            org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(
+                    new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(name, null, roles));
+        }
+        return doctorStationService;
+    }
 
     @Autowired DoctorStationService doctorStationService;
     @Autowired RegistrationService registrationService;
@@ -133,11 +144,11 @@ class V80ReviewFixTest {
     private Long visit(Long pid, String owner, String writer, LocalDate date, List<OutpDiagnosis> diags) {
         Long rid = registerOn(pid, owner, date);
         Long writerId = idOf(writer);
-        doctorStationService.startVisit(rid, writerId);
+        writer(writerId).startVisit(rid, writerId);
         OutpEmr e = new OutpEmr();
         e.setChiefComplaint("V80F咽痛两天");
         e.setAdvice("V80F对症处理");
-        doctorStationService.saveEmr(rid, e, diags, writerId, null, null);
+        writer(writerId).saveEmr(rid, e, diags, writerId, null, null);
         em.flush();
         em.clear();
         return rid;
@@ -513,7 +524,7 @@ class V80ReviewFixTest {
         Long pid = newPatient();
         Long rid = registerOn(pid, a, today());
         Long aid = idOf(a);
-        doctorStationService.startVisit(rid, aid);
+        writer(aid).startVisit(rid, aid);
         OutpEmr e = new OutpEmr();
         e.setChiefComplaint("V80F超长");
         Object[][] cases = {{"prefix", 32, "前缀"}, {"suffix", 32, "后缀"}, {"customName", 128, "自定义描述"}};
@@ -528,7 +539,7 @@ class V80ReviewFixTest {
                 default -> { ok.setCustomName(atMax); bad.setCustomName(over); }
             }
             var ex = assertThrows(RegistrationService.BizException.class,
-                    () -> doctorStationService.saveEmr(rid, e, List.of(ok, bad), aid, null, null), (String) c[0]);
+                    () -> writer(aid).saveEmr(rid, e, List.of(ok, bad), aid, null, null), (String) c[0]);
             assertEquals(4000, ex.code, ex.getMessage());
             assertTrue(ex.getMessage().contains("第 2 条诊断") && ex.getMessage().contains((String) c[2])
                     && ex.getMessage().contains(max + " 字"), ex.getMessage());

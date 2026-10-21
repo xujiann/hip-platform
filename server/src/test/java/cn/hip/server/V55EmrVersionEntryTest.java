@@ -82,8 +82,24 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 @AutoConfigureMockMvc
 @Transactional
-@WithMockUser(roles = "DOCTOR_OUTP")
+@WithMockUser(username = "admin", roles = "DOCTOR_OUTP")
 class V55EmrVersionEntryTest {
+
+    private DoctorStationController writer(Authentication actor) {
+        writer(jdbc.queryForObject("select id from sys_user where username=? and enabled", Long.class, actor.getName()));
+        return doctorStationController;
+    }
+
+    /** Keep the class's original mock privileges, while binding writes to the real enabled fixture actor. */
+    private DoctorStationService writer(Long actorId) {
+        if (actorId != null) {
+            String name = jdbc.queryForObject("select username from sys_user where id=? and enabled", String.class, actorId);
+            var roles = List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_DOCTOR_OUTP"));
+            org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(
+                    new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(name, null, roles));
+        }
+        return doctorStationService;
+    }
 
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager em;
@@ -128,7 +144,7 @@ class V55EmrVersionEntryTest {
         s.setCapacity(5);
         s = scheduleRepository.save(s);
         Long rid = registrationService.register(newPatient(), s.getId()).getId();
-        doctorStationService.startVisit(rid, userId("v55doc"));
+        writer(userId("v55doc")).startVisit(rid, userId("v55doc"));
         return rid;
     }
 
@@ -163,7 +179,7 @@ class V55EmrVersionEntryTest {
         assertNull(before.get("emr"), "尚未保存病历时 emr 应为 null——按钮此时不该出现");
 
         // 真实写路径保存一版
-        R<OutpEmr> saveResp = doctorStationController.saveEmr(
+        R<OutpEmr> saveResp = writer(auth("v55doc")).saveEmr(
                 rid, new SaveEmrRequest(emrOf("v55 首版正文"), List.of()), auth("v55doc"));
         assertEquals(0, saveResp.getCode(), "保存病历应成功：" + saveResp.getMessage());
         OutpEmr saved = saveResp.getData();

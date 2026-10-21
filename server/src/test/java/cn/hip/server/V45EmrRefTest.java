@@ -57,8 +57,24 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @SpringBootTest
 @Transactional
-@WithMockUser(roles = "ADMIN")
+@WithMockUser(username = "admin", roles = "ADMIN")
 class V45EmrRefTest {
+
+    private cn.hip.outpatient.web.DoctorStationController writer(Authentication actor) {
+        writer(jdbc.queryForObject("select id from sys_user where username=? and enabled", Long.class, actor.getName()));
+        return doctorStationController;
+    }
+
+    /** Keep the class's original mock privileges, while binding writes to the real enabled fixture actor. */
+    private DoctorStationService writer(Long actorId) {
+        if (actorId != null) {
+            String name = jdbc.queryForObject("select username from sys_user where id=? and enabled", String.class, actorId);
+            var roles = List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_ADMIN"));
+            org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(
+                    new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(name, null, roles));
+        }
+        return doctorStationService;
+    }
 
     @Autowired EmrRefController emrRefController;
     @Autowired cn.hip.outpatient.web.DoctorStationController doctorStationController;
@@ -115,7 +131,7 @@ class V45EmrRefTest {
         s.setCapacity(50);
         s = scheduleRepository.save(s);
         Long rid = registrationService.register(patientId, s.getId()).getId();
-        doctorStationService.startVisit(rid, doctorId);
+        writer(doctorId).startVisit(rid, doctorId);
         return rid;
     }
 
@@ -125,7 +141,7 @@ class V45EmrRefTest {
         e.setPresentIllness("受凉后起病 3 天，无咯血");
         e.setPastHistory("高血压 5 年");
         e.setAdvice("对症治疗，3 日后复诊");
-        var r = doctorStationController.saveEmr(registrationId, new SaveEmrRequest(e, List.of()), auth);
+        var r = writer(auth).saveEmr(registrationId, new SaveEmrRequest(e, List.of()), auth);
         assertEquals(0, r.getCode(), r.getMessage());
     }
 

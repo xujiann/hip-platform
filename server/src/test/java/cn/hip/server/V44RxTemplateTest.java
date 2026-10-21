@@ -64,8 +64,19 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @SpringBootTest
 @Transactional
-@WithMockUser(roles = {"ADMIN", "DOCTOR_OUTP", "PHARMACIST"})
+@WithMockUser(username = "admin", roles = {"ADMIN", "DOCTOR_OUTP", "PHARMACIST"})
 class V44RxTemplateTest {
+
+    /** Keep the class's original mock privileges, while binding writes to the real enabled fixture actor. */
+    private DoctorStationService writer(Long actorId) {
+        if (actorId != null) {
+            String name = jdbc.queryForObject("select username from sys_user where id=? and enabled", String.class, actorId);
+            var roles = List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_ADMIN"), new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_DOCTOR_OUTP"), new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_PHARMACIST"));
+            org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(
+                    new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(name, null, roles));
+        }
+        return doctorStationService;
+    }
 
     @Autowired RxTemplateController controller;
     @Autowired DoctorStationService doctorStationService;
@@ -624,7 +635,7 @@ class V44RxTemplateTest {
 
         // —— 端到端：把模板行原样交给既有开单端点 ——
         Long regId = visitedRegistration(deptId);
-        var created = doctorStationService.createOrders(regId, orderLines, doc.id());
+        var created = writer(doc.id()).createOrders(regId, orderLines, doc.id());
         assertEquals(2, created.size());
         var rx = created.stream().filter(o -> "DRUG".equals(o.getOrderType())).findFirst().orElseThrow();
         assertEquals(drug, rx.getItemId());
@@ -661,7 +672,7 @@ class V44RxTemplateTest {
         Long regId = visitedRegistration(deptId);
         var ol = new DoctorStationService.OrderLine("DRUG", drug, 2, "口服", "bid", "1片", 3);
         BizException ex = assertThrows(BizException.class,
-                () -> doctorStationService.createOrders(regId, List.of(ol), doc.id()));
+                () -> writer(doc.id()).createOrders(regId, List.of(ol), doc.id()));
         assertEquals(8016, ex.code, "套用模板不得绕过 v43 停用药预检");
     }
 
@@ -677,7 +688,7 @@ class V44RxTemplateTest {
         Long regId = visitedRegistration(deptId);
         var ol = new DoctorStationService.OrderLine("DRUG", drug, 2, "口服", "bid", "1片", 3);
         BizException ex = assertThrows(BizException.class,
-                () -> doctorStationService.createOrders(regId, List.of(ol, ol), doc.id()));
+                () -> writer(doc.id()).createOrders(regId, List.of(ol, ol), doc.id()));
         assertEquals(4013, ex.code);
     }
 }

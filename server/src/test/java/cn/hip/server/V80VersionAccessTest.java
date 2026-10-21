@@ -42,8 +42,19 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 @SpringBootTest
 @AutoConfigureMockMvc
 @Transactional
-@WithMockUser(roles = "ADMIN")
+@WithMockUser(username = "admin", roles = "ADMIN")
 class V80VersionAccessTest {
+
+    /** Keep the class's original mock privileges, while binding writes to the real enabled fixture actor. */
+    private DoctorStationService writer(Long actorId) {
+        if (actorId != null) {
+            String name = jdbc.queryForObject("select username from sys_user where id=? and enabled", String.class, actorId);
+            var roles = List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_ADMIN"));
+            org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(
+                    new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(name, null, roles));
+        }
+        return doctorStationService;
+    }
 
     @Autowired DoctorStationService doctorStationService;
     @Autowired RegistrationService registrationService;
@@ -81,14 +92,14 @@ class V80VersionAccessTest {
         s = scheduleRepository.save(s);
         Long rid = registrationService.register(pid, s.getId()).getId();
         Long ownerId = idOf(owner);
-        doctorStationService.startVisit(rid, ownerId);
+        writer(ownerId).startVisit(rid, ownerId);
         OutpEmr e = new OutpEmr();
         e.setChiefComplaint("咳嗽三天");
         e.setPresentIllness("受凉后咳嗽");
         OutpDiagnosis d = new OutpDiagnosis();
         d.setIcdCode(icdCode);
         d.setIcdName(icdName);
-        doctorStationService.saveEmr(rid, e, List.of(d), ownerId, null, null);
+        writer(ownerId).saveEmr(rid, e, List.of(d), ownerId, null, null);
         em.flush();
         em.clear();
         return rid;
