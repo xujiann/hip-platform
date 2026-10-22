@@ -328,8 +328,8 @@ it('late report and worklist reads after unmount cannot change the old page', as
   const reads = [h.v.loadReport(), h.v.load()]; h.dispose(); read.resolve({ ...reportData(12, true), items: [other] }); await Promise.all(reads); expect(h.v.specimen.value.id).toBe(11); expect(h.v.rows.value).toEqual([sample])
 })
 it('a pending report write prevents technical writes without changing their clinical policy', async () => {
-  const write = deferred(), h = report(undefined, vi.fn(() => write.promise)); await reportReady(h, true); const first = h.v.firstSign(); await h.v.techDone({ id: 5, status: 'ORDERED' }); await h.v.techCancel({ id: 5, status: 'ORDERED' }); await h.v.submitTech()
-  expect(h.put).toHaveBeenCalledOnce(); expect(h.post).not.toHaveBeenCalled(); expect(h.box.ElMessageBox.prompt).not.toHaveBeenCalled(); write.resolve(null); await first
+  const write = deferred(), h = report(undefined, vi.fn(() => write.promise)); await reportReady(h, true); const first = h.v.firstSign(); const techDone = h.v.techDone({ id: 5, status: 'ORDERED' }); const techCancel = h.v.techCancel({ id: 5, status: 'ORDERED' }); const techSubmit = h.v.submitTech()
+  expect(h.put).toHaveBeenCalledOnce(); expect(h.post).not.toHaveBeenCalled(); expect(h.box.ElMessageBox.prompt).not.toHaveBeenCalled(); write.resolve(null); await Promise.all([first, techDone, techCancel, techSubmit])
 })
 it('old receipt known validation errors propagate and do not reload the list', async () => {
   const error = { bizCode: 1005 }, h = specialty(undefined, vi.fn(() => Promise.reject(error))); h.v.tab.value = 'path'; await h.v.loadSpecimens(); h.get.mockClear(); await expect(h.v.receive(sample)).rejects.toBe(error); expect(h.get).not.toHaveBeenCalled()
