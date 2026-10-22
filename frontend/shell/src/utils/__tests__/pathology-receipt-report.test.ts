@@ -186,9 +186,9 @@ for (const action of ['firstSign', 'secondSign', 'submitDiagnose', 'submitSupple
     const write = deferred(), h = report(undefined, vi.fn(() => write.promise), vi.fn(() => write.promise)); await reportReady(h, action !== 'submitDiagnose'); Object.assign(h.v.primary.value, action === 'secondSign' ? { firstSignerId: 9, firstSignedAt: '2026-10-22' } : {})
     if (action === 'submitDiagnose') { h.v.openDiagnose(); h.v.diagnoseForm.diagnosis = '模拟原诊断' }
     if (action === 'submitSupplement') { h.v.openSupplement(); h.v.supplementForm.content = '模拟原补充' }
-    const first = h.v[action](); await h.v[action](); expect(h.put.mock.calls.length + h.post.mock.calls.length).toBe(1)
+    const first = h.v[action](); const duplicate = h.v[action](); expect(h.put.mock.calls.length + h.post.mock.calls.length).toBe(1)
     h.v.openReport(12); await h.v.loadReport(); if (action === 'submitSupplement') { h.v.hasPrimary.value = true; h.v.primary.value.diagnosis = '模拟既有诊断'; h.v.openSupplement(); h.v.supplementForm.content = '模拟新补充' } else { h.v.openDiagnose(); h.v.diagnoseForm.diagnosis = '模拟新诊断' }
-    write.resolve({ seqNo: 1 }); await first
+    write.resolve({ seqNo: 1 }); await Promise.all([first, duplicate])
     if (action === 'submitSupplement') { expect(h.v.supplementDialog.value).toBe(true); expect(h.v.supplementForm.content).toBe('模拟新补充') } else { expect(h.v.diagnoseDialog.value).toBe(true); expect(h.v.diagnoseForm.diagnosis).toBe('模拟新诊断') }
     expect(h.v.specimenId.value).toBe(12); expect(h.v.specimen.value.id).toBe(12)
   })
@@ -226,8 +226,8 @@ it('late report response cannot replace the new specimen or release its loading 
 it('an in-progress report read blocks all direct writes until the actual object is loaded', async () => {
   const read = deferred(); let slow = false
   const h = report(undefined, undefined, undefined, vi.fn((path: string) => slow && path.endsWith('/reports') ? read.promise : response(path.endsWith('/reports') ? reportData(11, true) : { items: [] })))
-  await reportReady(h, true); slow = true; const first = h.v.loadReport(); await h.v.firstSign(); await h.v.issue(); h.v.openSupplement(); h.v.supplementForm.content = '模拟补充'; await h.v.submitSupplement()
-  expect(h.put).not.toHaveBeenCalled(); expect(h.post).not.toHaveBeenCalled(); read.resolve(reportData(11, true)); await first
+  await reportReady(h, true); slow = true; const first = h.v.loadReport(); const sign = h.v.firstSign(); const issue = h.v.issue(); h.v.openSupplement(); h.v.supplementForm.content = '模拟补充'; const supplement = h.v.submitSupplement()
+  expect(h.put).not.toHaveBeenCalled(); expect(h.post).not.toHaveBeenCalled(); read.resolve(reportData(11, true)); await Promise.all([first, sign, issue, supplement])
 })
 it('worklist query versions preserve the latest result and cap when requests finish out of order', async () => {
   const old = deferred(), latest = deferred(); let slow = false
@@ -259,8 +259,8 @@ it('old receipt denies rejected or no-longer-collected specimens', async () => {
   const h = specialty(); h.v.tab.value = 'path'; await h.v.loadSpecimens(); await h.v.receive({ ...sample, rejected_at: '2026-10-22' }); await h.v.receive({ ...sample, status: 'RECEIVED' }); expect(h.put).not.toHaveBeenCalled()
 })
 it('old receipt is synchronously deduplicated and retains its original barcode', async () => {
-  const write = deferred(), h = specialty(undefined, vi.fn(() => write.promise)); h.v.tab.value = 'path'; await h.v.loadSpecimens(); const row = h.v.specimens.value[0]; const first = h.v.receive(row); row.barcode = 'PB99'; await h.v.receive(other)
-  expect(h.put).toHaveBeenCalledExactlyOnceWith('/pathology/specimens/PB11/receive'); write.resolve(null); await first
+  const write = deferred(), h = specialty(undefined, vi.fn(() => write.promise)); h.v.tab.value = 'path'; await h.v.loadSpecimens(); const row = h.v.specimens.value[0]; const first = h.v.receive(row); row.barcode = 'PB99'; const duplicate = h.v.receive(other)
+  expect(h.put).toHaveBeenCalledExactlyOnceWith('/pathology/specimens/PB11/receive'); write.resolve(null); await Promise.all([first, duplicate])
 })
 it('old receipt conflict refreshes the actual specimen queue without swallowing unrelated errors', async () => {
   const h = specialty(undefined, vi.fn(() => Promise.reject({ bizCode: 4551 }))); h.v.tab.value = 'path'; await h.v.loadSpecimens(); h.get.mockClear(); await settle(h.v.receive(sample)); expect(h.get).toHaveBeenCalledExactlyOnceWith('/pathology/specimens')
