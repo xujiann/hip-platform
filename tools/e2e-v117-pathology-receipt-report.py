@@ -451,12 +451,12 @@ print('[3] Preserved gross evidence, pre-issue supplement, different-person sign
 # The final active part alone changes the real source order to EXECUTED.
 parts_case = visit('两部位签发')
 parts = [register(parts_case, part=n) for n in [1, 2]]
-for entry in parts:
+for index, entry in enumerate(parts):
     receive(parts_case, entry)
     diagnose(parts_case, entry)
-    sign(entry, 'first-sign', 'doctor')
-    sign(entry, 'second-sign', 'doctor2')
-issue(parts_case, parts[0], False, 1, True)
+    sign(entry, 'first-sign', 'doctor' if index == 0 else 'admin')
+    sign(entry, 'second-sign', 'admin' if index == 0 else 'doctor2')
+issue(parts_case, parts[0], False, 1, True, who='admin')
 issue(parts_case, parts[1], True, 0, True, who='doctor2')
 reject_case = visit('最后部位拒收')
 first, last = register(reject_case), register(reject_case, part=2)
