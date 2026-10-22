@@ -9,7 +9,7 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 
-import java.util.Map;
+import java.util.*;
 import java.util.Objects;
 import java.util.Set;
 
@@ -59,6 +59,108 @@ public class PathologySpecimenAccess {
                 || (barcode != null && !Objects.equals(barcode, row.get("barcode"))))
             throw changed(changedCode);
         return row;
+    }
+
+    /** All source rows precede all specimens, including batches spanning OUTP and INP. */
+    private Map<Long, Map<String, Object>> lockSet(List<Long> ids, Authentication auth, int code) {
+        var refs = new TreeMap<Long, Map<String, Object>>();
+        for (Long id : ids) {
+            var rows = jdbc.queryForList("select id, order_id, inp_order_id from path_specimen where id=?", id);
+            if (rows.isEmpty()) throw changed(code);
+            refs.put(id, rows.getFirst());
+        }
+        // Fixed table order, then numeric id. Never take the next O while already holding S.
+        for (String key : List.of("order_id", "inp_order_id")) {
+            var sources = refs.values().stream().map(m -> (Long) m.get(key)).filter(Objects::nonNull)
+                    .distinct().sorted().toList();
+            String table = key.equals("order_id") ? "outp_order" : "inp_order";
+            for (Long id : sources) {
+                var rows = jdbc.queryForList("select id from " + table + " where id=? for update", id);
+                actor(auth, false);
+                if (rows.isEmpty()) throw changed(code);
+            }
+        }
+        var result = new LinkedHashMap<Long, Map<String, Object>>();
+        for (var entry : refs.entrySet()) {
+            var rows = jdbc.queryForList("select * from path_specimen where id=? for update", entry.getKey());
+            actor(auth, false);
+            if (rows.isEmpty()) throw changed(code);
+            var row = rows.getFirst();
+            for (String key : List.of("order_id", "inp_order_id"))
+                if (!Objects.equals(row.get(key), entry.getValue().get(key))) throw changed(code);
+            result.put(entry.getKey(), row);
+        }
+        return result;
+    }
+
+    public boolean lockBlocks(List<Long> ids, Authentication auth, int code) {
+        return lockChildren(ids, auth, code, false) != null;
+    }
+
+    public boolean lockSlides(List<Long> ids, Authentication auth, int code) {
+        return lockChildren(ids, auth, code, true) != null;
+    }
+
+    private Map<Long, Map<String, Object>> lockChildren(List<Long> ids, Authentication auth, int code, boolean slides) {
+        actor(auth, false);
+        entityManager.flush();
+        var refs = new ArrayList<Map<String, Object>>();
+        for (Long id : ids.stream().distinct().sorted().toList()) {
+            var rows = jdbc.queryForList(slides
+                    ? "select sl.id, sl.block_id, b.specimen_id, sl.tech_order_id from path_slide sl join path_block b on b.id=sl.block_id where sl.id=?"
+                    : "select b.id, b.id as block_id, b.specimen_id, b.tech_order_id from path_block b where b.id=?", id);
+            if (rows.isEmpty()) return null;
+            refs.add(rows.getFirst());
+        }
+        var specimens = lockSet(refs.stream().map(m -> (Long) m.get("specimen_id")).distinct().toList(), auth, code);
+        if (specimens.values().stream().anyMatch(m -> m.get("rejected_at") != null))
+            throw new HipBizException(code, "标本已拒收，不能登记制片，请刷新后重试");
+        var blocks = new TreeMap<Long, Long>();
+        for (var ref : refs) blocks.put((Long) ref.get("block_id"), (Long) ref.get("specimen_id"));
+        for (var entry : blocks.entrySet()) {
+            var rows = jdbc.queryForList("select * from path_block where id=? for update", entry.getKey());
+            actor(auth, false);
+            if (rows.isEmpty() || !Objects.equals(entry.getValue(), rows.getFirst().get("specimen_id"))) throw changed(code);
+        }
+        var technical = new TreeMap<Long, Long>();
+        for (var ref : refs) if (ref.get("tech_order_id") != null)
+            technical.put((Long) ref.get("tech_order_id"), (Long) ref.get("specimen_id"));
+        for (var entry : technical.entrySet()) {
+            var rows = jdbc.queryForList("select specimen_id from path_tech_order where id=? for update", entry.getKey());
+            actor(auth, false);
+            if (rows.isEmpty() || !Objects.equals(entry.getValue(), rows.getFirst().get("specimen_id"))) throw changed(code);
+        }
+        // The specimen lock serializes all application producers. Lock physical children too so a
+        // waiting stale request cannot follow a direct relationship repair to a different specimen.
+        for (var ref : refs) {
+            var rows = jdbc.queryForList(slides
+                    ? "select * from path_slide where id=? for update"
+                    : "select * from path_block where id=? for update", ref.get("id"));
+            actor(auth, false);
+            if (rows.isEmpty()) throw changed(code);
+            var row = rows.getFirst();
+            String parent = slides ? "block_id" : "specimen_id";
+            if (!Objects.equals(ref.get(parent), row.get(parent))
+                    || !Objects.equals(ref.get("tech_order_id"), row.get("tech_order_id"))) throw changed(code);
+        }
+        return specimens;
+    }
+
+    /** Resolve T without locking it, then O -> S -> T and verify its original parent binding. */
+    public Map<String, Object> lockTechOrder(Long id, Authentication auth) {
+        actor(auth, false);
+        entityManager.flush();
+        var refs = jdbc.queryForList("select id, specimen_id, block_id from path_tech_order where id=?", id);
+        if (refs.isEmpty()) return null;
+        var ref = refs.getFirst();
+        Long sid = (Long) ref.get("specimen_id");
+        var specimens = lockSet(List.of(sid), auth, 5268);
+        var rows = jdbc.queryForList("select * from path_tech_order where id=? for update", id);
+        actor(auth, false);
+        if (rows.isEmpty()) return null;
+        for (String key : List.of("specimen_id", "block_id"))
+            if (!Objects.equals(ref.get(key), rows.getFirst().get(key))) throw changed(5268);
+        return specimens.get(sid);
     }
 
     private static HipBizException changed(int code) {

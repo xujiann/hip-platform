@@ -2,7 +2,7 @@ package cn.hip.medtech.web;
 
 import cn.hip.platform.core.common.R;
 import cn.hip.platform.core.config.BusinessDates;
-import cn.hip.platform.core.security.CurrentUserService;
+import cn.hip.medtech.service.PathologySpecimenAccess;
 import cn.hip.platform.core.service.ConfigReader;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -39,9 +39,8 @@ import java.util.Map;
  *   <li><b>编号是「标本内 / 蜡块内序号」，不是全局序列</b>：病理报告上写的是「3 号蜡块第 2 张切片」。
  *       {@code block_no} 在标本内从 1 起、{@code slide_no} 在蜡块内从 1 起；
  *       {@code block_code} =「病理号-块号」、{@code slide_code} =「病理号-块号-片号」。
- *       序号由<b>单条 insert 内的子查询</b>取 max+1，并发下靠
- *       {@code uq_path_block_no} / {@code uq_path_slide_no} 兜底（撞号由全局兜底返 4090，
- *       调用方重试即可）——<b>不做「查了再写」的两段式</b>，那个窗口更大。</li>
+ *       序号由<b>单条 insert 内的子查询</b>取 max+1，写入先按源医嘱及标本统一锁序串行，
+ *       {@code uq_path_block_no} / {@code uq_path_slide_no} 继续作为完整性约束——<b>不做「查了再写」的两段式</b>，那个窗口更大。</li>
  *   <li><b>病理号缺失时编码回落到 barcode</b>：{@code path_no} 由 P1 车道在登记环节生成，
  *       V144 之前的存量标本没有病理号。此时回落既有 {@code barcode}（PB+序列，not null unique）
  *       而不是拒绝取材，更<b>不是临时造一个病理号</b>——造号会与 P1 的按年连续编号撞车。
@@ -118,7 +117,7 @@ import java.util.Map;
 public class PathologyProcessController {
 
     private final JdbcTemplate jdbc;
-    private final CurrentUserService currentUserService;
+    private final PathologySpecimenAccess specimenAccess;
     private final ConfigReader configReader;
 
     /**
@@ -393,6 +392,7 @@ public class PathologyProcessController {
     @PostMapping("/grossing")
     @Transactional
     public R<Map<String, Object>> grossing(@RequestBody GrossingReq req, Authentication auth) {
+        specimenAccess.actor(auth, false);
         if (req == null || req.specimenId() == null) return R.fail(5222, "标本 id 不能为空");
 
         List<BlockReq> blocks = req.blocks() == null ? List.of() : req.blocks();
@@ -435,6 +435,8 @@ public class PathologyProcessController {
             return R.fail(5222, e.getMessage());
         }
 
+        if (specimenAccess.lockId(req.specimenId(), auth, false, 5221) == null)
+            return R.fail(5220, "标本不存在：" + req.specimenId());
         var head = one("""
                 select s.id, s.barcode, s.path_no, s.status, s.received_at, s.rejected_at, s.diagnosed_at,
                        s.gross_finding,
@@ -469,8 +471,9 @@ public class PathologyProcessController {
                 return R.fail(5222, "首次取材不能挂接补取材医嘱：techOrderId 只在 append=true 的补取材时有效"
                         + "（收到 techOrderId=" + req.techOrderId() + "）");
             }
-            techOrder = one("select id, specimen_id, block_id, tech_type, tech_item, status from path_tech_order where id = ?",
+            techOrder = one("select id, specimen_id, block_id, tech_type, tech_item, status from path_tech_order where id = ? for update",
                     req.techOrderId());
+            specimenAccess.actor(auth, false);
             if (techOrder == null) {
                 return R.fail(5275, "补取材挂接的特检医嘱不存在：techOrderId=" + req.techOrderId());
             }
@@ -490,8 +493,7 @@ public class PathologyProcessController {
 
         // v58 审阅补（已复现）：当前用户判定必须在任何写入之前——R.fail 不是异常、@Transactional 不回滚，
         // 放在 gross_finding update 之后会留下无人署名的半截数据（文本有、字段/修订/蜡块/节点全无）。
-        Long uid = currentUserService.idOf(auth);
-        if (uid == null) return R.fail(5224, "无法识别当前登录用户，不能登记取材");
+        Long uid = specimenAccess.actor(auth, false);
 
         String existingRaw = (String) head.get("gross_finding");
         String existingGross = trim(existingRaw);
@@ -552,7 +554,7 @@ public class PathologyProcessController {
         var created = new ArrayList<Map<String, Object>>(blocks.size());
         for (String tissueDesc : tissueDescs) {
             // block_no 与 block_code 由单条 insert 内的子查询取 max+1：
-            // 「查了再写」的两段式窗口更大；并发撞号由 uq_path_block_no 兜底（全局返 4090）。
+            // v118：当前已持 O→S，编号与整个取材写入在该标本内串行。
             // 参数上的 ::bigint / ::varchar 不是装饰：insert ... select 的 select 列表里，
             // PostgreSQL 对未指定类型的参数（尤其传 null 时）会报
             // 「could not determine data type of parameter」，显式转型才是稳的。
@@ -657,6 +659,7 @@ public class PathologyProcessController {
     @Transactional
     public R<Map<String, Object>> reviseGrossFields(@PathVariable Long specimenId,
                                                     @RequestBody GrossReviseReq req, Authentication auth) {
+        specimenAccess.actor(auth, false);
         if (specimenId == null) return R.fail(5222, "标本 id 不能为空");
         if (req == null) return R.fail(5222, "修订内容不能为空");
 
@@ -672,6 +675,9 @@ public class PathologyProcessController {
         }
         if (assembled == null) return R.fail(5222, "修订内容不能为空：字段与自由描述至少填一项");
 
+        var locked = specimenAccess.lockId(specimenId, auth, false, 5221);
+        if (locked == null) return R.fail(5220, "标本不存在：" + specimenId);
+        if (locked.get("report_issued_at") != null) return R.fail(5221, "标本已签发，不能修订取材描述");
         var head = one("""
                 select s.id, s.received_at, s.rejected_at, s.diagnosed_at, s.gross_finding
                 from path_specimen s where s.id = ?
@@ -691,8 +697,7 @@ public class PathologyProcessController {
             return R.fail(5222, "修订后的大体描述与当前相同，没有变化就没有新版本");
         }
 
-        Long uid = currentUserService.idOf(auth);
-        if (uid == null) return R.fail(5224, "无法识别当前登录用户，不能修订取材描述");
+        Long uid = specimenAccess.actor(auth, false);
 
         // v62（2530 复核）：结构化退化守卫——**所有判定都在第一条写入之前**，block 档零写入。
         // 「本次落几行字段」与 storeGrossFields 同源（effectiveGrossFields），不各算一遍免得口径漂。
@@ -860,6 +865,7 @@ public class PathologyProcessController {
     @PutMapping("/blocks/dehydrate-batch")
     @Transactional
     public R<Map<String, Object>> dehydrateBatch(@RequestBody DehydrateBatchReq req, Authentication auth) {
+        specimenAccess.actor(auth, false);
         String batchNo = req == null ? null : trim(req.batchNo());
         if (batchNo == null) return R.fail(5242, "脱水批次号不能为空");
         if (batchNo.length() > BATCH_NO_MAX) {
@@ -875,8 +881,8 @@ public class PathologyProcessController {
             return R.fail(5242, "一次最多 " + MAX_BATCH_SIZE + " 个蜡块，收到 " + ids.size());
         }
 
-        Long uid = currentUserService.idOf(auth);
-        if (uid == null) return R.fail(5248, "无法识别当前登录用户，不能登记脱水分篮");
+        if (!specimenAccess.lockBlocks(ids, auth, 5241)) return R.fail(5240, "蜡块不存在，请刷新后重试");
+        Long uid = specimenAccess.actor(auth, false);
 
         String in = placeholders(ids.size());
         var rows = jdbc.queryForList("""
@@ -1009,13 +1015,14 @@ public class PathologyProcessController {
     public R<Map<String, Object>> embed(@PathVariable Long id,
                                         @RequestParam(required = false) String remark,
                                         Authentication auth) {
+        specimenAccess.actor(auth, false);
         String rk = trim(remark);
         if (rk != null && rk.length() > REMARK_MAX) {
             return R.fail(5243, "备注超长（上限 " + REMARK_MAX + " 字）");
         }
 
-        Long uid = currentUserService.idOf(auth);
-        if (uid == null) return R.fail(5248, "无法识别当前登录用户，不能登记包埋");
+        if (!specimenAccess.lockBlocks(List.of(id), auth, 5241)) return R.fail(5240, "蜡块不存在：" + id);
+        Long uid = specimenAccess.actor(auth, false);
 
         var updated = jdbc.queryForList("""
                 update path_block set embedded_at = now(), embedded_by = ?
@@ -1149,6 +1156,7 @@ public class PathologyProcessController {
     @PostMapping("/slides")
     @Transactional
     public R<Map<String, Object>> slides(@RequestBody SlideReq req, Authentication auth) {
+        specimenAccess.actor(auth, false);
         if (req == null || req.blockId() == null) return R.fail(5243, "蜡块 id 不能为空");
         int count = req.count() == null ? 1 : req.count();
         if (count < 1 || count > MAX_SLIDES_PER_SECTION) {
@@ -1168,8 +1176,8 @@ public class PathologyProcessController {
             return R.fail(5243, "备注超长（上限 " + REMARK_MAX + " 字）");
         }
 
-        Long uid = currentUserService.idOf(auth);
-        if (uid == null) return R.fail(5248, "无法识别当前登录用户，不能登记切片");
+        if (!specimenAccess.lockBlocks(List.of(req.blockId()), auth, 5241)) return R.fail(5240, "蜡块不存在：" + req.blockId());
+        Long uid = specimenAccess.actor(auth, false);
 
         var block = one("""
                 select b.id, b.specimen_id, b.block_no, b.block_code, b.embedded_at, b.tech_order_id,
@@ -1187,8 +1195,9 @@ public class PathologyProcessController {
         // v57：挂接特检技术医嘱（可空）。放在蜡块解析之后——「属于该蜡块所在标本」要先知道标本是谁
         Map<String, Object> techOrder = null;
         if (req.techOrderId() != null) {
-            techOrder = one("select id, specimen_id, block_id, tech_type, tech_item, status from path_tech_order where id = ?",
+            techOrder = one("select id, specimen_id, block_id, tech_type, tech_item, status from path_tech_order where id = ? for update",
                     req.techOrderId());
+            specimenAccess.actor(auth, false);
             if (techOrder == null) {
                 return R.fail(5272, "切片挂接的特检技术医嘱不存在：techOrderId=" + req.techOrderId());
             }
@@ -1291,6 +1300,7 @@ public class PathologyProcessController {
     public R<Map<String, Object>> stain(@PathVariable Long id,
                                         @RequestBody(required = false) StainReq req,
                                         Authentication auth) {
+        specimenAccess.actor(auth, false);
         String quality = req == null ? null : trimUpper(req.quality());
         if (quality != null && !SLIDE_QUALITIES.contains(quality)) {
             return R.fail(5246, "染色质量非法：" + req.quality() + "，可选 " + SLIDE_QUALITIES);
@@ -1304,8 +1314,8 @@ public class PathologyProcessController {
             return R.fail(5243, "备注超长（上限 " + REMARK_MAX + " 字）");
         }
 
-        Long uid = currentUserService.idOf(auth);
-        if (uid == null) return R.fail(5248, "无法识别当前登录用户，不能登记染色");
+        if (!specimenAccess.lockSlides(List.of(id), auth, 5245)) return R.fail(5244, "切片不存在：" + id);
+        Long uid = specimenAccess.actor(auth, false);
 
         // v59（2563 一致性）：已挂接「有项目」的医嘱时，项目不得改成别的——只在入参非空时判，且在 update 之前
         if (stainItem != null) {
@@ -1383,6 +1393,7 @@ public class PathologyProcessController {
     @PutMapping("/slides/batch-complete")
     @Transactional
     public R<Map<String, Object>> batchComplete(@RequestBody BatchCompleteReq req, Authentication auth) {
+        specimenAccess.actor(auth, false);
         var ids = distinctIds(req == null ? null : req.slideIds());
         if (ids.isEmpty()) return R.fail(5247, "切片清单不能为空");
         if (ids.size() > MAX_BATCH_SIZE) {
@@ -1401,8 +1412,8 @@ public class PathologyProcessController {
             return R.fail(5247, "备注超长（上限 " + REMARK_MAX + " 字）");
         }
 
-        Long uid = currentUserService.idOf(auth);
-        if (uid == null) return R.fail(5248, "无法识别当前登录用户，不能核销切片");
+        if (!specimenAccess.lockSlides(ids, auth, 5245)) return R.fail(5244, "切片不存在，请刷新后重试");
+        Long uid = specimenAccess.actor(auth, false);
 
         String in = placeholders(ids.size());
         var rows = jdbc.queryForList("""

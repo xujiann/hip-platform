@@ -957,8 +957,9 @@ public class PathologyReportController {
     @PostMapping("/tech-orders")
     @Transactional
     public R<Map<String, Object>> createTechOrder(@RequestBody TechOrderReq req, Authentication auth) {
+        specimenAccess.actor(auth, false);
         if (req == null || req.specimenId() == null) return R.fail(5260, "标本不存在：未指定 specimenId");
-        var h = head(req.specimenId());
+        var h = specimenAccess.lockId(req.specimenId(), auth, false, 5261);
         if (h == null) return R.fail(5260, "标本不存在：" + req.specimenId());
         if (h.get("rejected_at") != null) return R.fail(5261, "该标本已拒收，不能下达特检技术医嘱");
 
@@ -979,16 +980,16 @@ public class PathologyReportController {
             return R.fail(5267, "特检医嘱原因超长（最多 " + REASON_MAX + " 字）");
         }
         if (req.blockId() != null) {
-            Integer owned = jdbc.queryForObject(
-                    "select count(*) from path_block where id = ? and specimen_id = ?",
-                    Integer.class, req.blockId(), req.specimenId());
-            if (owned == null || owned == 0) {
+            var owned = jdbc.queryForList(
+                    "select id from path_block where id = ? and specimen_id = ? for update", req.blockId(), req.specimenId());
+            specimenAccess.actor(auth, false);
+            if (owned.isEmpty()) {
                 return R.fail(5269, "蜡块不存在或不属于该标本：blockId=" + req.blockId()
                         + "，specimenId=" + req.specimenId());
             }
         }
 
-        Long uid = currentUserService.idOf(auth);
+        Long uid = specimenAccess.actor(auth, false);
         var ins = jdbc.queryForList("""
                 insert into path_tech_order(specimen_id, block_id, tech_type, tech_item, reason, ordered_by)
                 values (?, ?, ?, ?, ?, ?)
@@ -1037,9 +1038,12 @@ public class PathologyReportController {
     @PutMapping("/tech-orders/{id}/done")
     @Transactional
     public R<Map<String, Object>> doneTechOrder(@PathVariable Long id, Authentication auth) {
+        specimenAccess.actor(auth, false);
+        var specimen = specimenAccess.lockTechOrder(id, auth);
+        if (specimen == null) return R.fail(5268, "特检技术医嘱不存在：" + id);
+        if (specimen.get("rejected_at") != null) return R.fail(5261, "标本已拒收，不能完成特检技术医嘱");
         // v57 审阅补：与 cancelTechOrder 同口径——完成人解析不出就不叫留痕，不把 done_by 静默写成 NULL
-        Long uid = currentUserService.idOf(auth);
-        if (uid == null) return R.fail(5270, "无法识别当前登录用户，不能完成特检技术医嘱");
+        Long uid = specimenAccess.actor(auth, false);
 
         var facts = jdbc.queryForList("""
                 select t.id, t.specimen_id, t.tech_type, t.tech_item, t.status,
@@ -1137,13 +1141,14 @@ public class PathologyReportController {
     public R<Map<String, Object>> cancelTechOrder(@PathVariable Long id,
                                                   @RequestBody(required = false) CancelTechOrderReq req,
                                                   Authentication auth) {
+        specimenAccess.actor(auth, false);
         String reason = req == null ? null : trim(req.reason());
         if (reason == null) return R.fail(5271, "技术医嘱取消原因不能为空：id=" + id);
         if (reason.length() > REASON_MAX) {
             return R.fail(5271, "技术医嘱取消原因超长（最多 " + REASON_MAX + " 字，收到 " + reason.length() + " 字）");
         }
-        Long uid = currentUserService.idOf(auth);
-        if (uid == null) return R.fail(5270, "无法识别当前登录用户，不能取消特检技术医嘱（取消人须留痕）");
+        if (specimenAccess.lockTechOrder(id, auth) == null) return R.fail(5268, "特检技术医嘱不存在：" + id);
+        Long uid = specimenAccess.actor(auth, false);
 
         var updated = jdbc.queryForList("""
                 update path_tech_order
