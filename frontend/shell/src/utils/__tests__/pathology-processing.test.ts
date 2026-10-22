@@ -1,5 +1,6 @@
 import { expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
 import { computed, reactive, ref } from 'vue'
@@ -28,7 +29,9 @@ const tails: Record<string, string> = {
   DiagnosisPanel: 'rows, specimen, specimenId, drawer, saving, techRows, techDialog, techForm, specimenBlocks, openReport, loadReport, loadTech, submitTech, techDone, techCancel, openTech: () => { if (typeof openTech === "function") openTech(); else techDialog.value = true }',
 }
 function harness(name: string, roles = ['TECHNICIAN'], put = vi.fn(() => response({ doneRemark: '已出块 2', warnings: [], requested: 1, completed: 1, specimenCount: 1 })), post = vi.fn(() => response({ blockCount: 1, slideCount: 1, blocks: [], warnings: [] })), getOverride?: any) {
-  const component = readFileSync(new URL(`../../views/medtech/pathology/${name}.vue`, import.meta.url), 'utf8')
+  const component = readFileSync(process.env.HIP_V118_FRONT_BASELINE_ROOT
+    ? resolve(process.env.HIP_V118_FRONT_BASELINE_ROOT, `${name}.vue`)
+    : new URL(`../../views/medtech/pathology/${name}.vue`, import.meta.url), 'utf8')
   const script = component.split('<script setup lang="ts">')[1].split('</script>')[0].replace(/^import[\s\S]*?from ['"][^'"]+['"]\r?$/gm, '')
   const dispose: Array<() => void> = [], user = reactive({ roles, id: 7 })
   const get = getOverride ?? vi.fn((path: string) => response(path.endsWith('/reports') ? report(Number(path.split('/')[3])) : /grossing\/\d+$/.test(path) ? grossData() : path.endsWith('/blocks') ? { items: [block, otherBlock] } : path.endsWith('/slides/search') ? { items: [slide, otherSlide] } : path.endsWith('/tech-orders') ? { items: [order] } : path.endsWith('/worklist') ? { items: [specimen, other] } : { items: [] }))
@@ -84,7 +87,7 @@ for (const [name, action, row] of cases) {
     const first = h.v[action](row); await Promise.resolve(); h.dispose(); write.resolve({ warnings: [], blocks: [] }); await first
     expect(h.box.ElMessage.success).not.toHaveBeenCalled(); expect(h.box.ElMessage.warning).not.toHaveBeenCalled(); expect(h.get).not.toHaveBeenCalled(); expect(h.box.emits).not.toHaveBeenCalled()
   })
-  const code = name === 'GrossingPanel' ? 5221 : name === 'ProcessingPanel' ? 5241 : 5261
+  const code = name === 'GrossingPanel' ? 5221 : name === 'ProcessingPanel' ? ['submitStain', 'submitBatchComplete'].includes(action) ? 5245 : 5241 : action === 'submitTech' ? 5261 : 5268
   it(`${name}/${action} ${code} refreshes actual state without success`, async () => {
     const h = harness(name, undefined, vi.fn(() => Promise.reject({ bizCode: code })), vi.fn(() => Promise.reject({ bizCode: code }))); await prepare(h, name, action)
     await settle(h.v[action](row)); expect(h.get.mock.calls.length).toBeGreaterThan(0); expect(h.box.ElMessage.success).not.toHaveBeenCalled()
@@ -111,7 +114,7 @@ for (const action of ['submit', 'submitRevise', 'submitSlide', 'submitStain', 's
 it('grossing keeps explicit append legal after diagnosis and issue', async () => {
   const h = harness('GrossingPanel'); await ready(h, 'GrossingPanel'); const issued = { ...specimen, diagnosed_at: '2026-10-22', report_issued_at: '2026-10-22', block_count: 2 }
   h.v.rows.value = [issued]; h.v.openGrossing(issued); h.v.form.append = true; h.v.form.grossText = '补取材'; await h.v.submit()
-  expect(h.post.mock.calls[0][1]).toMatchObject({ specimenId: 11, append: true, grossText: '补取材' }); expect(h.v.canRevise(issued)).toBe(false)
+  expect((h.post.mock.calls as any[][])[0][1]).toMatchObject({ specimenId: 11, append: true, grossText: '补取材' }); expect(h.v.canRevise(issued)).toBe(false)
 })
 it('grossing rejected or not received specimens cannot be opened by direct function', async () => {
   const h = harness('GrossingPanel'); await ready(h, 'GrossingPanel')
@@ -159,6 +162,15 @@ it('processing late attachment options cannot enter another block dialog', async
   const first = h.v.openSlide(block); await h.v.openSlide(otherBlock); old.resolve({ items: [{ ...order, id: 999 }] }); await first
   expect(h.v.currentBlock.value.id).toBe(22); expect(h.v.techOrderOptions.value.some((r: any) => r.id === 999)).toBe(false)
 })
-it('processing historical DONE/CANCELLED attachment still permits physical stain registration', async () => {
-  const h = harness('ProcessingPanel'); await prepare(h, 'ProcessingPanel', 'submitStain'); await h.v.submitStain(); expect(h.put.mock.calls[0][0]).toBe('/pathology/process/slides/31/stain')
+for (const [status, progress] of [['DONE', '已完成'], ['CANCELLED', '已取消']]) it(`processing historical ${status} attachment still permits physical stain registration`, async () => {
+  const h = harness('ProcessingPanel'); await ready(h, 'ProcessingPanel')
+  const linked = { ...slide, tech_order_id: 41 }; h.v.slides.value = [linked]; h.v.openStain(linked)
+  h.get.mockImplementation((path: string) => response({ items: path.endsWith('/tech-orders') ? [{ ...order, status, progress_name: progress }] : [] }))
+  await h.v.submitStain(); expect((h.put.mock.calls as any[][])[0][0]).toBe('/pathology/process/slides/31/stain')
+  expect(h.box.ElMessage.info).toHaveBeenCalledWith(expect.stringContaining(`进度：${progress}`))
+})
+it('diagnosis technical cancellation remains available after rejection while new and completed orders are refused', async () => {
+  const h = harness('DiagnosisPanel'); await prepare(h, 'DiagnosisPanel', 'submitTech'); h.v.specimen.value.rejected_at = '2026-10-22'
+  await h.v.submitTech(); await h.v.techDone(order); expect(h.post).not.toHaveBeenCalled(); expect(h.put).not.toHaveBeenCalled()
+  await h.v.techCancel(order); expect(h.put).toHaveBeenCalledExactlyOnceWith('/pathology/report/tech-orders/41/cancel', { reason: '模拟取消原因' })
 })
