@@ -369,7 +369,14 @@ for action in actions:
     denied(security_case, security_specimen, action, 1000, None)
 disabled = identities['disabled']
 expect(0, 'PUT', f"/system/users/{disabled['id']}/enabled?enabled=false")
-disabled_row = next(row for row in expect(0, 'GET', '/system/users') if row['id'] == disabled['id'])
+user_page = 0
+while True:
+    listed_users = expect(0, 'GET', f'/system/users?page={user_page}&size=100')['records']
+    disabled_row = next((row for row in listed_users if row['id'] == disabled['id']), None)
+    if disabled_row is not None:
+        break
+    assert listed_users, 'Disabled fixture employee must still exist in the public employee list'
+    user_page += 1
 assert disabled_row['enabled'] is False, 'The dedicated enabled endpoint must really disable the employee'
 for action in actions:
     denied(security_case, security_specimen, action, 1000, 'disabled')
