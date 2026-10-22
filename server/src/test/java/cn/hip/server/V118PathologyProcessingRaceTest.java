@@ -118,7 +118,7 @@ class V118PathologyProcessingRaceTest {
         jdbc.update("delete from path_tech_order where specimen_id in("+ids+")",tag+"%");
         jdbc.update("delete from path_specimen where barcode like ?",tag+"%");
         jdbc.update("delete from outp_order where registration_id=?",registration);jdbc.update("delete from outp_registration where id=?",registration);jdbc.update("delete from outp_schedule where id=?",schedule);
-        if(inpOrder!=null)jdbc.update("delete from inp_order where id=?",inpOrder);if(admission!=null)jdbc.update("delete from inp_admission where id=?",admission);if(bed!=null)jdbc.update("delete from inp_bed where id=?",bed);
+        if(admission!=null){jdbc.update("delete from inp_order where admission_id=?",admission);jdbc.update("delete from inp_admission where id=?",admission);}if(bed!=null)jdbc.update("delete from inp_bed where id=?",bed);
         jdbc.update("delete from empi_patient where id=?",patient);for(var s:staff){jdbc.update("delete from sys_user_role where user_id=?",s.id());jdbc.update("delete from sys_user where id=?",s.id());}jdbc.update("delete from sys_dept where id=?",dept);jdbc.update("update sys_config set cfg_value=? where cfg_key='emr.gate.pathology.techdone'",gate);
     });config.evictAll();}
 
@@ -221,7 +221,7 @@ class V118PathologyProcessingRaceTest {
     @ParameterizedTest @ValueSource(strings={"embed","slides","stain","batch","done","cancel"})
     void childRelationshipReboundWhileWaitingRefusesOriginalOperation(String op)throws Exception{
         ready(op);Long another=newSpecimen(order,null),anotherBlock=newBlock(another,true);var p=Executors.newSingleThreadExecutor();var pid=new AtomicInteger();var fs=new ArrayList<Future<Integer>>();Object[] before=new Object[1];
-        try{tx().executeWithoutResult(t->{sourceLock();fs.add(worker(p,pid,()->op(op)));waiting(pid,fs.getFirst());if(List.of("stain","batch").contains(op))jdbc.update("update path_slide set block_id=? where id=?",anotherBlock,slide);else if(List.of("done","cancel").contains(op))jdbc.update("update path_tech_order set specimen_id=?,block_id=? where id=?",another,anotherBlock,techOrder);else jdbc.update("update path_block set specimen_id=? where id=?",another,block);before[0]=facts();});assertEquals(changed(op),result(fs.getFirst()));assertEquals(before[0],facts());}finally{close(p);}
+        try{tx().executeWithoutResult(t->{sourceLock();fs.add(worker(p,pid,()->op(op)));waiting(pid,fs.getFirst());if(List.of("stain","batch").contains(op))jdbc.update("update path_slide set block_id=? where id=?",anotherBlock,slide);else if(List.of("done","cancel").contains(op))jdbc.update("update path_tech_order set specimen_id=?,block_id=? where id=?",another,anotherBlock,techOrder);else jdbc.update("update path_block set specimen_id=?,block_no=2 where id=?",another,block);before[0]=facts();});assertEquals(changed(op),result(fs.getFirst()));assertEquals(before[0],facts());}finally{close(p);}
     }
 
     @ParameterizedTest @ValueSource(strings={"gross","revise","create","slides","done"})
@@ -234,6 +234,43 @@ class V118PathologyProcessingRaceTest {
         jdbc.execute("create trigger "+trigger+" before insert on path_process for each row execute function "+fn+"()");
         try{assertThrows(RuntimeException.class,()->op(op));assertEquals(before,facts());}finally{jdbc.execute("drop trigger "+trigger+" on path_process");jdbc.execute("drop function "+fn+"()");}
         assertEquals(0,op(op));assertNotEquals(before,facts());
+    }
+    @ParameterizedTest @ValueSource(strings={"dehydrate","embed","slides","stain","batch","done","cancel"})
+    void actorDisabledWhileWaitingActualChildRowCannotLeavePartialProduction(String op)throws Exception{
+        ready(op);String table=List.of("done","cancel").contains(op)?"path_tech_order":List.of("stain","batch").contains(op)?"path_slide":"path_block";Long id=table.equals("path_tech_order")?techOrder:table.equals("path_slide")?slide:block;
+        var p=Executors.newSingleThreadExecutor();var pid=new AtomicInteger();var fs=new ArrayList<Future<Integer>>();Object before=facts();
+        try{tx().executeWithoutResult(t->{jdbc.queryForList("select id from "+table+" where id=? for update",id);fs.add(worker(p,pid,()->op(op)));waiting(pid,fs.getFirst());jdbc.update("update sys_user set enabled=false where id=?",tech.id());});assertEquals(1005,result(fs.getFirst()));assertEquals(before,facts());}finally{close(p);}
+    }
+
+    @Test void waitingAppendUsesGrossDescriptionCommittedByDiagnosisAndContinuesRevisionSequence()throws Exception{
+        var p=Executors.newSingleThreadExecutor();var pid=new AtomicInteger();var fs=new ArrayList<Future<Integer>>();
+        try{tx().executeWithoutResult(t->{assertEquals(0,legacy.diagnose(jdbc.queryForObject("select barcode from path_specimen where id=?",String.class,specimen),new PathologyController.DiagnoseReq("诊断重写大体",null,"模拟诊断"),auth()).getCode());fs.add(worker(p,pid,()->process.grossing(new GrossingReq(specimen,null,null,"后追加描述",true,null,List.of(new BlockReq("后追加组织"))),auth()).getCode()));waiting(pid,fs.getFirst());});assertEquals(0,result(fs.getFirst()));String gross=jdbc.queryForObject("select gross_finding from path_specimen where id=?",String.class,specimen);assertTrue(gross.startsWith("诊断重写大体"));assertTrue(gross.contains("后追加描述"));assertEquals("模拟诊断",jdbc.queryForObject("select diagnosis from path_specimen where id=?",String.class,specimen));assertEquals(List.of(1,2),jdbc.queryForList("select seq from path_gross_revision where specimen_id=? order by seq",Integer.class,specimen));assertEquals(List.of("DIAGNOSE","GROSSING"),jdbc.queryForList("select source from path_gross_revision where specimen_id=? order by seq",String.class,specimen));}finally{close(p);}
+    }
+
+    @ParameterizedTest @ValueSource(strings={"dehydrate","batch"})
+    void reverseInputBatchLocksAllInpatientSourcesByIdBeforeAnySpecimen(String op)throws Exception{
+        inpatient();Long firstInp=inpOrder;Long secondInp=jdbc.queryForObject("insert into inp_order(admission_id,group_no,order_type,item_id,item_code,item_name,unit,qty,unit_price,amount,status,doctor_id) values (?,?,'TREAT',0,?,'模拟病理二','次',1,7.5,7.5,'CREATED',?) returning id",Long.class,admission,tag+"2",tag+"2",doctor.id());
+        Long firstS=newSpecimen(null,firstInp),secondS=newSpecimen(null,secondInp);Long firstB=newBlock(firstS,false),secondB=newBlock(secondS,false),firstL=newSlide(firstB,null),secondL=newSlide(secondB,null);
+        var p=Executors.newSingleThreadExecutor();var pid=new AtomicInteger();var fs=new ArrayList<Future<Integer>>();
+        try{tx().executeWithoutResult(t->{jdbc.queryForList("select id from inp_order where id=? for update",secondInp);fs.add(worker(p,pid,()->op.equals("dehydrate")?process.dehydrateBatch(new DehydrateBatchReq(tag+"住院篮",List.of(secondB,firstB),null),auth()).getCode():process.batchComplete(new BatchCompleteReq(List.of(secondL,firstL),"GOOD",null,null),auth()).getCode()));waiting(pid,fs.getFirst());jdbc.execute((org.springframework.jdbc.core.ConnectionCallback<Void>)c->{var sp=c.setSavepoint();try(var q=c.prepareStatement("select id from inp_order where id=? for no key update nowait")){q.setLong(1,firstInp);try(var ignored=q.executeQuery()){fail("First INP source must already have strong lock");}}catch(java.sql.SQLException e){assertEquals("55P03",e.getSQLState());}finally{c.rollback(sp);c.releaseSavepoint(sp);}return null;});assertDoesNotThrow(()->jdbc.queryForList("select id from path_specimen where id in (?,?) for no key update nowait",firstS,secondS));});assertEquals(0,result(fs.getFirst()));assertEquals(2,jdbc.queryForObject("select count(*) from inp_order where admission_id=? and status='CREATED'",Integer.class,admission));}finally{close(p);}
+    }
+
+    @ParameterizedTest @ValueSource(strings={"dehydrate","batch"})
+    void secondSpecimenRejectionDuringBatchWaitRefusesEntireBatch(String op)throws Exception{
+        Long otherOrder=newOrder(),otherS=newSpecimen(otherOrder,null);block=newBlock(specimen,false);Long otherB=newBlock(otherS,false);slide=newSlide(block,null);Long otherL=newSlide(otherB,null);
+        var p=Executors.newSingleThreadExecutor();var pid=new AtomicInteger();var fs=new ArrayList<Future<Integer>>();Object[] before=new Object[1];
+        try{tx().executeWithoutResult(t->{jdbc.queryForList("select id from outp_order where id=? for update",otherOrder);fs.add(worker(p,pid,()->op.equals("dehydrate")?process.dehydrateBatch(new DehydrateBatchReq(tag+"拒收篮",List.of(block,otherB),null),auth()).getCode():process.batchComplete(new BatchCompleteReq(List.of(slide,otherL),"GOOD",null,null),auth()).getCode()));waiting(pid,fs.getFirst());assertEquals(0,registry.reject(otherS,new PathologyRegistryController.RejectReq("模拟第二部位不符",null),auth()).getCode());before[0]=facts();});assertEquals(op.equals("dehydrate")?5241:5245,result(fs.getFirst()));assertEquals(before[0],facts());}finally{close(p);}
+    }
+    @ParameterizedTest @ValueSource(strings={"slides","resample"})
+    void mismatchedForeignTechOrderMustRefuseWithoutTakingForeignChildLock(String producer)throws Exception{
+        block=newBlock(specimen,true);Long ownTech=newTech(specimen,block,"RESAMPLE");jdbc.update("update path_block set tech_order_id=? where id=?",ownTech,block);
+        Long foreignOrder=newOrder(),foreignS=newSpecimen(foreignOrder,null),foreignBlock=newBlock(foreignS,true);Long foreignTech=newTech(foreignS,foreignBlock,producer.equals("resample")?"RESAMPLE":"DEEP_CUT");jdbc.update("update path_block set tech_order_id=? where id=?",foreignTech,foreignBlock);
+        var p=Executors.newSingleThreadExecutor();var pid=new AtomicInteger();var fs=new ArrayList<Future<Integer>>();Object before=facts();
+        try{tx().executeWithoutResult(t->{jdbc.queryForList("select id from path_tech_order where id=? for update",foreignTech);fs.add(worker(p,pid,()->producer.equals("slides")?process.slides(new SlideReq(block,1,"HE",null,null,foreignTech),auth()).getCode():process.grossing(new GrossingReq(specimen,null,null,null,true,null,List.of(new BlockReq("坏挂接")),foreignTech),auth()).getCode()));
+            // Foreign T must not be acquired after the request has already locked its own S and T.
+            // This is the deterministic half of the T1->T2 / T2->T1 malformed-input deadlock.
+            try{assertEquals(producer.equals("slides")?5272:5275,fs.getFirst().get(3,TimeUnit.SECONDS));}catch(TimeoutException e){fail("Mismatched foreign tech order must be rejected before waiting for its row lock",e);}catch(Exception e){throw new RuntimeException(e);}
+        });assertEquals(before,facts());}finally{close(p);}
     }
 }
 
