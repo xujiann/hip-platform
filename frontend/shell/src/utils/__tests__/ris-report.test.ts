@@ -151,7 +151,7 @@ it('a pending critical prompt blocks another prompt and all other writes', async
 })
 it('verification and its share request hold the page write guard until completion', async () => {
   const share = deferred(); const h = setup(); await h.v.load(); h.post.mockImplementation(() => share.promise)
-  const first = h.v.verify(h.v.records.value[1]); await Promise.resolve(); await Promise.resolve(); await Promise.resolve()
+  const first = h.v.verify(h.v.records.value[1]); await vi.waitFor(() => expect(h.post).toHaveBeenCalledOnce())
   const rest = [h.v.verify(h.v.records.value[1]), h.v.arrive(h.v.records.value[0]), h.v.markCritical(h.v.records.value[1])]
   share.resolve({ url: '/share/v114-synthetic' }); await Promise.all([first, ...rest])
   expect(h.put).toHaveBeenCalledTimes(1); expect(h.post).toHaveBeenCalledTimes(1); expect(h.box.ElMessageBox.prompt).not.toHaveBeenCalled()
@@ -223,7 +223,7 @@ it('opening another draft suppresses the old verification share and preserves th
 })
 it('a late share response cannot display over another examination draft', async () => {
   const share = deferred(); const h = setup(); await h.v.load(); h.post.mockImplementation(() => share.promise)
-  const first = h.v.verify(h.v.records.value[1]); await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); await Promise.resolve()
+  const first = h.v.verify(h.v.records.value[1]); await vi.waitFor(() => expect(h.post).toHaveBeenCalledOnce())
   expect(h.post).toHaveBeenCalledOnce(); h.v.openReport(h.v.records.value[0]); h.v.findings.value = '甲保留'
   share.resolve({ url: '/share/v114-synthetic' }); await first
   expect(h.box.ElMessageBox.alert).not.toHaveBeenCalled(); expect(h.v.dialogVisible.value).toBe(true); expect(h.v.findings.value).toBe('甲保留')

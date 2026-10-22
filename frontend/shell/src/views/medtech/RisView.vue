@@ -25,15 +25,18 @@
       <el-table-column label="状态" width="90">
         <template #default="{ row }">{{ { REGISTERED: '已登记', ARRIVED: '已到检', REPORTED: '已报告' }[row.status as string] }}</template>
       </el-table-column>
+      <el-table-column label="源医嘱状态" width="110">
+        <template #default="{ row }">{{ orderStatusNames[row.order_status as string] || row.order_status || '—' }}</template>
+      </el-table-column>
       <el-table-column prop="impression" label="诊断意见" show-overflow-tooltip />
       <el-table-column label="操作" width="220">
         <template #default="{ row }">
-          <el-button v-if="row.status === 'REGISTERED'" link size="small" @click="arrive(row)">到检</el-button>
-          <el-button link type="primary" size="small" @click="openReport(row)">
+          <el-button v-if="canArrive(row)" link size="small" :disabled="writing" :loading="busyId === row.id" @click="arrive(row)">到检</el-button>
+          <el-button v-if="canReport(row)" link type="primary" size="small" @click="openReport(row)">
             {{ row.status === 'REPORTED' ? '修改报告' : '书写报告' }}
           </el-button>
-          <el-button v-if="row.status === 'REPORTED'" link type="warning" size="small" @click="markCritical(row)">标记危急</el-button>
-          <el-button v-if="row.status === 'REPORTED'" link type="success" size="small" :loading="busyId === row.id" @click="verify(row)">审核发布</el-button>
+          <el-button v-if="canVerify(row)" link type="warning" size="small" :disabled="writing" @click="markCritical(row)">标记危急</el-button>
+          <el-button v-if="canVerify(row)" link type="success" size="small" :disabled="writing" :loading="busyId === row.id" @click="verify(row)">审核发布</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -54,19 +57,22 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="saveReport" :loading="saveReportLoading">保存报告</el-button>
+        <el-button @click="closeReport">取消</el-button>
+        <el-button type="primary" @click="saveReport" :loading="saveReportLoading" :disabled="writing || !current || !canReport(current)">保存报告</el-button>
       </template>
     </el-dialog>
   </el-card>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
+import { useAuthStore } from '../../stores/auth'
 
+const auth = useAuthStore()
 const records = ref<Record<string, unknown>[]>([])
+const orderStatusNames: Record<string, string> = { CREATED: '未收费', CHARGED: '已收费', EXECUTED: '已执行', CANCELLED: '已作废', DISPENSED: '已发药' }
 const dialogVisible = ref(false)
 const current = ref<Record<string, unknown> | null>(null)
 const findings = ref('')
@@ -75,83 +81,196 @@ const busyId = ref<unknown>(null)
 const saveReportLoading = ref(false)
 const templates = ref<Record<string, unknown>[]>([])
 const templateId = ref<number | null>(null)
+const canWrite = computed(() => auth.user?.roles.some(role => ['ADMIN', 'TECHNICIAN', 'DOCTOR_OUTP', 'NURSE'].includes(role)) ?? false)
+const canShare = computed(() => auth.user?.roles.some(role => ['ADMIN', 'TECHNICIAN', 'DOCTOR_OUTP'].includes(role)) ?? false)
+const writing = computed(() => busyId.value != null || saveReportLoading.value)
+let active = true
+let viewVersion = 0
+let readVersion = 0
+let modalVersion = 0
+let pacsReadVersion = 0
 
 async function load() {
-  records.value = (await client.get('/ris/worklist')).data.data
-  templates.value = (await client.get('/emr-templates', { params: { type: 'RIS' } })).data.data
+  if (!active) return
+  ++viewVersion
+  closeReport()
+  records.value = []
+  templates.value = []
+  await refreshRecords()
+}
+
+/** 写后刷新不关闭新打开的另一份草稿；列表与模板仅接纳本轮最新读取。 */
+async function refreshRecords() {
+  if (!active) return
+  const version = ++readVersion
+  const [worklist, reportTemplates] = await Promise.all([
+    client.get('/ris/worklist'), client.get('/emr-templates', { params: { type: 'RIS' } }),
+  ])
+  if (!active || version !== readVersion) return
+  records.value = worklist.data.data
+  templates.value = reportTemplates.data.data
+}
+
+function canOperate(row: Record<string, unknown>, states: string[]) {
+  const source = records.value.find(record => record.id === row.id)
+  return active && canWrite.value && source != null && states.includes(String(source.status)) && ['CHARGED', 'EXECUTED'].includes(String(source.order_status))
+}
+function canArrive(row: Record<string, unknown>) {
+  return canOperate(row, ['REGISTERED'])
+}
+function canReport(row: Record<string, unknown>) {
+  return canOperate(row, ['REGISTERED', 'ARRIVED', 'REPORTED'])
+}
+function canVerify(row: Record<string, unknown>) {
+  return canOperate(row, ['REPORTED'])
+}
+
+/** 对象状态拒绝后回读真实源状态；只关闭仍属于原提交的失效草稿。 */
+async function recoverWrite(error: unknown, code: number, sameView: () => boolean, sameDialog?: () => boolean) {
+  if ((error as { bizCode?: number }).bizCode !== code) throw error
+  if (!sameView()) return
+  if (sameDialog?.()) closeReport()
+  await refreshRecords()
 }
 
 async function arrive(row: Record<string, unknown>) {
-  await client.put(`/ris/exams/${row.id}/arrive`)
-  ElMessage.success('已到检登记')
-  await load()
+  if (!active || writing.value || !records.value.includes(row) || !canArrive(row)) return
+  const id = row.id
+  const version = viewVersion
+  const dialogVersion = modalVersion
+  const sameView = () => active && version === viewVersion
+  busyId.value = id
+  try {
+    await client.put(`/ris/exams/${id}/arrive`)
+    if (!sameView()) return
+    if (dialogVersion === modalVersion) ElMessage.success('已到检登记')
+    await refreshRecords()
+  } catch (error) {
+    await recoverWrite(error, 9944, sameView)
+  } finally { busyId.value = null }
 }
 
 function applyTemplate() {
+  if (!active || !dialogVisible.value || !current.value || !canReport(current.value)) return
   const t = templates.value.find(x => x.id === templateId.value)
   if (t) findings.value = String(t.content ?? '')
 }
 
+function closeReport() {
+  ++modalVersion
+  dialogVisible.value = false
+  current.value = null
+  findings.value = ''
+  impression.value = ''
+  templateId.value = null
+}
+
 function openReport(row: Record<string, unknown>) {
-  current.value = row
+  if (!active || !records.value.includes(row) || !canReport(row)) return
+  ++modalVersion
+  current.value = { ...row }
   findings.value = String(row.findings ?? '')
   impression.value = String(row.impression ?? '')
+  templateId.value = null
   dialogVisible.value = true
 }
 
 async function saveReport() {
-  if (!current.value) return
+  if (!active || writing.value || !dialogVisible.value || !current.value || !canReport(current.value)) return
+  const id = current.value.id
+  const body = { findings: findings.value, impression: impression.value }
+  const version = viewVersion
+  const dialogVersion = modalVersion
+  const sameView = () => active && version === viewVersion
+  const sameDialog = () => sameView() && dialogVersion === modalVersion && dialogVisible.value && current.value?.id === id
   saveReportLoading.value = true
   try {
-    await client.put(`/ris/exams/${current.value.id}/report`, { findings: findings.value, impression: impression.value })
-    ElMessage.success('报告已保存')
-    dialogVisible.value = false
-    await load()
+    await client.put(`/ris/exams/${id}/report`, body)
+    if (!sameView()) return
+    if (sameDialog()) {
+      closeReport()
+      ElMessage.success('报告已保存')
+    }
+    await refreshRecords()
+  } catch (error) {
+    await recoverWrite(error, 9944, sameView, sameDialog)
   } finally { saveReportLoading.value = false }
 }
 
 async function markCritical(row: Record<string, unknown>) {
+  if (!active || writing.value || !records.value.includes(row) || !canVerify(row)) return
+  const id = row.id
+  const version = viewVersion
+  const dialogVersion = modalVersion
+  const sameView = () => active && version === viewVersion
+  const sameInteraction = () => sameView() && dialogVersion === modalVersion
+  busyId.value = id
   // 影像危急值（气胸/夹层/颅内出血等）：上报后走与检验同一条确认闭环，通知开单医师限时确认
-  const res = await ElMessageBox.prompt('危急描述（必填，如：右侧气胸，肺压缩约 40%）', '影像危急值上报',
-    { inputPlaceholder: '危急征象描述' }).catch(() => null)
-  if (!res) return
-  const note = (res.value || '').trim()
-  if (!note) { ElMessage.warning('危急描述必填'); return }
-  await client.put(`/ris/exams/${row.id}/critical`, { note })
-  ElMessage.success('已上报危急值，已通知开单医师确认')
-  await load()
+  try {
+    const res = await ElMessageBox.prompt('危急描述（必填，如：右侧气胸，肺压缩约 40%）', '影像危急值上报',
+      { inputPlaceholder: '危急征象描述' }).catch(() => null)
+    if (!res || !sameInteraction() || !records.value.includes(row) || !canVerify(row)) return
+    const note = (res.value || '').trim()
+    if (!note) { ElMessage.warning('危急描述必填'); return }
+    await client.put(`/ris/exams/${id}/critical`, { note })
+    if (!sameView()) return
+    if (sameInteraction()) ElMessage.success('已上报危急值，已通知开单医师确认')
+    await refreshRecords()
+  } catch (error) {
+    await recoverWrite(error, 9945, sameView)
+  } finally { busyId.value = null }
 }
 
 async function verify(row: Record<string, unknown>) {
-  busyId.value = row.id
+  if (!active || writing.value || !records.value.includes(row) || !canVerify(row)) return
+  const id = row.id
+  const version = viewVersion
+  const dialogVersion = modalVersion
+  const sameView = () => active && version === viewVersion
+  const sameInteraction = () => sameView() && dialogVersion === modalVersion
+  busyId.value = id
   try {
-    await client.put(`/ris/exams/${row.id}/verify`)
-    ElMessage.success('已审核发布，医嘱转已执行')
-    // 云胶片/报告对外分享：发布即出 72h 有效短链，可发给患者
-    const share = (await client.post(`/ris/exams/${row.id}/share`)).data.data
-    await ElMessageBox.alert(
-      `<div style="word-break:break-all">匿名访问链接（72 小时有效，姓名已脱敏）：
+    await client.put(`/ris/exams/${id}/verify`)
+    if (!sameView()) return
+    if (sameInteraction()) ElMessage.success('已审核发布，医嘱转已执行')
+    await refreshRecords()
+    // 护士保留审核岗位；分享沿用该接口原有的另三岗位，且只在原交互仍有效时展示。
+    if (!sameInteraction() || !canShare.value) return
+    const share = (await client.post(`/ris/exams/${id}/share`)).data.data
+    if (!sameInteraction() || !canShare.value) return
+    await ElMessageBox.alert(`<div style="word-break:break-all">匿名访问链接（72 小时有效，姓名已脱敏）：
 <b>${location.origin}${share.url}</b></div>`,
       '报告分享')
-    await load()
+  } catch (error) {
+    await recoverWrite(error, 9945, sameView)
   } finally { busyId.value = null }
 }
 
 /** v74：PACS 调阅入口。后端 /api/ris/pacs-info 回 {configured, viewerUrl}；读不到就当未配置，不打断报告页。 */
 const pacs = ref<{ configured: boolean; viewerUrl: string }>({ configured: false, viewerUrl: '' })
 async function loadPacs() {
+  const version = ++pacsReadVersion
   try {
     const d = (await client.get('/ris/pacs-info')).data.data ?? {}
+    if (!active || version !== pacsReadVersion) return
     pacs.value = { configured: Boolean(d.configured) && Boolean(d.viewerUrl), viewerUrl: String(d.viewerUrl ?? '') }
   } catch {
+    if (!active || version !== pacsReadVersion) return
     pacs.value = { configured: false, viewerUrl: '' }
   }
 }
 function openPacs() {
-  if (pacs.value.viewerUrl) window.open(pacs.value.viewerUrl, '_blank')
+  if (active && pacs.value.viewerUrl) window.open(pacs.value.viewerUrl, '_blank')
 }
 
 onMounted(() => { load(); loadPacs() })
+onUnmounted(() => {
+  active = false
+  ++viewVersion
+  ++readVersion
+  ++modalVersion
+  ++pacsReadVersion
+})
 </script>
 
 <style scoped>
