@@ -15,18 +15,31 @@ import time
 import urllib.error
 from decimal import Decimal
 
-from e2elib import call, login, provision_user, today_bj
+from e2elib import call, login, ok, provision_user, today_bj
 
 
 suffix = str(time.time_ns())[-11:]
 bootstrap = login()
 tokens = {'admin': provision_user(bootstrap, 'v113admin' + suffix, 'ADMIN')}
+machine_identity = None
 for who, role in [('technician', 'TECHNICIAN'), ('doctor', 'DOCTOR_OUTP'),
                   ('nurse', 'NURSE'), ('cashier', 'CASHIER'),
                   ('pharmacist', 'PHARMACIST'), ('interface', 'INTERFACE'),
                   ('disabled', 'TECHNICIAN')]:
-    tokens[who] = provision_user(tokens['admin'], 'v113' + who + suffix, role,
+    # The machine-only whitelist intentionally rejects employee password change.
+    # Finish human account initialization before assigning the final machine duty.
+    tokens[who] = provision_user(tokens['admin'], 'v113' + who + suffix,
+                                 'TECHNICIAN' if role == 'INTERFACE' else role,
                                  'V113' + who + suffix)
+    if role == 'INTERFACE':
+        employee = ok(call('GET', '/auth/me', token=tokens[who]), 'initial machine employee')
+        machine_identity = ok(call('PUT', f"/system/users/{employee['id']}", {
+            'username': 'v113' + who + suffix, 'realName': 'V113' + who + suffix,
+            'roleCodes': ['INTERFACE'],
+        }, tokens['admin']), 'assign private interface duty')
+        assert machine_identity['id'] == employee['id']
+        assert machine_identity['roleCodes'] == ['INTERFACE'] and machine_identity['enabled']
+        tokens[who] = login('v113' + who + suffix, 'Work@1234')
 
 
 def expect(code, method, path, body=None, who='admin', text=None):
@@ -40,10 +53,13 @@ def expect(code, method, path, body=None, who='admin', text=None):
     return response.get('data')
 
 
-identities = {who: expect(0, 'GET', '/auth/me', who=who) for who in tokens}
+identities = {who: expect(0, 'GET', '/auth/me', who=who) for who in tokens if who != 'interface'}
+identities['interface'] = machine_identity
 assert len({person['id'] for person in identities.values()}) == len(tokens)
 for who in ['admin', 'technician', 'doctor', 'nurse', 'cashier', 'pharmacist']:
     expect(0, 'GET', '/stats/overview', who=who)
+expect(1005, 'GET', '/auth/me', who='interface')
+expect(1005, 'GET', '/stats/overview', who='interface')
 
 department = expect(0, 'POST', '/system/depts', {
     'code': 'V113D' + suffix, 'name': 'V113检验模拟' + suffix,
@@ -207,11 +223,12 @@ print('[1] Existing manual roles, normal/HH results, doctor notification and ref
 pending = visit('岗位拒绝')
 for who in ['cashier', 'pharmacist', 'interface', None]:
     before = snapshot(pending)
-    publish(pending, [result_line('越权')], who, 1000 if who is None else 1005)
-    expect(1000 if who is None else 1005, 'GET', '/lis/samples', who=who)
+    denied_code = 1000 if who is None else 1005
+    publish(pending, [result_line('越权')], who, denied_code)
+    expect(denied_code, 'GET', '/lis/samples', who=who)
     assert snapshot(pending) == before
     if who is not None:
-        expect(0, 'GET', '/auth/me', who=who)
+        expect(1005 if who == 'interface' else 0, 'GET', '/auth/me', who=who)
 for who in ['technician', 'doctor', 'nurse', 'cashier', 'pharmacist']:
     before = snapshot(pending)
     expect(1005, 'POST', '/integration/hl7/oru', who=who,
