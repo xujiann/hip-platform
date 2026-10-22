@@ -4,7 +4,8 @@ import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
 import { computed, ref } from 'vue'
 
-const response = (data: unknown) => Promise.resolve({ data: { data } })
+// HTTP JSON gives each read a fresh object graph; avoid mutating shared fixtures via Vue proxies.
+const response = (data: unknown) => Promise.resolve({ data: { data: structuredClone(data) } })
 function deferred() {
   let resolve!: (value: any) => void
   let reject!: (reason: unknown) => void
@@ -24,11 +25,14 @@ function setup(get = vi.fn((path: string) => response(path === '/lis/samples' ? 
     ElMessage: { success: vi.fn(), warning: vi.fn() }, ElMessageBox: { prompt: vi.fn(() => Promise.resolve({ value: '' })) } }
   const button = Array.from(component.matchAll(/<el-button\b([^>]+)>/g)).find(m => m[1].includes('@click="openResult(row)"'))?.[1] ?? ''
   const condition = button.match(/v-if="([^"]+)"/)?.[1] ?? 'true'
+  const submitButton = Array.from(component.matchAll(/<el-button\b([^>]+)>/g)).find(m => m[1].includes('@click="publish"'))?.[1] ?? ''
+  const submitDisabled = submitButton.match(/:disabled="([^"]+)"/)?.[1] ?? 'false'
   // Evaluate the actual template condition and source-state column, not a copied predicate.
   const column = Array.from(component.matchAll(/<el-table-column\b([^>]+)>/g)).find(m => m[1].includes('label="源医嘱状态"'))
   const sourceColumn = column ? component.slice(column.index!, component.indexOf('</el-table-column>', column.index!) + 18) : ''
   runInNewContext(ts.transpileModule(source + `\nglobalThis.view = { deptId, pending, samples, dialogVisible, current, results, busyId, publishLoading, load, loadDepts, collect, receive, openResult, publish };
     globalThis.publishVisible = (row) => ${condition.replace(/\b(canWrite|writing)\b/g, '$1.value')};
+    globalThis.submitDisabled = () => ${submitDisabled.replace(/\b(writing|current)\b/g, '$1.value')};
   `, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText, box)
   return { v: box.view, box, get, post, sourceColumn, dispose: () => dispose.forEach(f => f()) }
 }
@@ -79,7 +83,8 @@ it('wrong roles have neither visible publishing nor callable writes from old pag
 it('captures an independent request body before HTTP, including every result row', async () => {
   const wait = deferred(); const h = setup(undefined, vi.fn(() => wait.promise)); const draft = await opened(h)
   draft.value = '甲原稿'; const first = h.v.publish(); draft.value = '后来的编辑'; h.v.results.value.push({ name: '后来加行', value: '2' })
-  expect(h.post.mock.calls[0][1].results).toEqual([{ code: '', name: a.item_name, value: '甲原稿', unit: '', refRange: '', flag: 'N' }])
+  const calls: any[][] = h.post.mock.calls
+  expect(calls[0][1].results).toEqual([{ code: '', name: a.item_name, value: '甲原稿', unit: '', refRange: '', flag: 'N' }])
   wait.resolve(null); await first
 })
 it('blocks duplicate publish and receive before HTTP while a write is pending', async () => {
@@ -144,6 +149,12 @@ it('a removed sample cannot be opened or submitted from a detached row reference
 it('a source status changed on the current list prevents a previously opened publish', async () => {
   const h = setup(); await opened(h); h.v.samples.value[0].order_status = 'CREATED'; await h.v.publish()
   expect(h.post).not.toHaveBeenCalled()
+})
+it('the actual modal submit binding follows refreshed source state while keeping its draft', async () => {
+  const h = setup(); const draft = await opened(h); draft.value = '原草稿保留'
+  h.v.samples.value = [{ ...a, order_status: 'CREATED' }, b]
+  expect(h.box.submitDisabled()).toBe(true); await h.v.publish()
+  expect(h.post).not.toHaveBeenCalled(); expect(h.v.results.value[0].value).toBe('原草稿保留')
 })
 it('leaving the page prevents late reads and publication side effects', async () => {
   const wait = deferred(); const h = setup(undefined, vi.fn(() => wait.promise)); await opened(h)

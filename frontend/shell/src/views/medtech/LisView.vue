@@ -7,6 +7,7 @@
       <el-select v-model="deptId" size="small" filterable clearable placeholder="全部" style="width: 200px" @change="load">
         <el-option v-for="d in depts" :key="d.id" :label="d.name" :value="d.id" />
       </el-select>
+      <el-button size="small" style="margin-left: 8px" @click="load">刷新</el-button>
     </div>
     <el-tabs v-model="tab">
       <el-tab-pane label="待采样" name="pending">
@@ -28,7 +29,7 @@
           </el-table-column>
           <el-table-column label="操作" width="110">
             <template #default="{ row }">
-              <el-button link type="primary" size="small" :loading="busyId === row.order_id" @click="collect(row)">采样打码</el-button>
+              <el-button v-if="canWrite" link type="primary" size="small" :loading="busyId === row.order_id" :disabled="writing" @click="collect(row)">采样打码</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -56,10 +57,13 @@
           <el-table-column label="状态" width="90">
             <template #default="{ row }">{{ statusNames[row.status as string] }}</template>
           </el-table-column>
+          <el-table-column label="源医嘱状态" width="110">
+            <template #default="{ row }">{{ orderStatusNames[row.order_status as string] || row.order_status || '—' }}</template>
+          </el-table-column>
           <el-table-column label="操作" width="180">
             <template #default="{ row }">
-              <el-button v-if="row.status === 'COLLECTED'" link type="primary" size="small" :loading="busyId === row.id" @click="receive(row)">核收</el-button>
-              <el-button v-if="row.status === 'RECEIVED'" link type="success" size="small" @click="openResult(row)">录结果并发布</el-button>
+              <el-button v-if="canWrite && row.status === 'COLLECTED'" link type="primary" size="small" :loading="busyId === row.id" :disabled="writing" @click="receive(row)">核收</el-button>
+              <el-button v-if="canPublish(row)" link type="success" size="small" @click="openResult(row)">录结果并发布</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -85,14 +89,14 @@
       </el-button>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="success" @click="publish" :loading="publishLoading">审核发布</el-button>
+        <el-button type="success" @click="publish" :loading="publishLoading" :disabled="writing || !current || !canPublish(current)">审核发布</el-button>
       </template>
     </el-dialog>
   </el-card>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
 import { useAuthStore } from '../../stores/auth'
@@ -103,6 +107,7 @@ const tab = ref('pending')
 const deptId = ref<number | null>(auth.user?.deptId ?? null)
 const depts = ref<{ id: number; name: string; enabled?: boolean }[]>([])
 const statusNames: Record<string, string> = { COLLECTED: '已采样', RECEIVED: '已核收', PUBLISHED: '已发布' }
+const orderStatusNames: Record<string, string> = { CREATED: '未收费', CHARGED: '已收费', EXECUTED: '已执行', CANCELLED: '已作废', DISPENSED: '已发药' }
 const pending = ref<Record<string, unknown>[]>([])
 const samples = ref<Record<string, unknown>[]>([])
 const dialogVisible = ref(false)
@@ -110,60 +115,124 @@ const current = ref<Record<string, unknown> | null>(null)
 const results = ref<Record<string, string>[]>([])
 const busyId = ref<unknown>(null)
 const publishLoading = ref(false)
+const canWrite = computed(() => auth.user?.roles.some(role => ['ADMIN', 'TECHNICIAN', 'DOCTOR_OUTP', 'NURSE'].includes(role)) ?? false)
+const writing = computed(() => busyId.value != null || publishLoading.value)
+let active = true
+let viewVersion = 0
+let readVersion = 0
+let deptReadVersion = 0
+let modalVersion = 0
 
 async function load() {
-  const params = { deptId: deptId.value ?? undefined }
-  pending.value = (await client.get('/lis/pending', { params })).data.data
-  samples.value = (await client.get('/lis/samples', { params })).data.data
+  if (!active) return
+  ++viewVersion
+  closeResult()
+  pending.value = []
+  samples.value = []
+  await refreshQueues()
+}
+
+/** 写入完成后只刷新队列；新打开的另一份结果草稿由自己的弹窗版本保护。 */
+async function refreshQueues() {
+  if (!active) return
+  const version = ++readVersion
+  const department = deptId.value
+  const params = { deptId: department ?? undefined }
+  const [pendingResponse, samplesResponse] = await Promise.all([
+    client.get('/lis/pending', { params }), client.get('/lis/samples', { params }),
+  ])
+  if (!active || version !== readVersion || department !== deptId.value) return
+  pending.value = pendingResponse.data.data
+  samples.value = samplesResponse.data.data
 }
 
 /** 科室下拉沿用系统管理的科室接口（所有登录用户可读）；停用科室不列（已开出的历史行仍按 exec_dept_name 原样显示） */
 async function loadDepts() {
+  const version = ++deptReadVersion
   const all = (await client.get('/system/depts')).data.data as { id: number; name: string; enabled?: boolean }[]
-  depts.value = all.filter((d) => d.enabled !== false)
+  if (active && version === deptReadVersion) depts.value = all.filter((d) => d.enabled !== false)
 }
 
 async function collect(row: Record<string, unknown>) {
+  if (!active || !canWrite.value || writing.value || !pending.value.includes(row)) return
+  const orderId = row.order_id
+  const department = deptId.value
+  const version = viewVersion
+  // 在提示框之前占用本页写入口；提示期间切科室/刷新会使旧目标失效。
+  busyId.value = orderId
   // 三十九期：替检参数化——留空为本人，填写则登记替检人（分检页红色醒目提示）
-  const res = await ElMessageBox.prompt('替检人（本人采样请留空）', '采样打码',
-    { inputValue: '', inputPlaceholder: '如：家属 张某' }).catch(() => null)
-  if (!res) return
-  const { value } = res
-  busyId.value = row.order_id
   try {
+    const res = await ElMessageBox.prompt('替检人（本人采样请留空）', '采样打码',
+      { inputValue: '', inputPlaceholder: '如：家属 张某' }).catch(() => null)
+    if (!res || !active || !canWrite.value || version !== viewVersion || department !== deptId.value || !pending.value.includes(row)) return
+    const { value } = res
     const resp = await client.post('/lis/samples', null,
-      { params: { orderId: row.order_id, substituteName: value || undefined } })
+      { params: { orderId, substituteName: value || undefined } })
+    if (!active || version !== viewVersion || department !== deptId.value) return
     ElMessage.success(`条码 ${resp.data.data.barcode}${value ? '（替检已标识）' : ''}`)
-    await load()
+    await refreshQueues()
   } finally { busyId.value = null }
 }
 
 async function receive(row: Record<string, unknown>) {
+  if (!active || !canWrite.value || writing.value || row.status !== 'COLLECTED' || !samples.value.includes(row)) return
+  const barcode = row.barcode
+  const version = viewVersion
+  const department = deptId.value
   busyId.value = row.id
   try {
-    await client.put(`/lis/samples/${row.barcode}/receive`)
-    await load()
+    await client.put(`/lis/samples/${barcode}/receive`)
+    if (active && version === viewVersion && department === deptId.value) await refreshQueues()
   } finally { busyId.value = null }
 }
 
+function canPublish(row: Record<string, unknown>) {
+  const source = samples.value.find(sample => sample.barcode === row.barcode && sample.order_id === row.order_id)
+  return canWrite.value && source != null && source.status === 'RECEIVED' && ['CHARGED', 'EXECUTED'].includes(String(source.order_status))
+}
+
+function closeResult() {
+  ++modalVersion
+  dialogVisible.value = false
+  current.value = null
+  results.value = []
+}
+
 function openResult(row: Record<string, unknown>) {
+  if (!active || !samples.value.includes(row) || !canPublish(row)) return
+  ++modalVersion
   current.value = row
   results.value = [{ code: '', name: String(row.item_name), value: '', unit: '', refRange: '', flag: 'N' }]
   dialogVisible.value = true
 }
 
 async function publish() {
-  if (!current.value) return
+  if (!active || writing.value || !dialogVisible.value || !current.value) return
+  const row = samples.value.find(sample => sample.barcode === current.value?.barcode && sample.order_id === current.value?.order_id)
+  if (!row || !canPublish(row)) return
+  const barcode = row.barcode
+  const orderId = row.order_id
+  const body = { results: results.value.map(result => ({ ...result })) }
+  const version = viewVersion
+  const dialogVersion = modalVersion
+  const department = deptId.value
+  const sameView = () => active && version === viewVersion && department === deptId.value
+  const sameDialog = () => sameView() && dialogVersion === modalVersion && dialogVisible.value && current.value?.barcode === barcode && current.value?.order_id === orderId
   publishLoading.value = true
   try {
-    await client.post(`/lis/samples/${current.value.barcode}/publish`, { results: results.value })
-    ElMessage.success('已发布，医嘱自动执行')
-    dialogVisible.value = false
-    // v74 复核补入口：检验报告单打印页（/print?type=lab-report）此前全前端无任何页面打开它，
-    // 偏离表 47 行却写着「已提供检验报告单打印」——后端做了、用户够不着。发布即出报告是最自然的入口；
-    // 标本列表本身不含已发布行（后端 where status <> 'PUBLISHED'），所以不能放行内按钮。
-    printReport(current.value.order_id)
-    await load()
+    await client.post(`/lis/samples/${barcode}/publish`, body)
+    if (!sameView()) return
+    if (sameDialog()) {
+      closeResult()
+      ElMessage.success('已发布，医嘱自动执行')
+      printReport(orderId)
+    }
+    await refreshQueues()
+  } catch (error) {
+    if ((error as { bizCode?: number }).bizCode !== 9942) throw error
+    if (!sameView()) return
+    if (sameDialog()) closeResult()
+    await refreshQueues()
   } finally { publishLoading.value = false }
 }
 
@@ -175,6 +244,13 @@ function printReport(orderId: unknown) {
 
 onMounted(async () => {
   await Promise.all([loadDepts(), load()])
+})
+onUnmounted(() => {
+  active = false
+  ++viewVersion
+  ++readVersion
+  ++deptReadVersion
+  ++modalVersion
 })
 </script>
 
