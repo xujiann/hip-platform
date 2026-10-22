@@ -6,7 +6,9 @@ import cn.hip.outpatient.repository.OutpOrderReportRepository;
 import cn.hip.outpatient.repository.OutpOrderRepository;
 import cn.hip.outpatient.repository.OutpRegistrationRepository;
 import cn.hip.platform.core.common.R;
-import cn.hip.platform.core.security.CurrentUserService;
+import cn.hip.outpatient.service.OutpatientExecutionAccess;
+import jakarta.persistence.EntityManager;
+import org.springframework.jdbc.core.JdbcTemplate;
 import cn.hip.platform.empi.repository.PatientRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
@@ -29,10 +31,13 @@ public class ExecStationController {
     private final OutpOrderReportRepository reportRepository;
     private final OutpRegistrationRepository registrationRepository;
     private final PatientRepository patientRepository;
-    private final CurrentUserService currentUserService;
+    private final OutpatientExecutionAccess access;
+    private final JdbcTemplate jdbc;
+    private final EntityManager entityManager;
 
     @GetMapping("/worklist")
     public R<List<Map<String, Object>>> worklist() {
+        access.exec(null);
         return R.ok(orderRepository.chargedExecutables().stream().map(o -> {
             var m = new LinkedHashMap<String, Object>();
             m.put("orderId", o.getId());
@@ -54,11 +59,18 @@ public class ExecStationController {
     @PostMapping("/{orderId}")
     @Transactional
     public R<Object> execute(@PathVariable Long orderId, @RequestBody ExecuteRequest req, Authentication auth) {
+        access.exec(auth);
+        if (req == null || (req.resultText() != null && req.resultText().length() > 2000))
+            return R.fail(4000, "执行结果不能超过2000字符");
+        entityManager.flush();
+        jdbc.queryForList("select id from outp_order where id=? for update", orderId);
+        Long actor = access.exec(auth);
         OutpOrder o = orderRepository.findById(orderId).orElse(null);
+        if (o != null) entityManager.refresh(o);
         if (o == null) return R.fail(7001, "医嘱不存在");
         if (!"CHARGED".equals(o.getStatus())) return R.fail(7002, "仅已收费项目可执行");
-        if ("DRUG".equals(o.getOrderType()) || "REG".equals(o.getOrderType())) {
-            return R.fail(7003, "药品/挂号费不在执行范围");
+        if (!java.util.Set.of("LAB", "EXAM", "TREAT").contains(o.getOrderType())) {
+            return R.fail(7003, "仅检验、检查及治疗项目可在此执行");
         }
         // v59 审阅补：已登记病理标本（未拒收）的申请由病理科签发后自动置 EXECUTED（PathologyReportController.issue，
         // 仍只认 CHARGED）；技师在此抢先置 EXECUTED 会让签发的 update 命中 0 行、orderExecuted=false。
@@ -66,19 +78,24 @@ public class ExecStationController {
         if (orderRepository.hasRegisteredSpecimen(orderId)) {
             return R.fail(7004, "病理申请已登记标本，由病理科签发后自动置执行");
         }
-        o.setStatus("EXECUTED");
-        orderRepository.save(o);
+        if (reportRepository.findByOrderId(orderId).isPresent())
+            return R.fail(7002, "该医嘱已有执行报告，请核对历史记录");
+        // Only change the claimed status: never overwrite charge/review fields from a managed old snapshot.
+        int n = jdbc.update("update outp_order set status='EXECUTED' where id=? and status='CHARGED'", orderId);
+        if (n == 0) return R.fail(7002, "仅已收费项目可执行");
+        entityManager.refresh(o);
         OutpOrderReport report = new OutpOrderReport();
         report.setOrderId(orderId);
         report.setResultText(req.resultText());
-        report.setExecutorId(currentUserService.idOf(auth));
-        reportRepository.save(report);
+        report.setExecutorId(actor);
+        reportRepository.saveAndFlush(report);
         return R.ok(Map.of("orderId", orderId, "status", "EXECUTED"));
     }
 
-    /** 报告查询（医生站回看） */
+    /** 执行站报告查询，沿用执行站岗位范围。 */
     @GetMapping("/reports")
     public R<List<OutpOrderReport>> reports(@RequestParam Long registrationId) {
+        access.exec(null);
         var orderIds = orderRepository.findByRegistrationIdOrderByIdAsc(registrationId)
                 .stream().map(OutpOrder::getId).toList();
         return R.ok(reportRepository.findByOrderIdIn(orderIds));

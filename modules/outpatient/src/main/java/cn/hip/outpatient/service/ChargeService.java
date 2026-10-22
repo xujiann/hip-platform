@@ -30,6 +30,9 @@ public class ChargeService {
     private final cn.hip.platform.core.service.ConfigReader configReader;
     private final cn.hip.platform.core.config.ModuleGate moduleGate;
     private final RefundApprovalService refundApprovalService;
+    private final OutpatientExecutionAccess executionAccess;
+    private final jakarta.persistence.EntityManager entityManager;
+    private final org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     /** 结算：全部未收费订单一次结清 */
     @Transactional
@@ -81,11 +84,17 @@ public class ChargeService {
         return chargeRepository.findTop50ByOrderByIdDesc();
     }
 
-    /** 退费：单内订单均未发药/未执行/未登记病理标本才可退；订单退回已开立（退号单的挂号费直接作废） */
+    /** 退费：未发药/执行/开始输液/登记病理才可退；保留待执行输液历史，医嘱退回已开立。 */
     @Transactional
     public OutpCharge refund(Long chargeId, Long operatorId) {
+        executionAccess.refund(operatorId);
+        entityManager.flush();
+        // All refunds serialize C -> ascending O. Execution takes O; nursing takes O -> I.
+        jdbc.queryForList("select id from outp_charge where id=? for update", chargeId);
+        executionAccess.refund(operatorId);
         OutpCharge charge = chargeRepository.findById(chargeId)
                 .orElseThrow(() -> new BizException(5002, "结算单不存在"));
+        entityManager.refresh(charge);
         String chargeNo = charge.getChargeNo();
         String payMethod = charge.getPayMethod();
         // 提示层（非防线）：单据已退时直接给准确话术。少了这层，二次退费会因明细已被摘走而
@@ -93,17 +102,18 @@ public class ChargeService {
         if (!"PAID".equals(charge.getStatus())) {
             throw new BizException(5003, "该结算单已退费");
         }
-        // 大额退费审批闸（v30）：超阈值须先有 APPROVED 审批单，否则拒绝并引导走审批。
-        // 放在抢占逻辑之前——审批未过时不触碰任何单据/明细状态；消费审批单是幂等条件更新
-        refundApprovalService.assertApproved(charge);
+        jdbc.queryForList("select id from outp_order where charge_id=? order by id for update", chargeId);
+        executionAccess.refund(operatorId);
         List<OutpOrder> orders = orderRepository.findByChargeId(chargeId);
+        orders.forEach(entityManager::refresh);
         // 空列表必须显式拒绝：明细抢占会把 chargeId 置 null，他方先退后本方查得空集，
         // 若放任则 `0 != 0` 为假、防线在最需要它时反而放行（settle/dispense 早有 isEmpty 拦截，此处漏了）
         if (orders.isEmpty()) {
             throw new BizException(5009, "项目状态已变化（可能正在发药或执行），退费终止");
         }
         // 只读校验一律前置于抢占：校验失败不该改单据状态。
-        // 此处读到的状态可能过时（读后被发药），由下方明细抢占的行数判定兜底
+        // Holding O excludes nursing starts even though they only UPDATE I. Query I in a fresh statement
+        // after the O wait: a NOT EXISTS in the claim statement alone could retain its old MVCC snapshot.
         for (OutpOrder o : orders) {
             if ("DISPENSED".equals(o.getStatus())) {
                 throw new BizException(5004, "已发药项目需先退药: " + o.getItemName());
@@ -111,6 +121,12 @@ public class ChargeService {
             if ("EXECUTED".equals(o.getStatus())) {
                 throw new BizException(5005, "已执行项目不可退费: " + o.getItemName());
             }
+            if (!"CHARGED".equals(o.getStatus()) || !chargeId.equals(o.getChargeId()))
+                throw new BizException(5009, "项目状态或收费关联已变化，退费终止");
+            if (Boolean.TRUE.equals(jdbc.queryForObject(
+                    "select exists(select 1 from outp_infusion where order_id=? and status in ('RUNNING','DONE'))",
+                    Boolean.class, o.getId())))
+                throw new BizException(5005, "已开始或完成输液，不可退费: " + o.getItemName());
             // v59 审阅补：EXECUTED 挪到正式签发后（2576-③），病理申请在「已取材 / 已写诊断、未签发」窗口内仍是
             // CHARGED，上一条拦不住——已取材制片、甚至写完诊断的申请单在签发前可整单退费。口径：登记了病理标本
             // （path_specimen.order_id = 该申请 且 rejected_at is null）即视为已进入病理科流程，复用 5005、消息改；
@@ -119,6 +135,9 @@ public class ChargeService {
                 throw new BizException(5005, "病理标本已登记，不可退费: " + o.getItemName());
             }
         }
+        // Complete every read-only validation before consuming an approval or claiming money.
+        refundApprovalService.assertApproved(charge);
+        executionAccess.refund(operatorId); // Approval consumption can itself have waited on a row.
         // 抢占单据本身：读-判-写让并发退费各自放行一次（YB 单会重复冲正医保额度）。
         // 本地时序下先行者已提交、后来者读到 REFUNDED 而"看起来正常"，CI 上六线程同时读到 PAID
         // 便全部通过——1.2.9 由 CI 实证。住院 claimCancel 一直如此，门诊漏了这一层。
