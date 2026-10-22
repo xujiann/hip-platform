@@ -62,7 +62,7 @@
           </el-table-column>
           <el-table-column label="操作" width="180">
             <template #default="{ row }">
-              <el-button v-if="canWrite && row.status === 'COLLECTED'" link type="primary" size="small" :loading="busyId === row.id" :disabled="writing" @click="receive(row)">核收</el-button>
+              <el-button v-if="canReceive(row)" link type="primary" size="small" :loading="busyId === row.id" :disabled="writing" @click="receive(row)">核收</el-button>
               <el-button v-if="canPublish(row)" link type="success" size="small" @click="openResult(row)">录结果并发布</el-button>
             </template>
           </el-table-column>
@@ -171,17 +171,27 @@ async function collect(row: Record<string, unknown>) {
     if (!active || version !== viewVersion || department !== deptId.value) return
     ElMessage.success(`条码 ${resp.data.data.barcode}${value ? '（替检已标识）' : ''}`)
     await refreshQueues()
+  } catch (error) {
+    if ((error as { bizCode?: number }).bizCode !== 9940) throw error
+    if (active && version === viewVersion && department === deptId.value) await refreshQueues()
   } finally { busyId.value = null }
 }
 
+function canReceive(row: Record<string, unknown>) {
+  return canWrite.value && samples.value.includes(row) && row.status === 'COLLECTED' && ['CHARGED', 'EXECUTED'].includes(String(row.order_status))
+}
+
 async function receive(row: Record<string, unknown>) {
-  if (!active || !canWrite.value || writing.value || row.status !== 'COLLECTED' || !samples.value.includes(row)) return
+  if (!active || writing.value || !canReceive(row)) return
   const barcode = row.barcode
   const version = viewVersion
   const department = deptId.value
   busyId.value = row.id
   try {
     await client.put(`/lis/samples/${barcode}/receive`)
+    if (active && version === viewVersion && department === deptId.value) await refreshQueues()
+  } catch (error) {
+    if ((error as { bizCode?: number }).bizCode !== 9941) throw error
     if (active && version === viewVersion && department === deptId.value) await refreshQueues()
   } finally { busyId.value = null }
 }
