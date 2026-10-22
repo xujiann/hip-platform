@@ -114,11 +114,22 @@ class V60SpecimenDescShownTest {
         assertTrue(grossing.contains("fieldsByRevision"), GROSSING + " 必须消费 fieldsByRevision（被取代版本的字段可调阅：查看对话框按版切换）");
         assertTrue(trail.contains("fieldsByRevision"), TRAIL + " 必须消费 fieldsByRevision（修订表每行可展开该版字段）");
         // techOrderId 必须真的在 POST /pathology/process/grossing 的请求体里，不是随便哪里提一嘴
-        Matcher post = Pattern.compile("client\\.post\\(\\s*'/pathology/process/grossing'\\s*,\\s*\\{").matcher(grossing);
-        assertTrue(post.find(), GROSSING + " 找不到 client.post('/pathology/process/grossing', {");
-        int open = grossing.indexOf('{', post.end() - 1);
+        Matcher post = Pattern.compile("client\\.post\\(\\s*'/pathology/process/grossing'\\s*,\\s*(\\{|[A-Za-z_$][\\w$]*)").matcher(grossing);
+        assertTrue(post.find(), GROSSING + " 找不到实际 POST /grossing 请求体");
+        int open;
+        if ("{".equals(post.group(1))) {
+            open = post.end() - 1;
+        } else {
+            // v118 captures the draft before awaiting; follow the const actually sent by this call.
+            int submit = grossing.lastIndexOf("async function submit(", post.start());
+            assertTrue(submit >= 0, "请求必须在真实 submit 中");
+            Matcher captured = Pattern.compile("\\bconst\\s+" + Pattern.quote(post.group(1)) + "\\s*=\\s*\\{")
+                    .matcher(grossing.substring(submit, post.start()));
+            assertTrue(captured.find(), "实际发送的请求变量必须来自本次草稿副本");
+            open = submit + captured.end() - 1;
+        }
         String body = grossing.substring(open + 1, closerOf(grossing, open));
-        assertTrue(Pattern.compile("(?m)^\\s*techOrderId\\s*[,:]").matcher(body).find(),
+        assertTrue(Pattern.compile("(?m)(?:^|,)\\s*techOrderId\\s*:").matcher(body).find(),
                 GROSSING + " 的 POST /grossing 请求体必须带 techOrderId（append=true 时挂接补取材医嘱）：\n" + body);
         // 医嘱来源：GET /pathology/report/tech-orders，只列 ORDERED 且 RESAMPLE；被拒 5275 要给人看后端消息
         assertTrue(grossing.contains("'/pathology/report/tech-orders'"), GROSSING + " 挂接下拉的来源必须是 GET /pathology/report/tech-orders");

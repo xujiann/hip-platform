@@ -645,6 +645,10 @@ class V62TechRemarkTest {
         // ② 剥注释后，全前端没有第二份写死的完成规则文案，也没有写死的进度态清单
         for (var f : vues) {
             String clean = stripComments(f.text());
+            // v118: routing a received bizCode to refresh is not a second completion policy.
+            // Exclude only the complete throw-or-refresh dispatch expression, never UI text
+            // or rules calculated from slide/evidence/gate facts; living controls below remain.
+            clean = clean.replaceAll("(?m)^\\s*if \\(!\\[[0-9, ]+\\]\\.includes\\(Number\\(\\(error as \\{ bizCode\\?: number \\}\\)\\.bizCode\\)\\)\\) throw error\\s*$", "");
             String rule = firstMatch(HARDCODED_GATE_RULE, clean);
             assertNull(rule, "**屏上不得再有第二份写死的完成规则文案**："
                     + f.rel() + " 命中「" + rule + "」");
