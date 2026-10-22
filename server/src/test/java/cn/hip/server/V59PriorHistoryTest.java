@@ -136,13 +136,13 @@ class V59PriorHistoryTest {
         diagnoseAndIssue(a1, "A1");
         diagnoseAndIssue(b1, "B1");
         // A1 再出一份补充报告——既往行要带的是它的正文，不只是份数
-        var sup = report.supplement(a1, new SupplementReq("免疫组化：CK7(+)、CK20(-) " + tag, "免疫组化回报 " + tag), doc1);
+        var sup = PathologyTestActors.as(doc1, () -> report.supplement(a1, new SupplementReq("免疫组化：CK7(+)、CK20(-) " + tag, "免疫组化回报 " + tag), doc1));
         assertEquals(0, sup.getCode(), sup.getMessage());
         assertEquals(1, ((Number) sup.getData().get("seqNo")).intValue());
 
         // A3 / C2 / D1：走真实拒收端点——不删行、不改 status，只写 reject_reason/rejected_at/rejected_by
         for (long id : new long[] {a3, c2, d1}) {
-            var rj = registry.reject(id, new RejectReq("标本未固定 " + tag, null), doc1);
+            var rj = PathologyTestActors.as(doc1, () -> registry.reject(id, new RejectReq("标本未固定 " + tag, null), doc1));
             assertEquals(0, rj.getCode(), rj.getMessage());
         }
         assertEquals("RECEIVED", jdbc.queryForObject("select status from path_specimen where id = ?", String.class, a3),
@@ -350,9 +350,9 @@ class V59PriorHistoryTest {
                  where id = ?
                 """, "（左乳）浸润性导管癌 " + tag, "灰白组织一块 " + tag, "镜下见异型细胞 " + tag,
                 userId(tag + "d1"), specimenId);
-        var fs = report.firstSign(specimenId, null, doc1);
+        var fs = PathologyTestActors.as(doc1, () -> report.firstSign(specimenId, null, doc1));
         assertEquals(0, fs.getCode(), suffix + " 初签：" + fs.getMessage());
-        var is = report.issue(specimenId, doc1);
+        var is = PathologyTestActors.as(doc1, () -> report.issue(specimenId, doc1));
         assertEquals(0, is.getCode(), suffix + " 签发：" + is.getMessage());
     }
 

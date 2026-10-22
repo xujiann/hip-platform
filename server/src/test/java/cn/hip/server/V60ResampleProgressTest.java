@@ -432,7 +432,7 @@ class V60ResampleProgressTest {
         assertTrue(trailHead.containsKey("specimen_desc"), "trail 头必须带 specimen_desc 键：" + trailHead.keySet());
         assertEquals("标本D", trailHead.get("specimen_desc"));
         // d 写了诊断后成为 a 的「既往」：prior 行带 specimen_desc
-        assertEquals(0, pathology.diagnose(barcodeOf(d), new DiagnoseReq(null, null, "诊断 D " + tag), doc1).getCode());
+        assertEquals(0, PathologyTestActors.as(doc1, () -> pathology.diagnose(barcodeOf(d), new DiagnoseReq(null, null, "诊断 D " + tag), doc1)).getCode());
         var prior = ok(report.prior(a, null));
         var dRow = rows(prior, "items").stream().filter(x -> asLong(x.get("id")) == d).findFirst()
                 .orElseGet(() -> fail("prior 里找不到同患者已诊断的标本 D"));

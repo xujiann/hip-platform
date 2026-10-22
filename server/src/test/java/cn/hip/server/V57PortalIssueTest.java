@@ -126,7 +126,7 @@ class V57PortalIssueTest {
         assertNull(pathRow(patientId, dx));
 
         // 既有 diagnose 端点：status → DIAGNOSED、diagnosed_at 落值，report_issued_at 仍空
-        var dg = pathology.diagnose(barcode, new DiagnoseReq("灰白组织一块 " + tag, micro, dx), doc1);
+        var dg = PathologyTestActors.as(doc1, () -> pathology.diagnose(barcode, new DiagnoseReq("灰白组织一块 " + tag, micro, dx), doc1));
         assertEquals(0, dg.getCode(), dg.getMessage());
         assertEquals("DIAGNOSED", jdbc.queryForObject(
                 "select status from path_specimen where id = ?", String.class, specimenId));
@@ -140,7 +140,7 @@ class V57PortalIssueTest {
                 "已诊断未签发的报告不得出现在患者端——修复前 where 是 status='DIAGNOSED'，这里会命中");
 
         // 签发（gate=warn：缺双签放行并回带 warnings）
-        var is = report.issue(specimenId, doc1);
+        var is = PathologyTestActors.as(doc1, () -> report.issue(specimenId, doc1));
         assertEquals(0, is.getCode(), is.getMessage());
         assertFalse(((List<?>) is.getData().get("warnings")).isEmpty(), "缺双签签发必须回带 warnings");
         Instant issuedAt = instantOf(is.getData().get("reportIssuedAt"));
@@ -204,8 +204,8 @@ class V57PortalIssueTest {
 
         // 与 PATH 行混排：今天签发的病理报告排在昨天审核的影像报告前面（order by report_date desc）
         String dx = "混排诊断 " + tag;
-        assertEquals(0, pathology.diagnose(barcode, new DiagnoseReq("g", "m", dx), doc1).getCode());
-        assertEquals(0, report.issue(specimenId, doc1).getCode());
+        assertEquals(0, PathologyTestActors.as(doc1, () -> pathology.diagnose(barcode, new DiagnoseReq("g", "m", dx), doc1)).getCode());
+        assertEquals(0, PathologyTestActors.as(doc1, () -> report.issue(specimenId, doc1)).getCode());
         rows = rowsOf(patientId);
         int idxPath = -1, idxExam = -1;
         for (int i = 0; i < rows.size(); i++) {

@@ -104,7 +104,7 @@ class V57GrossKeepTest {
         String dx = "（胃窦）慢性浅表性胃炎 " + tag;
 
         // 修复前：update 无条件 set gross_finding = ''（入参原样写入），G 在这里被抹掉
-        var r = pathology.diagnose(f.barcode(), new DiagnoseReq("", null, dx), doc);
+        var r = PathologyTestActors.as(doc, () -> pathology.diagnose(f.barcode(), new DiagnoseReq("", null, dx), doc));
         assertEquals(0, r.getCode(), r.getMessage());
 
         Map<String, Object> row = jdbc.queryForMap("""
@@ -130,15 +130,15 @@ class V57GrossKeepTest {
         assertEquals("CHARGED", jdbc.queryForObject(
                 "select status from outp_order where id = ?", String.class, f.orderId()),
                 "diagnose 不再把 outp_order 置 EXECUTED——「报告出了」= 正式签发");
-        var issued = report.issue(f.id(), doc);
+        var issued = PathologyTestActors.as(doc, () -> report.issue(f.id(), doc));
         assertEquals(0, issued.getCode(), issued.getMessage());
         assertEquals(Boolean.TRUE, issued.getData().get("orderExecuted"), "签发返回体应回带本次置了 EXECUTED 的事实");
         assertEquals("EXECUTED", jdbc.queryForObject(
                 "select status from outp_order where id = ?", String.class, f.orderId()),
                 "正式签发后门诊申请才是 EXECUTED");
-        assertEquals(4553, pathology.diagnose(f.barcode(), new DiagnoseReq(null, null, "再来一次"), doc).getCode(),
+        assertEquals(4553, PathologyTestActors.as(doc, () -> pathology.diagnose(f.barcode(), new DiagnoseReq(null, null, "再来一次"), doc)).getCode(),
                 "已诊断的标本再诊断仍是 4553（状态守卫未动）");
-        assertEquals(4552, pathology.diagnose(f.barcode(), new DiagnoseReq("x", "y", "   "), doc).getCode(),
+        assertEquals(4552, PathologyTestActors.as(doc, () -> pathology.diagnose(f.barcode(), new DiagnoseReq("x", "y", "   "), doc)).getCode(),
                 "诊断空白仍是 4552，且先于状态守卫");
     }
 
@@ -151,7 +151,7 @@ class V57GrossKeepTest {
         jdbc.update("update path_specimen set micro_finding = ? where id = ?", m, f.id());
 
         // 修复前：gross_finding 会被写成 "  \t "、micro_finding 被写成 ""——两处断言都红
-        var r = pathology.diagnose(f.barcode(), new DiagnoseReq("  \t ", "", "慢性炎症 " + tag), doc);
+        var r = PathologyTestActors.as(doc, () -> pathology.diagnose(f.barcode(), new DiagnoseReq("  \t ", "", "慢性炎症 " + tag), doc));
         assertEquals(0, r.getCode(), r.getMessage());
         var row = jdbc.queryForMap("select gross_finding, micro_finding from path_specimen where id = ?", f.id());
         assertEquals(g, row.get("gross_finding"), "纯空白与空串同义：保留原值");
@@ -171,7 +171,7 @@ class V57GrossKeepTest {
         String g2 = "灰白组织一块，切面实性，质硬 " + tag;
         String m2 = "镜下见异型细胞浸润 " + tag;
 
-        var r = pathology.diagnose(f.barcode(), new DiagnoseReq("  " + g2 + "  ", " " + m2 + "\t", "浸润性导管癌 " + tag), doc);
+        var r = PathologyTestActors.as(doc, () -> pathology.diagnose(f.barcode(), new DiagnoseReq("  " + g2 + "  ", " " + m2 + "\t", "浸润性导管癌 " + tag), doc));
         assertEquals(0, r.getCode(), r.getMessage());
         var row = jdbc.queryForMap("select status, gross_finding, micro_finding from path_specimen where id = ?", f.id());
         assertEquals(g2, row.get("gross_finding"), "显式传值仍覆盖原值，且入库已 trim");

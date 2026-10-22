@@ -269,7 +269,7 @@ class V59GrossReviseTest {
     void diagnoseOverwriteLeavesFieldsAtTheirOwnVersion() {
         Fixture f = revisedFixture("C");
         String g3 = "诊断时改写的大体所见 " + tag;
-        var d = pathology.diagnose(f.barcode(), new DiagnoseReq(g3, "镜下 " + tag, "浸润性导管癌 " + tag), doc);
+        var d = PathologyTestActors.as(doc, () -> pathology.diagnose(f.barcode(), new DiagnoseReq(g3, "镜下 " + tag, "浸润性导管癌 " + tag), doc));
         assertEquals(0, d.getCode(), d.getMessage());
         assertEquals(Boolean.TRUE, d.getData().get("grossRevised"));
 
@@ -299,7 +299,7 @@ class V59GrossReviseTest {
     void reviseAfterDiagnosisOrWithoutGrossIsRejectedWithoutWrites() {
         Fixture f = revisedFixture("D");
         String g3 = "诊断时改写 " + tag;
-        assertEquals(0, pathology.diagnose(f.barcode(), new DiagnoseReq(g3, null, "慢性炎症 " + tag), doc).getCode());
+        assertEquals(0, PathologyTestActors.as(doc, () -> pathology.diagnose(f.barcode(), new DiagnoseReq(g3, null, "慢性炎症 " + tag), doc)).getCode());
         var g = new LinkedHashMap<String, String>();
         g.put("大小", "9×9×9cm");
         var r = process.reviseGrossFields(f.id(), new GrossReviseReq("GENERIC", g, "诊断后还想改 " + tag), doc);
@@ -405,7 +405,7 @@ class V59GrossReviseTest {
 
         // 已诊断标本的补取材（RESAMPLE）：诊断空白保留原值 → append=true 带描述 → 新版本；这正是修复前没有任何入口的场景
         Fixture fd = specimenWithGross("E3", g1, free1);
-        var dg = pathology.diagnose(fd.barcode(), new DiagnoseReq(null, null, "需补取材 " + tag), doc);
+        var dg = PathologyTestActors.as(doc, () -> pathology.diagnose(fd.barcode(), new DiagnoseReq(null, null, "需补取材 " + tag), doc));
         assertEquals(0, dg.getCode(), dg.getMessage());
         assertEquals(Boolean.TRUE, dg.getData().get("grossKept"));
         var rs = ok(process.grossing(new GrossingReq(fd.id(), null, g2, free2, true, null,

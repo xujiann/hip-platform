@@ -117,7 +117,7 @@ class V60IssueConcurrencyTest {
                         SecurityContextHolder.getContext().setAuthentication(doc);
                         try {
                             gate.await(10, TimeUnit.SECONDS);
-                            return report.issue(sid, doc);
+                            return PathologyTestActors.as(doc, () -> report.issue(sid, doc));
                         } finally {
                             SecurityContextHolder.clearContext();
                         }

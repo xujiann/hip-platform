@@ -140,7 +140,7 @@ class V59ExecutedGuardTest {
         assertTrue(wl.contains(ct));
 
         // 拒收（真实端点：不删记录、不改 status）→ 退出病理科流程，重新出现在队列
-        var rj = registry.reject(sid, new RejectReq("固定液不规范 " + tag, null), tech);
+        var rj = PathologyTestActors.as(tech, () -> registry.reject(sid, new RejectReq("固定液不规范 " + tag, null), tech));
         assertEquals(0, rj.getCode(), rj.getMessage());
         assertNotNull(jdbc.queryForObject("select rejected_at from path_specimen where id = ?", Object.class, sid));
         assertEquals("COLLECTED", specimenStatus(sid), "拒收不改 status（v48 口径）——守卫看的是 rejected_at");
@@ -218,7 +218,7 @@ class V59ExecutedGuardTest {
         assertEquals("DIAGNOSED", specimenStatus(sid), "标本一字未动");
 
         // 守卫只认「未拒收标本」：已诊断的标本走不了拒收端点（5208），直接一条 SQL 置拒收 → 退费放行
-        assertEquals(5208, registry.reject(sid, new RejectReq("已诊断不能拒收", null), tech).getCode());
+        assertEquals(5208, PathologyTestActors.as(tech, () -> registry.reject(sid, new RejectReq("已诊断不能拒收", null), tech)).getCode());
         jdbc.update("update path_specimen set rejected_at = now(), reject_reason = ? where id = ?",
                 "测试置拒收 " + tag, sid);
         assertFalse(orderRepository.hasRegisteredSpecimen(p));
@@ -242,7 +242,7 @@ class V59ExecutedGuardTest {
         long sid = diagnosed(p, "D");
         assertFalse(queueIds().contains(p), "签发前：已登记标本 → 不在队列（没有技师能抢先）");
 
-        var issued = report.issue(sid, doc);
+        var issued = PathologyTestActors.as(doc, () -> report.issue(sid, doc));
         assertEquals(0, issued.getCode(), issued.getMessage());
         assertEquals(Boolean.TRUE, issued.getData().get("orderExecuted"),
                 "签发本次真的把 CHARGED 置成了 EXECUTED——没有被执行站抢先命中 0 行");
@@ -295,7 +295,7 @@ class V59ExecutedGuardTest {
         var gr = process.grossing(new GrossingReq(sid, null, null, "灰白组织一块 " + tag, false, null,
                 List.of(new BlockReq("肿物中心"))), doc);
         assertEquals(0, gr.getCode(), gr.getMessage());
-        var dx = pathology.diagnose(barcode, new DiagnoseReq(null, "镜下见慢性炎细胞浸润 " + tag, "慢性炎症 " + tag), doc);
+        var dx = PathologyTestActors.as(doc, () -> pathology.diagnose(barcode, new DiagnoseReq(null, "镜下见慢性炎细胞浸润 " + tag, "慢性炎症 " + tag), doc));
         assertEquals(0, dx.getCode(), dx.getMessage());
         assertEquals("DIAGNOSED", specimenStatus(sid));
         assertEquals("CHARGED", orderStatus(orderId), "前提（v59 口径）：写完诊断、未签发的申请仍是 CHARGED");

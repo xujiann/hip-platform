@@ -242,7 +242,7 @@ class V58GrossFieldsTest {
         Fixture f1 = specimenWithGross("B1", gross, g);
         String expected1 = "大小：2×1cm。" + g;
         // 修复前：返回体没有 grossRevised，path_gross_revision 表不存在
-        var r1 = pathology.diagnose(f1.barcode(), new DiagnoseReq("  " + g2 + "  ", null, "浸润性导管癌 " + tag), doc);
+        var r1 = PathologyTestActors.as(doc, () -> pathology.diagnose(f1.barcode(), new DiagnoseReq("  " + g2 + "  ", null, "浸润性导管癌 " + tag), doc));
         assertEquals(0, r1.getCode(), r1.getMessage());
         assertEquals(Boolean.TRUE, r1.getData().get("grossRevised"));
         assertEquals(Boolean.FALSE, r1.getData().get("grossKept"));
@@ -268,12 +268,12 @@ class V58GrossFieldsTest {
         assertEquals(g2, rv1.get(1).get("newText"));
         assertEquals(tag + "d1医生", rv1.get(1).get("changedByName"));
         // 已诊断再诊断仍 4553（状态守卫未动），且不再多出修订
-        assertEquals(4553, pathology.diagnose(f1.barcode(), new DiagnoseReq("再改一次", null, "x"), doc).getCode());
+        assertEquals(4553, PathologyTestActors.as(doc, () -> pathology.diagnose(f1.barcode(), new DiagnoseReq("再改一次", null, "x"), doc)).getCode());
         assertEquals(2, revisionRows(f1.id()).size(), "4553 路径不写修订");
 
         // ② 空白 → 保留原值、不写修订
         Fixture f2 = specimenWithGross("B2", gross, g);
-        var r2 = pathology.diagnose(f2.barcode(), new DiagnoseReq("  \t ", null, "慢性炎症 " + tag), doc);
+        var r2 = PathologyTestActors.as(doc, () -> pathology.diagnose(f2.barcode(), new DiagnoseReq("  \t ", null, "慢性炎症 " + tag), doc));
         assertEquals(0, r2.getCode(), r2.getMessage());
         assertEquals(Boolean.TRUE, r2.getData().get("grossKept"));
         assertEquals(Boolean.FALSE, r2.getData().get("grossRevised"));
@@ -282,7 +282,7 @@ class V58GrossFieldsTest {
 
         // ③ 与原值相同（带空白）→ 不写修订
         Fixture f3 = specimenWithGross("B3", gross, g);
-        var r3 = pathology.diagnose(f3.barcode(), new DiagnoseReq("  " + expected1 + "\t", null, "慢性炎症 " + tag), doc);
+        var r3 = PathologyTestActors.as(doc, () -> pathology.diagnose(f3.barcode(), new DiagnoseReq("  " + expected1 + "\t", null, "慢性炎症 " + tag), doc));
         assertEquals(0, r3.getCode(), r3.getMessage());
         assertEquals(Boolean.FALSE, r3.getData().get("grossRevised"), "trim 后相同不算修订");
         assertEquals(Boolean.FALSE, r3.getData().get("grossKept"), "显式传了值就不叫「保留」（v57 口径）");
@@ -291,7 +291,7 @@ class V58GrossFieldsTest {
         // ④ 从未取材的标本由诊断首写：修订 seq1 old=null source=DIAGNOSE；但 fieldsAvailable=false——
         //    字段与版本是两回事，不拿修订行凑字段
         Fixture f4 = specimen("B4");
-        var r4 = pathology.diagnose(f4.barcode(), new DiagnoseReq(g, null, "慢性炎症 " + tag), doc);
+        var r4 = PathologyTestActors.as(doc, () -> pathology.diagnose(f4.barcode(), new DiagnoseReq(g, null, "慢性炎症 " + tag), doc));
         assertEquals(0, r4.getCode(), r4.getMessage());
         assertEquals(Boolean.TRUE, r4.getData().get("grossRevised"));
         var revs4 = revisionRows(f4.id());
@@ -307,7 +307,7 @@ class V58GrossFieldsTest {
 
         // ⑤ 4552（诊断空白）先于一切：不锁行、不写修订
         Fixture f5 = specimenWithGross("B5", gross, g);
-        assertEquals(4552, pathology.diagnose(f5.barcode(), new DiagnoseReq(g2, null, "   "), doc).getCode());
+        assertEquals(4552, PathologyTestActors.as(doc, () -> pathology.diagnose(f5.barcode(), new DiagnoseReq(g2, null, "   "), doc)).getCode());
         assertEquals(1, revisionRows(f5.id()).size());
     }
 
@@ -333,7 +333,7 @@ class V58GrossFieldsTest {
 
         // 历史标本之后被诊断覆盖：修订行的 old_text 是覆盖前的那段文本（真实事实），fieldsAvailable 仍 false
         String g2 = "灰白组织两块 " + tag;
-        var r = pathology.diagnose(f.barcode(), new DiagnoseReq(g2, null, "慢性炎症 " + tag), doc);
+        var r = PathologyTestActors.as(doc, () -> pathology.diagnose(f.barcode(), new DiagnoseReq(g2, null, "慢性炎症 " + tag), doc));
         assertEquals(0, r.getCode(), r.getMessage());
         assertEquals(Boolean.TRUE, r.getData().get("grossRevised"));
         var after = ok(process.grossingView(f.id()));

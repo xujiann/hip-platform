@@ -129,9 +129,9 @@ class V55PathologyReachTest {
                        diagnosed_at = now() - interval '2 days', pathologist_id = ?
                  where id = ?
                 """, "（左乳）浸润性导管癌 " + tag, "灰白组织 " + tag, userId(tag + "d1"), b);
-        var fs = report.firstSign(b, null, doc1);
+        var fs = PathologyTestActors.as(doc1, () -> report.firstSign(b, null, doc1));
         assertEquals(0, fs.getCode(), fs.getMessage());
-        var is = report.issue(b, doc1);
+        var is = PathologyTestActors.as(doc1, () -> report.issue(b, doc1));
         assertEquals(0, is.getCode(), is.getMessage());
         assertFalse(((List<?>) is.getData().get("warnings")).isEmpty(),
                 "gate=warn 下缺复签签发必须回带 warnings，否则夹具没造出「缺双签即签发」这个事实");

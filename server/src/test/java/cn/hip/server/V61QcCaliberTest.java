@@ -213,9 +213,9 @@ class V61QcCaliberTest {
         var gr = process.grossing(new GrossingReq(sid, null, null, "灰白组织一块 " + tag, false, null,
                 List.of(new BlockReq("肿物中心"))), doc);
         assertEquals(0, gr.getCode(), gr.getMessage());
-        var dx = pathology.diagnose(barcode, new DiagnoseReq(null, "镜下见慢性炎细胞浸润 " + tag, "慢性炎症 " + tag), doc);
+        var dx = PathologyTestActors.as(doc, () -> pathology.diagnose(barcode, new DiagnoseReq(null, "镜下见慢性炎细胞浸润 " + tag, "慢性炎症 " + tag), doc));
         assertEquals(0, dx.getCode(), dx.getMessage());
-        var is = report.issue(sid, doc);
+        var is = PathologyTestActors.as(doc, () -> report.issue(sid, doc));
         assertEquals(0, is.getCode(), is.getMessage());
         return sid;
     }

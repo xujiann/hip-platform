@@ -357,33 +357,33 @@ class V59TechConsistencyTest {
     @Test
     void executedMovesFromDiagnoseToIssue() {
         // --- 门诊 A：diagnose → 仍 CHARGED；issue → EXECUTED ---
-        var dg = pathology.diagnose(barcodeOf(a), new DiagnoseReq("灰白组织 " + tag, "镜下 " + tag, "诊断 " + tag), doc1);
+        var dg = PathologyTestActors.as(doc1, () -> pathology.diagnose(barcodeOf(a), new DiagnoseReq("灰白组织 " + tag, "镜下 " + tag, "诊断 " + tag), doc1));
         assertEquals(0, dg.getCode(), dg.getMessage());
         assertEquals("DIAGNOSED", specimenStatus(a));
         assertEquals("CHARGED", orderStatus(a),
                 "修复前 diagnose 同一事务把 outp_order 置 EXECUTED——医生站在报告尚未签发时就显示「已执行」");
 
-        var issued = ok(report.issue(a, doc1));
+        var issued = ok(PathologyTestActors.as(doc1, () -> report.issue(a, doc1)));
         assertNotNull(issued.get("reportIssuedAt"));
         assertEquals(Boolean.TRUE, issued.get("orderExecuted"), "签发返回体回带「本次置了 EXECUTED」的事实");
         assertEquals("EXECUTED", orderStatus(a), "正式签发后门诊申请才是 EXECUTED");
         assertEquals("DIAGNOSED", specimenStatus(a), "path_specimen.status 值域不动（已签发看 report_issued_at）");
         // 重复签发 5261，状态不变
-        assertEquals(5261, report.issue(a, doc1).getCode());
+        assertEquals(5261, PathologyTestActors.as(doc1, () -> report.issue(a, doc1)).getCode());
         assertEquals("EXECUTED", orderStatus(a));
 
         // --- 门诊 B：未诊断即签发 5262 → 不置；gate=block 缺双签 5265 → 不置；恢复 warn 后签发 → 置 ---
-        assertEquals(5262, report.issue(b, doc1).getCode());
+        assertEquals(5262, PathologyTestActors.as(doc1, () -> report.issue(b, doc1)).getCode());
         assertEquals("CHARGED", orderStatus(b), "5262 拦下的签发不置 EXECUTED");
-        assertEquals(0, pathology.diagnose(barcodeOf(b), new DiagnoseReq(null, null, "诊断 B " + tag), doc1).getCode());
+        assertEquals(0, PathologyTestActors.as(doc1, () -> pathology.diagnose(barcodeOf(b), new DiagnoseReq(null, null, "诊断 B " + tag), doc1)).getCode());
         assertEquals("CHARGED", orderStatus(b));
         assertEquals(1, setGate(PathologyReportController.DOUBLE_SIGN_GATE_KEY, "block"));
-        var blocked = report.issue(b, doc1);
+        var blocked = PathologyTestActors.as(doc1, () -> report.issue(b, doc1));
         assertEquals(5265, blocked.getCode(), blocked.getMessage());
         assertEquals("CHARGED", orderStatus(b), "5265 拦下的签发不置 EXECUTED");
         assertNull(jdbc.queryForObject("select report_issued_at from path_specimen where id = ?", Object.class, b));
         assertEquals(1, setGate(PathologyReportController.DOUBLE_SIGN_GATE_KEY, "warn"));
-        var issuedB = ok(report.issue(b, doc2));
+        var issuedB = ok(PathologyTestActors.as(doc2, () -> report.issue(b, doc2)));
         assertEquals(Boolean.TRUE, issuedB.get("orderExecuted"));
         assertEquals("EXECUTED", orderStatus(b));
 
@@ -391,9 +391,9 @@ class V59TechConsistencyTest {
         var inp = inpatientSpecimen("C");
         long c = inp.specimenId();
         assertEquals("CHARGED", inpOrderStatus(inp.inpOrderId()));
-        assertEquals(0, pathology.diagnose(inp.barcode(), new DiagnoseReq(null, null, "诊断 C " + tag), doc1).getCode());
+        assertEquals(0, PathologyTestActors.as(doc1, () -> pathology.diagnose(inp.barcode(), new DiagnoseReq(null, null, "诊断 C " + tag), doc1)).getCode());
         assertEquals("CHARGED", inpOrderStatus(inp.inpOrderId()));
-        var issuedC = ok(report.issue(c, doc1));
+        var issuedC = ok(PathologyTestActors.as(doc1, () -> report.issue(c, doc1)));
         assertNotNull(issuedC.get("reportIssuedAt"), "住院来源照常签发");
         assertEquals(Boolean.FALSE, issuedC.get("orderExecuted"), "住院来源：没有门诊申请可置，orderExecuted=false");
         assertEquals("CHARGED", inpOrderStatus(inp.inpOrderId()), "签发不碰 inp_order（维持既有口径，javadoc 写明）");

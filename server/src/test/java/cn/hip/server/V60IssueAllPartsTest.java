@@ -96,7 +96,7 @@ class V60IssueAllPartsTest {
         long p2 = part(o, 2, true);
         assertEquals("CHARGED", orderStatus(o), "夹具前提：登记后申请仍 CHARGED");
 
-        var i1 = ok(report.issue(p1, doc));
+        var i1 = ok(PathologyTestActors.as(doc, () -> report.issue(p1, doc)));
         assertNotNull(i1.get("reportIssuedAt"), "第 1 部位照常签发");
         assertNotNull(issuedAt(p1));
         assertEquals(Boolean.FALSE, i1.get("orderExecuted"),
@@ -105,13 +105,13 @@ class V60IssueAllPartsTest {
         assertEquals("CHARGED", orderStatus(o), "第 1 部位签发后申请仍 CHARGED");
         assertNull(issuedAt(p2), "第 2 部位未被波及");
 
-        var i2 = ok(report.issue(p2, doc));
+        var i2 = ok(PathologyTestActors.as(doc, () -> report.issue(p2, doc)));
         assertEquals(Boolean.TRUE, i2.get("orderExecuted"), "最后一个部位签发才置 EXECUTED");
         assertEquals(0L, asLong(i2.get("partsPending")));
         assertEquals("EXECUTED", orderStatus(o));
 
         // 重复签发 5261，状态不变；返回体既有键一个不少
-        assertEquals(5261, report.issue(p1, doc).getCode());
+        assertEquals(5261, PathologyTestActors.as(doc, () -> report.issue(p1, doc)).getCode());
         assertEquals("EXECUTED", orderStatus(o));
         for (String k : List.of("specimenId", "reportIssuedAt", "diagnosedAt", "doubleSignGate", "doubleSignComplete", "warnings",
                 "orderExecuted", "partsPending")) {
@@ -129,12 +129,12 @@ class V60IssueAllPartsTest {
         long p1 = part(o, 1, true);
         long p2 = part(o, 2, false);   // 未诊断才能拒收（5208 已出诊断不能拒收）
 
-        var rj = registry.reject(p2, new RejectReq("固定不良 " + tag, null), doc);
+        var rj = PathologyTestActors.as(doc, () -> registry.reject(p2, new RejectReq("固定不良 " + tag, null), doc));
         assertEquals(0, rj.getCode(), rj.getMessage());
         assertNotNull(jdbc.queryForObject("select rejected_at from path_specimen where id = ?", Object.class, p2));
         assertEquals("CHARGED", orderStatus(o), "拒收不动申请状态");
 
-        var i1 = ok(report.issue(p1, doc));
+        var i1 = ok(PathologyTestActors.as(doc, () -> report.issue(p1, doc)));
         assertEquals(Boolean.TRUE, i1.get("orderExecuted"), "第 2 部位已拒收：签发第 1 即全部未拒收部位都已签发 → EXECUTED");
         assertEquals(0L, asLong(i1.get("partsPending")), "已拒收的不算未完成");
         assertEquals("EXECUTED", orderStatus(o));
@@ -144,21 +144,21 @@ class V60IssueAllPartsTest {
         Long o2 = order("B2");
         long q1 = part(o2, 1, true);
         long q2 = part(o2, 2, false);
-        var j1 = ok(report.issue(q1, doc));
+        var j1 = ok(PathologyTestActors.as(doc, () -> report.issue(q1, doc)));
         assertEquals(Boolean.FALSE, j1.get("orderExecuted"));
         assertEquals(1L, asLong(j1.get("partsPending")));
-        assertEquals(0, registry.reject(q2, new RejectReq("量不足 " + tag, null), doc).getCode());
+        assertEquals(0, PathologyTestActors.as(doc, () -> registry.reject(q2, new RejectReq("量不足 " + tag, null), doc)).getCode());
         assertEquals("EXECUTED", orderStatus(o2), "拒收剩余部位后由拒收端点结算置 EXECUTED（审阅 medium 修补）");
-        assertEquals(5261, report.issue(q1, doc).getCode(), "已签发的第 1 部位不能再签一次");
+        assertEquals(5261, PathologyTestActors.as(doc, () -> report.issue(q1, doc)).getCode(), "已签发的第 1 部位不能再签一次");
         // 全部部位都拒收、没有已签发部位 → 不置：什么也没发布，退费此时应当放行
         Long o3 = order("B3");
         long r1 = part(o3, 1, false);
         long r2 = part(o3, 2, false);
-        assertEquals(0, registry.reject(r1, new RejectReq("固定不良 " + tag, null), doc).getCode());
-        assertEquals(0, registry.reject(r2, new RejectReq("量不足 " + tag, null), doc).getCode());
+        assertEquals(0, PathologyTestActors.as(doc, () -> registry.reject(r1, new RejectReq("固定不良 " + tag, null), doc)).getCode());
+        assertEquals(0, PathologyTestActors.as(doc, () -> registry.reject(r2, new RejectReq("量不足 " + tag, null), doc)).getCode());
         assertEquals("CHARGED", orderStatus(o3), "全部拒收无已签发部位：不置 EXECUTED");
         // 拒收的部位本身不能签发（5261 已拒收）
-        assertEquals(5261, report.issue(q2, doc).getCode());
+        assertEquals(5261, PathologyTestActors.as(doc, () -> report.issue(q2, doc)).getCode());
     }
 
     // =====================================================================================
@@ -172,14 +172,14 @@ class V60IssueAllPartsTest {
         long p2 = part(o, 2, true);
         long p3 = part(o, 3, false);
 
-        var i1 = ok(report.issue(p1, doc));
+        var i1 = ok(PathologyTestActors.as(doc, () -> report.issue(p1, doc)));
         assertEquals(Boolean.FALSE, i1.get("orderExecuted"));
         assertEquals(2L, asLong(i1.get("partsPending")), "还有第 2、3 部位");
         assertEquals("CHARGED", orderStatus(o));
 
-        assertEquals(0, registry.reject(p3, new RejectReq("送检不合格 " + tag, null), doc).getCode());
+        assertEquals(0, PathologyTestActors.as(doc, () -> registry.reject(p3, new RejectReq("送检不合格 " + tag, null), doc)).getCode());
 
-        var i2 = ok(report.issue(p2, doc));
+        var i2 = ok(PathologyTestActors.as(doc, () -> report.issue(p2, doc)));
         assertEquals(Boolean.TRUE, i2.get("orderExecuted"), "第 3 部位已拒收、第 1 已签发：第 2 签发即全部完成");
         assertEquals(0L, asLong(i2.get("partsPending")));
         assertEquals("EXECUTED", orderStatus(o));
@@ -196,7 +196,7 @@ class V60IssueAllPartsTest {
         long p1 = part(o, 1, true);
         long q1 = part(other, 1, true);
 
-        var i1 = ok(report.issue(p1, doc));
+        var i1 = ok(PathologyTestActors.as(doc, () -> report.issue(p1, doc)));
         assertEquals(Boolean.TRUE, i1.get("orderExecuted"), "单部位：签发即 EXECUTED（与 v59 逐字相同）");
         assertEquals(0L, asLong(i1.get("partsPending")));
         assertEquals("EXECUTED", orderStatus(o));
@@ -217,11 +217,11 @@ class V60IssueAllPartsTest {
         long p1 = inpatientPart(inp, 1);
         long p2 = inpatientPart(inp, 2);
 
-        var i1 = ok(report.issue(p1, doc));
+        var i1 = ok(PathologyTestActors.as(doc, () -> report.issue(p1, doc)));
         assertEquals(Boolean.FALSE, i1.get("orderExecuted"), "住院来源：没有门诊申请可置");
         assertEquals(1L, asLong(i1.get("partsPending")), "按 inp_order_id 同口径计数（只作信息）");
         assertEquals("CHARGED", inpOrderStatus(inp));
-        var i2 = ok(report.issue(p2, doc));
+        var i2 = ok(PathologyTestActors.as(doc, () -> report.issue(p2, doc)));
         assertEquals(Boolean.FALSE, i2.get("orderExecuted"));
         assertEquals(0L, asLong(i2.get("partsPending")));
         assertEquals("CHARGED", inpOrderStatus(inp), "签发不碰 inp_order（维持 v59 口径，javadoc 写明）");

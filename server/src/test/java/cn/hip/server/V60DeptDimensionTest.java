@@ -567,7 +567,7 @@ class V60DeptDimensionTest {
     /** 登记后走真实拒收端点（不删记录、不改 status，只落 rejected_at） */
     private long rejected(Dept d, String suffix) {
         long sid = specimen(d, suffix);
-        var r = registry.reject(sid, new RejectReq("固定液不规范 " + tag, null), tech);
+        var r = PathologyTestActors.as(tech, () -> registry.reject(sid, new RejectReq("固定液不规范 " + tag, null), tech));
         assertEquals(0, r.getCode(), r.getMessage());
         assertNotNull(jdbc.queryForObject("select rejected_at from path_specimen where id = ?", Object.class, sid));
         return sid;
@@ -582,9 +582,9 @@ class V60DeptDimensionTest {
         var gr = process.grossing(new GrossingReq(sid, null, null, "灰白组织一块 " + tag, false, null,
                 List.of(new BlockReq("肿物中心"))), doc);
         assertEquals(0, gr.getCode(), gr.getMessage());
-        var dx = pathology.diagnose(barcode, new DiagnoseReq(null, "镜下见慢性炎细胞浸润 " + tag, "慢性炎症 " + tag), doc);
+        var dx = PathologyTestActors.as(doc, () -> pathology.diagnose(barcode, new DiagnoseReq(null, "镜下见慢性炎细胞浸润 " + tag, "慢性炎症 " + tag), doc));
         assertEquals(0, dx.getCode(), dx.getMessage());
-        var is = report.issue(sid, doc);
+        var is = PathologyTestActors.as(doc, () -> report.issue(sid, doc));
         assertEquals(0, is.getCode(), is.getMessage());
         assertNotNull(is.getData().get("reportIssuedAt"));
         return sid;
