@@ -2,6 +2,8 @@ package cn.hip.outpatient.web;
 
 import cn.hip.platform.core.common.R;
 import cn.hip.platform.core.security.CurrentUserService;
+import cn.hip.outpatient.service.OutpatientExecutionAccess;
+import jakarta.persistence.EntityManager;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.Authentication;
@@ -21,6 +23,8 @@ public class OutpNurseStationController {
 
     private final JdbcTemplate jdbc;
     private final CurrentUserService currentUserService;
+    private final OutpatientExecutionAccess executionAccess;
+    private final EntityManager entityManager;
 
     /**
      * 皮试类别：输液前必须有**同类别**阴性皮试结果。
@@ -119,6 +123,7 @@ public class OutpNurseStationController {
     /** 待建输液单：已收费/已发药的静脉用药医嘱 */
     @GetMapping("/infusion-candidates")
     public R<List<Map<String, Object>>> candidates() {
+        executionAccess.nurse(null);
         return R.ok(jdbc.queryForList("""
                 select o.id as order_id, o.item_name, o.usage_route, o.group_no, p.name as patient_name, o.registration_id
                 from outp_order o
@@ -133,58 +138,77 @@ public class OutpNurseStationController {
 
     /** 生成输液单 */
     @PostMapping("/infusions")
+    @Transactional
     public R<Void> createInfusion(@RequestParam Long orderId) {
-        int n = jdbc.update("""
-                insert into outp_infusion(order_id)
-                select ? where exists (select 1 from outp_order o where o.id = ?
-                    and o.order_type = 'DRUG' and o.status in ('CHARGED','DISPENSED'))
-                  and not exists (select 1 from outp_infusion i where i.order_id = ?)
-                """, orderId, orderId, orderId);
-        return n == 0 ? R.fail(4501, "医嘱不存在/未收费/已建输液单") : R.ok();
+        executionAccess.nurse(null);
+        entityManager.flush();
+        var order = lockOrder(orderId, null);
+        if (order == null || !paidDrug(order)) return R.fail(4501, "医嘱不存在/未收费/已建输液单");
+        // O 锁串行化同一医嘱建单；不能把唯一约束冲突当作第二人的业务响应。
+        var existing = jdbc.queryForList("select id from outp_infusion where order_id = ? for update", orderId);
+        executionAccess.nurse(null);
+        if (!existing.isEmpty()) return R.fail(4501, "医嘱不存在/未收费/已建输液单");
+        jdbc.update("insert into outp_infusion(order_id) values (?)", orderId);
+        return R.ok();
     }
 
     /** 开始输液：皮试类药品必须有本次就诊的阴性皮试 */
     @PutMapping("/infusions/{id}/start")
     @Transactional
     public R<Void> start(@PathVariable Long id, Authentication auth) {
-        var rows = jdbc.queryForList("""
-                select i.status, o.item_name, o.registration_id from outp_infusion i
-                join outp_order o on o.id = i.order_id where i.id = ?
-                """, id);
-        if (rows.isEmpty()) return R.fail(4501, "输液单不存在");
-        var row = rows.get(0);
-        if (!"PENDING".equals(row.get("status"))) return R.fail(4501, "输液单状态不允许开始");
-        String itemName = (String) row.get("item_name");
+        executionAccess.nurse(auth);
+        entityManager.flush();
+        var care = lockCare(id, auth);
+        if (care == null) return R.fail(4501, "输液单不存在");
+        if (!"PENDING".equals(care.infusion().get("status")) || !paidDrug(care.order())) {
+            return R.fail(4501, "输液单状态或医嘱收费状态不允许开始");
+        }
+        String itemName = (String) care.order().get("item_name");
         // 按皮试类别匹配：原实现只看"本次就诊有任一阴性皮试"，头孢皮试即放行青霉素（安全门失效）
         String category = skinTestCategory(itemName);
         if (category != null) {
             var negatives = jdbc.queryForList("""
                     select drug_name from outp_skin_test where registration_id = ? and result = 'NEG'
-                    """, String.class, row.get("registration_id"));
+                    """, String.class, care.order().get("registration_id"));
             boolean covered = negatives.stream().anyMatch(n -> category.equals(skinTestCategory(n)));
             if (!covered) {
                 return R.fail(4502, "皮试拦截：" + itemName + " 需" + category + "阴性皮试结果后方可输液");
             }
         }
-        jdbc.update("update outp_infusion set status = 'RUNNING', nurse_id = ?, started_at = now() where id = ?",
-                currentUserService.idOf(auth), id);
-        return R.ok();
+        Long nurseId = executionAccess.nurse(auth);
+        int n = jdbc.update("""
+                update outp_infusion set status = 'RUNNING', nurse_id = ?, started_at = now()
+                where id = ? and status = 'PENDING'
+                """, nurseId, id);
+        return n == 0 ? R.fail(4501, "输液单状态不允许开始") : R.ok();
     }
 
     /** 巡视记录 */
     @PostMapping("/infusions/{id}/checks")
+    @Transactional
     public R<Void> addCheck(@PathVariable Long id, @RequestParam String note, Authentication auth) {
-        Integer running = jdbc.queryForObject(
-                "select count(*) from outp_infusion where id = ? and status = 'RUNNING'", Integer.class, id);
-        if (running == null || running == 0) return R.fail(4501, "仅输液中可登记巡视");
+        executionAccess.nurse(auth);
+        if (note == null || note.isBlank() || note.length() > 500) return R.fail(4000, "巡视记录须为1至500字真实内容");
+        entityManager.flush();
+        var care = lockCare(id, auth);
+        if (care == null || !"RUNNING".equals(care.infusion().get("status"))) {
+            return R.fail(4501, "仅输液中可登记巡视");
+        }
         jdbc.update("insert into outp_infusion_check(infusion_id, note, nurse_id) values (?,?,?)",
-                id, note, currentUserService.idOf(auth));
+                id, note, executionAccess.nurse(auth));
         return R.ok();
     }
 
     /** 结束输液 */
     @PutMapping("/infusions/{id}/finish")
+    @Transactional
     public R<Void> finish(@PathVariable Long id) {
+        executionAccess.nurse(null);
+        entityManager.flush();
+        var care = lockCare(id, null);
+        if (care == null || !"RUNNING".equals(care.infusion().get("status"))) {
+            return R.fail(4501, "仅输液中可结束");
+        }
         int n = jdbc.update(
                 "update outp_infusion set status = 'DONE', finished_at = now() where id = ? and status = 'RUNNING'", id);
         return n == 0 ? R.fail(4501, "仅输液中可结束") : R.ok();
@@ -192,9 +216,10 @@ public class OutpNurseStationController {
 
     @GetMapping("/infusions")
     public R<List<Map<String, Object>>> infusions() {
+        executionAccess.nurse(null);
         return R.ok(jdbc.queryForList("""
                 select i.id, i.status, i.started_at, i.finished_at, o.item_name, o.usage_route,
-                       p.name as patient_name,
+                       p.name as patient_name, o.status as order_status,
                        (select count(*) from outp_infusion_check c where c.infusion_id = i.id) as checks
                 from outp_infusion i
                 join outp_order o on o.id = i.order_id
@@ -204,4 +229,32 @@ public class OutpNurseStationController {
                 order by i.id desc limit 100
                 """));
     }
+
+    /** 每条输液写路径都按 O→I 锁序；先读关联 ID 不持有 I 锁。 */
+    private LockedCare lockCare(Long infusionId, Authentication auth) {
+        var links = jdbc.queryForList("select order_id from outp_infusion where id = ?", Long.class, infusionId);
+        if (links.isEmpty()) return null;
+        Long orderId = links.getFirst();
+        var order = lockOrder(orderId, auth);
+        if (order == null) return null;
+        var rows = jdbc.queryForList("select id, status from outp_infusion where id = ? and order_id = ? for update",
+                infusionId, orderId);
+        executionAccess.nurse(auth);
+        return rows.isEmpty() ? null : new LockedCare(order, rows.getFirst());
+    }
+
+    private Map<String, Object> lockOrder(Long orderId, Authentication auth) {
+        var rows = jdbc.queryForList("""
+                select id, order_type, status, item_name, registration_id from outp_order where id = ? for update
+                """, orderId);
+        executionAccess.nurse(auth);
+        return rows.isEmpty() ? null : rows.getFirst();
+    }
+
+    private static boolean paidDrug(Map<String, Object> order) {
+        return "DRUG".equals(order.get("order_type"))
+                && ("CHARGED".equals(order.get("status")) || "DISPENSED".equals(order.get("status")));
+    }
+
+    private record LockedCare(Map<String, Object> order, Map<String, Object> infusion) {}
 }
