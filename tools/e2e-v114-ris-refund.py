@@ -149,6 +149,7 @@ def visit(label):
 
 
 def report_body(label):
+    label = str(label)
     return {'findings': 'V114模拟所见' + label, 'impression': 'V114模拟结论' + label}
 
 
