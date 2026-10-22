@@ -268,3 +268,84 @@ it('old receipt conflict refreshes the actual specimen queue without swallowing 
 it('old receipt completion after leaving does not start another request', async () => {
   const write = deferred(), h = specialty(undefined, vi.fn(() => write.promise)); h.v.tab.value = 'path'; await h.v.loadSpecimens(); h.get.mockClear(); const first = h.v.receive(sample); h.dispose(); write.resolve(null); await first; expect(h.get).not.toHaveBeenCalled()
 })
+
+for (const action of ['Receive', 'Reject']) {
+  it(`${action} refuses a known latest queue state or a rebound original row`, async () => {
+    const h = registry(); await registryReady(h); const row = h.v.specimens.value[0]; h.v[`open${action}`](row); h.v.rejectForm.reason = '模拟原因'
+    if (action === 'Receive') row.status = 'RECEIVED'; else row.rejected_at = '2026-10-22'
+    await h.v[`submit${action}`](); expect(h.put).not.toHaveBeenCalled()
+    h.v[`open${action}`](sample); h.v.rejectForm.reason = '模拟原因'; h.v.specimens.value = [{ ...sample, status: 'DIAGNOSED' }]; await h.v[`submit${action}`](); expect(h.put).not.toHaveBeenCalled()
+  })
+  it(`${action} leaves validation and authorization errors visible without queue reload`, async () => {
+    const error = { bizCode: 1005 }, h = registry(undefined, vi.fn(() => Promise.reject(error))); await registryReady(h); h.v[`open${action}`](sample); h.v.rejectForm.reason = '模拟原因'
+    await expect(h.v[`submit${action}`]()).rejects.toBe(error); expect(h.get).not.toHaveBeenCalled(); expect(h.v.saving.value).toBe(false)
+  })
+}
+for (const action of ['firstSign', 'secondSign', 'issue', 'submitDiagnose', 'submitSupplement']) {
+  it(`a direct ${action} after unmount cannot use cached computed permissions`, async () => {
+    const h = report(); await reportReady(h, action !== 'submitDiagnose'); if (action === 'secondSign') Object.assign(h.v.primary.value, { firstSignerId: 9, firstSignedAt: '2026-10-22' })
+    if (action === 'submitDiagnose') { h.v.openDiagnose(); h.v.diagnoseForm.diagnosis = '模拟诊断' }
+    if (action === 'submitSupplement') { h.v.openSupplement(); h.v.supplementForm.content = '模拟补充' }
+    h.dispose(); await h.v[action](); expect(h.put).not.toHaveBeenCalled(); expect(h.post).not.toHaveBeenCalled(); expect(h.box.ElMessageBox.confirm).not.toHaveBeenCalled()
+  })
+  it(`${action} holds its guard through both refreshes even when one read fails`, async () => {
+    const read = deferred(); let slow = false
+    const h = report(undefined, undefined, undefined, vi.fn((path: string) => slow ? path.endsWith('/worklist') ? Promise.reject(new Error('模拟列表失败')) : read.promise : response(path.endsWith('/reports') ? reportData(11, action !== 'submitDiagnose') : { items: [] })))
+    await reportReady(h, action !== 'submitDiagnose'); if (action === 'secondSign') Object.assign(h.v.primary.value, { firstSignerId: 9, firstSignedAt: '2026-10-22' })
+    if (action === 'submitDiagnose') { h.v.openDiagnose(); h.v.diagnoseForm.diagnosis = '模拟诊断' }
+    if (action === 'submitSupplement') { h.v.openSupplement(); h.v.supplementForm.content = '模拟补充' }
+    slow = true; const first = h.v[action](); await vi.waitFor(() => expect(reportReads(h)).toHaveLength(2)); expect(h.v.saving.value).toBe(true)
+    const duplicate = h.v[action](); expect(h.put.mock.calls.length + h.post.mock.calls.length).toBe(1); read.resolve(reportData(11, true)); await Promise.all([first, duplicate]); expect(h.v.saving.value).toBe(false)
+  })
+}
+for (const action of ['submitDiagnose', 'submitSupplement']) {
+  it(`late failed ${action} does not close, clear, or reload another specimen's draft`, async () => {
+    const write = deferred(), h = report(undefined, vi.fn(() => write.promise), vi.fn(() => write.promise)); await reportReady(h, action === 'submitSupplement')
+    if (action === 'submitDiagnose') { h.v.openDiagnose(); h.v.diagnoseForm.diagnosis = '原稿' } else { h.v.openSupplement(); h.v.supplementForm.content = '原补充' }
+    const first = settle(h.v[action]()); h.v.openReport(12); await h.v.loadReport(); h.get.mockClear()
+    if (action === 'submitDiagnose') { h.v.openDiagnose(); h.v.diagnoseForm.diagnosis = '新稿' } else { h.v.hasPrimary.value = true; h.v.openSupplement(); h.v.supplementForm.content = '新补充' }
+    write.reject({ bizCode: action === 'submitDiagnose' ? 4553 : 5261 }); await first
+    expect(h.get.mock.calls.some((c: any[]) => c[0].endsWith('/reports'))).toBe(false); expect(h.box.ElMessage.success).not.toHaveBeenCalled()
+    if (action === 'submitDiagnose') { expect(h.v.diagnoseDialog.value).toBe(true); expect(h.v.diagnoseForm.diagnosis).toBe('新稿') } else { expect(h.v.supplementDialog.value).toBe(true); expect(h.v.supplementForm.content).toBe('新补充') }
+  })
+}
+it('cancelling the issue confirmation releases its guard without writing or refreshing', async () => {
+  const h = report(); await reportReady(h, true); h.box.ElMessageBox.confirm.mockRejectedValue('cancel'); await h.v.issue(); expect(h.put).not.toHaveBeenCalled(); expect(h.get).not.toHaveBeenCalled(); expect(h.v.saving.value).toBe(false)
+})
+it('changing the gate to block while issue confirmation is open cannot bypass the current rule', async () => {
+  const confirmation = deferred(), h = report(); await reportReady(h, true); h.box.ElMessageBox.confirm.mockImplementation(() => confirmation.promise); const first = h.v.issue(); h.v.doubleSignGate.value = 'block'; confirmation.raw('confirm'); await first; expect(h.put).not.toHaveBeenCalled()
+})
+it('new report open immediately clears the previous patient header and primary before the next read', async () => {
+  const read = deferred(); let slow = false
+  const h = report(undefined, undefined, undefined, vi.fn((path: string) => slow && path.endsWith('/reports') ? read.promise : response(path.endsWith('/reports') ? reportData(11, true) : { items: [] }))); await reportReady(h, true)
+  slow = true; h.v.openReport(12); expect(h.v.specimen.value).toEqual({}); expect(h.v.primary.value).toEqual({}); expect(h.v.hasPrimary.value).toBe(false); read.resolve(reportData(12)); await h.v.loadReport()
+})
+it('a worklist filter changed without issuing another read invalidates the pending response', async () => {
+  const read = deferred(); let slow = false; const h = report(undefined, undefined, undefined, vi.fn(() => slow ? read.promise : response({ items: [sample] }))); await h.v.load(); slow = true; const first = h.v.load(); h.v.query.scope = 'diagnosed'; read.resolve({ items: [other] }); await first; expect(h.v.rows.value).toEqual([sample])
+})
+it('late report and worklist reads after unmount cannot change the old page', async () => {
+  const read = deferred(); let slow = false; const h = report(undefined, undefined, undefined, vi.fn((path: string) => slow ? read.promise : response(path.endsWith('/reports') ? reportData() : { items: [sample] }))); await reportReady(h); await h.v.load(); slow = true
+  const reads = [h.v.loadReport(), h.v.load()]; h.dispose(); read.resolve({ ...reportData(12, true), items: [other] }); await Promise.all(reads); expect(h.v.specimen.value.id).toBe(11); expect(h.v.rows.value).toEqual([sample])
+})
+it('a pending report write prevents technical writes without changing their clinical policy', async () => {
+  const write = deferred(), h = report(undefined, vi.fn(() => write.promise)); await reportReady(h, true); const first = h.v.firstSign(); await h.v.techDone({ id: 5, status: 'ORDERED' }); await h.v.techCancel({ id: 5, status: 'ORDERED' }); await h.v.submitTech()
+  expect(h.put).toHaveBeenCalledOnce(); expect(h.post).not.toHaveBeenCalled(); expect(h.box.ElMessageBox.prompt).not.toHaveBeenCalled(); write.resolve(null); await first
+})
+it('old receipt known validation errors propagate and do not reload the list', async () => {
+  const error = { bizCode: 1005 }, h = specialty(undefined, vi.fn(() => Promise.reject(error))); h.v.tab.value = 'path'; await h.v.loadSpecimens(); h.get.mockClear(); await expect(h.v.receive(sample)).rejects.toBe(error); expect(h.get).not.toHaveBeenCalled()
+})
+it('old pathology queue keeps the latest response when two reloads finish in reverse order', async () => {
+  const old = deferred(), latest = deferred(); let count = 0; const h = specialty(undefined, undefined, vi.fn(() => (++count === 1 ? old.promise : latest.promise))); h.v.tab.value = 'path'; const first = h.v.loadSpecimens(); const second = h.v.loadSpecimens(); latest.resolve([other]); await second; old.resolve([sample]); await first; expect(h.v.specimens.value).toEqual([other])
+})
+for (const action of ['Receive', 'Reject']) {
+  it(`issued historical COLLECTED specimen cannot ${action} through the registry`, async () => {
+    const h = registry(); await registryReady(h); const row = { ...sample, report_issued_at: '2026-10-22' }; h.v[`open${action}`](row); h.v.rejectForm.reason = '模拟原因'; await h.v[`submit${action}`](); expect(h.put).not.toHaveBeenCalled()
+    expect(h.template[`${action.toLowerCase()}Visible`](row) && !h.template[`${action.toLowerCase()}Disabled`](row)).toBe(false)
+  })
+}
+it('issued historical COLLECTED specimen cannot use the old receipt endpoint', async () => {
+  const h = specialty(); h.v.tab.value = 'path'; const row = { ...sample, report_issued_at: '2026-10-22' }; await h.v.receive(row); expect(h.put).not.toHaveBeenCalled(); expect(h.template.receiveVisible(row) && !h.template.receiveDisabled(row)).toBe(false)
+})
+it('issued historical RECEIVED specimen cannot reopen or directly write its first diagnosis', async () => {
+  const h = report(); await reportReady(h); h.v.specimen.value.report_issued_at = '2026-10-22'; h.v.openDiagnose(); h.v.diagnoseForm.diagnosis = '模拟改写'; await h.v.submitDiagnose(); expect(h.put).not.toHaveBeenCalled(); expect(h.template.diagnoseDisabled()).toBe(true)
+})
