@@ -49,6 +49,11 @@ it('an administrator dispenses a captured worklist item through the existing API
   expect(h.post).toHaveBeenCalledExactlyOnceWith('/outpatient/dispense/11')
   expect(h.box.ElMessage.success).toHaveBeenCalledOnce()
 })
+it('a pharmacist loads today choices from the pharmacy endpoint rather than the cashier registration desk', async () => {
+  const h = setup(); await h.v.load()
+  expect(h.get).toHaveBeenCalledWith('/outpatient/dispense/registrations', { params: { date: '2026-10-22' } })
+  expect(h.get).not.toHaveBeenCalledWith('/outpatient/registrations', expect.anything())
+})
 it('a non-pharmacy role has neither visible write buttons nor callable stale-page writes', async () => {
   const h = setup(undefined, undefined, ['NURSE']); h.v.worklist.value = [wa]; h.v.returnRegId.value = 11; h.v.dispensed.value = [a]
   expect(h.box.buttons.dispense(wa)).toBe(false); expect(h.box.buttons.return(a)).toBe(false)
