@@ -65,7 +65,7 @@ import java.util.Map;
  *   <li>5222 取材请求非法（蜡块清单为空或超上限 / 组织描述超长 / 大体描述字段非法 / 备注超长 /
  *       已有大体所见且未声明 append 时再传描述；v59 取材修订入口：内容为空 / 与当前相同 / 并发改写）</li>
  *   <li>5223 该标本已取材（未显式声明 append 的重复取材）</li>
- *   <li>5224 无法识别当前登录用户，不能登记取材</li>
+ *   <li>5224 历史员工识别码；v118起实际员工权限统一1005</li>
  *   <li>5225 取材模板不存在</li>
  *   <li>5240 蜡块不存在</li>
  *   <li>5241 蜡块状态不允许该操作（重复包埋 / 已包埋不得再改脱水批次）</li>
@@ -75,7 +75,7 @@ import java.util.Map;
  *   <li>5245 切片状态不允许该操作（已染色，重复核销）</li>
  *   <li>5246 染色质量取值非法</li>
  *   <li>5247 批量核销请求非法（清单为空 / 超上限 / 参数超长）</li>
- *   <li>5248 无法识别当前登录用户，不能登记制片</li>
+ *   <li>5248 历史员工识别码；v118起实际员工权限统一1005</li>
  *   <li>5249 检索参数非法（日期格式 / 区间倒置 / 跨度过大 / 枚举取值）</li>
  *   <li>5272 切片挂接的技术医嘱非法（v57，登记在诊断与报告段 5260–5279 内、与 5271 同批：
  *       医嘱不存在 / 不属于该蜡块所在标本 / 不是 ORDERED 三条路径同码，见 {@link #slides}）</li>
@@ -471,11 +471,11 @@ public class PathologyProcessController {
                 return R.fail(5222, "首次取材不能挂接补取材医嘱：techOrderId 只在 append=true 的补取材时有效"
                         + "（收到 techOrderId=" + req.techOrderId() + "）");
             }
-            techOrder = one("select id, specimen_id, block_id, tech_type, tech_item, status from path_tech_order where id = ? for update",
-                    req.techOrderId());
+            techOrder = one("select id, specimen_id, block_id, tech_type, tech_item, status from path_tech_order where id = ? and specimen_id = ? for update",
+                    req.techOrderId(), req.specimenId());
             specimenAccess.actor(auth, false);
             if (techOrder == null) {
-                return R.fail(5275, "补取材挂接的特检医嘱不存在：techOrderId=" + req.techOrderId());
+                return R.fail(5275, "补取材挂接的特检医嘱不存在或不属于该标本：techOrderId=" + req.techOrderId());
             }
             if (!"RESAMPLE".equals(techOrder.get("tech_type"))) {
                 return R.fail(5275, "特检医嘱 #" + req.techOrderId() + " 不是补取材（RESAMPLE）类型（当前 "
@@ -1148,7 +1148,7 @@ public class PathologyProcessController {
      * 绝大多数切片就是 HE，这个默认值省掉的是最高频的一次输入。
      *
      * <p>序号与编码同样由<b>单条 insert 内的子查询</b>算出（配合 {@code generate_series} 一次插 N 张），
-     * 并发撞号由 {@code uq_path_slide_no} 兜底返 4090。
+     * v118先持源O→标本S→块锁，合法并发在锁后读新序号；唯一约束保留作完整性防线。
      *
      * <p><b>未包埋只告警不拦截</b>：物理上切片当然在包埋之后，但存量蜡块没有包埋记录
      * （零回填：当时确实没采集），硬拦会让这些蜡块永远切不了片。
@@ -1195,11 +1195,11 @@ public class PathologyProcessController {
         // v57：挂接特检技术医嘱（可空）。放在蜡块解析之后——「属于该蜡块所在标本」要先知道标本是谁
         Map<String, Object> techOrder = null;
         if (req.techOrderId() != null) {
-            techOrder = one("select id, specimen_id, block_id, tech_type, tech_item, status from path_tech_order where id = ? for update",
-                    req.techOrderId());
+            techOrder = one("select id, specimen_id, block_id, tech_type, tech_item, status from path_tech_order where id = ? and specimen_id = ? for update",
+                    req.techOrderId(), specimenId);
             specimenAccess.actor(auth, false);
             if (techOrder == null) {
-                return R.fail(5272, "切片挂接的特检技术医嘱不存在：techOrderId=" + req.techOrderId());
+                return R.fail(5272, "切片挂接的特检技术医嘱不存在或不属于该标本：techOrderId=" + req.techOrderId());
             }
             if (!specimenId.equals(asLongObj(techOrder.get("specimen_id")))) {
                 return R.fail(5272, "特检技术医嘱 #" + req.techOrderId() + " 不属于该蜡块所在标本（医嘱标本 "

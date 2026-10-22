@@ -10,8 +10,6 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
-import java.util.Objects;
-import java.util.Set;
 
 /** Clinical specimen writes serialize source O -> S; physical rescue is independent of payment. */
 @Service
@@ -126,7 +124,8 @@ public class PathologySpecimenAccess {
         for (var ref : refs) if (ref.get("tech_order_id") != null)
             technical.put((Long) ref.get("tech_order_id"), (Long) ref.get("specimen_id"));
         for (var entry : technical.entrySet()) {
-            var rows = jdbc.queryForList("select specimen_id from path_tech_order where id=? for update", entry.getKey());
+            var rows = jdbc.queryForList("select specimen_id from path_tech_order where id=? and specimen_id=? for update",
+                    entry.getKey(), entry.getValue());
             actor(auth, false);
             if (rows.isEmpty() || !Objects.equals(entry.getValue(), rows.getFirst().get("specimen_id"))) throw changed(code);
         }
@@ -155,11 +154,20 @@ public class PathologySpecimenAccess {
         var ref = refs.getFirst();
         Long sid = (Long) ref.get("specimen_id");
         var specimens = lockSet(List.of(sid), auth, 5268);
-        var rows = jdbc.queryForList("select * from path_tech_order where id=? for update", id);
+        var rows = jdbc.queryForList("select * from path_tech_order where id=? and specimen_id=? for update", id, sid);
         actor(auth, false);
         if (rows.isEmpty()) return null;
-        for (String key : List.of("specimen_id", "block_id"))
-            if (!Objects.equals(ref.get(key), rows.getFirst().get(key))) throw changed(5268);
+        var row = rows.getFirst();
+        if (!Objects.equals(ref.get("specimen_id"), row.get("specimen_id"))) throw changed(5268);
+        if (!Objects.equals(ref.get("block_id"), row.get("block_id"))) {
+            // RESAMPLE legitimately backfills its first newly produced block while this request
+            // waits on O. This is the same technical order, with fresh physical evidence.
+            boolean backfilled = ref.get("block_id") == null && row.get("block_id") != null
+                    && "RESAMPLE".equals(row.get("tech_type"))
+                    && !jdbc.queryForList("select id from path_block where id=? and specimen_id=? and tech_order_id=?",
+                            row.get("block_id"), sid, id).isEmpty();
+            if (!backfilled) throw changed(5268);
+        }
         return specimens.get(sid);
     }
 

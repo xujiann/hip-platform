@@ -2,7 +2,6 @@ package cn.hip.medtech.web;
 
 import cn.hip.platform.core.common.R;
 import cn.hip.medtech.service.PathologySpecimenAccess;
-import cn.hip.platform.core.security.CurrentUserService;
 import cn.hip.platform.core.service.ConfigReader;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -178,7 +177,7 @@ import java.util.Set;
  *       下达、按类型筛选、按状态筛选同码）</li>
  *   <li>5268 特检技术医嘱不存在或非待执行状态（完成、取消两条路径同码）</li>
  *   <li>5269 蜡块不存在或不属于该标本</li>
- *   <li>5270 无法识别当前登录用户，不能签名（v57 起取消技术医嘱同码：取消人解析不出就不叫留痕）</li>
+ *   <li>5270 历史员工识别码；实际员工权限现统一1005</li>
  *   <li>5271 技术医嘱取消原因非法（v57：缺失 / 空白 / 超 255 字三条路径同码）</li>
  *   <li>5272 切片挂接的技术医嘱非法（v57，<b>由 {@link PathologyProcessController#slides} 返回</b>：
  *       医嘱不存在 / 不属于该蜡块所在标本 / 不是 ORDERED 三条路径同码）</li>
@@ -199,7 +198,6 @@ import java.util.Set;
 public class PathologyReportController {
 
     private final JdbcTemplate jdbc;
-    private final CurrentUserService currentUserService;
     private final PathologySpecimenAccess specimenAccess;
     private final ConfigReader configReader;
 
@@ -1030,10 +1028,10 @@ public class PathologyReportController {
      *       放行不等于没发生过，事后得能查到是谁在没片子的情况下点的完成；</li>
      *   <li>off：不判，照常 DONE，返回体仍带两个事实、warnings 为空数组。</li>
      * </ul>
-     * 坏配置回落 warn 而非 off。5268（不存在 / 不是待执行）与 5270（完成人解析不出）两条既有守卫不变。
+     * 坏配置回落 warn 而非 off。5268（不存在 / 不是待执行）保持，实际员工权限统一1005。
      *
-     * <p>先读事实再<b>条件更新</b>：update 仍带 {@code and status = 'ORDERED'}，并发抢完成时后到的一方照旧吃 5268，
-     * 不存在「事实按 A 算、行按 B 改」的中间态。
+     * <p>v118先强锁源O→标本S→原技术医嘱T，再统计实际执行事实并条件更新；
+     * update 仍带 {@code and status = 'ORDERED'}，重复完成仍5268。
      */
     @PutMapping("/tech-orders/{id}/done")
     @Transactional
@@ -1128,7 +1126,7 @@ public class PathologyReportController {
      *
      * <p>取消时刻、取消人、取消原因与 status 在<b>同一条 update</b> 里落库（条件更新 + 受影响行数判定，
      * 不做读-判-写），不存在「状态变了、留痕没写」的中间态；时刻取库端 {@code now()}，与 done_at 同源。
-     * 取消人解析不出返 5270——留痕缺了「谁」就不叫留痕，不把 cancelled_by 静默写成 NULL。
+     * v118核实际启用员工与显式身份，非法员工1005，不把 cancelled_by 静默写成 NULL。
      * 5268（不存在 / 不是待执行）路径不变。
      *
      * <p>历史 CANCELLED 行（V163 之前取消的）三列永远为 NULL，本端点不回填，清单端点照常返回它们。
