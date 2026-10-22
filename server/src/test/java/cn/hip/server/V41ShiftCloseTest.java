@@ -119,7 +119,14 @@ class V41ShiftCloseTest {
         // 甲：两笔收款，其中一笔当日由甲本人退费 → 净额 = 一笔药费
         var a1 = settleBy(uidA, "班结甲一V41");
         var a2 = settleBy(uidA, "班结甲二V41");
-        chargeService.refund(a2.getId(), uidA);
+        // Keep clinical fixture creation as admin and refund under its real attributed cashier.
+        var clinicalActor = SecurityContextHolder.getContext().getAuthentication();
+        try {
+            actAs("cashierV41a", "CASHIER");
+            chargeService.refund(a2.getId(), uidA);
+        } finally {
+            SecurityContextHolder.getContext().setAuthentication(clinicalActor);
+        }
         entityManager.flush();
         // 乙：一笔收款（甲的 preview 绝不能把它算进来）
         var b1 = settleBy(uidB, "班结乙一V41");

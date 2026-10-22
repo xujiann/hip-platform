@@ -25,10 +25,12 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -69,7 +71,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 @SpringBootTest
 @Transactional
-@WithMockUser(roles = "ADMIN")
+@WithMockUser(username = "admin", roles = "ADMIN")
 class V59ExecutedGuardTest {
 
     @Autowired PathologyController pathology;
@@ -88,13 +90,15 @@ class V59ExecutedGuardTest {
     private Long cashierId;
     private Authentication doc;
     private Authentication tech;
+    private Authentication cashier;
 
     @BeforeEach
     void setUp() {
         tag = "V59F" + Long.toHexString(System.nanoTime());
         doc = userAuth(tag + "d1", "DOCTOR_OUTP");
         tech = userAuth(tag + "t1", "TECHNICIAN");
-        cashierId = userId(userAuth(tag + "c1", "CASHIER").getName());
+        cashier = userAuth(tag + "c1", "CASHIER");
+        cashierId = userId(cashier.getName());
 
         Long deptId = jdbc.queryForObject(
                 "insert into sys_dept(name, code, type) values (?, ?, 'DEPT') returning id",
@@ -156,7 +160,7 @@ class V59ExecutedGuardTest {
         Long ct = ctOrder("B");
         collect(p, "标本B");
 
-        var r = exec.execute(p, new ExecuteRequest("技师抢先执行 " + tag), tech);
+        var r = executeAsTech(p, new ExecuteRequest("技师抢先执行 " + tag));
         entityManager.flush();
         assertEquals(7004, r.getCode(), "修复前：已登记标本的病理申请仍是 CHARGED，执行站直接置 EXECUTED（返回 0）");
         assertEquals("病理申请已登记标本，由病理科签发后自动置执行", r.getMessage());
@@ -164,19 +168,19 @@ class V59ExecutedGuardTest {
         assertTrue(reportRepository.findByOrderIdIn(List.of(p)).isEmpty(), "被拒路径不落执行报告");
 
         // 普通检查申请照常执行
-        var ok = exec.execute(ct, new ExecuteRequest("CT 已完成 " + tag), tech);
+        var ok = executeAsTech(ct, new ExecuteRequest("CT 已完成 " + tag));
         entityManager.flush();
         assertEquals(0, ok.getCode(), ok.getMessage());
         assertEquals("EXECUTED", orderStatus(ct));
         assertEquals(1, reportRepository.findByOrderIdIn(List.of(ct)).size(), "正常执行落一条报告");
-        assertEquals(7002, exec.execute(ct, new ExecuteRequest("再来一次"), tech).getCode(), "已执行的再执行仍是 7002");
+        assertEquals(7002, executeAsTech(ct, new ExecuteRequest("再来一次")).getCode(), "已执行的再执行仍是 7002");
 
         // 判定次序：7002 先于 7004——未收费申请上已有标本（标本实物先送达时走 /specimens/manual 登记的口径）
         Long unpaid = pathOrder("B2", "CREATED");
         jdbc.update("insert into path_specimen(order_id, barcode, specimen_desc) values (?, ?, ?)",
                 unpaid, "PB" + tag + "B2", "未收费先送达的标本");
         assertTrue(orderRepository.hasRegisteredSpecimen(unpaid));
-        assertEquals(7002, exec.execute(unpaid, new ExecuteRequest("x"), tech).getCode(), "7002 仍在 7004 之前");
+        assertEquals(7002, executeAsTech(unpaid, new ExecuteRequest("x")).getCode(), "7002 仍在 7004 之前");
         assertEquals("CREATED", orderStatus(unpaid));
     }
 
@@ -197,7 +201,7 @@ class V59ExecutedGuardTest {
         assertFalse(orderRepository.hasRegisteredSpecimen(p), "前提：结算时尚无标本");
 
         long sid = diagnosed(p, "C");   // 已取材、已写诊断、未签发——审阅者点名的窗口
-        var e = assertThrows(BizException.class, () -> chargeService.refund(chargeId, cashierId),
+        var e = assertThrows(BizException.class, () -> refundAsCashier(chargeId),
                 "修复前放行：申请仍是 CHARGED，「EXECUTED 不可退费」拦不住，整单退费成功");
         assertEquals(5005, e.code, "复用 5005，不新占码");
         assertTrue(e.getMessage().contains("病理"), "消息须点明是病理标本：" + e.getMessage());
@@ -218,7 +222,7 @@ class V59ExecutedGuardTest {
         jdbc.update("update path_specimen set rejected_at = now(), reject_reason = ? where id = ?",
                 "测试置拒收 " + tag, sid);
         assertFalse(orderRepository.hasRegisteredSpecimen(p));
-        var refunded = chargeService.refund(chargeId, cashierId);
+        var refunded = refundAsCashier(chargeId);
         entityManager.flush();
         assertEquals("REFUNDED", refunded.getStatus(), "拒收后退费照常");
         assertEquals("REFUNDED", jdbc.queryForObject("select status from outp_charge where id = ?", String.class, chargeId));
@@ -246,8 +250,8 @@ class V59ExecutedGuardTest {
         assertFalse(queueIds().contains(p), "签发后：已执行 → 仍不在队列");
 
         entityManager.clear();   // 保险：清一级缓存，让执行站按库里的 EXECUTED 判，不依赖 claimCharge 的 clearAutomatically
-        assertEquals(7002, exec.execute(p, new ExecuteRequest("x"), tech).getCode(), "签发后执行站按状态拒（7002），轮不到 7004");
-        var e = assertThrows(BizException.class, () -> chargeService.refund(chargeId, cashierId));
+        assertEquals(7002, executeAsTech(p, new ExecuteRequest("x")).getCode(), "签发后执行站按状态拒（7002），轮不到 7004");
+        var e = assertThrows(BizException.class, () -> refundAsCashier(chargeId));
         assertEquals(5005, e.code);
         assertTrue(e.getMessage().contains("已执行"), "签发后由原「已执行项目不可退费」先拦：" + e.getMessage());
         assertEquals("PAID", jdbc.queryForObject("select status from outp_charge where id = ?", String.class, chargeId));
@@ -314,7 +318,7 @@ class V59ExecutedGuardTest {
     }
 
     private List<Long> worklistIds() {
-        var r = exec.worklist();
+        var r = as(tech, exec::worklist);
         assertEquals(0, r.getCode(), r.getMessage());
         return r.getData().stream().map(m -> ((Number) m.get("orderId")).longValue()).toList();
     }
@@ -325,6 +329,24 @@ class V59ExecutedGuardTest {
 
     private String specimenStatus(long specimenId) {
         return jdbc.queryForObject("select status from path_specimen where id = ?", String.class, specimenId);
+    }
+
+    private cn.hip.platform.core.common.R<Object> executeAsTech(Long orderId, ExecuteRequest request) {
+        return as(tech, () -> exec.execute(orderId, request, tech));
+    }
+
+    private OutpCharge refundAsCashier(Long chargeId) {
+        return as(cashier, () -> chargeService.refund(chargeId, cashierId));
+    }
+
+    private <T> T as(Authentication actor, Supplier<T> operation) {
+        var previous = SecurityContextHolder.getContext().getAuthentication();
+        try {
+            SecurityContextHolder.getContext().setAuthentication(actor);
+            return operation.get();
+        } finally {
+            SecurityContextHolder.getContext().setAuthentication(previous);
+        }
     }
 
     private Authentication userAuth(String username, String role) {

@@ -13,6 +13,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -103,7 +106,15 @@ class Phase113FinanceTest {
         // 把收费单倒填到昨天（模拟 D1 收费）
         jdbc.update("update outp_charge set created_at = now() - interval '1 day' where id = ?", charge.getId());
 
-        chargeService.refund(charge.getId(), uidB);
+        // Clinical setup runs as admin; the attributed refund is performed by the actual cashier B.
+        var clinicalActor = SecurityContextHolder.getContext().getAuthentication();
+        try {
+            SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
+                    "cashier113b", null, List.of(new SimpleGrantedAuthority("ROLE_CASHIER"))));
+            chargeService.refund(charge.getId(), uidB);
+        } finally {
+            SecurityContextHolder.getContext().setAuthentication(clinicalActor);
+        }
         entityManager.flush();
 
         String today = cn.hip.platform.core.config.BusinessDates.today().toString();
