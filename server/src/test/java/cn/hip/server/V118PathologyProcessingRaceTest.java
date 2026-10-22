@@ -227,7 +227,7 @@ class V118PathologyProcessingRaceTest {
     @ParameterizedTest @ValueSource(strings={"gross","revise","create","slides","done"})
     void pendingManagedMetadataFlushIsRetainedByProcessingComposition(String op){ready(op);tx().executeWithoutResult(t->{var original=orders.findById(order).orElseThrow();original.setRemark("组合中的新备注");assertEquals(0,op(op));assertEquals("组合中的新备注",jdbc.queryForObject("select remark from outp_order where id=?",String.class,order));});assertEquals("组合中的新备注",jdbc.queryForObject("select remark from outp_order where id=?",String.class,order));assertEquals("CHARGED",jdbc.queryForObject("select status from outp_order where id=?",String.class,order));}
 
-    @ParameterizedTest @ValueSource(strings={"gross","slides","create","done","cancel","batch"})
+    @ParameterizedTest @ValueSource(strings={"gross","slides","create","done","cancel","batch","dehydrate","embed","stain"})
     void actualProcessNodeFailureRollsBackEveryProducerFactAndRetrySucceeds(String op){
         ready(op);Object before=facts();String fn="v118_fail_"+tag.toLowerCase(),trigger=fn+"_trigger";
         jdbc.execute("create function "+fn+"() returns trigger language plpgsql as $$ begin if exists(select 1 from path_specimen where id=NEW.specimen_id and barcode like '"+tag+"%') then raise exception 'v118 deliberately fail node'; end if; return NEW; end $$");
@@ -271,6 +271,12 @@ class V118PathologyProcessingRaceTest {
             // This is the deterministic half of the T1->T2 / T2->T1 malformed-input deadlock.
             try{assertEquals(producer.equals("slides")?5272:5275,fs.getFirst().get(3,TimeUnit.SECONDS));}catch(TimeoutException e){fail("Mismatched foreign tech order must be rejected before waiting for its row lock",e);}catch(Exception e){throw new RuntimeException(e);}
         });assertEquals(before,facts());}finally{close(p);}
+    }
+    @ParameterizedTest @ValueSource(strings={"slides","resample"})
+    void actorDisabledWhileWaitingExplicitRequestedTechLockCannotCreatePhysicalChildren(String producer)throws Exception{
+        block=newBlock(specimen,true);techOrder=newTech(specimen,producer.equals("resample")?null:block,producer.equals("resample")?"RESAMPLE":"DEEP_CUT");
+        var p=Executors.newSingleThreadExecutor();var pid=new AtomicInteger();var fs=new ArrayList<Future<Integer>>();Object before=facts();
+        try{tx().executeWithoutResult(t->{jdbc.queryForList("select id from path_tech_order where id=? for update",techOrder);fs.add(worker(p,pid,()->producer.equals("slides")?process.slides(new SlideReq(block,1,"HE",null,null,techOrder),auth()).getCode():process.grossing(new GrossingReq(specimen,null,null,null,true,null,List.of(new BlockReq("补块")),techOrder),auth()).getCode()));waiting(pid,fs.getFirst());jdbc.update("update sys_user set enabled=false where id=?",tech.id());});assertEquals(1005,result(fs.getFirst()));assertEquals(before,facts());}finally{close(p);}
     }
 }
 
