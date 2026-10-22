@@ -368,10 +368,9 @@ for action in ['first-sign', 'second-sign', 'issue', 'supplement']:
 for action in actions:
     denied(security_case, security_specimen, action, 1000, None)
 disabled = identities['disabled']
-expect(0, 'PUT', f"/system/users/{disabled['id']}", {
-    'username': disabled['username'], 'realName': disabled['realName'],
-    'enabled': False, 'roleCodes': ['TECHNICIAN'],
-})
+expect(0, 'PUT', f"/system/users/{disabled['id']}/enabled?enabled=false")
+disabled_row = next(row for row in expect(0, 'GET', '/system/users') if row['id'] == disabled['id'])
+assert disabled_row['enabled'] is False, 'The dedicated enabled endpoint must really disable the employee'
 for action in actions:
     denied(security_case, security_specimen, action, 1000, 'disabled')
 print('[1] Real JWT eight-write wrong-duty, anonymous, machine and disabled refusals have zero projected writes')
