@@ -2,9 +2,9 @@ package cn.hip.medtech.web;
 
 import cn.hip.platform.core.common.R;
 import cn.hip.platform.core.config.HipProfiles;
-import cn.hip.platform.core.security.CurrentUserService;
 import cn.hip.platform.core.service.ConfigReader;
 import cn.hip.medtech.service.PathologyRegistrationAccess;
+import cn.hip.medtech.service.PathologySpecimenAccess;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.ResultSetExtractor;
@@ -86,9 +86,9 @@ import java.util.regex.Pattern;
 public class PathologyRegistryController {
 
     private final JdbcTemplate jdbc;
-    private final CurrentUserService currentUserService;
     private final ConfigReader configReader;
     private final PathologyRegistrationAccess registrationAccess;
+    private final PathologySpecimenAccess specimenAccess;
 
     /** 待办与检索硬上限：命中超过它说明条件太宽，应收窄而不是翻页（同 v43 车道D 口径） */
     private static final int SEARCH_LIMIT = 200;
@@ -385,7 +385,7 @@ public class PathologyRegistryController {
      * 接收核对：核对标本与申请是否相符，落 {@code path_process.RECEIVE} 并置为已核收。
      *
      * <p><b>与既有 {@code PUT /specimens/{barcode}/receive} 的关系</b>：那个按条码、无核对信息、
-     * 不留流转记录，本版<b>一个字节没改</b>，前端旧路径照常可用。本端点按 id，多两件事：
+     * 不留流转记录；两入口统一真实员工及 O→S 锁序，旧路径照常可用。本端点按 id，多两件事：
      * 记录核对时刻与核对备注、落一条 {@code path_process} 流转节点（病理质控的各环节耗时靠它算）。
      * 写的是同两列（{@code status/received_at}），不是新值域。
      *
@@ -400,10 +400,8 @@ public class PathologyRegistryController {
     public R<Void> receiveCheck(@PathVariable Long id,
                                 @RequestBody(required = false) ReceiveCheckReq req,
                                 Authentication auth) {
-        var rows = jdbc.queryForList(
-                "select status, collected_at, rejected_at from path_specimen where id = ?", id);
-        if (rows.isEmpty()) return R.fail(5206, "标本不存在");
-        var row = rows.get(0);
+        var row = specimenAccess.lockId(id, auth, false, 5208);
+        if (row == null) return R.fail(5206, "标本不存在");
         if (row.get("rejected_at") != null) return R.fail(5208, "标本已拒收，不能核收");
         if (!"COLLECTED".equals(row.get("status"))) {
             return R.fail(5208, "标本状态不允许核收（当前 " + row.get("status") + "）");
@@ -438,7 +436,7 @@ public class PathologyRegistryController {
         jdbc.update("""
                 insert into path_process(specimen_id, node, occurred_at, operator_id, remark)
                 values (?, 'RECEIVE', ?, ?, ?)
-                """, id, Timestamp.from(received), currentUserService.idOf(auth),
+                """, id, Timestamp.from(received), specimenAccess.actor(auth, false),
                 req == null ? null : cut(trim(req.remark()), 255));
         return R.ok();
     }
@@ -455,14 +453,13 @@ public class PathologyRegistryController {
     @PutMapping("/specimens/{id}/reject")
     @Transactional
     public R<Void> reject(@PathVariable Long id, @RequestBody RejectReq req, Authentication auth) {
+        specimenAccess.actor(auth, false);
         String reason = req == null ? "" : trim(req.reason());
         if (reason.isEmpty()) return R.fail(5207, "拒收原因必填");
         if (reason.length() > 255) return R.fail(5207, "拒收原因过长（最多 255 字）");
 
-        var rows = jdbc.queryForList(
-                "select status, collected_at, rejected_at from path_specimen where id = ?", id);
-        if (rows.isEmpty()) return R.fail(5206, "标本不存在");
-        var row = rows.get(0);
+        var row = specimenAccess.lockId(id, auth, false, 5208);
+        if (row == null) return R.fail(5206, "标本不存在");
         if (row.get("rejected_at") != null) return R.fail(5208, "标本已拒收，不能重复拒收");
         if ("DIAGNOSED".equals(row.get("status"))) return R.fail(5208, "已出诊断的标本不能拒收");
 
@@ -480,7 +477,7 @@ public class PathologyRegistryController {
             rejected = t;
         }
 
-        Long me = currentUserService.idOf(auth);
+        Long me = specimenAccess.actor(auth, false);
         int n = jdbc.update("""
                 update path_specimen set reject_reason = ?, rejected_at = ?, rejected_by = ?
                 where id = ? and rejected_at is null and status <> 'DIAGNOSED'

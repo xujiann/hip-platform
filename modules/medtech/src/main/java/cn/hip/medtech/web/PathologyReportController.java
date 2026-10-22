@@ -1,6 +1,7 @@
 package cn.hip.medtech.web;
 
 import cn.hip.platform.core.common.R;
+import cn.hip.medtech.service.PathologySpecimenAccess;
 import cn.hip.platform.core.security.CurrentUserService;
 import cn.hip.platform.core.service.ConfigReader;
 import lombok.RequiredArgsConstructor;
@@ -199,6 +200,7 @@ public class PathologyReportController {
 
     private final JdbcTemplate jdbc;
     private final CurrentUserService currentUserService;
+    private final PathologySpecimenAccess specimenAccess;
     private final ConfigReader configReader;
 
     /** 双签 gate 配置键（V144 已随地基写入，默认值 warn） */
@@ -561,7 +563,7 @@ public class PathologyReportController {
      * <p>前置：标本存在、未拒收、未签发、<b>已写诊断</b>（没有诊断内容签什么？）。
      * 落 {@code first_signer_id}/{@code first_signed_at} 与 FIRST_SIGN 流转节点。
      *
-     * <p><b>无法识别当前登录用户时直接拒（5270）</b>而不是落一个 signer_id 为 null 的签名：
+     * <p><b>实际员工不存在、停用或显式身份不一致时直接拒（1005）</b>而不是落一个 signer_id 为 null 的签名：
      * 匿名的「初诊签名」会让复诊环节永远无从核验「是不是同一个人签的」，双签就此形同虚设。
      */
     @PutMapping("/{specimenId}/first-sign")
@@ -570,15 +572,14 @@ public class PathologyReportController {
     public R<Map<String, Object>> firstSign(@PathVariable Long specimenId,
                                             @RequestParam(required = false) String remark,
                                             Authentication auth) {
-        var h = head(specimenId);
+        var h = specimenAccess.lockId(specimenId, auth, true, 5261);
         if (h == null) return R.fail(5260, "标本不存在：" + specimenId);
         R<Map<String, Object>> blocked = notSignable(h);
         if (blocked != null) return blocked;
         if (blank(h.get("diagnosis"))) return R.fail(5262, "该标本尚未书写病理诊断，不能初诊签名");
         if (h.get("first_signed_at") != null) return R.fail(5261, "该标本已完成初诊签名，不可重复签名");
 
-        Long uid = currentUserService.idOf(auth);
-        if (uid == null) return R.fail(5270, "无法识别当前登录用户，不能完成初诊签名");
+        Long uid = specimenAccess.actor(auth, true);
 
         // 条件更新 + 受影响行数即并发闸门（照抄 8014 纪律，不做读-判-写）
         var updated = jdbc.queryForList("""
@@ -612,15 +613,14 @@ public class PathologyReportController {
     public R<Map<String, Object>> secondSign(@PathVariable Long specimenId,
                                              @RequestParam(required = false) String remark,
                                              Authentication auth) {
-        var h = head(specimenId);
+        var h = specimenAccess.lockId(specimenId, auth, true, 5261);
         if (h == null) return R.fail(5260, "标本不存在：" + specimenId);
         R<Map<String, Object>> blocked = notSignable(h);
         if (blocked != null) return blocked;
         if (h.get("first_signed_at") == null) return R.fail(5264, "该标本尚未完成初诊签名，不能复诊签名");
         if (h.get("second_signed_at") != null) return R.fail(5261, "该标本已完成复诊签名，不可重复签名");
 
-        Long uid = currentUserService.idOf(auth);
-        if (uid == null) return R.fail(5270, "无法识别当前登录用户，不能完成复诊签名");
+        Long uid = specimenAccess.actor(auth, true);
 
         Long first = asLong(h.get("first_signer_id"));
         if (first == null) {
@@ -683,7 +683,7 @@ public class PathologyReportController {
     @PreAuthorize(SIGNER_ROLES)
     @Transactional
     public R<Map<String, Object>> issue(@PathVariable Long specimenId, Authentication auth) {
-        var h = head(specimenId);
+        var h = specimenAccess.lockId(specimenId, auth, true, 5261);
         if (h == null) return R.fail(5260, "标本不存在：" + specimenId);
         if (h.get("rejected_at") != null) return R.fail(5261, "该标本已拒收，不能签发报告");
         if (h.get("report_issued_at") != null) {
@@ -714,7 +714,7 @@ public class PathologyReportController {
                     + "（「" + gateTierName(gate) + "」档已放行，本次签发已记入流转节点）");
         }
 
-        Long uid = currentUserService.idOf(auth);
+        Long uid = specimenAccess.actor(auth, true);
         var updated = jdbc.queryForList("""
                 update path_specimen set report_issued_at = now()
                 where id = ? and report_issued_at is null and rejected_at is null
@@ -728,7 +728,7 @@ public class PathologyReportController {
         // v59（2576-③）：「报告出了」= 正式签发——门诊申请在此置 EXECUTED（此前在 diagnose）；inp_order 不碰。
         // v60（2576 尾-①）：只有同一申请的全部未拒收部位都已签发才置——not exists 在同一条 update 里判，
         // 本标本的 report_issued_at 已在上面同一事务落下，所以它自己不会被算成「未签发的兄弟部位」
-        // v60 审阅修补：结算逻辑抽成 settleOutpOrderExecuted——先 select … for update 锁申请行再判。
+        // Caller already owns O -> S; settle reuses O and evaluates all parts after the write.
         // 没有锁时并发签发最后两个部位，READ COMMITTED 下两边都看不见对方未提交的 report_issued_at、各自命中 0 行，
         // 申请永久停在 CHARGED（审阅者两会话复现）；拒收端点也调同一处（先签部分再拒收剩余的死局）。
         boolean executedNow = settleOutpOrderExecuted(jdbc, specimenId);
@@ -791,9 +791,8 @@ public class PathologyReportController {
      * 在本方法里连读都只读来判空，绝无 update——免疫组化回报后的补充诊断是<b>新增一份文书</b>，
      * 不是修订旧文书。覆盖原报告会让「当时医生看到的是什么」永久不可考。
      *
-     * <p>seq_no 由单条 insert 内的子查询取 {@code max+1}；并发下靠
-     * {@code uq_path_report_seq(specimen_id, seq_no)} 兜底（撞号由全局兜底返 4090 唯一冲突，
-     * 调用方重试即可）——<b>不做「查了再写」的两段式</b>，那个窗口更大。
+     * <p>持有源 O → 标本 S 后再取 {@code max+1}，同标本的并发补充依次追加，
+     * 不用唯一冲突代替正常串行；原报告不因补充而改写。
      */
     @PostMapping("/{specimenId}/supplement")
     @PreAuthorize(SIGNER_ROLES)
@@ -801,6 +800,7 @@ public class PathologyReportController {
     public R<Map<String, Object>> supplement(@PathVariable Long specimenId,
                                              @RequestBody SupplementReq req,
                                              Authentication auth) {
+        specimenAccess.actor(auth, true);
         String content = req == null ? null : trim(req.content());
         if (content == null) return R.fail(5266, "补充报告内容不能为空");
         String reason = req == null ? null : trim(req.reason());
@@ -808,15 +808,14 @@ public class PathologyReportController {
             return R.fail(5266, "补充报告原因超长（最多 " + REASON_MAX + " 字，当前 " + reason.length() + " 字）");
         }
 
-        var h = head(specimenId);
+        var h = specimenAccess.lockId(specimenId, auth, true, 5261);
         if (h == null) return R.fail(5260, "标本不存在：" + specimenId);
         if (h.get("rejected_at") != null) return R.fail(5261, "该标本已拒收，不能出补充报告");
         if (blank(h.get("diagnosis"))) {
             return R.fail(5262, "该标本尚未书写首次病理诊断，不能出补充报告（补充报告是对已有报告的追加）");
         }
 
-        Long uid = currentUserService.idOf(auth);
-        if (uid == null) return R.fail(5270, "无法识别当前登录用户，不能出具补充报告");
+        Long uid = specimenAccess.actor(auth, true);
 
         var ins = jdbc.queryForList("""
                 insert into path_report(specimen_id, seq_no, content, reason,

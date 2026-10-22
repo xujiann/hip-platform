@@ -1,8 +1,8 @@
 package cn.hip.medtech.web;
 
 import cn.hip.platform.core.common.R;
-import cn.hip.platform.core.security.CurrentUserService;
 import cn.hip.medtech.service.PathologyRegistrationAccess;
+import cn.hip.medtech.service.PathologySpecimenAccess;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.Authentication;
@@ -27,8 +27,8 @@ import java.util.Map;
 public class PathologyController {
 
     private final JdbcTemplate jdbc;
-    private final CurrentUserService currentUserService;
     private final PathologyRegistrationAccess registrationAccess;
+    private final PathologySpecimenAccess specimenAccess;
 
     /** 待取材：已收费、项目名含「病理/活检」的申请 */
     @GetMapping("/pending")
@@ -86,7 +86,10 @@ public class PathologyController {
      * 改的只是 4551 的触发时机（多了一种「已拒收」的情形）。
      */
     @PutMapping("/specimens/{barcode}/receive")
+    @Transactional
     public R<Void> receive(@PathVariable String barcode) {
+        var specimen = specimenAccess.lockBarcode(barcode, null, false, 4551);
+        if (specimen == null) return R.fail(4551, "标本不存在、状态不符或已拒收");
         int n = jdbc.update(
                 "update path_specimen set status = 'RECEIVED', received_at = now() "
                         + "where barcode = ? and status = 'COLLECTED' and rejected_at is null",
@@ -135,15 +138,16 @@ public class PathologyController {
     @PutMapping("/specimens/{barcode}/diagnose")
     @Transactional
     public R<Map<String, Object>> diagnose(@PathVariable String barcode, @RequestBody DiagnoseReq req, Authentication auth) {
+        specimenAccess.actor(auth, false);
         if (req.diagnosis() == null || req.diagnosis().isBlank()) return R.fail(4552, "诊断不能为空");
         String gross = blankToNull(req.grossFinding());
         String micro = blankToNull(req.microFinding());
-        // v58：覆盖前锁行读原值。只读不判——状态守卫仍由下面那条 update 的 where 决定，4553 触发情形一个不变。
-        var before = jdbc.queryForList(
-                "select gross_finding from path_specimen where barcode = ? for update", barcode);
-        String oldGrossRaw = before.isEmpty() ? null : (String) before.get(0).get("gross_finding");
+        // Read the original gross finding only after source O -> specimen S and live-actor checks.
+        var before = specimenAccess.lockBarcode(barcode, auth, false, 4553);
+        if (before == null) return R.fail(4553, "标本不存在、未核收或已拒收");
+        String oldGrossRaw = (String) before.get("gross_finding");
         String oldGross = blankToNull(oldGrossRaw);
-        Long uid = currentUserService.idOf(auth);
+        Long uid = specimenAccess.actor(auth, false);
         int n = jdbc.update("""
                 update path_specimen set status = 'DIAGNOSED',
                        gross_finding = coalesce(nullif(btrim(?::text), ''), gross_finding),
