@@ -67,8 +67,8 @@
         </el-table-column>
         <el-table-column label="操作" width="150" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" size="small" @click="openRegister(row, false)">登记</el-button>
-            <el-button link type="warning" size="small" @click="openRegister(row, true)">手工登记</el-button>
+            <el-button v-if="canRegister" link type="primary" size="small" :disabled="saving" @click="openRegister(row, false)">登记</el-button>
+            <el-button v-if="canRegister" link type="warning" size="small" :disabled="saving" @click="openRegister(row, true)">手工登记</el-button>
           </template>
         </el-table-column>
         <template #empty>无待登记申请</template>
@@ -166,10 +166,10 @@
         <el-table-column label="操作" width="210" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small"
-                       :disabled="row.status !== 'COLLECTED' || !!row.rejected_at"
+                       :disabled="saving || row.status !== 'COLLECTED' || !!row.rejected_at"
                        @click="openReceive(row)">接收核对</el-button>
             <el-button link type="danger" size="small"
-                       :disabled="!!row.rejected_at || row.status === 'DIAGNOSED'"
+                       :disabled="saving || !!row.rejected_at || row.status === 'DIAGNOSED'"
                        @click="openReject(row)">拒收</el-button>
             <el-button link type="info" size="small" @click="openHistory(row)">既往病理</el-button>
           </template>
@@ -190,7 +190,7 @@
       <el-descriptions-item label="申请项目" :span="2">{{ regForm.itemName }}</el-descriptions-item>
     </el-descriptions>
 
-    <el-form label-width="100px" size="small">
+    <el-form label-width="100px" size="small" :disabled="saving">
       <el-form-item label="部位序号">
         <el-input-number v-model="regForm.partNo" :min="1" :max="99" />
         <span class="muted" style="margin-left: 8px">
@@ -243,7 +243,7 @@
 
     <template #footer>
       <el-button size="small" @click="regDialog = false">取消</el-button>
-      <el-button type="primary" size="small" :loading="saving" @click="submitRegister">登记</el-button>
+      <el-button type="primary" size="small" :loading="saving" :disabled="saving || !canRegister" @click="submitRegister">登记</el-button>
     </template>
   </el-dialog>
 
@@ -410,18 +410,25 @@
  * 返回体键名照后端原样消费：列表行是蛇形（JdbcTemplate 直出），
  * 登记返回体是驼峰（控制器手工装配的 LinkedHashMap）——两者不在前端归一。
  */
-import { reactive, ref } from 'vue'
+import { computed, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import client from '../../../api/client'
+import { useAuthStore } from '../../../stores/auth'
 import {
   SOURCES, SPECIMEN_STATUSES, SPECIMEN_TYPES,
   fmt, fmtTime, num, sourceName, statusName, typeName, type Row,
 } from './format'
 
 const emit = defineEmits<{ (e: 'changed'): void }>()
+const auth = useAuthStore()
+const canRegister = computed(() => auth.user?.roles.some(role => ['ADMIN', 'TECHNICIAN', 'DOCTOR_OUTP'].includes(role)) ?? false)
 
 const tab = ref('pending')
 const saving = ref(false)
+let active = true
+let pendingReadVersion = 0
+let specimenReadVersion = 0
+let registrationVersion = 0
 
 /* ---------------- 待登记 ---------------- */
 const pending = ref<Row[]>([])
@@ -431,20 +438,29 @@ const pendingLoading = ref(false)
 const pendingQuery = reactive({ source: '', keyword: '', includeRegistered: false })
 
 async function loadPending() {
+  if (!active) return
+  const version = ++pendingReadVersion
+  const params = pendingParams()
+  const key = JSON.stringify(params)
   pendingLoading.value = true
   try {
     const d = (await client.get('/pathology/registry/pending', {
-      params: {
-        source: pendingQuery.source || undefined,
-        keyword: pendingQuery.keyword || undefined,
-        includeRegistered: pendingQuery.includeRegistered || undefined,
-      },
+      params,
     })).data.data as Row
+    if (!active || version !== pendingReadVersion || key !== JSON.stringify(pendingParams())) return
     pending.value = (d.items ?? []) as Row[]
     pendingTruncated.value = d.truncated === true
     pendingLimit.value = num(d.limit) || 200
   } finally {
-    pendingLoading.value = false
+    if (active && version === pendingReadVersion) pendingLoading.value = false
+  }
+}
+
+function pendingParams() {
+  return {
+    source: pendingQuery.source || undefined,
+    keyword: pendingQuery.keyword || undefined,
+    includeRegistered: pendingQuery.includeRegistered || undefined,
   }
 }
 
@@ -460,26 +476,35 @@ const searchQuery = reactive({
 })
 
 async function loadSpecimens() {
+  if (!active) return
+  const version = ++specimenReadVersion
+  const params = specimenParams()
+  const key = JSON.stringify(params)
   searchLoading.value = true
   try {
     const d = (await client.get('/pathology/registry/specimens/search', {
-      params: {
-        pathNo: searchQuery.pathNo || undefined,
-        barcode: searchQuery.barcode || undefined,
-        patientName: searchQuery.patientName || undefined,
-        from: searchRange.value?.[0] || undefined,
-        to: searchRange.value?.[1] || undefined,
-        status: searchQuery.status || undefined,
-        specimenType: searchQuery.specimenType || undefined,
-        source: searchQuery.source || undefined,
-        rejected: rejectedFlag.value === 'Y' ? true : rejectedFlag.value === 'N' ? false : undefined,
-      },
+      params,
     })).data.data as Row
+    if (!active || version !== specimenReadVersion || key !== JSON.stringify(specimenParams())) return
     specimens.value = (d.items ?? []) as Row[]
     searchTruncated.value = d.truncated === true
     searchLimit.value = num(d.limit) || 200
   } finally {
-    searchLoading.value = false
+    if (active && version === specimenReadVersion) searchLoading.value = false
+  }
+}
+
+function specimenParams() {
+  return {
+    pathNo: searchQuery.pathNo || undefined,
+    barcode: searchQuery.barcode || undefined,
+    patientName: searchQuery.patientName || undefined,
+    from: searchRange.value?.[0] || undefined,
+    to: searchRange.value?.[1] || undefined,
+    status: searchQuery.status || undefined,
+    specimenType: searchQuery.specimenType || undefined,
+    source: searchQuery.source || undefined,
+    rejected: rejectedFlag.value === 'Y' ? true : rejectedFlag.value === 'N' ? false : undefined,
   }
 }
 
@@ -508,6 +533,8 @@ const regForm = reactive({
 })
 
 function openRegister(row: Row, manual: boolean) {
+  if (!active || !canRegister.value) return
+  ++registrationVersion
   const src = String(row.source ?? '')
   Object.assign(regForm, {
     manual,
@@ -533,40 +560,60 @@ function openRegister(row: Row, manual: boolean) {
 }
 
 async function submitRegister() {
+  if (!active || !canRegister.value || saving.value || !regDialog.value) return
   if (!regForm.orderId && !regForm.inpOrderId) {
     ElMessage.warning('该申请没有可用的院内医嘱 id，无法登记')
     return
   }
+  const draft = { ...regForm }
+  const version = registrationVersion
+  const sameDialog = () => active && version === registrationVersion && regDialog.value
+    && regForm.orderId === draft.orderId && regForm.inpOrderId === draft.inpOrderId
+    && regForm.manual === draft.manual && regForm.partNo === draft.partNo
   saving.value = true
   try {
     const body: Record<string, unknown> = {
-      orderId: regForm.orderId,
-      inpOrderId: regForm.inpOrderId,
-      partNo: regForm.partNo,
-      specimenType: regForm.specimenType,
-      specimenDesc: regForm.specimenDesc || undefined,
-      samplingSite: regForm.samplingSite || undefined,
-      clinicalDiagnosis: regForm.clinicalDiagnosis || undefined,
-      fixative: regForm.fixative || undefined,
-      fixedAt: regForm.fixedAt || undefined,
-      urgent: regForm.urgent,
+      orderId: draft.orderId,
+      inpOrderId: draft.inpOrderId,
+      partNo: draft.partNo,
+      specimenType: draft.specimenType,
+      specimenDesc: draft.specimenDesc || undefined,
+      samplingSite: draft.samplingSite || undefined,
+      clinicalDiagnosis: draft.clinicalDiagnosis || undefined,
+      fixative: draft.fixative || undefined,
+      fixedAt: draft.fixedAt || undefined,
+      urgent: draft.urgent,
     }
-    if (regForm.manual) {
-      body.applyDept = regForm.applyDept || undefined
-      body.applyDoctor = regForm.applyDoctor || undefined
-      body.note = regForm.note || undefined
+    if (draft.manual) {
+      body.applyDept = draft.applyDept || undefined
+      body.applyDoctor = draft.applyDoctor || undefined
+      body.note = draft.note || undefined
     }
-    const url = regForm.manual
+    const url = draft.manual
       ? '/pathology/registry/specimens/manual'
       : '/pathology/registry/specimens'
-    regResult.value = (await client.post(url, body)).data.data as Row
-    regDialog.value = false
-    resultDialog.value = true
-    await loadPending()
+    const result = (await client.post(url, body)).data.data as Row
+    if (!active) return
+    if (sameDialog()) {
+      regResult.value = result
+      regDialog.value = false
+      resultDialog.value = true
+    }
+    await refreshRegistrationQueues()
+    if (!active) return
     emit('changed')
+  } catch (error) {
+    if (![5201, 5202].includes((error as { bizCode?: number }).bizCode ?? 0)) throw error
+    // 已退款源与已登记部位都须回读真实队列；不把失败改为成功，也不自动走手工实物救济。
+    if (active) await refreshRegistrationQueues()
   } finally {
     saving.value = false
   }
+}
+
+async function refreshRegistrationQueues() {
+  // 两个读请求各自受过滤条件与序号保护；单个读失败也等待另一请求结束再释放本页写入口。
+  await Promise.allSettled([loadPending(), loadSpecimens()])
 }
 
 /* ---------------- 接收核对 / 拒收 ---------------- */
@@ -584,6 +631,7 @@ function openReceive(row: Row) {
 }
 
 async function submitReceive() {
+  if (!active || saving.value) return
   saving.value = true
   try {
     await client.put(`/pathology/registry/specimens/${Number(current.value.id)}/receive-check`, {
@@ -607,6 +655,7 @@ function openReject(row: Row) {
 }
 
 async function submitReject() {
+  if (!active || saving.value) return
   if (!rejectForm.reason.trim()) {
     ElMessage.warning('拒收原因必填')
     return
@@ -680,6 +729,13 @@ async function loadHistory() {
 }
 
 defineExpose({ reload: loadPending })
+
+onUnmounted(() => {
+  active = false
+  ++pendingReadVersion
+  ++specimenReadVersion
+  ++registrationVersion
+})
 
 void loadPending()
 </script>
