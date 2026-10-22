@@ -10,7 +10,7 @@ import org.springframework.stereotype.Service;
 import java.util.Objects;
 import java.util.Set;
 
-/** Shared execution/nursing duties; re-query the live employee after business-row waits. */
+/** Shared outpatient duties; re-query the live employee after business-row waits. */
 @Service
 @RequiredArgsConstructor
 public class OutpatientExecutionAccess {
@@ -21,6 +21,17 @@ public class OutpatientExecutionAccess {
     }
     public Long nurse(Authentication supplied) {
         return require(Set.of("ROLE_ADMIN", "ROLE_NURSE"), supplied);
+    }
+    public Long pharmacy(Authentication supplied) {
+        return require(Set.of("ROLE_ADMIN", "ROLE_PHARMACIST"), supplied);
+    }
+    public Long pharmacyActor(Long operatorId) {
+        // Only trusted in-process calls may omit authentication; HTTP has its own strict guard.
+        if (SecurityContextHolder.getContext().getAuthentication() == null) return operatorId;
+        Long me = pharmacy(null);
+        if (operatorId != null && !me.equals(operatorId))
+            throw new AccessDeniedException("发退药操作人与当前登录员工不一致");
+        return me;
     }
     public void refund(Long operatorId) {
         // Preserve trusted, unauthenticated in-process service calls. HTTP still requires its cashier role.

@@ -5,6 +5,7 @@ import cn.hip.outpatient.repository.OutpOrderRepository;
 import cn.hip.outpatient.service.RegistrationService.BizException;
 import cn.hip.platform.masterdata.repository.DrugItemRepository;
 import cn.hip.platform.masterdata.service.InventoryService;
+import jakarta.persistence.EntityManager;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -21,6 +22,8 @@ public class DispenseService {
     private final InventoryService inventoryService;
     private final PharmStockService pharmStockService;
     private final JdbcTemplate jdbc;
+    private final EntityManager entityManager;
+    private final OutpatientExecutionAccess access;
 
     /**
      * <b>v50 收敛：把发药接进批次账</b>，同时不动这个类的既有并发模型。
@@ -44,11 +47,24 @@ public class DispenseService {
     /** 退药：已发药订单退回药房，库存回补并留痕，状态回到已收费（此后可整单退费） */
     @Transactional
     public OutpOrder returnDrug(Long orderId, Long operatorId) {
+        Long actor = access.pharmacyActor(operatorId);
+        entityManager.flush();
+        // Nursing holds O before I. Serialize on O, then use a new statement to see its
+        // committed I-only transition after a wait; joining I in this locking statement
+        // could retain the snapshot taken before the wait. Never take an I->O or O->C lock.
+        var locked = jdbc.queryForList("select id from outp_order where id=? for update", orderId);
+        actor = access.pharmacyActor(actor);
+        if (locked.isEmpty()) throw new BizException(6006, "订单不存在");
         OutpOrder o = orderRepository.findById(orderId)
                 .orElseThrow(() -> new BizException(6006, "订单不存在"));
-        if (!"DRUG".equals(o.getOrderType())) {
+        entityManager.refresh(o);
+        if (!"DRUG".equals(o.getOrderType()) || !"DISPENSED".equals(o.getStatus())) {
             throw new BizException(6004, "仅已发药的药品可退药");
         }
+        if (Boolean.TRUE.equals(jdbc.queryForObject("""
+                select exists(select 1 from outp_infusion where order_id=? and status in ('RUNNING','DONE'))
+                """, Boolean.class, orderId)))
+            throw new BizException(6004, "已开始或完成输液，不可退药");
         // 先抢占 DISPENSED→CHARGED 再回补库存：读-判-写会让两次并发退药各回补一次（库存凭空多出）
         if (orderRepository.claimReturn(orderId) == 0) {
             throw new BizException(6004, "仅已发药的药品可退药");
@@ -56,25 +72,28 @@ public class DispenseService {
         if (drugRepository.restoreStock(o.getItemId(), o.getQty()) == 0) {
             throw new BizException(6005, "药品不存在");
         }
+        access.pharmacyActor(actor);
         // 按发药时落下的明细回补**原批次**，不猜。历史订单（批次账启用前发的）没有明细行，
         // 自然回落旧口径只回补汇总——那是事实，不是缺陷。
         for (var row : jdbc.queryForList("""
                 select id, batch_id, location_code, qty - returned_qty as remain
-                from pharm_dispense_batch where order_id = ? and qty > returned_qty
+                from pharm_dispense_batch where order_id = ? and qty > returned_qty order by id
                 """, orderId)) {
             int remain = ((Number) row.get("remain")).intValue();
             pharmStockService.restoreToBatch(((Number) row.get("batch_id")).longValue(),
-                    (String) row.get("location_code"), remain, o.getGroupNo(), operatorId);
+                    (String) row.get("location_code"), remain, o.getGroupNo(), actor);
+            access.pharmacyActor(actor);
             jdbc.update("update pharm_dispense_batch set returned_qty = returned_qty + ? where id = ?",
                     remain, ((Number) row.get("id")).longValue());
         }
-        inventoryService.logReturn(o.getItemId(), o.getQty(), o.getGroupNo(), operatorId);
+        inventoryService.logReturn(o.getItemId(), o.getQty(), o.getGroupNo(), actor);
         return orderRepository.findById(orderId).orElseThrow();
     }
 
     /** 发药：该挂号下全部已收费药品订单，逐一原子扣库存后标记已发药 */
     @Transactional
     public List<OutpOrder> dispense(Long registrationId) {
+        Long actor = access.pharmacyActor(null);
         List<OutpOrder> charged = orderRepository
                 .findByRegistrationIdAndOrderTypeAndStatusOrderByIdAsc(registrationId, "DRUG", "CHARGED");
         if (charged.isEmpty()) {
@@ -85,16 +104,19 @@ public class DispenseService {
         if (orderRepository.claimDispense(ids) != ids.size()) {
             throw new BizException(6003, "处方状态已变化（可能正在退费或已发药），请刷新后重试");
         }
+        access.pharmacyActor(actor);
         for (OutpOrder o : charged) {
             if (drugRepository.deductStock(o.getItemId(), o.getQty()) == 0) {
                 throw new BizException(6002, "库存不足: " + o.getItemName() + " x" + o.getQty());
             }
-            inventoryService.logOut(o.getItemId(), o.getQty(), o.getGroupNo(), null);
+            access.pharmacyActor(actor);
+            inventoryService.logOut(o.getItemId(), o.getQty(), o.getGroupNo(), actor);
             // 已纳管药品同时扣批次账，并把「拆给了哪几个批次各多少」当场落库——
             // 退药要回补原批次，事后按 FEFO 猜会让批次追溯变成错的且看不出来。
             if (batchManaged(o.getItemId())) {
                 var plan = pharmStockService.consumeForDispense(
-                        o.getItemId(), null, o.getQty(), o.getGroupNo(), null);
+                        o.getItemId(), null, o.getQty(), o.getGroupNo(), actor);
+                access.pharmacyActor(actor);
                 for (var line : plan.lines()) {
                     jdbc.update("""
                             insert into pharm_dispense_batch(order_id, drug_id, batch_id, location_code, qty)
