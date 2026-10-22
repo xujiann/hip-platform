@@ -59,7 +59,7 @@ import static org.junit.jupiter.api.Assertions.fail;
  */
 @SpringBootTest
 @Transactional
-@WithMockUser(roles = "ADMIN")
+@WithMockUser(username = "admin", roles = "ADMIN")
 class V61QcCaliberTest {
 
     private static final String QC_VIEW = "frontend/shell/src/views/medtech/pathology/PathQcView.vue";

@@ -72,7 +72,7 @@ import static org.junit.jupiter.api.Assertions.fail;
  */
 @SpringBootTest
 @Transactional
-@WithMockUser(roles = "ADMIN")
+@WithMockUser(username = "admin", roles = "ADMIN")
 class V58GrossFieldsTest {
 
     private static final String V164 = "server/src/main/resources/db/migration/V164__path_gross_fields.sql";

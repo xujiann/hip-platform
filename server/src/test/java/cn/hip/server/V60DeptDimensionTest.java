@@ -76,7 +76,7 @@ import static org.junit.jupiter.api.Assertions.fail;
  */
 @SpringBootTest
 @Transactional
-@WithMockUser(roles = "ADMIN")
+@WithMockUser(username = "admin", roles = "ADMIN")
 class V60DeptDimensionTest {
 
     private static final String CONTROLLER = "modules/medtech/src/main/java/cn/hip/medtech/web/PathQcController.java";

@@ -74,7 +74,7 @@ import static org.junit.jupiter.api.Assertions.fail;
  */
 @SpringBootTest
 @Transactional
-@WithMockUser(roles = "ADMIN")
+@WithMockUser(username = "admin", roles = "ADMIN")
 class V59GrossReviseTest {
 
     private static final String V166 = "server/src/main/resources/db/migration/V166__path_gross_revise.sql";

@@ -8,7 +8,7 @@
     </template>
 
     <el-alert type="info" show-icon :closable="false" class="cav"
-              title="双来源域：门诊与住院开的病理申请都在这里，菜单挂在门诊业务目录之下不代表只看门诊。既有的「专科流程」页仍可用，本工作台是它的超集而不是替代——旧路径一个字节没改。" />
+              title="门诊与住院开的病理申请都在这里。既有「专科流程」页仍可用；登记入口统一校验真实岗位和源医嘱状态，手工实物登记保留原接收规则。" />
 
     <el-tabs v-model="tab" class="stations">
       <el-tab-pane name="registry" label="① 登记">

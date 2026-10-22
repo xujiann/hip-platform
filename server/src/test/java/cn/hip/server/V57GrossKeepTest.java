@@ -57,7 +57,7 @@ import static org.junit.jupiter.api.Assertions.fail;
  */
 @SpringBootTest
 @Transactional
-@WithMockUser(roles = "ADMIN")
+@WithMockUser(username = "admin", roles = "ADMIN")
 class V57GrossKeepTest {
 
     static final String OLD_PAGE = "frontend/shell/src/views/medtech/SpecialtyView.vue";
