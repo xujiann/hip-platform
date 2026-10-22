@@ -349,6 +349,37 @@ restored = write(gate_case, 'done')
 assert restored['techDoneGate'] == 'warn' and len(restored['warnings']) == 1
 print('[4] off/warn/block use actual slide/stain/block evidence; real SAMPLED completion and restored gate pass')
 
+# A historical attached physical slide may still receive its stain registration
+# after the technical order becomes DONE/CANCELLED. Only new attachment is closed.
+# DONE keeps the facts recorded at completion; current derived counts may grow.
+for status in ['DONE', 'CANCELLED']:
+    gate_case['tech'] = write(gate_case, 'new-tech')
+    historical = write(gate_case, 'slides', body={
+        'blockId': gate_case['block']['id'], 'count': 2, 'stainType': 'IHC',
+        'stainItem': 'CK7', 'techOrderId': gate_case['tech']['id']})['slides']
+    if status == 'DONE':
+        historical_done = write(gate_case, 'done')
+        assert historical_done['slideCount'] == 2 and historical_done['stainedCount'] == 0
+        assert historical_done['warnings'] and historical_done['techDoneGate'] == 'warn'
+    else:
+        write(gate_case, 'cancel')
+    historical_order = next(row for row in tech_rows(gate_case) if row['id'] == gate_case['tech']['id'])
+    historical_before = snapshot(gate_case)
+    gate_case['slide'] = historical[0]
+    write(gate_case, 'stain', 'doctor')
+    write(gate_case, 'batch', 'tech', body={'slideIds': [historical[1]['id']], 'quality': 'GOOD'})
+    historical_after = snapshot(gate_case)
+    current_order = next(row for row in tech_rows(gate_case) if row['id'] == gate_case['tech']['id'])
+    assert current_order['status'] == status and current_order['slide_count'] == current_order['stained_count'] == 2
+    for key in ['done_at', 'done_by', 'cancelled_at', 'cancelled_by', 'cancel_reason', 'reason', 'ordered_at', 'ordered_by']:
+        assert current_order[key] == historical_order[key], (status, key)
+    assert historical_after['source'] == historical_before['source'] and historical_after['charges'] == historical_before['charges']
+    for key in ['primary', 'specimen', 'supplements']:
+        assert historical_after['reports'][key] == historical_before['reports'][key]
+    if status == 'DONE':
+        assert node(gate_case, 'TECH_DONE', 'tech', f"#{gate_case['tech']['id']} ")['remark'] == historical_done['doneRemark']
+print('[4b] DONE/CANCELLED preserve historical physical stain registration, while completion facts and original reports stay truthful')
+
 # Independent-source binding errors preserve all existing facts.
 other = complete_chain(visit('异标本'), 'tech')
 denied(gate_case, 'new-tech', 5269, body={'specimenId': gate_case['specimen']['id'],
