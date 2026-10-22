@@ -40,7 +40,7 @@ function harness(name: string, roles = ['TECHNICIAN'], put = vi.fn(() => respons
     ElMessage: { success: vi.fn(), warning: vi.fn(), info: vi.fn(), error: vi.fn() }, ElMessageBox: { prompt: vi.fn(() => Promise.resolve({ value: '模拟取消原因' })), alert: vi.fn(() => Promise.resolve()), confirm: vi.fn(() => Promise.resolve('confirm')) } }
   const buttons = Array.from(component.matchAll(/<el-button\b([^>]+)>/g))
   const binding = (action: string, attr: string, fallback: string) => buttons.find(m => m[1].includes(`@click="${action}"`))?.[1].match(new RegExp(`${attr}="([^"]+)"`))?.[1] ?? fallback
-  const unwrap = (text: string) => text.replace(/\b(canProcess|canTech|canDiagnose|saving|selectedBlocks|selectedSlides|reportUnavailable)\b/g, '$1.value')
+  const unwrap = (text: string) => text.replace(/\b(canProcess|canTech|canDiagnose|saving|selectedBlocks|selectedSlides|reportUnavailable|currentBlock|currentSlide|specimen|mode)\b/g, '$1.value')
   const actions = ['openGrossing(row)', 'openRevise(row)', 'submit', 'submitRevise', 'submitBatch', 'embed(row)', 'openSlide(row)', 'submitSlide', 'openStain(row)', 'submitStain', 'submitBatchComplete', 'done(row)', 'cancel(row)', 'submitTech', 'techDone(row)', 'techCancel(row)']
   const expressions = actions.map(a => `${JSON.stringify(a)}: row => (${unwrap(binding(a, 'v-if', 'true'))}) && !(${unwrap(binding(a, ':disabled', 'false'))})`).join(',')
   runInNewContext(ts.transpileModule(script + `\nglobalThis.view = {${tails[name]}}; globalThis.emits = emit; globalThis.template = {${expressions}};`, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText, box)
@@ -67,7 +67,9 @@ async function prepare(h: ReturnType<typeof harness>, name: string, action: stri
 const cases = [['GrossingPanel', 'submit', specimen], ['GrossingPanel', 'submitRevise', specimen], ['ProcessingPanel', 'submitBatch', block], ['ProcessingPanel', 'embed', block], ['ProcessingPanel', 'submitSlide', block], ['ProcessingPanel', 'submitStain', slide], ['ProcessingPanel', 'submitBatchComplete', slide], ['TechOrderPanel', 'done', order], ['TechOrderPanel', 'cancel', order], ['DiagnosisPanel', 'submitTech', order], ['DiagnosisPanel', 'techDone', order], ['DiagnosisPanel', 'techCancel', order]] as const
 for (const [name, action, row] of cases) {
   for (const role of ['ADMIN', 'TECHNICIAN', 'DOCTOR_OUTP']) it(`${name}/${action} retains ${role} collaboration and existing response facts`, async () => {
-    const h = harness(name, [role]); await prepare(h, name, action); await h.v[action](row)
+    const h = harness(name, [role]); await prepare(h, name, action)
+    expect(h.template[action + (['embed', 'done', 'cancel', 'techDone', 'techCancel'].includes(action) ? '(row)' : '')](row)).toBe(true)
+    await h.v[action](row)
     expect(h.put.mock.calls.length + h.post.mock.calls.length).toBe(1)
     if (['done', 'techDone'].includes(action)) expect(h.box.ElMessage.success).toHaveBeenCalledWith('已出块 2')
   })
