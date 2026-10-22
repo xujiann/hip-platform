@@ -8,6 +8,7 @@ import cn.hip.outpatient.repository.OutpLabResultRepository;
 import cn.hip.outpatient.repository.OutpOrderRepository;
 import cn.hip.platform.core.service.ConfigReader;
 import cn.hip.platform.integration.event.LabResultReceivedEvent;
+import jakarta.persistence.EntityManager;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.event.EventListener;
@@ -20,6 +21,8 @@ import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.Map;
 import java.util.Set;
+import java.util.ArrayList;
+import java.util.Objects;
 
 /** LIS 回传结果落库：按申请单号定位医嘱 → 结果入库（缺 flag 按参考区间自动判）→ 医嘱自动执行 → 危急值闭环告警 */
 @Slf4j
@@ -36,14 +39,25 @@ public class LabResultListener {
     private final ReferenceRangeService referenceRangeService;
     private final ConfigReader configReader;
     private final JdbcTemplate jdbc;
+    private final EntityManager entityManager;
 
     @EventListener
     @Transactional
     public void onLabResult(LabResultReceivedEvent event) {
-        var orders = orderRepository.findByGroupNo(event.orderGroupNo()).stream()
-                .filter(o -> "LAB".equals(o.getOrderType()))
-                .filter(o -> "CHARGED".equals(o.getStatus()) || "EXECUTED".equals(o.getStatus()))
-                .toList();
+        entityManager.flush();
+        // Refund takes C -> ascending O. Lock every member of the group in the same
+        // O order before inserting any result/FK row; a later FK KEY SHARE is too weak
+        // and its upgrade can deadlock with a waiting refund. Manual publish uses O -> S.
+        var ids = jdbc.queryForList("select id from outp_order where group_no=? order by id for update",
+                Long.class, event.orderGroupNo());
+        var orders = new ArrayList<OutpOrder>();
+        for (Long id : ids) {
+            var order = orderRepository.findById(id).orElseThrow();
+            entityManager.refresh(order);
+            if (Objects.equals(event.orderGroupNo(), order.getGroupNo()) && "LAB".equals(order.getOrderType())
+                    && ("CHARGED".equals(order.getStatus()) || "EXECUTED".equals(order.getStatus())))
+                orders.add(order);
+        }
         if (orders.isEmpty()) {
             throw new IllegalStateException("未找到可回传的检验申请: " + event.orderGroupNo());
         }
@@ -85,8 +99,12 @@ public class LabResultListener {
                             item.name(), item.value(), item.unit() == null ? "" : item.unit(), flag));
                 }
             }
-            order.setStatus("EXECUTED");
-            orderRepository.save(order);
+            if ("CHARGED".equals(order.getStatus())) {
+                if (jdbc.update("update outp_order set status='EXECUTED' where id=? and order_type='LAB' and status='CHARGED'",
+                        order.getId()) != 1)
+                    throw new IllegalStateException("检验申请状态已变化: " + event.orderGroupNo());
+                entityManager.refresh(order);
+            }
             if (!critical.isEmpty()) {
                 Long doctorId = order.getDoctorId();
                 if (doctorId == null) {

@@ -4,16 +4,21 @@ import cn.hip.medtech.service.EmrTemplateService;
 import cn.hip.platform.core.common.R;
 import cn.hip.platform.core.security.CurrentUserService;
 import cn.hip.platform.integration.event.LabResultReceivedEvent;
+import jakarta.persistence.EntityManager;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.Authentication;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 
 /** 十四/十五期：LIS 标本流转、RIS 检查报告、手术麻醉 */
 @RestController
@@ -25,6 +30,7 @@ public class MedTechController {
     private final cn.hip.medtech.service.SurgeryAccess surgeryAccess;
     private final CurrentUserService currentUserService;
     private final ApplicationEventPublisher eventPublisher;
+    private final EntityManager entityManager;
     private final cn.hip.platform.core.service.ConfigReader configReader;
     /** v45 车道H：病历模板体系（作用范围/授权/编辑停用/科室默认/存为模板），见文件末尾那一组端点 */
     private final cn.hip.medtech.service.EmrTemplateService emrTemplateService;
@@ -159,7 +165,7 @@ public class MedTechController {
     public R<List<Map<String, Object>>> samples(@RequestParam(required = false) Long deptId) {
         String sql = """
                 select s.id, s.barcode, s.status, s.collected_at, s.substitute, s.substitute_name,
-                       o.id as order_id, o.item_name, o.group_no,
+                       o.id as order_id, o.item_name, o.group_no, o.status as order_status,
                        o.specimen_type, o.sampling_site, o.urgent, o.remark,   -- v44 合版补
                        p.name as patient_name,
                        coalesce(o.exec_dept_id, ci.exec_dept_id) as exec_dept_id, ed.name as exec_dept_name   -- v77
@@ -185,22 +191,56 @@ public class MedTechController {
     @PostMapping("/api/lis/samples/{barcode}/publish")
     @Transactional
     public R<Void> publish(@PathVariable String barcode, @RequestBody PublishReq req, Authentication auth) {
+        Long actor = lisPublisher(auth);
+        entityManager.flush();
         var rows = jdbc.queryForList("""
-                select s.id, o.group_no from lis_sample s join outp_order o on o.id = s.order_id
+                select s.order_id, o.group_no from lis_sample s join outp_order o on o.id = s.order_id
                 where s.barcode = ? and s.status = 'RECEIVED'
                 """, barcode);
         if (rows.isEmpty()) return R.fail(9942, "标本不存在或未核收");
-        if (req.results() == null || req.results().isEmpty()) return R.fail(9943, "结果不能为空");
+        Long orderId = ((Number) rows.getFirst().get("order_id")).longValue();
         String groupNo = (String) rows.get(0).get("group_no");
+        // Keep the same ascending group O lock order as the LIS listener. Do not
+        // claim S first: the event must not re-enter the group in the opposite order.
+        var lockedOrders = jdbc.queryForList("select id from outp_order where group_no=? order by id for update",
+                Long.class, groupNo);
+        actor = lisPublisher(auth);
+        var samples = jdbc.queryForList("""
+                select s.order_id, s.status, o.group_no, o.order_type, o.status as order_status
+                from lis_sample s join outp_order o on o.id=s.order_id
+                where s.barcode=? for update of s
+                """, barcode);
+        actor = lisPublisher(auth);
+        if (samples.isEmpty()) return R.fail(9942, "标本不存在或未核收");
+        var sample = samples.getFirst();
+        if (!lockedOrders.contains(orderId) || !Objects.equals(orderId, ((Number) sample.get("order_id")).longValue())
+                || !Objects.equals(groupNo, sample.get("group_no")) || !"RECEIVED".equals(sample.get("status"))
+                || !"LAB".equals(sample.get("order_type"))
+                || !("CHARGED".equals(sample.get("order_status")) || "EXECUTED".equals(sample.get("order_status"))))
+            return R.fail(9942, "标本或源医嘱状态不允许发布，请刷新");
+        if (req.results() == null || req.results().isEmpty()) return R.fail(9943, "结果不能为空");
         // 先抢占终态再发事件：并发 publish 会双写结果行并双发危急值告警
         if (jdbc.update("update lis_sample set status = 'PUBLISHED', published_at = now(), verifier_id = ? "
-                + "where barcode = ? and status = 'RECEIVED'", currentUserService.idOf(auth), barcode) == 0) {
+                + "where barcode = ? and status = 'RECEIVED'", actor, barcode) == 0) {
             return R.fail(9942, "标本不存在或未核收");
         }
         eventPublisher.publishEvent(new LabResultReceivedEvent(groupNo, req.results().stream()
                 .map(x -> new LabResultReceivedEvent.Item(x.code(), x.name(), x.value(), x.unit(), x.refRange(), x.flag()))
                 .toList()));
         return R.ok();
+    }
+
+    /** Preserve the four existing manual LIS duties, checking the live employee after O/S waits. */
+    private Long lisPublisher(Authentication supplied) {
+        var auth = SecurityContextHolder.getContext().getAuthentication();
+        var roles = Set.of("ROLE_ADMIN", "ROLE_TECHNICIAN", "ROLE_DOCTOR_OUTP", "ROLE_NURSE");
+        if (auth == null || !auth.isAuthenticated()
+                || auth.getAuthorities().stream().noneMatch(a -> roles.contains(a.getAuthority()))
+                || (supplied != null && !Objects.equals(auth.getName(), supplied.getName())))
+            throw new AccessDeniedException("无检验结果发布权限");
+        var ids = jdbc.queryForList("select id from sys_user where username=? and enabled=true", Long.class, auth.getName());
+        if (ids.isEmpty()) throw new AccessDeniedException("检验发布操作人不存在或已停用");
+        return ids.getFirst();
     }
 
     // ===== RIS =====
