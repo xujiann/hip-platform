@@ -126,6 +126,7 @@ public class MedTechController {
     @Transactional
     public R<Map<String, Object>> collect(@RequestParam Long orderId,
                                           @RequestParam(required = false) String substituteName) {
+        lisOperator(null);
         boolean substitute = substituteName != null && !substituteName.isBlank();
         if (substitute) {
             var allow = jdbc.queryForList(
@@ -136,6 +137,15 @@ public class MedTechController {
                 return R.fail(4770, "本院参数已禁止替检");
             }
         }
+        entityManager.flush();
+        // Serialize collectors with refunds before checking eligibility or the
+        // existing sample. An INSERT's FK KEY SHARE is not this source lock.
+        var sources = jdbc.queryForList("select order_type,status from outp_order where id=? for update", orderId);
+        lisOperator(null);
+        if (sources.isEmpty() || !"LAB".equals(sources.getFirst().get("order_type"))
+                || !"CHARGED".equals(sources.getFirst().get("status"))
+                || !jdbc.queryForList("select id from lis_sample where order_id=?", Long.class, orderId).isEmpty())
+            return R.fail(9940, "申请不存在/未收费/已采样");
         String barcode = "BC" + jdbc.queryForObject("select nextval('lis_barcode_seq')", Long.class);
         int n = jdbc.update("""
                 insert into lis_sample(order_id, barcode, substitute, substitute_name)
@@ -147,7 +157,25 @@ public class MedTechController {
 
     /** 标本核收 */
     @PutMapping("/api/lis/samples/{barcode}/receive")
+    @Transactional
     public R<Void> receive(@PathVariable String barcode) {
+        lisOperator(null);
+        entityManager.flush();
+        // Read the relation without claiming S, then use the same O -> S order
+        // as publication. JDBC reads after the waits cannot reuse stale JPA state.
+        var links = jdbc.queryForList("select order_id from lis_sample where barcode=?", Long.class, barcode);
+        if (links.isEmpty()) return R.fail(9941, "标本不存在或状态不符");
+        Long orderId = links.getFirst();
+        var sources = jdbc.queryForList("select order_type,status from outp_order where id=? for update", orderId);
+        lisOperator(null);
+        var samples = jdbc.queryForList("select order_id,status from lis_sample where barcode=? for update", barcode);
+        lisOperator(null);
+        if (sources.isEmpty() || samples.isEmpty()
+                || !Objects.equals(orderId, numOrNull(samples.getFirst().get("order_id")))
+                || !"LAB".equals(sources.getFirst().get("order_type"))
+                || !("CHARGED".equals(sources.getFirst().get("status")) || "EXECUTED".equals(sources.getFirst().get("status")))
+                || !"COLLECTED".equals(samples.getFirst().get("status")))
+            return R.fail(9941, "标本或源医嘱状态不允许核收，请刷新");
         int n = jdbc.update(
                 "update lis_sample set status = 'RECEIVED', received_at = now() where barcode = ? and status = 'COLLECTED'",
                 barcode);
@@ -191,7 +219,7 @@ public class MedTechController {
     @PostMapping("/api/lis/samples/{barcode}/publish")
     @Transactional
     public R<Void> publish(@PathVariable String barcode, @RequestBody PublishReq req, Authentication auth) {
-        Long actor = lisPublisher(auth);
+        Long actor = lisOperator(auth);
         entityManager.flush();
         var rows = jdbc.queryForList("""
                 select s.order_id, o.group_no from lis_sample s join outp_order o on o.id = s.order_id
@@ -204,13 +232,13 @@ public class MedTechController {
         // claim S first: the event must not re-enter the group in the opposite order.
         var lockedOrders = jdbc.queryForList("select id from outp_order where group_no=? order by id for update",
                 Long.class, groupNo);
-        actor = lisPublisher(auth);
+        actor = lisOperator(auth);
         var samples = jdbc.queryForList("""
                 select s.order_id, s.status, o.group_no, o.order_type, o.status as order_status
                 from lis_sample s join outp_order o on o.id=s.order_id
                 where s.barcode=? for update of s
                 """, barcode);
-        actor = lisPublisher(auth);
+        actor = lisOperator(auth);
         if (samples.isEmpty()) return R.fail(9942, "标本不存在或未核收");
         var sample = samples.getFirst();
         if (!lockedOrders.contains(orderId) || !Objects.equals(orderId, ((Number) sample.get("order_id")).longValue())
@@ -230,16 +258,16 @@ public class MedTechController {
         return R.ok();
     }
 
-    /** Preserve the four existing manual LIS duties, checking the live employee after O/S waits. */
-    private Long lisPublisher(Authentication supplied) {
+    /** Preserve the four manual LIS duties, checking the live employee after O/S waits. */
+    private Long lisOperator(Authentication supplied) {
         var auth = SecurityContextHolder.getContext().getAuthentication();
         var roles = Set.of("ROLE_ADMIN", "ROLE_TECHNICIAN", "ROLE_DOCTOR_OUTP", "ROLE_NURSE");
         if (auth == null || !auth.isAuthenticated()
                 || auth.getAuthorities().stream().noneMatch(a -> roles.contains(a.getAuthority()))
                 || (supplied != null && !Objects.equals(auth.getName(), supplied.getName())))
-            throw new AccessDeniedException("无检验结果发布权限");
+            throw new AccessDeniedException("无检验操作权限");
         var ids = jdbc.queryForList("select id from sys_user where username=? and enabled=true", Long.class, auth.getName());
-        if (ids.isEmpty()) throw new AccessDeniedException("检验发布操作人不存在或已停用");
+        if (ids.isEmpty()) throw new AccessDeniedException("检验操作人不存在或已停用");
         return ids.getFirst();
     }
 
