@@ -392,5 +392,29 @@ class V117PathologyReceiptReportRaceTest {
         ready(op);authenticate(actor(op));transaction().executeWithoutResult(tx->{var o=orders.findById(order).orElseThrow();o.setRemark("组合新备注");o.setClinicalSummary("组合新摘要");assertEquals(0,operation(op));assertEquals("组合新备注",jdbc.queryForObject("select remark from outp_order where id=?",String.class,order));});
         var row=jdbc.queryForMap("select status,charge_id,remark,clinical_summary,amount from outp_order where id=?",order);assertEquals(op.equals("issue")?"EXECUTED":"CHARGED",row.get("status"));assertEquals(charge,row.get("charge_id"));assertEquals("组合新备注",row.get("remark"));assertEquals("组合新摘要",row.get("clinical_summary"));assertEquals(0,new BigDecimal("7.50").compareTo((BigDecimal)row.get("amount")));
     }
+
+    @ParameterizedTest
+    @ValueSource(strings={"receive","legacyReceive","reject","diagnose"})
+    void historicalIssuedSpecimenFreezesReceiptRejectionAndPrimaryDiagnosis(String op) {
+        ready(op);authenticate(actor(op));
+        // Historical compatibility fixture: issued_at is authoritative even if the old status is earlier.
+        jdbc.update("update path_specimen set diagnosis='历史首次诊断',diagnosed_at=now(),pathologist_id=?,report_issued_at=now() where id=?",firstDoctor.id(),specimen);
+        Object before=facts();assertEquals(changedCode(op),attempt(()->operation(op)));assertEquals(before,facts());
+        assertEquals(0,jdbc.queryForObject("select count(*) from path_process where specimen_id=?",Integer.class,specimen));
+        assertEquals(0,jdbc.queryForObject("select count(*) from path_gross_revision where specimen_id=?",Integer.class,specimen));
+    }
+
+    @Test
+    void actualIssueOfCompatibilityRowMakesWaitingRejectRefuseWithCompleteZeroWrites() throws Exception {
+        ready("issue");jdbc.update("update path_specimen set status='RECEIVED' where id=?",specimen);authenticate(doctor);
+        var pool=Executors.newSingleThreadExecutor();var pid=new AtomicInteger();var futures=new ArrayList<Future<Integer>>();Object[] issued=new Object[1];
+        try{transaction().executeWithoutResult(tx->{
+            var r=report.issue(specimen,auth());assertEquals(0,r.getCode());assertEquals(true,r.getData().get("doubleSignComplete"));
+            assertEquals("RECEIVED",jdbc.queryForObject("select status from path_specimen where id=?",String.class,specimen));
+            issued[0]=facts();futures.add(worker(pool,pid,tech,()->operation("reject")));waiting(pid,futures.getFirst());
+        });assertEquals(5208,result(futures.getFirst()));assertEquals(issued[0],facts());assertNode("ISSUE",doctor);
+            assertNull(jdbc.queryForObject("select rejected_at from path_specimen where id=?",Object.class,specimen));assertLedger("EXECUTED","PAID");
+        }finally{close(pool);}
+    }
 }
 
