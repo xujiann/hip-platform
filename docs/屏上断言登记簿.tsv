@@ -313,3 +313,6 @@ cee21a03f649	默认	modules/medtech/src/main/java/cn/hip/medtech/web/AnesQcContr
 b68a6a604df6	默认	frontend/shell/src/views/outpatient/AppointmentView.vue:changeAppointment	v103开发复核：沿用取消确认文案，只有BOOKED成功取消才释放两级号源；过期页面确认不提交。V103AppointmentRaceTest覆盖签到/取消真竞争一成功一3114及失败回滚，浏览器另核取消回落。非临床签认。
 932051b6925a	默认	frontend/shell/src/views/outpatient/RegisterView.vue:doCancel	v104开发复核：沿用退号确认，捕获真实挂号ID并拒绝过期确认；服务端核真实员工、挂号及预约关联，REGISTERED仅释放一次，已收费先退费。V104RegistrationRaceTest核并发/回滚及两级号源，非临床签认。
 048eab710f63	默认	frontend/shell/src/views/medtech/pathology/PathologyWorkbenchView.vue:11	v116开发复核：门诊住院双来源保持；V116PathologyRegistrationRefundRaceTest及真实JWT覆盖双登记入口岗位/启用员工、普通源状态和手工未付救济。非负责人临床签认。
+8e333c4234fc	默认	frontend/shell/src/views/medtech/pathology/DiagnosisPanel.vue:issue	v117开发复核：签发确认沿用缺签告警，绑定确认前原S与gate/缺签副本；实际SFC覆盖切标本/关闭/卸载，服务端仍以锁后真实签名决定三档结果。非负责人临床签认。
+89bf7f3d790b	默认	frontend/shell/src/views/medtech/pathology/DiagnosisPanel.vue:issue	v117开发复核：签发成功时刻来自实际响应reportIssuedAt，仅原抽屉/标本仍有效才提示和回读，不误报另一标本；真实SFC及本轮JWT覆盖。非负责人临床签认。
+bac1672d393d	默认	frontend/shell/src/views/medtech/pathology/DiagnosisPanel.vue:cancelTech	v117开发复核：沿用技术医嘱取消原理由提示，本轮只参与同页写互斥与原对象保护；其后端独立权限竞态仍范围外。非负责人临床签认。
