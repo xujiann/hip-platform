@@ -41,6 +41,8 @@ class V112PharmacyReadAccessTest {
         SecurityContextHolder.clearContext();
         try {
             var req = ("POST".equals(method) ? post(path) : get(path)).with(user(who).roles(role));
+            if ("POST".equals(method) && path.equals("/api/outpatient/registrations"))
+                req.contentType("application/json").content("{\"patientId\":1,\"scheduleId\":1}");
             var response = mvc.perform(req).andReturn().getResponse();
             assertTrue(response.getStatus() < 500, "unexpected server failure: " + response.getStatus());
             return mapper.readTree(response.getContentAsString(StandardCharsets.UTF_8));
