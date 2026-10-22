@@ -92,7 +92,7 @@ public class PathologyController {
         if (specimen == null) return R.fail(4551, "标本不存在、状态不符或已拒收");
         int n = jdbc.update(
                 "update path_specimen set status = 'RECEIVED', received_at = now() "
-                        + "where barcode = ? and status = 'COLLECTED' and rejected_at is null",
+                        + "where barcode = ? and status = 'COLLECTED' and rejected_at is null and report_issued_at is null",
                 barcode);
         return n == 0 ? R.fail(4551, "标本不存在、状态不符或已拒收") : R.ok();
     }
@@ -153,7 +153,7 @@ public class PathologyController {
                        gross_finding = coalesce(nullif(btrim(?::text), ''), gross_finding),
                        micro_finding = coalesce(nullif(btrim(?::text), ''), micro_finding),
                        diagnosis = ?, pathologist_id = ?, diagnosed_at = now()
-                where barcode = ? and status = 'RECEIVED' and rejected_at is null
+                where barcode = ? and status = 'RECEIVED' and rejected_at is null and report_issued_at is null
                 """, gross, micro, req.diagnosis(),
                 uid, barcode);
         if (n == 0) return R.fail(4553, "标本不存在、未核收或已拒收");

@@ -403,6 +403,7 @@ public class PathologyRegistryController {
         var row = specimenAccess.lockId(id, auth, false, 5208);
         if (row == null) return R.fail(5206, "标本不存在");
         if (row.get("rejected_at") != null) return R.fail(5208, "标本已拒收，不能核收");
+        if (row.get("report_issued_at") != null) return R.fail(5208, "报告已签发，不能核收");
         if (!"COLLECTED".equals(row.get("status"))) {
             return R.fail(5208, "标本状态不允许核收（当前 " + row.get("status") + "）");
         }
@@ -429,7 +430,7 @@ public class PathologyRegistryController {
 
         int n = jdbc.update("""
                 update path_specimen set status = 'RECEIVED', received_at = ?
-                where id = ? and status = 'COLLECTED' and rejected_at is null
+                where id = ? and status = 'COLLECTED' and rejected_at is null and report_issued_at is null
                 """, Timestamp.from(received), id);
         if (n == 0) return R.fail(5208, "标本状态已变化，请刷新后重试");
 
@@ -461,6 +462,7 @@ public class PathologyRegistryController {
         var row = specimenAccess.lockId(id, auth, false, 5208);
         if (row == null) return R.fail(5206, "标本不存在");
         if (row.get("rejected_at") != null) return R.fail(5208, "标本已拒收，不能重复拒收");
+        if (row.get("report_issued_at") != null) return R.fail(5208, "报告已签发，不能拒收");
         if ("DIAGNOSED".equals(row.get("status"))) return R.fail(5208, "已出诊断的标本不能拒收");
 
         // 历史：此处原用 Instant.now() 并截断到微秒，以免与 PG 微秒舍入后的 collected_at 比出「早 100 纳秒」的假越界
@@ -480,7 +482,7 @@ public class PathologyRegistryController {
         Long me = specimenAccess.actor(auth, false);
         int n = jdbc.update("""
                 update path_specimen set reject_reason = ?, rejected_at = ?, rejected_by = ?
-                where id = ? and rejected_at is null and status <> 'DIAGNOSED'
+                where id = ? and rejected_at is null and status <> 'DIAGNOSED' and report_issued_at is null
                 """, reason, Timestamp.from(rejected), me, id);
         if (n == 0) return R.fail(5208, "标本状态已变化，请刷新后重试");
 
