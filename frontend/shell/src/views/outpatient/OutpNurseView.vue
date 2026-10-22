@@ -11,7 +11,7 @@
           <el-table-column prop="usage_route" label="用法" width="100" />
           <el-table-column label="操作" width="110">
             <template #default="{ row }">
-              <el-button link type="primary" size="small" :loading="createInfusionBusy === row.order_id" @click="createInfusion(row)">生成输液单</el-button>
+              <el-button link type="primary" size="small" v-if="canNurse" :disabled="infusionBusy || !candidatesReady" :loading="createInfusionBusy === row.order_id" @click="createInfusion(row)">生成输液单</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -22,18 +22,21 @@
           <el-table-column label="状态" width="90">
             <template #default="{ row }">
               <el-tag :type="row.status === 'DONE' ? 'success' : row.status === 'RUNNING' ? 'warning' : 'info'"
-                      size="small">{{ row.status }}</el-tag>
+                      size="small">{{ { PENDING: '待开始', RUNNING: '输液中', DONE: '已结束' }[row.status as string] ?? row.status }}</el-tag>
             </template>
+          </el-table-column>
+          <el-table-column label="源医嘱状态" width="110">
+            <template #default="{ row }">{{ orderStatusLabel(row.order_status) }}</template>
           </el-table-column>
           <el-table-column prop="checks" label="巡视次数" width="90" />
           <el-table-column label="操作" width="230">
             <template #default="{ row }">
-              <el-button v-if="row.status === 'PENDING'" link type="primary" size="small"
+              <el-button v-if="canNurse && row.status === 'PENDING' && ['CHARGED', 'DISPENSED'].includes(row.order_status)" :disabled="infusionBusy || !infusionsReady" link type="primary" size="small"
                          :loading="startInfusionBusy === row.id" @click="startInfusion(row)">
                 开始</el-button>
-              <template v-if="row.status === 'RUNNING'">
-                <el-button link type="warning" size="small" :loading="addCheckBusy === row.id" @click="addCheck(row)">巡视</el-button>
-                <el-button link type="success" size="small" :loading="finishInfusionBusy === row.id" @click="finishInfusion(row)">结束</el-button>
+              <template v-if="canNurse && row.status === 'RUNNING'">
+                <el-button link type="warning" size="small" :disabled="infusionBusy || !infusionsReady" :loading="addCheckBusy === row.id" @click="addCheck(row)">巡视</el-button>
+                <el-button link type="success" size="small" :disabled="infusionBusy || !infusionsReady" :loading="finishInfusionBusy === row.id" @click="finishInfusion(row)">结束</el-button>
               </template>
             </template>
           </el-table-column>
@@ -67,10 +70,13 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import client from '../../api/client'
+import client, { type BizError } from '../../api/client'
+import { useAuthStore } from '../../stores/auth'
 
+const auth = useAuthStore()
+const canNurse = computed(() => auth.user?.roles.some(role => ['ADMIN', 'NURSE'].includes(role)) ?? false)
 const tab = ref('infusion')
 const candidates = ref<Record<string, unknown>[]>([])
 const infusions = ref<Record<string, unknown>[]>([])
@@ -83,46 +89,133 @@ const addCheckBusy = ref<unknown>(null)
 const finishInfusionBusy = ref<unknown>(null)
 const recordResultBusy = ref<unknown>(null)
 
-async function loadCandidates() { candidates.value = (await client.get('/outpatient/nurse/infusion-candidates')).data.data }
-async function loadInfusions() { infusions.value = (await client.get('/outpatient/nurse/infusions')).data.data }
+const candidatesReady = ref(false)
+const infusionsReady = ref(false)
+const infusionBusy = computed(() => [createInfusionBusy.value, startInfusionBusy.value, addCheckBusy.value, finishInfusionBusy.value].some(id => id !== null))
+let alive = true
+let candidateSequence = 0
+let infusionSequence = 0
+
+function orderStatusLabel(status: unknown) {
+  const labels: Record<string, string> = { CREATED: '未收费', CHARGED: '已收费', DISPENSED: '已发药', EXECUTED: '已执行', CANCELLED: '已作废' }
+  return labels[String(status)] ?? String(status ?? '未知')
+}
+
+async function loadCandidates() {
+  const sequence = ++candidateSequence
+  candidatesReady.value = false
+  candidates.value = []
+  if (!alive || !canNurse.value) return
+  try {
+    const resp = await client.get('/outpatient/nurse/infusion-candidates')
+    if (!alive || sequence !== candidateSequence || !canNurse.value) return
+    candidates.value = resp.data.data
+    candidatesReady.value = true
+  } catch {
+    // Errors are displayed by the shared client; the old candidates stay cleared.
+  }
+}
+async function loadInfusions() {
+  const sequence = ++infusionSequence
+  infusionsReady.value = false
+  infusions.value = []
+  if (!alive || !canNurse.value) return
+  try {
+    const resp = await client.get('/outpatient/nurse/infusions')
+    if (!alive || sequence !== infusionSequence || !canNurse.value) return
+    infusions.value = resp.data.data
+    infusionsReady.value = true
+  } catch {
+    // Do not offer actions using a status from an unsuccessful refresh.
+  }
+}
 async function loadSkinTests() { skinTests.value = (await client.get('/outpatient/nurse/skin-tests')).data.data }
 
+function invalidateInfusionReads() {
+  candidateSequence++
+  infusionSequence++
+  candidatesReady.value = false
+  infusionsReady.value = false
+}
+
+async function refreshAfterInfusion(error?: unknown) {
+  if (!alive) return
+  if (!canNurse.value || (error as BizError | undefined)?.bizCode === 1005) {
+    invalidateInfusionReads()
+    candidates.value = []
+    infusions.value = []
+    return
+  }
+  await Promise.all([loadCandidates(), loadInfusions()])
+}
+
+function latestInfusion(id: unknown) {
+  return infusions.value.find(item => item.id === id)
+}
+
 async function createInfusion(row: Record<string, unknown>) {
-  createInfusionBusy.value = row.order_id
+  if (!alive || !canNurse.value || infusionBusy.value || !candidatesReady.value || !candidates.value.some(item => item.order_id === row.order_id)) return
+  const orderId = row.order_id
+  createInfusionBusy.value = orderId
+  invalidateInfusionReads()
   try {
-    await client.post('/outpatient/nurse/infusions', null, { params: { orderId: row.order_id } })
-    await Promise.all([loadCandidates(), loadInfusions()])
+    await client.post('/outpatient/nurse/infusions', null, { params: { orderId } })
+    await refreshAfterInfusion()
+  } catch (error) {
+    await refreshAfterInfusion(error)
   } finally {
     createInfusionBusy.value = null
   }
 }
 async function startInfusion(row: Record<string, unknown>) {
-  startInfusionBusy.value = row.id
+  if (!alive || !canNurse.value || infusionBusy.value || !infusionsReady.value) return
+  const current = latestInfusion(row.id)
+  if (current?.status !== 'PENDING' || !['CHARGED', 'DISPENSED'].includes(String(current.order_status))) return
+  const id = current.id
+  startInfusionBusy.value = id
+  invalidateInfusionReads()
   try {
-    await client.put(`/outpatient/nurse/infusions/${row.id}/start`)
-    ElMessage.success('已开始输液')
-    await loadInfusions()
+    await client.put(`/outpatient/nurse/infusions/${id}/start`)
+    if (alive && canNurse.value) ElMessage.success('已开始输液')
+    await refreshAfterInfusion()
+  } catch (error) {
+    await refreshAfterInfusion(error)
   } finally {
     startInfusionBusy.value = null
   }
 }
 async function addCheck(row: Record<string, unknown>) {
-  const res = await ElMessageBox.prompt('巡视情况', '输液巡视', { inputValue: '滴速正常，无不良反应' }).catch(() => null)
-  if (!res) return
-  const { value } = res
-  addCheckBusy.value = row.id
+  if (!alive || !canNurse.value || infusionBusy.value || !infusionsReady.value || latestInfusion(row.id)?.status !== 'RUNNING') return
+  const id = row.id
+  // Reserve the action before opening the prompt so repeated clicks cannot create two prompts.
+  addCheckBusy.value = id
   try {
-    await client.post(`/outpatient/nurse/infusions/${row.id}/checks`, null, { params: { note: value } })
-    await loadInfusions()
+    const res = await ElMessageBox.prompt('请填写实际观察到的巡视情况', '输液巡视', {
+      inputValue: '',
+      inputValidator: (value: string) => !!value.trim() && value.length <= 500 || '请填写1至500字的实际巡视记录',
+    }).catch(() => null)
+    if (!res || !alive || !canNurse.value || !infusionsReady.value || latestInfusion(id)?.status !== 'RUNNING') return
+    const note = res.value.trim()
+    if (!note || note.length > 500) return
+    invalidateInfusionReads()
+    await client.post(`/outpatient/nurse/infusions/${id}/checks`, null, { params: { note } })
+    await refreshAfterInfusion()
+  } catch (error) {
+    await refreshAfterInfusion(error)
   } finally {
     addCheckBusy.value = null
   }
 }
 async function finishInfusion(row: Record<string, unknown>) {
-  finishInfusionBusy.value = row.id
+  if (!alive || !canNurse.value || infusionBusy.value || !infusionsReady.value || latestInfusion(row.id)?.status !== 'RUNNING') return
+  const id = row.id
+  finishInfusionBusy.value = id
+  invalidateInfusionReads()
   try {
-    await client.put(`/outpatient/nurse/infusions/${row.id}/finish`)
-    await loadInfusions()
+    await client.put(`/outpatient/nurse/infusions/${id}/finish`)
+    await refreshAfterInfusion()
+  } catch (error) {
+    await refreshAfterInfusion(error)
   } finally {
     finishInfusionBusy.value = null
   }
@@ -149,4 +242,10 @@ async function recordResult(row: Record<string, unknown>, result: string) {
 }
 
 onMounted(async () => { await Promise.all([loadCandidates(), loadInfusions(), loadSkinTests()]) })
+onUnmounted(() => {
+  alive = false
+  invalidateInfusionReads()
+  candidates.value = []
+  infusions.value = []
+})
 </script>

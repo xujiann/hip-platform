@@ -86,7 +86,7 @@ it('infusion start ignores a duplicate click before HTTP and preserves one succe
   wait.resolve(null); await Promise.all([first, second]); expect(h.write).toHaveBeenCalledTimes(1)
 })
 it('refreshes actual infusion state after a competing start is refused', async () => {
-  let state = [pending]; const h = setup('nurse', vi.fn(path => response(path.includes('candidates') ? [] : state)), vi.fn(() => Promise.reject({ bizCode: 4501 })))
+  let state = [pending]; const h = setup('nurse', vi.fn((path: string) => response(path.includes('candidates') ? [] : state)), vi.fn(() => Promise.reject({ bizCode: 4501 })))
   await h.v.loadInfusions(); const row = h.v.infusions.value[0]; state = [{ ...pending, status: 'DONE' }]; await h.v.startInfusion(row)
   expect(h.v.infusions.value[0].status).toBe('DONE'); expect(h.box.ElMessage.success).not.toHaveBeenCalled()
 })
