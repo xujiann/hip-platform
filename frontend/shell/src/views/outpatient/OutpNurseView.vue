@@ -3,7 +3,7 @@
     <el-tabs v-model="tab">
       <el-tab-pane label="输液执行" name="infusion">
         <h4>待建输液单（静脉用药）
-          <el-button link type="primary" size="small" @click="loadCandidates">刷新</el-button>
+          <el-button link type="primary" size="small" @click="refreshInfusionLists">刷新</el-button>
         </h4>
         <el-table :data="candidates" size="small" border>
           <el-table-column prop="patient_name" label="患者" width="100" />
@@ -129,6 +129,9 @@ async function loadInfusions() {
     // Do not offer actions using a status from an unsuccessful refresh.
   }
 }
+async function refreshInfusionLists() {
+  await Promise.all([loadCandidates(), loadInfusions()])
+}
 async function loadSkinTests() { skinTests.value = (await client.get('/outpatient/nurse/skin-tests')).data.data }
 
 function invalidateInfusionReads() {
@@ -146,7 +149,7 @@ async function refreshAfterInfusion(error?: unknown) {
     infusions.value = []
     return
   }
-  await Promise.all([loadCandidates(), loadInfusions()])
+  await refreshInfusionLists()
 }
 
 function latestInfusion(id: unknown) {

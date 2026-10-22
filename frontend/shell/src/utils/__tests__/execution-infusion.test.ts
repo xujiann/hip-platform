@@ -12,14 +12,16 @@ function deferred() {
 }
 function setup(kind: 'exec' | 'nurse', get = vi.fn(() => response([])), write = vi.fn(() => response(null)), roles = kind === 'exec' ? ['TECHNICIAN'] : ['NURSE']) {
   const file = kind === 'exec' ? 'ExecStationView' : 'OutpNurseView'
-  const source = readFileSync(new URL(`../../views/outpatient/${file}.vue`, import.meta.url), 'utf8')
-    .split('<script setup lang="ts">')[1].split('</script>')[0].replace(/^import .*$/gm, '')
+  const component = readFileSync(new URL(`../../views/outpatient/${file}.vue`, import.meta.url), 'utf8')
+  const source = component.split('<script setup lang="ts">')[1].split('</script>')[0].replace(/^import .*$/gm, '')
   const dispose: Array<() => void> = []
   const box: Record<string, any> = { ref, reactive, computed, onMounted: () => {}, onUnmounted: (f: () => void) => dispose.push(f),
     useAuthStore: () => ({ user: { roles } }), client: { get, post: write, put: write },
     ElMessage: { success: vi.fn(), warning: vi.fn(), info: vi.fn() }, ElMessageBox: { prompt: vi.fn(() => Promise.resolve({ value: '实际巡视记录' })) } }
+  // Exercise the actual refresh button's handler, including which lists it reloads.
+  const refreshAction = component.match(/@click="(\w+)">刷新<\/el-button>/)?.[1]
   const exposed = kind === 'exec' ? 'worklist, dialogVisible, current, resultText, executing, load, openExecute, execute'
-    : 'candidates, infusions, loadCandidates, loadInfusions, createInfusion, startInfusion, addCheck, finishInfusion'
+    : `candidates, infusions, loadCandidates, loadInfusions, createInfusion, startInfusion, addCheck, finishInfusion, refreshInfusionLists: ${refreshAction}`
   runInNewContext(ts.transpileModule(source + `\nglobalThis.view = { ${exposed} };`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
   }).outputText, box)
@@ -98,4 +100,25 @@ it('a late check prompt cannot append to an infusion that has finished', async (
 it('does not restore an infusion list after leaving the page', async () => {
   const wait = deferred(); const h = setup('nurse', vi.fn(() => wait.promise)); const first = h.v.loadInfusions(); h.dispose(); wait.resolve([pending]); await first
   expect(h.v.infusions.value).toEqual([])
+})
+
+it('refreshes the retained infusion after recharging its source order so it can legitimately start', async () => {
+  let sourceStatus = 'CREATED'
+  let started = false
+  const get = vi.fn((path: string) => response(path.includes('candidates') ? [] : [{ ...pending, order_status: sourceStatus, status: started ? 'RUNNING' : 'PENDING' }]))
+  const write = vi.fn(() => { started = true; return response(null) })
+  const h = setup('nurse', get, write)
+  await h.v.loadInfusions()
+  await h.v.startInfusion(h.v.infusions.value[0])
+  expect(write).not.toHaveBeenCalled()
+  // The existing infusion excludes this order from candidates, even after the cashier recharges it.
+  sourceStatus = 'CHARGED'
+  get.mockClear()
+  await h.v.refreshInfusionLists()
+  expect(get).toHaveBeenCalledWith('/outpatient/nurse/infusions')
+  expect(get).toHaveBeenCalledWith('/outpatient/nurse/infusion-candidates')
+  expect(h.v.infusions.value[0].order_status).toBe('CHARGED')
+  await h.v.startInfusion(h.v.infusions.value[0])
+  expect(write).toHaveBeenCalledExactlyOnceWith('/outpatient/nurse/infusions/1/start')
+  expect(h.v.infusions.value[0].status).toBe('RUNNING')
 })
