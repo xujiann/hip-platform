@@ -132,7 +132,9 @@ class V114RisRefundRaceTest {
     void waiting(AtomicInteger pid, Future<?> future) {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(12);
         while (System.nanoTime() < deadline) {
-            if (pid.get() > 0 && Boolean.TRUE.equals(jdbc.queryForObject("select exists(select 1 from pg_stat_activity where pid=? and wait_event_type='Lock')", Boolean.class, pid.get()))) return;
+            if (pid.get() > 0 && Boolean.TRUE.equals(jdbc.queryForObject("select exists(select 1 from pg_stat_activity where pid=? and wait_event_type='Lock')", Boolean.class, pid.get()))) {
+                System.out.println("V114 PG_LOCK observed pid=" + pid.get()); return;
+            }
             if (future.isDone()) fail("Operation completed without the required PostgreSQL Lock wait");
             try { Thread.sleep(20); } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new RuntimeException(e); }
         }
@@ -471,6 +473,20 @@ class V114RisRefundRaceTest {
         Object before = snapshot();
         assertThrows(RuntimeException.class, () -> ris.writeReport(exam, new MedTechController.RisReportReq("X".repeat(2001), "模拟结论"), auth()));
         assertEquals(before, snapshot()); assertEquals(0, report()); assertLedger("CHARGED", "PAID", "REPORTED", tech, null, 0);
+    }
+
+    @Test
+    void failedSourceExecutionUpdateRollsBackEarlierVerifiedSignatureAndCanRetry() {
+        reportedBy(reporter); Object before = snapshot();
+        // This dedicated test database runs sequentially. The unique constraint applies only to
+        // this fixture order, forces the second UPDATE to fail, and is always removed in finally.
+        String constraint = "v114_fail_" + Long.toUnsignedString(System.nanoTime(), 36);
+        jdbc.execute("alter table outp_order add constraint " + constraint + " check(id <> " + order + " or status <> 'EXECUTED') not valid");
+        try {
+            assertThrows(RuntimeException.class, this::verify);
+            assertEquals(before, snapshot(), "Failure after updating E must roll back verifier/time and preserve the paid bill");
+        } finally { jdbc.execute("alter table outp_order drop constraint " + constraint); }
+        assertEquals(0, verify()); assertLedger("EXECUTED", "PAID", "VERIFIED", reporter, tech, 0);
     }
 
     @Test
