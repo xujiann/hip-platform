@@ -25,10 +25,8 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -184,6 +182,23 @@ class V112ReturnInfusionRaceTest {
             default -> throw new IllegalArgumentException();
         };
         assertEquals(1, jdbc.queryForList(sql, level == 0 ? order : level == 1 ? drug : firstBatch).size());
+    }
+    void assertWorkerOwns(String table, Long id) {
+        assertTrue(List.of("outp_order", "md_drug").contains(table));
+        jdbc.execute((org.springframework.jdbc.core.ConnectionCallback<Void>) connection -> {
+            var savepoint = connection.setSavepoint();
+            try (var statement = connection.prepareStatement("select id from " + table + " where id=? for update nowait")) {
+                statement.setLong(1, id);
+                try (var ignored = statement.executeQuery()) {
+                    fail("Stock waiter must already own its preceding " + table + " lock");
+                }
+            } catch (java.sql.SQLException expected) {
+                assertEquals("55P03", expected.getSQLState(), "Only the intentional NOWAIT miss is expected");
+            } finally {
+                connection.rollback(savepoint); connection.releaseSavepoint(savepoint);
+            }
+            return null;
+        });
     }
     Object snapshot() {
         return List.of(
@@ -402,6 +417,8 @@ class V112ReturnInfusionRaceTest {
             transaction().executeWithoutResult(tx -> {
                 lock(lockLevel);
                 var task = worker(pool, pid, pharmacist, returning ? this::returnDrug : this::dispense); tasks.add(task); waiting(pid, task);
+                if (lockLevel > 0) assertWorkerOwns("outp_order", order);
+                if (lockLevel > 1) assertWorkerOwns("md_drug", drug);
                 jdbc.update("update sys_user set enabled=false where id=?", pharmacist.id());
             });
             assertEquals(1005, result(tasks.getFirst())); assertEquals(before, snapshot(), "Revocation after a real wait rolls back every prior write");
