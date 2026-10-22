@@ -312,3 +312,4 @@ cee21a03f649	默认	modules/medtech/src/main/java/cn/hip/medtech/web/AnesQcContr
 6cd95ddc3eb6	默认	frontend/shell/src/views/quality/QualityCenterView.vue:adverseScope	v98开发复核：管理员/质控横向读取，护士仅本人实名，匿名和历史无主行不向护士回显；V98EmergencyPrivacyTest覆盖过滤先于上限及匿名历史异常行，不宣称安全审计不可追溯。
 b68a6a604df6	默认	frontend/shell/src/views/outpatient/AppointmentView.vue:changeAppointment	v103开发复核：沿用取消确认文案，只有BOOKED成功取消才释放两级号源；过期页面确认不提交。V103AppointmentRaceTest覆盖签到/取消真竞争一成功一3114及失败回滚，浏览器另核取消回落。非临床签认。
 932051b6925a	默认	frontend/shell/src/views/outpatient/RegisterView.vue:doCancel	v104开发复核：沿用退号确认，捕获真实挂号ID并拒绝过期确认；服务端核真实员工、挂号及预约关联，REGISTERED仅释放一次，已收费先退费。V104RegistrationRaceTest核并发/回滚及两级号源，非临床签认。
+048eab710f63	默认	frontend/shell/src/views/medtech/pathology/PathologyWorkbenchView.vue:11	v116开发复核：门诊住院双来源保持；V116PathologyRegistrationRefundRaceTest及真实JWT覆盖双登记入口岗位/启用员工、普通源状态和手工未付救济。非负责人临床签认。
