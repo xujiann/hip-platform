@@ -164,7 +164,10 @@ class LisRisReviewFlowTest {
         // v33 双签分权：报告人(admin)自审应被拒（9947）
         assertEquals(9947, medTechController.verifyReport(examId, admin).getCode(), "报告人不得自审");
         // 换审核医师（≠报告人）方可发布
-        assertEquals(0, medTechController.verifyReport(examId, userAuth("radiologist_v33")).getCode());
+        Authentication verifier = userAuth("radiologist_v33");
+        SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(verifier.getName(), null,
+                List.of(new SimpleGrantedAuthority("ROLE_TECHNICIAN"))));
+        assertEquals(0, medTechController.verifyReport(examId, verifier).getCode());
         entityManager.clear(); // JDBC 更新后清 JPA 一级缓存再读
         assertEquals("EXECUTED", orderRepository.findById(orderId).orElseThrow().getStatus());
     }

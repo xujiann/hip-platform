@@ -87,7 +87,11 @@ class V38RisExpTest {
     void mutualRecognitionListsRecentVerified() {
         var c = examCase();
         medTech.writeReport(c.examId(), new MedTechController.RisReportReq("窦性心律", "正常心电图"), admin);
-        medTech.verifyReport(c.examId(), userAuth("ris_verifier_v38"));
+        Authentication verifier = userAuth("ris_verifier_v38");
+        org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(
+                new UsernamePasswordAuthenticationToken(verifier.getName(), null,
+                        List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_TECHNICIAN"))));
+        assertEquals(0, medTech.verifyReport(c.examId(), verifier).getCode());
         em.flush();
         var recent = medTech.recentExams(c.patientId(), null).getData();
         assertEquals(1, recent.size(), "30 天窗口内应命中已审报告");

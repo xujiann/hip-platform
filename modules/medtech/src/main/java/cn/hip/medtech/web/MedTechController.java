@@ -264,6 +264,7 @@ public class MedTechController {
                 -- v44 合版补：临床摘要/检查目的/注意事项/加急是技师写报告的依据，
                 -- V137 已建列但本队列原先不取（同 lis/pending）。
                 select e.id, e.status, e.modality, e.findings, e.impression, o.item_name, o.group_no,
+                       o.status as order_status,
                        o.clinical_summary, o.exam_purpose, o.notice, o.urgent,
                        p.name as patient_name,
                        -- v74 复核（1014★ 反驳者一）：申请诊断此前只印在纸上，技师屏幕看不到。
@@ -283,7 +284,11 @@ public class MedTechController {
 
     /** v38 到检登记：患者到检 REGISTERED→ARRIVED（与预约叫号联动的现场登记态） */
     @PutMapping("/api/ris/exams/{id}/arrive")
+    @Transactional
     public R<Void> arrive(@PathVariable Long id) {
+        var locked = lockRisExam(id, null);
+        if (locked == null || !"REGISTERED".equals(locked.exam().get("status")))
+            return R.fail(9944, "检查或源医嘱状态不允许到检登记，请刷新");
         int n = jdbc.update(
                 "update ris_exam set status = 'ARRIVED', arrived_at = now() where id = ? and status = 'REGISTERED'", id);
         return n == 0 ? R.fail(9944, "检查不存在或状态不允许到检登记") : R.ok();
@@ -312,11 +317,15 @@ public class MedTechController {
     }
 
     @PutMapping("/api/ris/exams/{id}/report")
+    @Transactional
     public R<Void> writeReport(@PathVariable Long id, @RequestBody RisReportReq req, Authentication auth) {
+        var locked = lockRisExam(id, auth);
+        if (locked == null || !Set.of("REGISTERED", "ARRIVED", "REPORTED").contains(locked.exam().get("status")))
+            return R.fail(9944, "检查或源医嘱状态不允许书写报告，请刷新");
         int n = jdbc.update("""
                 update ris_exam set findings = ?, impression = ?, reporter_id = ?, reported_at = now(), status = 'REPORTED'
                 where id = ? and status in ('REGISTERED', 'ARRIVED', 'REPORTED')
-                """, req.findings(), req.impression(), currentUserService.idOf(auth), id);
+                """, req.findings(), req.impression(), locked.actor(), id);
         return n == 0 ? R.fail(9944, "检查不存在或已审核") : R.ok();
     }
 
@@ -324,7 +333,13 @@ public class MedTechController {
     @PutMapping("/api/ris/exams/{id}/verify")
     @Transactional
     public R<Void> verifyReport(@PathVariable Long id, Authentication auth) {
-        Long me = currentUserService.idOf(auth);
+        var locked = lockRisExam(id, auth);
+        if (locked == null || !"REPORTED".equals(locked.exam().get("status"))
+                || locked.exam().get("reporter_id") == null)
+            return R.fail(9945, "检查或源医嘱状态不允许审核，请刷新");
+        Long me = locked.actor();
+        if (me.equals(numOrNull(locked.exam().get("reporter_id"))))
+            return R.fail(9947, "审核人不得为报告医师");
         int n = jdbc.update("""
                 update ris_exam set status = 'VERIFIED', verifier_id = ?, verified_at = now()
                 where id = ? and status = 'REPORTED' and reporter_id <> ?
@@ -338,7 +353,10 @@ public class MedTechController {
             }
             return R.fail(9945, "须先书写报告");
         }
-        jdbc.update("update outp_order set status = 'EXECUTED' where id = (select order_id from ris_exam where id = ?) and status = 'CHARGED'", id);
+        // O is already locked and was read through JDBC after the wait. Only the
+        // state column changes; saving a managed snapshot could restore old billing fields.
+        jdbc.update("update outp_order set status = 'EXECUTED' where id = ? and status = 'CHARGED'",
+                locked.exam().get("order_id"));
         return R.ok();
     }
 
@@ -351,7 +369,11 @@ public class MedTechController {
     @PutMapping("/api/ris/exams/{id}/critical")
     @Transactional
     public R<Void> markRisCritical(@PathVariable Long id, @RequestBody RisCriticalReq req) {
+        risOperator(null);
         if (req.note() == null || req.note().isBlank()) return R.fail(9948, "危急描述必填");
+        var locked = lockRisExam(id, null);
+        if (locked == null || !Set.of("REPORTED", "VERIFIED").contains(locked.exam().get("status")))
+            return R.fail(9945, "检查或源医嘱状态不允许上报危急值，请刷新");
         var rows = jdbc.queryForList("""
                 select e.order_id, e.critical_flag, o.registration_id, o.doctor_id, o.item_name
                 from ris_exam e join outp_order o on o.id = e.order_id
@@ -370,6 +392,42 @@ public class MedTechController {
                 "【影像危急值】" + row.get("item_name") + "：" + req.note(),
                 numOrNull(row.get("doctor_id")), minutes);
         return R.ok();
+    }
+
+    private record LockedRisExam(Map<String, Object> exam, Long actor) {}
+
+    /** Refund holds C then O; every RIS producer holds O then E, never E then O. */
+    private LockedRisExam lockRisExam(Long id, Authentication supplied) {
+        risOperator(supplied);
+        entityManager.flush();
+        var links = jdbc.queryForList("select order_id from ris_exam where id=?", Long.class, id);
+        if (links.isEmpty()) return null;
+        Long orderId = links.getFirst();
+        var orders = jdbc.queryForList("select id,order_type,status from outp_order where id=? for update", orderId);
+        risOperator(supplied);
+        var exams = jdbc.queryForList("select * from ris_exam where id=? for update", id);
+        Long actor = risOperator(supplied);
+        if (orders.isEmpty() || exams.isEmpty()) return null;
+        var exam = exams.getFirst();
+        var order = orders.getFirst();
+        if (!Objects.equals(orderId, numOrNull(exam.get("order_id")))
+                || !"EXAM".equals(order.get("order_type"))
+                || !("CHARGED".equals(order.get("status")) || "EXECUTED".equals(order.get("status"))))
+            return null;
+        return new LockedRisExam(exam, actor);
+    }
+
+    /** Same four clinical duties as before, with the actual live employee checked after waits. */
+    private Long risOperator(Authentication supplied) {
+        var auth = SecurityContextHolder.getContext().getAuthentication();
+        var roles = Set.of("ROLE_ADMIN", "ROLE_TECHNICIAN", "ROLE_DOCTOR_OUTP", "ROLE_NURSE");
+        if (auth == null || !auth.isAuthenticated()
+                || auth.getAuthorities().stream().noneMatch(a -> roles.contains(a.getAuthority()))
+                || (supplied != null && !Objects.equals(auth.getName(), supplied.getName())))
+            throw new AccessDeniedException("无RIS报告操作权限");
+        var ids = jdbc.queryForList("select id from sys_user where username=? and enabled=true", Long.class, auth.getName());
+        if (ids.isEmpty()) throw new AccessDeniedException("RIS操作人不存在或已停用");
+        return ids.getFirst();
     }
 
     private static Long numOrNull(Object o) {
