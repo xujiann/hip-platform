@@ -112,6 +112,7 @@ for (const action of ['submit', 'submitRevise', 'submitSlide', 'submitStain', 's
   if (action === 'submitTech') h.v.openTech()
   h.get.mockClear(); write.resolve({ warnings: [], blocks: [] }); await first
   expect(h.v[dialogKey].value).toBe(true); expect(h.box.ElMessage.success).not.toHaveBeenCalled()
+  if (action === 'submitTech') expect(h.get.mock.calls.some((c: any[]) => c[0].endsWith('/tech-orders'))).toBe(true)
 })
 it('grossing keeps explicit append legal after diagnosis and issue', async () => {
   const h = harness('GrossingPanel'); await ready(h, 'GrossingPanel'); const issued = { ...specimen, diagnosed_at: '2026-10-22', report_issued_at: '2026-10-22', block_count: 2 }

@@ -1119,8 +1119,8 @@ async function submitTech() {
       techForm.techItem = ''
       techForm.reason = ''
       techForm.blockId = undefined
-      await loadTech()
     }
+    if (sameReport(target)) await loadTech()
     if (active) emit('changed')
   } catch (error) { await refreshTechConflict(error, target) }
   finally { saving.value = false }
