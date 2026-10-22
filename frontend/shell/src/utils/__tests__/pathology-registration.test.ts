@@ -16,7 +16,7 @@ const specimenRow = { id: 8, barcode: 'PB8', path_no: '2026-C-000008', status: '
 const registered = { id: 9, barcode: 'PB9', pathNo: '2026-C-000009', partNo: 1, source: 'OUTP', specimenType: 'ROUTINE', status: 'COLLECTED', manual: false }
 
 function setup(get = vi.fn((path: string) => response({ items: path.endsWith('/pending') ? [pendingRow, secondRow] : [specimenRow], limit: 200, truncated: false })),
-  post = vi.fn(() => response(registered)), put = vi.fn(() => response(null)), roles = ['TECHNICIAN']) {
+  post = vi.fn((_path: string, _body: Record<string, unknown>) => response(registered)), put = vi.fn(() => response(null)), roles = ['TECHNICIAN']) {
   const component = readFileSync(new URL('../../views/medtech/pathology/RegistryPanel.vue', import.meta.url), 'utf8')
   const source = component.split('<script setup lang="ts">')[1].split('</script>')[0].replace(/^import[\s\S]*?from ['"][^'"]+['"]\r?$/gm, '')
   const dispose: Array<() => void> = [], user = reactive({ roles })
