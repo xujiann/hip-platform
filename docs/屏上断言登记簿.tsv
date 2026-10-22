@@ -316,3 +316,6 @@ b68a6a604df6	默认	frontend/shell/src/views/outpatient/AppointmentView.vue:chan
 8e333c4234fc	默认	frontend/shell/src/views/medtech/pathology/DiagnosisPanel.vue:issue	v117开发复核：签发确认沿用缺签告警，绑定确认前原S与gate/缺签副本；实际SFC覆盖切标本/关闭/卸载，服务端仍以锁后真实签名决定三档结果。非负责人临床签认。
 89bf7f3d790b	默认	frontend/shell/src/views/medtech/pathology/DiagnosisPanel.vue:issue	v117开发复核：签发成功时刻来自实际响应reportIssuedAt，仅原抽屉/标本仍有效才提示和回读，不误报另一标本；真实SFC及本轮JWT覆盖。非负责人临床签认。
 bac1672d393d	默认	frontend/shell/src/views/medtech/pathology/DiagnosisPanel.vue:cancelTech	v117开发复核：沿用技术医嘱取消原理由提示，本轮只参与同页写互斥与原对象保护；其后端独立权限竞态仍范围外。非负责人临床签认。
+2461048a0de1	默认	frontend/shell/src/views/medtech/pathology/ProcessingPanel.vue:embed	v118开发复核：包埋成功提示来自当前请求blockCode；实际SFC核原id、互斥及失败不提示，后端与JWT核真实节点和操作者。非负责人临床签认。
+7ee4ee8025f3	默认	frontend/shell/src/views/medtech/pathology/ProcessingPanel.vue:submitSlide	v118开发复核：产出数量取实际成功响应slideCount；原对象草稿版本与SFC回归防旧返回关闭新草稿，失败不成功提示。非负责人临床签认。
+d596c1aa2edc	默认	frontend/shell/src/views/medtech/pathology/ProcessingPanel.vue:submitStain	v118开发复核：仅实际染色成功响应后提示；单批共用互斥、失败刷新，SFC/事务及JWT验证真实物理记录。非负责人临床签认。

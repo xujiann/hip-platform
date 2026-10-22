@@ -151,13 +151,13 @@ class V62GrossReviseGuardTest {
         var first = new LinkedHashMap<String, String>();
         first.put("标本大小", "5×4×3cm");
         first.put("切面", "灰白");
-        ok(process.grossing(new GrossingReq(specimenId, null, first, "首次 " + tag, false, null,
-                List.of(new BlockReq("首块 " + tag))), doc));
+        ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(specimenId, null, first, "首次 " + tag, false, null,
+                List.of(new BlockReq("首块 " + tag))), doc)));
         var second = new LinkedHashMap<String, String>();
         second.put("补取块数", "2 块");
         second.put("最大径", "0.8cm");
-        ok(process.grossing(new GrossingReq(specimenId, null, second, "补取材 " + tag, true, null,
-                List.of(new BlockReq("补块 " + tag))), doc));
+        ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(specimenId, null, second, "补取材 " + tag, true, null,
+                List.of(new BlockReq("补块 " + tag))), doc)));
 
         var v = ok(process.grossingView(specimenId));
         String text = String.valueOf(v.get("grossFinding"));
@@ -188,8 +188,8 @@ class V62GrossReviseGuardTest {
                 "本版字段不再重复留在自由描述里，否则提交后拼出重复内容：" + fixed.free());
 
         // 照这份预填原样提交：字段一项不少地落进新版本（修复前这里落 0 项）
-        var r = ok(process.reviseGrossFields(specimenId,
-                new GrossReviseReq(null, new LinkedHashMap<>(fixed.gross()), fixed.free()), doc));
+        var r = ok(PathologyTestActors.as(doc, () -> process.reviseGrossFields(specimenId,
+                new GrossReviseReq(null, new LinkedHashMap<>(fixed.gross()), fixed.free()), doc)));
         assertEquals(2, ((Number) r.get("grossFieldCount")).intValue(), "预填原样提交 → 结构化字段不丢");
         assertEquals(List.of(), warningsOf(r), "没有退化就没有告警");
         var v2 = ok(process.grossingView(specimenId));
@@ -219,15 +219,15 @@ class V62GrossReviseGuardTest {
         var g = new LinkedHashMap<String, String>();
         g.put("大小", "3cm");
         g.put("切面", "灰白");
-        ok(process.grossing(new GrossingReq(specimenId, null, g, "首次 " + tag, false, null,
-                List.of(new BlockReq("块 " + tag))), doc));
+        ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(specimenId, null, g, "首次 " + tag, false, null,
+                List.of(new BlockReq("块 " + tag))), doc)));
         assertEquals(2, fieldRows(specimenId), "前置：库里已有 2 行字段");
 
         // ---- block：返 5277 且**零写入** ----
         assertEquals(1, setGate("block"), "sys_config 里必须有这一行可改（V168 种子）");
         String snap = snapshot(specimenId);
-        var blocked = process.reviseGrossFields(specimenId,
-                new GrossReviseReq(null, null, "只写自由描述 block " + tag), doc);
+        var blocked = PathologyTestActors.as(doc, () -> process.reviseGrossFields(specimenId,
+                new GrossReviseReq(null, null, "只写自由描述 block " + tag), doc));
         assertEquals(5277, blocked.getCode(), "block 档应返 5277，实际 " + blocked.getMessage());
         assertTrue(blocked.getMessage().contains("=block")
                         && blocked.getMessage().contains("结构化记录停在第 1 版"),
@@ -247,8 +247,8 @@ class V62GrossReviseGuardTest {
         assertEquals(1, setGate("block"), "仍在 block 档");
         var keep = new LinkedHashMap<String, String>();
         keep.put("大小", "3.5cm");
-        var kept = ok(process.reviseGrossFields(specimenId,
-                new GrossReviseReq(null, keep, "仍有字段 " + tag), doc));
+        var kept = ok(PathologyTestActors.as(doc, () -> process.reviseGrossFields(specimenId,
+                new GrossReviseReq(null, keep, "仍有字段 " + tag), doc)));
         assertEquals(1, ((Number) kept.get("grossFieldCount")).intValue());
         var partial = warningsOf(kept);
         assertEquals(1, partial.size(), "**修复前这里是空数组**：2 项变 1 项既不 block 也不 warn：" + partial);
@@ -279,14 +279,14 @@ class V62GrossReviseGuardTest {
         // 活的对照组：项数不减就是真的不退化，一声不吭——否则上面那条成了「只要带字段就告警」
         var same = new LinkedHashMap<String, String>();
         same.put("大小", "3.6cm");
-        var unchanged = ok(process.reviseGrossFields(specimenId,
-                new GrossReviseReq(null, same, "只改了值 " + tag), doc));
+        var unchanged = ok(PathologyTestActors.as(doc, () -> process.reviseGrossFields(specimenId,
+                new GrossReviseReq(null, same, "只改了值 " + tag), doc)));
         assertEquals(List.of(), warningsOf(unchanged), "活对照组：修订前最新一版 1 项、本次 1 项，不减就不告警");
 
         // ---- warn：照常落库，返回体带 warnings ----
         assertEquals(1, setGate("warn"));
         String warnText = "只写自由描述 warn " + tag;
-        var warned = ok(process.reviseGrossFields(specimenId, new GrossReviseReq(null, null, warnText), doc));
+        var warned = ok(PathologyTestActors.as(doc, () -> process.reviseGrossFields(specimenId, new GrossReviseReq(null, null, warnText), doc)));
         assertEquals(0, ((Number) warned.get("grossFieldCount")).intValue());
         var ws = warningsOf(warned);
         assertEquals(1, ws.size(), "warn 且退化应恰一条告警：" + ws);
@@ -305,25 +305,25 @@ class V62GrossReviseGuardTest {
         // ---- off：不判，warnings 是空数组而不是缺键 ----
         assertEquals(1, setGate("off"));
         String offText = "只写自由描述 off " + tag;
-        var offR = ok(process.reviseGrossFields(specimenId, new GrossReviseReq(null, null, offText), doc));
+        var offR = ok(PathologyTestActors.as(doc, () -> process.reviseGrossFields(specimenId, new GrossReviseReq(null, null, offText), doc)));
         assertEquals(List.of(), warningsOf(offR), "off 不判；warnings 键仍在，调用方不必判键在不在");
         assertEquals(offText, grossFinding(specimenId));
 
         // ---- 坏配置回落 warn 而非 off ----
         assertEquals(1, setGate("blocked"));
         String badText = "只写自由描述 badcfg " + tag;
-        var badR = ok(process.reviseGrossFields(specimenId, new GrossReviseReq(null, null, badText), doc));
+        var badR = ok(PathologyTestActors.as(doc, () -> process.reviseGrossFields(specimenId, new GrossReviseReq(null, null, badText), doc)));
         assertEquals(1, warningsOf(badR).size(),
                 "坏配置回落 warn 而非 off：把笔误当成静默关闭校验是更坏的默认");
         assertEquals(badText, grossFinding(specimenId));
 
         // ---- 修订前本就没有字段行 → 任何档位都不判（存量标本不会被这条守卫拦死）----
         assertEquals(1, setGate("block"));
-        ok(process.grossing(new GrossingReq(freeTextId, null, null, "纯自由文本 " + tag, false, null,
-                List.of(new BlockReq("块F " + tag))), doc));
+        ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(freeTextId, null, null, "纯自由文本 " + tag, false, null,
+                List.of(new BlockReq("块F " + tag))), doc)));
         assertEquals(0, fieldRows(freeTextId), "前置：这个标本一行字段都没有");
-        var freeR = ok(process.reviseGrossFields(freeTextId,
-                new GrossReviseReq(null, null, "改过的纯自由文本 " + tag), doc));
+        var freeR = ok(PathologyTestActors.as(doc, () -> process.reviseGrossFields(freeTextId,
+                new GrossReviseReq(null, null, "改过的纯自由文本 " + tag), doc)));
         assertEquals(List.of(), warningsOf(freeR), "守卫看的是「修订前有、修订后没有」，本来就没有不算退化");
     }
 
@@ -338,8 +338,8 @@ class V62GrossReviseGuardTest {
         four.put("切面", "灰白");
         four.put("边界", "清");
         four.put("取材块数", "4");
-        ok(process.grossing(new GrossingReq(specimenId, null, four, "首次 " + tag, false, null,
-                List.of(new BlockReq("块 " + tag))), doc));
+        ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(specimenId, null, four, "首次 " + tag, false, null,
+                List.of(new BlockReq("块 " + tag))), doc)));
         assertEquals(4, fieldRows(specimenId), "前置：最新一版 4 行字段");
 
         // ---- block 档：部分退化**不拦**（不占预分配的 5278，理由见端点注释）----
@@ -347,7 +347,7 @@ class V62GrossReviseGuardTest {
         var two = new LinkedHashMap<String, String>();
         two.put("标本大小", "5×4×3cm");
         two.put("切面", "灰白");
-        var r = process.reviseGrossFields(specimenId, new GrossReviseReq(null, two, "只留两项 " + tag), doc);
+        var r = PathologyTestActors.as(doc, () -> process.reviseGrossFields(specimenId, new GrossReviseReq(null, two, "只留两项 " + tag), doc));
         assertEquals(0, r.getCode(),
                 "部分删字段有正当场景、gate 又是运维配置（录入者当场改不了），block 路径没有真实用途：" + r.getMessage());
         var body = r.getData();
@@ -366,8 +366,8 @@ class V62GrossReviseGuardTest {
         assertEquals(1, setGate("warn"));
         var one = new LinkedHashMap<String, String>();
         one.put("标本大小", "5×4×3cm");
-        var w = warningsOf(ok(process.reviseGrossFields(specimenId,
-                new GrossReviseReq(null, one, "只留一项 " + tag), doc)));
+        var w = warningsOf(ok(PathologyTestActors.as(doc, () -> process.reviseGrossFields(specimenId,
+                new GrossReviseReq(null, one, "只留一项 " + tag), doc))));
         assertEquals(1, w.size(), "warn 档同样告警：" + w);
         assertTrue(w.get(0).contains("由 2 项减至 1 项"),
                 "基准是修订前最新一版的 2 行，不是全部版本累计的 6 行（拿累计当基准会把「仍填满」误判成退化）："
@@ -380,15 +380,15 @@ class V62GrossReviseGuardTest {
 
         // ---- off 档：不判 ----
         assertEquals(1, setGate("off"));
-        var z = ok(process.reviseGrossFields(specimenId,
-                new GrossReviseReq(null, null, "整段自由描述 " + tag), doc));
+        var z = ok(PathologyTestActors.as(doc, () -> process.reviseGrossFields(specimenId,
+                new GrossReviseReq(null, null, "整段自由描述 " + tag), doc)));
         assertEquals(List.of(), warningsOf(z), "off 就是不判，全丢与部分退化一视同仁");
 
         // ---- 活对照组：项数不减就不告警（这几条不是「只要带字段就喊」）----
         assertEquals(1, setGate("warn"));
         var keepOne = new LinkedHashMap<String, String>();
         keepOne.put("标本大小", "6×4×3cm");
-        var k = ok(process.reviseGrossFields(specimenId, new GrossReviseReq(null, keepOne, "改了值 " + tag), doc));
+        var k = ok(PathologyTestActors.as(doc, () -> process.reviseGrossFields(specimenId, new GrossReviseReq(null, keepOne, "改了值 " + tag), doc)));
         assertEquals(List.of(), warningsOf(k),
                 "活对照组：修订前最新一版 1 行（上一次整段自由描述没落字段行）、本次 1 行，不减就不告警");
     }
@@ -403,13 +403,13 @@ class V62GrossReviseGuardTest {
         var first = new LinkedHashMap<String, String>();
         first.put("标本大小", "5×4×3cm");
         first.put("切面", "灰白");
-        ok(process.grossing(new GrossingReq(specimenId, null, first, "首次 " + tag, false, null,
-                List.of(new BlockReq("首块 " + tag))), doc));
+        ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(specimenId, null, first, "首次 " + tag, false, null,
+                List.of(new BlockReq("首块 " + tag))), doc)));
         var second = new LinkedHashMap<String, String>();
         second.put("补取块数", "2 块");
         second.put("最大径", "0.8cm");
-        ok(process.grossing(new GrossingReq(specimenId, null, second, "补取材 " + tag, true, null,
-                List.of(new BlockReq("补块 " + tag))), doc));
+        ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(specimenId, null, second, "补取材 " + tag, true, null,
+                List.of(new BlockReq("补块 " + tag))), doc)));
 
         // 累积全文阶段：4 个形态、只有最后一版那 2 项有字段行（fieldsCurrent 这一步 v61 已判 false）
         var v = ok(process.grossingView(specimenId));
@@ -421,8 +421,8 @@ class V62GrossReviseGuardTest {
         // 照 GrossingPanel 的预填原样提交（Java 同构版 prefill 与那段 TS 逐条对应）
         var fixed = prefill(String.valueOf(v.get("grossFinding")), rows(v, "fields"));
         assertEquals("CUMULATIVE", fixed.mode());
-        var r = ok(process.reviseGrossFields(specimenId,
-                new GrossReviseReq(null, new LinkedHashMap<>(fixed.gross()), fixed.free()), doc));
+        var r = ok(PathologyTestActors.as(doc, () -> process.reviseGrossFields(specimenId,
+                new GrossReviseReq(null, new LinkedHashMap<>(fixed.gross()), fixed.free()), doc)));
         assertEquals(2, ((Number) r.get("grossFieldCount")).intValue());
         assertEquals(List.of(), warningsOf(r),
                 "本次 2 项、修订前最新一版也是 2 项（追加那一版），不减——所以 gate 这一侧沉默，"
@@ -454,7 +454,7 @@ class V62GrossReviseGuardTest {
         all4.put("最大径", "0.8cm");
         all4.put("标本大小", "5×4×3cm");
         all4.put("切面", "灰白");
-        ok(process.reviseGrossFields(specimenId, new GrossReviseReq(null, all4, "首次 " + tag), doc));
+        ok(PathologyTestActors.as(doc, () -> process.reviseGrossFields(specimenId, new GrossReviseReq(null, all4, "首次 " + tag), doc)));
         var v3 = ok(process.grossingView(specimenId));
         assertEquals(4, ((Number) v3.get("textFieldForms")).intValue());
         assertEquals(4, ((Number) v3.get("textFieldFormsBacked")).intValue());
@@ -484,17 +484,17 @@ class V62GrossReviseGuardTest {
         var first = new LinkedHashMap<String, String>();
         first.put("标本大小", "5×4×3cm");
         first.put("切面", "灰白");
-        ok(process.grossing(new GrossingReq(specimenId, null, first, "首次 " + tag, false, null,
-                List.of(new BlockReq("首块 " + tag))), doc));
+        ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(specimenId, null, first, "首次 " + tag, false, null,
+                List.of(new BlockReq("首块 " + tag))), doc)));
         var second = new LinkedHashMap<String, String>();
         second.put("补取块数", "2 块");
         second.put("最大径", "0.8cm");
-        ok(process.grossing(new GrossingReq(specimenId, null, second, "补取材 " + tag, true, null,
-                List.of(new BlockReq("补块 " + tag))), doc));
+        ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(specimenId, null, second, "补取材 " + tag, true, null,
+                List.of(new BlockReq("补块 " + tag))), doc)));
         var v0 = ok(process.grossingView(specimenId));
         var fixed = prefill(String.valueOf(v0.get("grossFinding")), rows(v0, "fields"));
-        ok(process.reviseGrossFields(specimenId,
-                new GrossReviseReq(null, new LinkedHashMap<>(fixed.gross()), fixed.free()), doc));
+        ok(PathologyTestActors.as(doc, () -> process.reviseGrossFields(specimenId,
+                new GrossReviseReq(null, new LinkedHashMap<>(fixed.gross()), fixed.free()), doc)));
 
         var v = ok(process.grossingView(specimenId));
         assertEquals(4, ((Number) v.get("textFieldForms")).intValue(),
@@ -546,7 +546,7 @@ class V62GrossReviseGuardTest {
         all4.put("最大径", "0.8cm");
         all4.put("标本大小", "5×4×3cm");
         all4.put("切面", "灰白");
-        ok(process.reviseGrossFields(specimenId, new GrossReviseReq(null, all4, "首次 " + tag), doc));
+        ok(PathologyTestActors.as(doc, () -> process.reviseGrossFields(specimenId, new GrossReviseReq(null, all4, "首次 " + tag), doc)));
         var v3 = ok(process.grossingView(specimenId));
         assertEquals(0, ((Number) v3.get("textFieldFormsInEarlierVersions")).intValue());
         assertEquals(0, ((Number) v3.get("textFieldFormsTextOnly")).intValue());
@@ -570,8 +570,8 @@ class V62GrossReviseGuardTest {
                 "活对照组：这句话还在，只是改成了屏上看得懂的业务语言：" + wlNote);
 
         // ---- ② 轨迹抽屉底部那条（同型）----
-        ok(process.grossing(new GrossingReq(specimenId, null, null, "自由文本 " + tag, false, null,
-                List.of(new BlockReq("块 " + tag))), doc));
+        ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(specimenId, null, null, "自由文本 " + tag, false, null,
+                List.of(new BlockReq("块 " + tag))), doc)));
         String trailNote = String.valueOf(ok(process.trail(specimenId, null)).get("note"));
         for (String bad : List.of("nodes ", "hours_since_prev", "anomalies ", "STALLED", "stallHours")) {
             assertFalse(trailNote.contains(bad), "轨迹抽屉屏上不得出现「" + bad + "」：" + trailNote);
@@ -698,15 +698,15 @@ class V62GrossReviseGuardTest {
         var first = new LinkedHashMap<String, String>();
         first.put("标本大小", "5×4×3cm");
         first.put("切面", "灰白");
-        ok(process.grossing(new GrossingReq(specimenId, null, first, "首次 " + tag, false, null,
-                List.of(new BlockReq("首块 " + tag))), doc));
+        ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(specimenId, null, first, "首次 " + tag, false, null,
+                List.of(new BlockReq("首块 " + tag))), doc)));
         var second = new LinkedHashMap<String, String>();
         second.put("补取块数", "2 块");
         second.put("最大径", "0.8cm");
-        ok(process.grossing(new GrossingReq(specimenId, null, second, "补取材 " + tag, true, null,
-                List.of(new BlockReq("补块 " + tag))), doc));
-        ok(process.grossing(new GrossingReq(specimenId, null, null, "第三次只写描述 " + tag, true, null,
-                List.of(new BlockReq("三块 " + tag))), doc));
+        ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(specimenId, null, second, "补取材 " + tag, true, null,
+                List.of(new BlockReq("补块 " + tag))), doc)));
+        ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(specimenId, null, null, "第三次只写描述 " + tag, true, null,
+                List.of(new BlockReq("三块 " + tag))), doc)));
 
         var v = ok(process.grossingView(specimenId));
         var fields = rows(v, "fields");
@@ -759,8 +759,8 @@ class V62GrossReviseGuardTest {
         assertEquals("胃肠镜活检", codeToName.get("GI_BIOPSY"), "中文名的唯一事实源就是这份清单");
 
         // ---- 带下划线的码（GI_BIOPSY）----
-        ok(process.grossing(new GrossingReq(specimenId, "GI_BIOPSY", null, "取材描述 " + tag, false, null,
-                List.of(new BlockReq("块 " + tag))), doc));
+        ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(specimenId, "GI_BIOPSY", null, "取材描述 " + tag, false, null,
+                List.of(new BlockReq("块 " + tag))), doc)));
         String remark = latestGrossingRemark(specimenId);
         assertTrue(remark.contains("取材产出 1 块"), "本次产出块数照旧如实写：" + remark);
         assertTrue(remark.contains("（模板 胃肠镜活检）"), "模板印中文名：" + remark);
@@ -769,8 +769,8 @@ class V62GrossReviseGuardTest {
                         + "「取材打点」表的备注列与⑥流转时间线各印一次：" + remark);
 
         // ---- 不带下划线的码（LUNG）：**按形态猜的正则会漏掉它**，所以这条用例必须在 ----
-        ok(process.grossing(new GrossingReq(freeTextId, "lung", null, "取材描述 " + tag, false, null,
-                List.of(new BlockReq("块F " + tag))), doc));
+        ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(freeTextId, "lung", null, "取材描述 " + tag, false, null,
+                List.of(new BlockReq("块F " + tag))), doc)));
         String lungRemark = latestGrossingRemark(freeTextId);
         assertTrue(lungRemark.contains("（模板 肺）"), "小写入参也规范化到同一份清单上：" + lungRemark);
         assertEquals(List.of(), codesIn(lungRemark, codeToName.keySet()), lungRemark);
@@ -910,8 +910,8 @@ class V62GrossReviseGuardTest {
 
     @Test
     void pureFreeTextSpecimenHasNoFieldVersionToBeSupersededBy() {
-        ok(process.grossing(new GrossingReq(freeTextId, null, null, "纯自由文本 " + tag, false, null,
-                List.of(new BlockReq("块F " + tag))), doc));
+        ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(freeTextId, null, null, "纯自由文本 " + tag, false, null,
+                List.of(new BlockReq("块F " + tag))), doc)));
 
         var v = ok(process.grossingView(freeTextId));
         assertEquals(Boolean.TRUE, v.get("grossFindingPresent"));

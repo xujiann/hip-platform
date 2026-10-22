@@ -131,10 +131,10 @@ class V57TechTraceTest {
 
     @Test
     void cancelRejectsMissingBlankAndOverlongReasonAndLeavesRowOrdered() {
-        assertEquals(5271, report.cancelTechOrder(ihcOnA, null, doc1).getCode(), "无 body");
-        assertEquals(5271, report.cancelTechOrder(ihcOnA, new CancelTechOrderReq(null), doc1).getCode(), "reason 缺失");
-        assertEquals(5271, report.cancelTechOrder(ihcOnA, new CancelTechOrderReq(" \t  "), doc1).getCode(), "空白");
-        assertEquals(5271, report.cancelTechOrder(ihcOnA, new CancelTechOrderReq("原".repeat(256)), doc1).getCode(),
+        assertEquals(5271, PathologyTestActors.as(doc1, () -> report.cancelTechOrder(ihcOnA, null, doc1)).getCode(), "无 body");
+        assertEquals(5271, PathologyTestActors.as(doc1, () -> report.cancelTechOrder(ihcOnA, new CancelTechOrderReq(null), doc1)).getCode(), "reason 缺失");
+        assertEquals(5271, PathologyTestActors.as(doc1, () -> report.cancelTechOrder(ihcOnA, new CancelTechOrderReq(" \t  "), doc1)).getCode(), "空白");
+        assertEquals(5271, PathologyTestActors.as(doc1, () -> report.cancelTechOrder(ihcOnA, new CancelTechOrderReq("原".repeat(256)), doc1)).getCode(),
                 "256 字（上限 255）");
 
         var row = techRowInDb(ihcOnA);
@@ -145,7 +145,7 @@ class V57TechTraceTest {
         assertEquals(reasonOnA, row.get("reason"));
 
         // 5268 路径保留：不存在的 id
-        assertEquals(5268, report.cancelTechOrder(-1L, new CancelTechOrderReq("不存在的医嘱"), doc1).getCode());
+        assertEquals(5268, PathologyTestActors.as(doc1, () -> report.cancelTechOrder(-1L, new CancelTechOrderReq("不存在的医嘱"), doc1)).getCode());
     }
 
     // =====================================================================================
@@ -156,12 +156,12 @@ class V57TechTraceTest {
     void cancelWithReasonWritesFullTraceAndKeepsOrderReason() {
         // 恰 255 字：上限含边界
         String boundary = "因".repeat(255);
-        var edge = ok(report.cancelTechOrder(ihcOnB, new CancelTechOrderReq(boundary), doc2));
+        var edge = ok(PathologyTestActors.as(doc2, () -> report.cancelTechOrder(ihcOnB, new CancelTechOrderReq(boundary), doc2)));
         assertEquals("CANCELLED", edge.get("status"));
         assertEquals(boundary, edge.get("cancel_reason"));
 
         String why = "临床改送外院会诊 " + tag;
-        var r = ok(report.cancelTechOrder(ihcOnA, new CancelTechOrderReq("  " + why + "  "), doc2));
+        var r = ok(PathologyTestActors.as(doc2, () -> report.cancelTechOrder(ihcOnA, new CancelTechOrderReq("  " + why + "  "), doc2)));
         assertEquals("CANCELLED", r.get("status"));
         assertEquals(why, r.get("cancel_reason"), "取消原因两端空白剥掉后入库");
         assertEquals(reasonOnA, r.get("reason"), "下达原因 reason 一个字节不动");
@@ -182,8 +182,8 @@ class V57TechTraceTest {
                 "cancelled_at 应在本次测试时刻附近（库端 now()），实际偏差 " + drift);
 
         // 重复取消 / 取消后再完成 → 5268（路径保留）
-        assertEquals(5268, report.cancelTechOrder(ihcOnA, new CancelTechOrderReq("再取消一次"), doc2).getCode());
-        assertEquals(5268, report.doneTechOrder(ihcOnA, doc2).getCode());
+        assertEquals(5268, PathologyTestActors.as(doc2, () -> report.cancelTechOrder(ihcOnA, new CancelTechOrderReq("再取消一次"), doc2)).getCode());
+        assertEquals(5268, PathologyTestActors.as(doc2, () -> report.doneTechOrder(ihcOnA, doc2)).getCode());
 
         // 标本分支
         var bySpecimen = techRow(ok(report.techOrders(a, null, null, null, null, null, null, null, null)), ihcOnA);
@@ -214,24 +214,24 @@ class V57TechTraceTest {
     @Test
     void slidesAttachToTechOrderOnlyWhenLegal() {
         // 他标本的医嘱：ihcOnB 属于 B，蜡块 blockA 属于 A
-        var foreign = process.slides(new SlideReq(blockA, 1, "IHC", "Ki-67", null, ihcOnB), doc1);
+        var foreign = PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 1, "IHC", "Ki-67", null, ihcOnB), doc1));
         assertEquals(5272, foreign.getCode(), foreign.getMessage());
 
         // 已取消的医嘱
         long cancelled = techOrder(a, blockA, "DEEP_CUT", null, "深切 " + tag);
-        assertEquals(0, report.cancelTechOrder(cancelled, new CancelTechOrderReq("不需要了 " + tag), doc1).getCode());
-        assertEquals(5272, process.slides(new SlideReq(blockA, 1, "HE", null, null, cancelled), doc1).getCode());
+        assertEquals(0, PathologyTestActors.as(doc1, () -> report.cancelTechOrder(cancelled, new CancelTechOrderReq("不需要了 " + tag), doc1)).getCode());
+        assertEquals(5272, PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 1, "HE", null, null, cancelled), doc1)).getCode());
 
         // 已完成的医嘱同样不是 ORDERED
         long done = techOrder(a, blockA, "RECUT", null, null);
-        assertEquals(0, report.doneTechOrder(done, doc1).getCode());
-        assertEquals(5272, process.slides(new SlideReq(blockA, 1, "HE", null, null, done), doc1).getCode());
+        assertEquals(0, PathologyTestActors.as(doc1, () -> report.doneTechOrder(done, doc1)).getCode());
+        assertEquals(5272, PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 1, "HE", null, null, done), doc1)).getCode());
 
         // 不存在的 id
-        assertEquals(5272, process.slides(new SlideReq(blockA, 1, "HE", null, null, -1L), doc1).getCode());
+        assertEquals(5272, PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 1, "HE", null, null, -1L), doc1)).getCode());
 
         // v57 审阅补（复现后加）：医嘱指定了蜡块（ihcOnA 下达在 blockA），挂到同标本另一块 blockA2 → 5272
-        var wrongBlock = process.slides(new SlideReq(blockA2, 1, "IHC", "CK7", null, ihcOnA), doc1);
+        var wrongBlock = PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA2, 1, "IHC", "CK7", null, ihcOnA), doc1));
         assertEquals(5272, wrongBlock.getCode(), wrongBlock.getMessage());
         assertEquals(0L, slidesOf(blockA2, null), "挂错块被拒时一张片都不许插");
 
@@ -239,7 +239,7 @@ class V57TechTraceTest {
         assertEquals(0L, sectionNodes(a), "被拒的切片不留 SECTION 节点");
 
         // 合法：每张新切片 tech_order_id 都等于它
-        var okBody = ok(process.slides(new SlideReq(blockA, 3, "IHC", "CK7", "免疫组化加做", ihcOnA), doc1));
+        var okBody = ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 3, "IHC", "CK7", "免疫组化加做", ihcOnA), doc1)));
         assertEquals(ihcOnA, asLong(okBody.get("techOrderId")));
         var slides = rows(okBody, "slides");
         assertEquals(3, slides.size());
@@ -268,7 +268,7 @@ class V57TechTraceTest {
         assertEquals(3L, asLong(qcTechRow(ihcOnA).get("slide_count")), "质控穿透 slide_count 同口径");
 
         // 不传（旧五参形态）→ NULL，旧契约不变；已挂接的计数不受影响
-        var plain = ok(process.slides(new SlideReq(blockA, 2, "HE", null, null), doc1));
+        var plain = ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 2, "HE", null, null), doc1)));
         assertNull(plain.get("techOrderId"));
         assertEquals(2, rows(plain, "slides").size());
         for (var s : rows(plain, "slides")) assertNull(s.get("tech_order_id"), "普通切片 tech_order_id 必须为 NULL：" + s);
@@ -413,7 +413,7 @@ class V57TechTraceTest {
     private List<Long> grossBlocks(long specimenId, String... tissues) {
         List<BlockReq> blocks = new java.util.ArrayList<>();
         for (String s : tissues) blocks.add(new BlockReq(s));
-        var gr = process.grossing(new GrossingReq(specimenId, null, null, "灰白组织两块 " + tag, false, null, blocks), doc1);
+        var gr = PathologyTestActors.as(doc1, () -> process.grossing(new GrossingReq(specimenId, null, null, "灰白组织两块 " + tag, false, null, blocks), doc1));
         assertEquals(0, gr.getCode(), gr.getMessage());
         List<Long> ids = new java.util.ArrayList<>();
         for (var r : rows(gr.getData(), "blocks")) ids.add(idOf(r));
@@ -421,14 +421,14 @@ class V57TechTraceTest {
     }
 
     private long gross(long specimenId, String tissue) {
-        var gr = process.grossing(new GrossingReq(specimenId, null, null, "灰白组织一块 " + tag, false, null,
-                List.of(new BlockReq(tissue))), doc1);
+        var gr = PathologyTestActors.as(doc1, () -> process.grossing(new GrossingReq(specimenId, null, null, "灰白组织一块 " + tag, false, null,
+                List.of(new BlockReq(tissue))), doc1));
         assertEquals(0, gr.getCode(), gr.getMessage());
         return idOf(rows(gr.getData(), "blocks").get(0));
     }
 
     private long techOrder(long specimenId, Long blockId, String type, String item, String reason) {
-        var t = report.createTechOrder(new TechOrderReq(specimenId, blockId, type, item, reason), doc1);
+        var t = PathologyTestActors.as(doc1, () -> report.createTechOrder(new TechOrderReq(specimenId, blockId, type, item, reason), doc1));
         assertEquals(0, t.getCode(), t.getMessage());
         return ((Number) t.getData().get("id")).longValue();
     }

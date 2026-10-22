@@ -229,7 +229,7 @@ class V62BlockCaliberTest {
         long sid = registered("a1", "ROUTINE");
         List<Long> blockIds = gross(sid, "肿物中心 " + tag, "肿物周边 " + tag);
         assertEquals(2, blockIds.size());
-        var sl = process.slides(new SlideReq(blockIds.get(0), 2, "HE", null, null), doc);
+        var sl = PathologyTestActors.as(doc, () -> process.slides(new SlideReq(blockIds.get(0), 2, "HE", null, null), doc));
         assertEquals(0, sl.getCode(), sl.getMessage());
 
         long produced = windowSum("WORKLOAD_BLOCK", from, to, BLOCKS_PRODUCED) - producedBefore;
@@ -305,7 +305,7 @@ class V62BlockCaliberTest {
                 "未包埋的蜡块被拿 created_at 顶替 embedded_at，先算进了这个已关闭区间的「产出」：" + closedBefore);
 
         // 补登包埋：embedded_at 由库端 now() 落（今天），落在上面那个已关闭区间**之外**
-        var emb = process.embed(blockId, null, doc);
+        var emb = PathologyTestActors.as(doc, () -> process.embed(blockId, null, doc));
         assertEquals(0, emb.getCode(), emb.getMessage());
 
         long closedAfter = windowSum("WORKLOAD_BLOCK", from, to, BLOCKS_PRODUCED);
@@ -518,7 +518,7 @@ class V62BlockCaliberTest {
         // ---- 造出五个非按日维度各自至少一行，否则「表里没有日期列」会在空集合上恒真 ----
         long sid = registered("dim", "ROUTINE");                     // 标本类别 / 送检科室 / 按登记日
         long blockId = gross(sid, "维度守卫取材 " + tag).get(0);        // 按包埋日
-        var sl = process.slides(new SlideReq(blockId, 1, "HE", "HE " + tag, null), doc);
+        var sl = PathologyTestActors.as(doc, () -> process.slides(new SlideReq(blockId, 1, "HE", "HE " + tag, null), doc));
         assertEquals(0, sl.getCode(), sl.getMessage());               // 染色类型 / 按染色日
         assertEquals(1, jdbc.update("""
                 insert into path_tech_order(specimen_id, block_id, tech_type, tech_item, status, ordered_at)
@@ -740,7 +740,7 @@ class V62BlockCaliberTest {
         // 一条 MOLECULAR 标本，从它的一块蜡块出 3 张 MOLECULAR 切片：标本数 1、切片数 3
         long sid = registered("c1", "MOLECULAR");
         long blockId = gross(sid, "分子检测取材 " + tag).get(0);
-        var sl = process.slides(new SlideReq(blockId, 3, "MOLECULAR", "EGFR " + tag, null), doc);
+        var sl = PathologyTestActors.as(doc, () -> process.slides(new SlideReq(blockId, 3, "MOLECULAR", "EGFR " + tag, null), doc));
         assertEquals(0, sl.getCode(), sl.getMessage());
 
         long specimens = windowSum("WORKLOAD_REGISTER", from, to, MOLECULAR_SPECIMENS) - specBefore;
@@ -907,7 +907,7 @@ class V62BlockCaliberTest {
     private List<Long> gross(long sid, String... tissueDescs) {
         var blocks = new ArrayList<BlockReq>();
         for (String d : tissueDescs) blocks.add(new BlockReq(d));
-        var gr = process.grossing(new GrossingReq(sid, null, null, "取材描述 " + tag, false, null, blocks), doc);
+        var gr = PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(sid, null, null, "取材描述 " + tag, false, null, blocks), doc));
         assertEquals(0, gr.getCode(), gr.getMessage());
         var out = new ArrayList<Long>();
         for (var row : rows(gr.getData(), "blocks")) out.add(n(row.get("id")));

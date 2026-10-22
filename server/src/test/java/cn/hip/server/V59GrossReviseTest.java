@@ -131,8 +131,8 @@ class V59GrossReviseTest {
         Fixture f = specimen("A");
 
         // 模板码传小写：端点 trimUpper 规范化后落库（与 5225 校验用的目录键一致）
-        var gr = ok(process.grossing(new GrossingReq(f.id(), "gi_biopsy", gross, free, false, null,
-                List.of(new BlockReq("全部取材"))), doc));
+        var gr = ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(f.id(), "gi_biopsy", gross, free, false, null,
+                List.of(new BlockReq("全部取材"))), doc)));
         assertEquals(1, ((Number) gr.get("grossRevisionSeq")).intValue(), "首写是第 1 版");
         assertEquals(3, ((Number) gr.get("grossFieldCount")).intValue());
 
@@ -157,15 +157,15 @@ class V59GrossReviseTest {
 
         // 不用模板：template_code 如实为 null，不拿别的东西凑
         Fixture f0 = specimen("A0");
-        ok(process.grossing(new GrossingReq(f0.id(), null, gross, null, false, null,
-                List.of(new BlockReq("x"))), doc));
+        ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(f0.id(), null, gross, null, false, null,
+                List.of(new BlockReq("x"))), doc)));
         assertNull(revisionRows(f0.id()).get(0).get("template_code"));
         assertNull(rows(ok(process.grossingView(f0.id())), "revisions").get(0).get("templateCode"));
 
         // 未知模板：既有 5225，零写入
         Fixture f1 = specimen("A1");
-        assertEquals(5225, process.grossing(new GrossingReq(f1.id(), "NO_SUCH_TPL", gross, null, false, null,
-                List.of(new BlockReq("x"))), doc).getCode());
+        assertEquals(5225, PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(f1.id(), "NO_SUCH_TPL", gross, null, false, null,
+                List.of(new BlockReq("x"))), doc)).getCode());
         assertNothingWritten(f1.id(), "5225 路径");
     }
 
@@ -191,7 +191,7 @@ class V59GrossReviseTest {
         String expected2 = "大小：3.5×2×1cm；颜色：灰白；质地：质硬。" + free2;
 
         // 修复前：根本没有这个端点，字段永远是第 1 版
-        var r = ok(process.reviseGrossFields(f.id(), new GrossReviseReq("generic", g2, free2), doc));
+        var r = ok(PathologyTestActors.as(doc, () -> process.reviseGrossFields(f.id(), new GrossReviseReq("generic", g2, free2), doc)));
         // v62：多一个 warnings（结构化退化 gate emr.gate.pathology.grossfield 的告警口，
         // off / 无退化时为空数组而不是缺键——调用方不必判键在不在）。三档行为由 V62GrossReviseGuardTest 钉。
         assertEquals(Set.of("revisionSeq", "grossFieldCount", "grossFinding", "warnings"), r.keySet());
@@ -243,19 +243,19 @@ class V59GrossReviseTest {
         assertEquals(tag + "d1医生", rv.get(1).get("changedByName"));
 
         // 被拒路径全部零写入：相同文本 / 空内容 / 未知模板 / 幽灵用户 / 查无此标本
-        assertEquals(5222, process.reviseGrossFields(f.id(), new GrossReviseReq(null, g2, free2), doc).getCode(),
+        assertEquals(5222, PathologyTestActors.as(doc, () -> process.reviseGrossFields(f.id(), new GrossReviseReq(null, g2, free2), doc)).getCode(),
                 "与当前相同：没有变化就没有版本");
-        assertEquals(5222, process.reviseGrossFields(f.id(), new GrossReviseReq(null, null, "   "), doc).getCode(), "空内容");
-        assertEquals(5222, process.reviseGrossFields(f.id(), null, doc).getCode(), "空 body");
-        assertEquals(5225, process.reviseGrossFields(f.id(), new GrossReviseReq("NO_SUCH_TPL", g1, null), doc).getCode());
+        assertEquals(5222, PathologyTestActors.as(doc, () -> process.reviseGrossFields(f.id(), new GrossReviseReq(null, null, "   "), doc)).getCode(), "空内容");
+        assertEquals(5222, PathologyTestActors.as(doc, () -> process.reviseGrossFields(f.id(), null, doc)).getCode(), "空 body");
+        assertEquals(5225, PathologyTestActors.as(doc, () -> process.reviseGrossFields(f.id(), new GrossReviseReq("NO_SUCH_TPL", g1, null), doc)).getCode());
         var dup = new LinkedHashMap<String, String>();
         dup.put("大小", "a");
         dup.put(" 大小 ", "b");
-        assertEquals(5222, process.reviseGrossFields(f.id(), new GrossReviseReq(null, dup, null), doc).getCode(), "字段名重复");
+        assertEquals(5222, PathologyTestActors.as(doc, () -> process.reviseGrossFields(f.id(), new GrossReviseReq(null, dup, null), doc)).getCode(), "字段名重复");
         Authentication ghost = new UsernamePasswordAuthenticationToken("ghost_" + tag, null,
                 List.of(new SimpleGrantedAuthority("ROLE_DOCTOR_OUTP")));
-        assertEquals(5224, process.reviseGrossFields(f.id(), new GrossReviseReq(null, g1, "改回去 " + tag), ghost).getCode());
-        assertEquals(5220, process.reviseGrossFields(-1L, new GrossReviseReq(null, g1, null), doc).getCode());
+        org.junit.jupiter.api.Assertions.assertThrows(org.springframework.security.access.AccessDeniedException.class, () -> PathologyTestActors.as(ghost, () -> process.reviseGrossFields(f.id(), new GrossReviseReq(null, g1, "改回去 " + tag), ghost)));
+        assertEquals(5220, PathologyTestActors.as(doc, () -> process.reviseGrossFields(-1L, new GrossReviseReq(null, g1, null), doc)).getCode());
         assertEquals(expected2, grossOf(f.id()), "被拒路径不改文本");
         assertEquals(2, revisionRows(f.id()).size(), "被拒路径不出版本");
         assertEquals(5, fieldRows(f.id()).size(), "被拒路径不落字段行");
@@ -302,7 +302,7 @@ class V59GrossReviseTest {
         assertEquals(0, PathologyTestActors.as(doc, () -> pathology.diagnose(f.barcode(), new DiagnoseReq(g3, null, "慢性炎症 " + tag), doc)).getCode());
         var g = new LinkedHashMap<String, String>();
         g.put("大小", "9×9×9cm");
-        var r = process.reviseGrossFields(f.id(), new GrossReviseReq("GENERIC", g, "诊断后还想改 " + tag), doc);
+        var r = PathologyTestActors.as(doc, () -> process.reviseGrossFields(f.id(), new GrossReviseReq("GENERIC", g, "诊断后还想改 " + tag), doc));
         assertEquals(5221, r.getCode(), r.getMessage());
         assertEquals(g3, grossOf(f.id()), "5221 路径不改文本");
         assertEquals(3, revisionRows(f.id()).size(), "5221 路径不出版本");
@@ -310,13 +310,13 @@ class V59GrossReviseTest {
 
         // 尚无大体所见：本端点只修订不首写（首写走取材登记，否则之后正常取材会被「已有大体所见」挡住）
         Fixture f0 = specimen("D0");
-        var r0 = process.reviseGrossFields(f0.id(), new GrossReviseReq(null, g, null), doc);
+        var r0 = PathologyTestActors.as(doc, () -> process.reviseGrossFields(f0.id(), new GrossReviseReq(null, g, null), doc));
         assertEquals(5221, r0.getCode(), r0.getMessage());
         assertNothingWritten(f0.id(), "尚无大体所见的修订路径");
 
         // 未核收 / 已拒收同样 5221
         Fixture fc = collectedOnly("D1");
-        assertEquals(5221, process.reviseGrossFields(fc.id(), new GrossReviseReq(null, g, null), doc).getCode());
+        assertEquals(5221, PathologyTestActors.as(doc, () -> process.reviseGrossFields(fc.id(), new GrossReviseReq(null, g, null), doc)).getCode());
         assertNothingWritten(fc.id(), "未核收的修订路径");
     }
 
@@ -337,8 +337,8 @@ class V59GrossReviseTest {
         g2.put("最大径", "0.5cm");
         String free2 = "补取材组织 " + tag;
         // 修复前：已有大体所见后任何取材再传描述一律 5222
-        var gr = ok(process.grossing(new GrossingReq(f.id(), "GI_BIOPSY", g2, free2, true, null,
-                List.of(new BlockReq("补取材 " + tag))), doc));
+        var gr = ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(f.id(), "GI_BIOPSY", g2, free2, true, null,
+                List.of(new BlockReq("补取材 " + tag))), doc)));
         String expected2 = expected1 + "。补取材：" + "块数：2；最大径：0.5cm。" + free2;
         assertEquals(expected2, gr.get("grossFinding"), "返回体是拼接后的全文");
         assertEquals(Boolean.TRUE, gr.get("grossFindingWritten"));
@@ -370,16 +370,16 @@ class V59GrossReviseTest {
 
         // 追加后超长 → 5222，在任何写入之前：文本 / 版本 / 字段 / 蜡块 / 节点全不动
         var before = snapshot(f.id());
-        assertEquals(5222, process.grossing(new GrossingReq(f.id(), null, null, "x".repeat(1995), true, null,
-                List.of(new BlockReq("y"))), doc).getCode());
+        assertEquals(5222, PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(f.id(), null, null, "x".repeat(1995), true, null,
+                List.of(new BlockReq("y"))), doc)).getCode());
         assertEquals(before, snapshot(f.id()), "超长路径零写入");
 
         // append=false 仍 5222：历史标本（gross_finding 由 SQL 置入、无蜡块、无修订行）首次取材还传描述
         Fixture legacy = specimen("E2");
         String legacyText = "大小：2×1cm；切面：灰白。" + tag;
         jdbc.update("update path_specimen set gross_finding = ? where id = ?", legacyText, legacy.id());
-        var rej = process.grossing(new GrossingReq(legacy.id(), null, g2, free2, false, null,
-                List.of(new BlockReq("x"))), doc);
+        var rej = PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(legacy.id(), null, g2, free2, false, null,
+                List.of(new BlockReq("x"))), doc));
         assertEquals(5222, rej.getCode(), rej.getMessage());
         assertTrue(rej.getMessage().contains("append=true"), rej.getMessage());
         assertEquals(legacyText, grossOf(legacy.id()));
@@ -388,8 +388,8 @@ class V59GrossReviseTest {
         assertEquals(0L, rowsOf("path_block", legacy.id()));
 
         // 同一历史标本 append=true：第 1 版的 old_text 就是那段历史文本（真实事实），字段落在第 1 版
-        var la = ok(process.grossing(new GrossingReq(legacy.id(), null, g2, null, true, null,
-                List.of(new BlockReq("x"))), doc));
+        var la = ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(legacy.id(), null, g2, null, true, null,
+                List.of(new BlockReq("x"))), doc)));
         assertEquals(1, ((Number) la.get("grossRevisionSeq")).intValue());
         assertEquals(legacyText + "。补取材：块数：2；最大径：0.5cm", la.get("grossFinding"));
         var lr = revisionRows(legacy.id());
@@ -408,8 +408,8 @@ class V59GrossReviseTest {
         var dg = PathologyTestActors.as(doc, () -> pathology.diagnose(fd.barcode(), new DiagnoseReq(null, null, "需补取材 " + tag), doc));
         assertEquals(0, dg.getCode(), dg.getMessage());
         assertEquals(Boolean.TRUE, dg.getData().get("grossKept"));
-        var rs = ok(process.grossing(new GrossingReq(fd.id(), null, g2, free2, true, null,
-                List.of(new BlockReq("RESAMPLE " + tag))), doc));
+        var rs = ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(fd.id(), null, g2, free2, true, null,
+                List.of(new BlockReq("RESAMPLE " + tag))), doc)));
         assertEquals(expected2, rs.get("grossFinding"));
         assertEquals(2, ((Number) rs.get("grossRevisionSeq")).intValue());
         assertEquals(List.of("GROSSING", "GROSSING"),
@@ -593,8 +593,8 @@ class V59GrossReviseTest {
     /** 核收后走真实 grossing：结构化字段 + 自由文本 + 一块蜡块 */
     private Fixture specimenWithGross(String suffix, Map<String, String> gross, String freeText) {
         Fixture f = specimen(suffix);
-        var gr = process.grossing(new GrossingReq(f.id(), null, gross, freeText, false, null,
-                List.of(new BlockReq("肿物中心"))), doc);
+        var gr = PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(f.id(), null, gross, freeText, false, null,
+                List.of(new BlockReq("肿物中心"))), doc));
         assertEquals(0, gr.getCode(), gr.getMessage());
         assertEquals(Boolean.TRUE, gr.getData().get("grossFindingWritten"), "夹具前提：取材端点真的写了大体所见");
         return f;
@@ -610,7 +610,7 @@ class V59GrossReviseTest {
         g2.put("大小", "3.5×2×1cm");
         g2.put("颜色", "灰白");
         g2.put("质地", "质硬");
-        var r = process.reviseGrossFields(f.id(), new GrossReviseReq("GENERIC", g2, "切面实性，局灶出血 " + tag), doc);
+        var r = PathologyTestActors.as(doc, () -> process.reviseGrossFields(f.id(), new GrossReviseReq("GENERIC", g2, "切面实性，局灶出血 " + tag), doc));
         assertEquals(0, r.getCode(), r.getMessage());
         assertEquals(2, revisionRows(f.id()).size());
         assertEquals(5, fieldRows(f.id()).size());

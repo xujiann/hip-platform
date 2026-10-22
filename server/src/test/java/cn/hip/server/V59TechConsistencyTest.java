@@ -136,12 +136,12 @@ class V59TechConsistencyTest {
         assertProgress(ck7, "STAINED", 1, 1);
 
         // 同一件事从端点走，现在被 5274 拦住、一张片不插
-        var viaEndpoint = process.slides(new SlideReq(blockA, 1, "HE", null, null, ck7), doc1);
+        var viaEndpoint = PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 1, "HE", null, null, ck7), doc1));
         assertEquals(5274, viaEndpoint.getCode(), viaEndpoint.getMessage());
         assertEquals(1L, slidesOf(blockA, ck7), "被 5274 拦下的挂接一张片不插（只剩 SQL 造的那张）");
 
         // done 照样 DONE 且 warnings 为空——这就是反驳者说的「2 张 HE 片推到已完成而 warnings 为空」
-        var done = ok(report.doneTechOrder(ck7, doc1));
+        var done = ok(PathologyTestActors.as(doc1, () -> report.doneTechOrder(ck7, doc1)));
         assertEquals("DONE", done.get("status"));
         assertEquals(List.of(), done.get("warnings"), "旧世界挂错的片子在完成校验里看不出来（gate 只看片数）");
 
@@ -159,25 +159,25 @@ class V59TechConsistencyTest {
         long ck7 = techOrder(a, blockA, "IHC", "CK7", null);
 
         // 类型不符：HE 片挂 IHC 医嘱
-        var he = process.slides(new SlideReq(blockA, 2, "HE", null, null, ck7), doc1);
+        var he = PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 2, "HE", null, null, ck7), doc1));
         assertEquals(5274, he.getCode(), he.getMessage());
         assertTrue(he.getMessage().contains("染色类型") && he.getMessage().contains("IHC"), he.getMessage());
         // 类型不符：SPECIAL 片带对的项目也不行
-        assertEquals(5274, process.slides(new SlideReq(blockA, 1, "SPECIAL", "CK7", null, ck7), doc1).getCode());
+        assertEquals(5274, PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 1, "SPECIAL", "CK7", null, ck7), doc1)).getCode());
         // 项目不符：IHC CK20 挂 CK7 医嘱
-        var ck20 = process.slides(new SlideReq(blockA, 2, "IHC", "CK20", null, ck7), doc1);
+        var ck20 = PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 2, "IHC", "CK20", null, ck7), doc1));
         assertEquals(5274, ck20.getCode(), ck20.getMessage());
         assertTrue(ck20.getMessage().contains("项目") && ck20.getMessage().contains("CK7") && ck20.getMessage().contains("CK20"),
                 ck20.getMessage());
         // 项目缺失：医嘱有项目而切片不给
-        assertEquals(5274, process.slides(new SlideReq(blockA, 1, "IHC", null, null, ck7), doc1).getCode());
+        assertEquals(5274, PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 1, "IHC", null, null, ck7), doc1)).getCode());
         // 四条被拒路径：一张片不插、不留 SECTION 节点
         assertEquals(0L, slidesOf(blockA, null), "被拒时一张片都不许插");
         assertEquals(0L, nodes(a, "SECTION"), "被拒的切片不留 SECTION 节点");
         assertProgress(ck7, "PENDING_SECTION", 0, 0);
 
         // 合法：IHC CK7（项目 trim 后比较）
-        var okBody = ok(process.slides(new SlideReq(blockA, 2, "IHC", "  CK7 ", null, ck7), doc1));
+        var okBody = ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 2, "IHC", "  CK7 ", null, ck7), doc1)));
         assertEquals(2, rows(okBody, "slides").size());
         for (var s : rows(okBody, "slides")) {
             assertEquals("IHC", s.get("stain_type"));
@@ -189,27 +189,27 @@ class V59TechConsistencyTest {
 
         // 深切医嘱（无项目）：IHC 片不行，HE 片可挂且项目不限
         long deep = techOrder(a, blockA, "DEEP_CUT", null, null);
-        assertEquals(5274, process.slides(new SlideReq(blockA, 1, "IHC", "CK7", null, deep), doc1).getCode());
-        assertEquals(5274, process.slides(new SlideReq(blockA, 1, "IHC", null, null, deep), doc1).getCode());
+        assertEquals(5274, PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 1, "IHC", "CK7", null, deep), doc1)).getCode());
+        assertEquals(5274, PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 1, "IHC", null, null, deep), doc1)).getCode());
         assertEquals(0L, slidesOf(blockA, deep));
-        ok(process.slides(new SlideReq(blockA, 1, "HE", null, null, deep), doc1));
-        ok(process.slides(new SlideReq(blockA, 1, "HE", "连续切片 " + tag, null, deep), doc1));
+        ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 1, "HE", null, null, deep), doc1)));
+        ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 1, "HE", "连续切片 " + tag, null, deep), doc1)));
         assertEquals(2L, slidesOf(blockA, deep), "深切医嘱无项目：HE 片不限项目");
 
         // 特殊染色 / 分子病理各对各的染色类型
         long pas = techOrder(a, blockA, "SPECIAL_STAIN", "PAS", null);
-        assertEquals(5274, process.slides(new SlideReq(blockA, 1, "IHC", "PAS", null, pas), doc1).getCode());
-        ok(process.slides(new SlideReq(blockA, 1, "SPECIAL", "PAS", null, pas), doc1));
+        assertEquals(5274, PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 1, "IHC", "PAS", null, pas), doc1)).getCode());
+        ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 1, "SPECIAL", "PAS", null, pas), doc1)));
         long egfr = techOrder(a, blockA, "MOLECULAR", "EGFR", null);
-        assertEquals(5274, process.slides(new SlideReq(blockA, 1, "SPECIAL", "EGFR", null, egfr), doc1).getCode());
-        ok(process.slides(new SlideReq(blockA, 1, "MOLECULAR", "EGFR", null, egfr), doc1));
+        assertEquals(5274, PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 1, "SPECIAL", "EGFR", null, egfr), doc1)).getCode());
+        ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 1, "MOLECULAR", "EGFR", null, egfr), doc1)));
 
         // 5272 四条仍先于 5274：他标本的医嘱，即使类型也不对，返回的仍是 5272
         long onB = techOrder(b, blockB, "IHC", "Ki-67", null);
-        assertEquals(5272, process.slides(new SlideReq(blockA, 1, "HE", null, null, onB), doc1).getCode());
+        assertEquals(5272, PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 1, "HE", null, null, onB), doc1)).getCode());
         // 普通切片（不挂接）不受任何限制——旧契约不变
-        ok(process.slides(new SlideReq(blockA, 1, "HE", null, null), doc1));
-        ok(process.slides(new SlideReq(blockA, 1, "IHC", "随便", null), doc1));
+        ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 1, "HE", null, null), doc1)));
+        ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 1, "IHC", "随便", null), doc1)));
     }
 
     // =====================================================================================
@@ -219,12 +219,12 @@ class V59TechConsistencyTest {
     @Test
     void stainRegistrationCannotRewriteItemOfAttachedSlide() {
         long ck7 = techOrder(a, blockA, "IHC", "CK7", null);
-        var slides = rows(ok(process.slides(new SlideReq(blockA, 2, "IHC", "CK7", null, ck7), doc1)), "slides");
+        var slides = rows(ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 2, "IHC", "CK7", null, ck7), doc1))), "slides");
         long s1 = idOf(slides.get(0));
         long s2 = idOf(slides.get(1));
 
         // 修复前：coalesce(?, stain_item) 把 CK7 改成 CK20 照样登记、进度照样 +1
-        var bad = process.stain(s1, new StainReq("GOOD", "CK20", null), doc1);
+        var bad = PathologyTestActors.as(doc1, () -> process.stain(s1, new StainReq("GOOD", "CK20", null), doc1));
         assertEquals(5274, bad.getCode(), bad.getMessage());
         assertTrue(bad.getMessage().contains("CK7") && bad.getMessage().contains("CK20"), bad.getMessage());
         var row1 = slideRow(s1);
@@ -235,28 +235,28 @@ class V59TechConsistencyTest {
         assertProgress(ck7, "SECTIONING", 2, 0);
 
         // 空照旧：保留 CK7
-        ok(process.stain(s1, new StainReq("GOOD", null, null), doc1));
+        ok(PathologyTestActors.as(doc1, () -> process.stain(s1, new StainReq("GOOD", null, null), doc1)));
         assertEquals("CK7", slideRow(s1).get("stain_item"));
         assertNotNull(slideRow(s1).get("stained_at"));
         assertProgress(ck7, "SECTIONING", 2, 1);
         // 传相同项目（trim 后）照过
-        ok(process.stain(s2, new StainReq("GOOD", " CK7 ", null), doc1));
+        ok(PathologyTestActors.as(doc1, () -> process.stain(s2, new StainReq("GOOD", " CK7 ", null), doc1)));
         assertEquals("CK7", slideRow(s2).get("stain_item"));
         assertProgress(ck7, "STAINED", 2, 2);
         assertEquals(2L, nodes(a, "STAIN"));
 
         // 已染色的片子再传错项目：仍 5274（判在 update 之前，什么都不写）
-        assertEquals(5274, process.stain(s1, new StainReq(null, "CK20", null), doc1).getCode());
+        assertEquals(5274, PathologyTestActors.as(doc1, () -> process.stain(s1, new StainReq(null, "CK20", null), doc1)).getCode());
 
         // 医嘱无项目（深切）：染色登记可以补任何项目
         long deep = techOrder(a, blockA, "DEEP_CUT", null, null);
-        long d1 = idOf(rows(ok(process.slides(new SlideReq(blockA, 1, "HE", null, null, deep), doc1)), "slides").get(0));
-        ok(process.stain(d1, new StainReq("GOOD", "连续切片 " + tag, null), doc1));
+        long d1 = idOf(rows(ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 1, "HE", null, null, deep), doc1))), "slides").get(0));
+        ok(PathologyTestActors.as(doc1, () -> process.stain(d1, new StainReq("GOOD", "连续切片 " + tag, null), doc1)));
         assertEquals("连续切片 " + tag, slideRow(d1).get("stain_item"));
 
         // 普通切片不受限
-        long plain = idOf(rows(ok(process.slides(new SlideReq(blockA, 1, "HE", null, null), doc1)), "slides").get(0));
-        ok(process.stain(plain, new StainReq("GOOD", "任意项目", null), doc1));
+        long plain = idOf(rows(ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 1, "HE", null, null), doc1))), "slides").get(0));
+        ok(PathologyTestActors.as(doc1, () -> process.stain(plain, new StainReq("GOOD", "任意项目", null), doc1)));
         assertEquals("任意项目", slideRow(plain).get("stain_item"));
     }
 
@@ -267,13 +267,13 @@ class V59TechConsistencyTest {
     @Test
     void batchCompleteRejectsWholeBatchOnItemMismatch() {
         long ck7 = techOrder(a, blockA, "IHC", "CK7", null);
-        var attached = rows(ok(process.slides(new SlideReq(blockA, 2, "IHC", "CK7", null, ck7), doc1)), "slides");
+        var attached = rows(ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 2, "IHC", "CK7", null, ck7), doc1))), "slides");
         long s1 = idOf(attached.get(0));
         long s2 = idOf(attached.get(1));
-        long plain = idOf(rows(ok(process.slides(new SlideReq(blockA, 1, "HE", null, null), doc1)), "slides").get(0));
+        long plain = idOf(rows(ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 1, "HE", null, null), doc1))), "slides").get(0));
         String s1Code = String.valueOf(attached.get(0).get("slide_code"));
 
-        var bad = process.batchComplete(new BatchCompleteReq(List.of(s1, s2, plain), "GOOD", "CK20", null), doc1);
+        var bad = PathologyTestActors.as(doc1, () -> process.batchComplete(new BatchCompleteReq(List.of(s1, s2, plain), "GOOD", "CK20", null), doc1));
         assertEquals(5274, bad.getCode(), bad.getMessage());
         assertTrue(bad.getMessage().contains(s1Code) && bad.getMessage().contains("#" + ck7 + " CK7"),
                 "5274 消息应连同问题条目与医嘱项目返回，实际：" + bad.getMessage());
@@ -287,7 +287,7 @@ class V59TechConsistencyTest {
         assertProgress(ck7, "SECTIONING", 2, 0);
 
         // 空照旧：各自保留原值，整批核销
-        var okBody = ok(process.batchComplete(new BatchCompleteReq(List.of(s1, s2, plain), "GOOD", null, null), doc1));
+        var okBody = ok(PathologyTestActors.as(doc1, () -> process.batchComplete(new BatchCompleteReq(List.of(s1, s2, plain), "GOOD", null, null), doc1)));
         assertEquals(3L, asLong(okBody.get("completed")));
         assertEquals("CK7", slideRow(s1).get("stain_item"));
         assertEquals("CK7", slideRow(s2).get("stain_item"));
@@ -298,13 +298,13 @@ class V59TechConsistencyTest {
 
         // 传相同项目照过；深切（无项目）挂接片与普通片一起传任意项目也照过
         long ck20 = techOrder(a, blockA, "IHC", "CK20", null);
-        var more = rows(ok(process.slides(new SlideReq(blockA, 2, "IHC", "CK20", null, ck20), doc1)), "slides");
-        ok(process.batchComplete(new BatchCompleteReq(List.of(idOf(more.get(0)), idOf(more.get(1))), null, "CK20", null), doc1));
+        var more = rows(ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 2, "IHC", "CK20", null, ck20), doc1))), "slides");
+        ok(PathologyTestActors.as(doc1, () -> process.batchComplete(new BatchCompleteReq(List.of(idOf(more.get(0)), idOf(more.get(1))), null, "CK20", null), doc1)));
         assertProgress(ck20, "STAINED", 2, 2);
         long deep = techOrder(a, blockA, "DEEP_CUT", null, null);
-        long d1 = idOf(rows(ok(process.slides(new SlideReq(blockA, 1, "HE", null, null, deep), doc1)), "slides").get(0));
-        long p2 = idOf(rows(ok(process.slides(new SlideReq(blockA, 1, "HE", null, null), doc1)), "slides").get(0));
-        ok(process.batchComplete(new BatchCompleteReq(List.of(d1, p2), "FAIR", "补充说明", null), doc1));
+        long d1 = idOf(rows(ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 1, "HE", null, null, deep), doc1))), "slides").get(0));
+        long p2 = idOf(rows(ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 1, "HE", null, null), doc1))), "slides").get(0));
+        ok(PathologyTestActors.as(doc1, () -> process.batchComplete(new BatchCompleteReq(List.of(d1, p2), "FAIR", "补充说明", null), doc1)));
         assertEquals("补充说明", slideRow(d1).get("stain_item"));
         assertEquals("补充说明", slideRow(p2).get("stain_item"));
     }
@@ -318,9 +318,9 @@ class V59TechConsistencyTest {
         long ck7 = techOrder(a, blockA, "IHC", "CK7", null);
         assertAttachedStain(ck7, null);
 
-        var s = rows(ok(process.slides(new SlideReq(blockA, 2, "IHC", "CK7", null, ck7), doc1)), "slides");
+        var s = rows(ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 2, "IHC", "CK7", null, ck7), doc1))), "slides");
         assertAttachedStain(ck7, "IHC CK7 ×2");
-        ok(process.stain(idOf(s.get(0)), new StainReq("GOOD", null, null), doc1));
+        ok(PathologyTestActors.as(doc1, () -> process.stain(idOf(s.get(0)), new StainReq("GOOD", null, null), doc1)));
         assertAttachedStain(ck7, "IHC CK7 ×2");
         assertProgress(ck7, "SECTIONING", 2, 1);
 
@@ -339,13 +339,13 @@ class V59TechConsistencyTest {
 
         // 深切：三张 HE 无项目
         long deep = techOrder(a, blockA, "DEEP_CUT", null, null);
-        ok(process.slides(new SlideReq(blockA, 3, "HE", null, null, deep), doc1));
+        ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 3, "HE", null, null, deep), doc1)));
         assertAttachedStain(deep, "HE ×3");
 
         // 另一标本的医嘱不串：B 上的 Ki-67 无挂接
         long onB = techOrder(b, blockB, "IHC", "Ki-67", null);
         assertAttachedStain(onB, null);
-        ok(process.slides(new SlideReq(blockB, 1, "IHC", "Ki-67", null, onB), doc1));
+        ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockB, 1, "IHC", "Ki-67", null, onB), doc1)));
         assertAttachedStain(onB, "IHC Ki-67 ×1");
         assertAttachedStain(deep, "HE ×3");
     }
@@ -529,14 +529,14 @@ class V59TechConsistencyTest {
     }
 
     private long gross(long specimenId, String tissue) {
-        var gr = process.grossing(new GrossingReq(specimenId, null, null, "灰白组织一块 " + tag, false, null,
-                List.of(new BlockReq(tissue))), doc1);
+        var gr = PathologyTestActors.as(doc1, () -> process.grossing(new GrossingReq(specimenId, null, null, "灰白组织一块 " + tag, false, null,
+                List.of(new BlockReq(tissue))), doc1));
         assertEquals(0, gr.getCode(), gr.getMessage());
         return idOf(rows(gr.getData(), "blocks").get(0));
     }
 
     private long techOrder(long specimenId, Long blockId, String type, String item, String reason) {
-        var t = report.createTechOrder(new TechOrderReq(specimenId, blockId, type, item, reason), doc1);
+        var t = PathologyTestActors.as(doc1, () -> report.createTechOrder(new TechOrderReq(specimenId, blockId, type, item, reason), doc1));
         assertEquals(0, t.getCode(), t.getMessage());
         return ((Number) t.getData().get("id")).longValue();
     }

@@ -579,8 +579,8 @@ class V60DeptDimensionTest {
         String barcode = jdbc.queryForObject("select barcode from path_specimen where id = ?", String.class, sid);
         var rc = pathology.receive(barcode);
         assertEquals(0, rc.getCode(), rc.getMessage());
-        var gr = process.grossing(new GrossingReq(sid, null, null, "灰白组织一块 " + tag, false, null,
-                List.of(new BlockReq("肿物中心"))), doc);
+        var gr = PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(sid, null, null, "灰白组织一块 " + tag, false, null,
+                List.of(new BlockReq("肿物中心"))), doc));
         assertEquals(0, gr.getCode(), gr.getMessage());
         var dx = PathologyTestActors.as(doc, () -> pathology.diagnose(barcode, new DiagnoseReq(null, "镜下见慢性炎细胞浸润 " + tag, "慢性炎症 " + tag), doc));
         assertEquals(0, dx.getCode(), dx.getMessage());

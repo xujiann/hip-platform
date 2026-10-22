@@ -271,8 +271,8 @@ class V62TechRemarkTest {
                         now() - interval '2 days' - interval '1 hour', now() - interval '2 days', false)
                 returning id
                 """, Long.class, orderId, "PB" + tag, tag + "-1", "备注去码标本" + tag);
-        var gr = ok(process.grossing(new GrossingReq(a, null, null, "首次取材 " + tag, false, null,
-                List.of(new BlockReq("肿物中心 " + tag))), doc1));
+        var gr = ok(PathologyTestActors.as(doc1, () -> process.grossing(new GrossingReq(a, null, null, "首次取材 " + tag, false, null,
+                List.of(new BlockReq("肿物中心 " + tag))), doc1)));
         blockA = idOf(rows(gr, "blocks").get(0));
     }
 
@@ -286,7 +286,7 @@ class V62TechRemarkTest {
         assertClean(remarkOf(a, "TECH_ORDER", ihc), "TECH_ORDER");
 
         // 0 片 0 块 + 出厂 warn：走的是「有缺口、放行」那条最长的备注分支
-        ok(report.doneTechOrder(ihc, doc1));
+        ok(PathologyTestActors.as(doc1, () -> report.doneTechOrder(ihc, doc1)));
         String done = remarkOf(a, "TECH_DONE", ihc);
         assertClean(done, "TECH_DONE");
         assertTrue(done.contains("已出块 0 / 挂接 0 片 / 已染色 0"),
@@ -295,7 +295,7 @@ class V62TechRemarkTest {
                 "缺口文案用人话、不带库列名（修复前是「无挂接切片（slide_count=0）」）：" + done);
 
         long pas = techOrder(a, null, "SPECIAL_STAIN", "PAS");
-        ok(report.cancelTechOrder(pas, new CancelTechOrderReq("不做了 " + tag), doc1));
+        ok(PathologyTestActors.as(doc1, () -> report.cancelTechOrder(pas, new CancelTechOrderReq("不做了 " + tag), doc1)));
         String cancelled = remarkOf(a, "TECH_CANCEL", pas);
         assertClean(cancelled, "TECH_CANCEL");
         assertTrue(cancelled.contains("特殊染色") && cancelled.contains("PAS"),
@@ -330,12 +330,12 @@ class V62TechRemarkTest {
 
             // (a) 补取材医嘱：已出 2 块、一张片子都没有
             long rs = techOrder(a, null, "RESAMPLE", null);
-            var gr = ok(process.grossing(new GrossingReq(a, null, null, null, true, null,
-                    List.of(new BlockReq("切缘一 " + tag), new BlockReq("切缘二 " + tag)), rs), doc1));
+            var gr = ok(PathologyTestActors.as(doc1, () -> process.grossing(new GrossingReq(a, null, null, null, true, null,
+                    List.of(new BlockReq("切缘一 " + tag), new BlockReq("切缘二 " + tag)), rs), doc1)));
             assertEquals(2, rows(gr, "blocks").size(), "夹具前提：本次补取材出两块");
             assertEquals("SAMPLED", listRow(rs).get("progress"), "夹具前提：六态派生已认这两块");
 
-            var r = report.doneTechOrder(rs, doc1);
+            var r = PathologyTestActors.as(doc1, () -> report.doneTechOrder(rs, doc1));
             assertEquals(0, r.getCode(), gate
                     + "：补取材已出块就是执行证据，三档都该放行（**修复前 block 档下这条医嘱永远完不成**）："
                     + r.getMessage());
@@ -359,7 +359,7 @@ class V62TechRemarkTest {
             //     证明上面的「放行」是因为认了蜡块，不是因为 gate 被整体放空
             long bare = techOrder(a, null, "RESAMPLE", null);
             assertEquals("PENDING_SECTION", listRow(bare).get("progress"), "对照组前提：这条一块一片都没有");
-            var br = report.doneTechOrder(bare, doc1);
+            var br = PathologyTestActors.as(doc1, () -> report.doneTechOrder(bare, doc1));
             if ("block".equals(gate)) {
                 assertEquals(5273, br.getCode(), "对照组：真无证据时 block 档仍拦：" + br.getMessage());
                 assertTrue(br.getMessage().contains("既无挂接切片、也无补取材已出块")
@@ -424,8 +424,8 @@ class V62TechRemarkTest {
     @Test
     void techDetailCsvHeaderIsUnambiguousAndCarriesChineseTechClass() {
         long rs = techOrder(a, null, "RESAMPLE", null);
-        ok(process.grossing(new GrossingReq(a, null, null, null, true, null,
-                List.of(new BlockReq("切缘 " + tag)), rs), doc1));
+        ok(PathologyTestActors.as(doc1, () -> process.grossing(new GrossingReq(a, null, null, null, true, null,
+                List.of(new BlockReq("切缘 " + tag)), rs), doc1)));
 
         String csv = pathQc.detailCsv("WORKLOAD_TECH", null, null, null);
         List<String> header = csvHeader(csv);
@@ -480,7 +480,7 @@ class V62TechRemarkTest {
         // 不得再出现在任何一处宣告里（它正是复核者点名「屏上宣告的判定规则与实现相反」的那句）
         assertFalse(rule.contains("无已染色挂接切片"),
                 "**规则说明里不得再宣告 v58 的旧口径**（补取材已出块即执行证据）：" + rule);
-        var doneBody = ok(report.doneTechOrder(techOrder(a, blockA, "IHC", "CK7"), doc1));
+        var doneBody = ok(PathologyTestActors.as(doc1, () -> report.doneTechOrder(techOrder(a, blockA, "IHC", "CK7"), doc1)));
         assertEquals(rule, String.valueOf(doneBody.get("techDoneGateRule")),
                 "完成端点回带的规则与清单端点逐字相同（同一处定义）");
 
@@ -517,7 +517,7 @@ class V62TechRemarkTest {
                 boolean declaredGap = e.getValue();
                 long id = orderWithProgress(progress);
                 assertEquals(progress, listRow(id).get("progress"), gate + "：夹具前提——真造出了该进度");
-                var r = report.doneTechOrder(id, doc1);
+                var r = PathologyTestActors.as(doc1, () -> report.doneTechOrder(id, doc1));
                 String at = gate + " × " + progress;
                 if (declaredGap && "block".equals(gate)) {
                     assertEquals(5273, r.getCode(), at + "：说明承诺 block 档拦，实际没拦：" + r.getMessage());
@@ -546,9 +546,9 @@ class V62TechRemarkTest {
 
         // (a) 无缺口分支：补取材医嘱已出 2 块、零切片——「已出块 2」是这条医嘱唯一的执行证据
         long rs = techOrder(a, null, "RESAMPLE", null);
-        ok(process.grossing(new GrossingReq(a, null, null, null, true, null,
-                List.of(new BlockReq("切缘一 " + tag), new BlockReq("切缘二 " + tag)), rs), doc1));
-        var body = ok(report.doneTechOrder(rs, doc1));
+        ok(PathologyTestActors.as(doc1, () -> process.grossing(new GrossingReq(a, null, null, null, true, null,
+                List.of(new BlockReq("切缘一 " + tag), new BlockReq("切缘二 " + tag)), rs), doc1)));
+        var body = ok(PathologyTestActors.as(doc1, () -> report.doneTechOrder(rs, doc1)));
         String doneRemark = String.valueOf(body.get("doneRemark"));
         assertEquals(remarkOf(a, "TECH_DONE", rs), doneRemark,
                 "**返回给屏幕的那句与写进 path_process 的那句必须逐字是同一句**（实查库）：" + doneRemark);
@@ -569,7 +569,7 @@ class V62TechRemarkTest {
 
         // (b) 有缺口分支（gap != null 那半个三元）：真的什么都没有的医嘱，warn 档放行
         long bare = techOrder(a, null, "RESAMPLE", null);
-        var bareBody = ok(report.doneTechOrder(bare, doc1));
+        var bareBody = ok(PathologyTestActors.as(doc1, () -> report.doneTechOrder(bare, doc1)));
         String bareRemark = String.valueOf(bareBody.get("doneRemark"));
         assertEquals(remarkOf(a, "TECH_DONE", bare), bareRemark,
                 "有缺口分支同样同源（备注里多一段「；<缺口>（「提示」档放行）」）：" + bareRemark);
@@ -592,9 +592,9 @@ class V62TechRemarkTest {
 
         // ---- 库这一端：回给屏幕的那句与落库那句逐字相同（实查 path_process）----
         long rs = techOrder(a, null, "RESAMPLE", null);
-        ok(process.grossing(new GrossingReq(a, null, null, null, true, null,
-                List.of(new BlockReq("提示切缘一 " + tag), new BlockReq("提示切缘二 " + tag)), rs), doc1));
-        var body = ok(report.doneTechOrder(rs, doc1));
+        ok(PathologyTestActors.as(doc1, () -> process.grossing(new GrossingReq(a, null, null, null, true, null,
+                List.of(new BlockReq("提示切缘一 " + tag), new BlockReq("提示切缘二 " + tag)), rs), doc1)));
+        var body = ok(PathologyTestActors.as(doc1, () -> report.doneTechOrder(rs, doc1)));
         String screen = String.valueOf(body.get("doneRemark"));
         assertEquals(remarkOf(a, "TECH_DONE", rs), screen,
                 "**回给屏幕的那句与写进 path_process 的那句必须逐字是同一句**（实查库）：" + screen);
@@ -711,9 +711,9 @@ class V62TechRemarkTest {
     void threeScreensReadTheSameBlockColumnForOneTechOrder() {
         // ---- 库这一端：造一条真「已出块 3」的补取材医嘱（取材 append 挂接 → block_id 被系统回写为首块）----
         long rs = techOrder(a, null, "RESAMPLE", null);
-        var gr = ok(process.grossing(new GrossingReq(a, null, null, "补取材 " + tag, true, null,
+        var gr = ok(PathologyTestActors.as(doc1, () -> process.grossing(new GrossingReq(a, null, null, "补取材 " + tag, true, null,
                 List.of(new BlockReq("切缘一 " + tag), new BlockReq("切缘二 " + tag),
-                        new BlockReq("切缘三 " + tag)), rs), doc1));
+                        new BlockReq("切缘三 " + tag)), rs), doc1)));
         assertEquals(3, rows(gr, "blocks").size(), "夹具前提：本次补取材出三块");
         assertEquals(Boolean.TRUE, gr.get("techOrderBlockBackfilled"),
                 "夹具前提：医嘱 block_id 由空被系统回写为本次首块——**?? 短路正是在这里当场发生**");
@@ -908,19 +908,20 @@ class V62TechRemarkTest {
             }
             case "SAMPLED" -> {
                 long rs = techOrder(a, null, "RESAMPLE", null);
-                ok(process.grossing(new GrossingReq(a, null, null, null, true, null,
-                        List.of(new BlockReq("切缘 " + tag), new BlockReq("切缘二 " + tag)), rs), doc1));
+                ok(PathologyTestActors.as(doc1, () -> process.grossing(new GrossingReq(a, null, null, null, true, null,
+                        List.of(new BlockReq("切缘 " + tag), new BlockReq("切缘二 " + tag)), rs), doc1)));
                 return rs;
             }
             case "SECTIONING", "STAINED" -> {
                 long ihc = techOrder(a, blockA, "IHC", "CK7");
-                var sl = ok(process.slides(new SlideReq(blockA, 2, "IHC", "CK7", null, ihc), doc1));
+                var sl = ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 2, "IHC", "CK7", null, ihc), doc1)));
                 var made = rows(sl, "slides");
                 assertEquals(2, made.size(), "夹具前提：挂接两张切片");
                 // SECTIONING = 只染一张（还差一张）；STAINED = 两张都染完
                 int toStain = "STAINED".equals(progress) ? 2 : 1;
                 for (int i = 0; i < toStain; i++) {
-                    ok(process.stain(idOf(made.get(i)), new StainReq("GOOD", "CK7", null), doc1));
+                    long currentSlide = idOf(made.get(i));
+                    ok(PathologyTestActors.as(doc1, () -> process.stain(currentSlide, new StainReq("GOOD", "CK7", null), doc1)));
                 }
                 return ihc;
             }
@@ -1015,7 +1016,7 @@ class V62TechRemarkTest {
     }
 
     private long techOrder(long specimenId, Long blockId, String type, String item) {
-        var t = ok(report.createTechOrder(new TechOrderReq(specimenId, blockId, type, item, "原因 " + tag), doc1));
+        var t = ok(PathologyTestActors.as(doc1, () -> report.createTechOrder(new TechOrderReq(specimenId, blockId, type, item, "原因 " + tag), doc1)));
         return ((Number) t.get("id")).longValue();
     }
 

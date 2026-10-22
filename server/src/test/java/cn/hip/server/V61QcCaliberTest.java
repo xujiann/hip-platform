@@ -210,8 +210,8 @@ class V61QcCaliberTest {
         // 本类要拿流量指标做对照组，夹具必须显式落类别——否则「流量=0」是空表恒真而不是口径差异
         jdbc.update("update path_specimen set specimen_type = 'ROUTINE' where id = ?", sid);
         assertEquals(0, pathology.receive(barcode).getCode());
-        var gr = process.grossing(new GrossingReq(sid, null, null, "灰白组织一块 " + tag, false, null,
-                List.of(new BlockReq("肿物中心"))), doc);
+        var gr = PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(sid, null, null, "灰白组织一块 " + tag, false, null,
+                List.of(new BlockReq("肿物中心"))), doc));
         assertEquals(0, gr.getCode(), gr.getMessage());
         var dx = PathologyTestActors.as(doc, () -> pathology.diagnose(barcode, new DiagnoseReq(null, "镜下见慢性炎细胞浸润 " + tag, "慢性炎症 " + tag), doc));
         assertEquals(0, dx.getCode(), dx.getMessage());

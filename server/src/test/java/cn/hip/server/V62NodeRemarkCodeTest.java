@@ -118,8 +118,8 @@ class V62NodeRemarkCodeTest {
                         now() - interval '2 days' - interval '1 hour', now() - interval '2 days', false)
                 returning id
                 """, Long.class, orderId, "PB" + tag, tag + "-1", "节点去码标本" + tag);
-        var gr = ok(process.grossing(new GrossingReq(a, null, null, "首次取材 " + tag, false, null,
-                List.of(new BlockReq("肿物中心 " + tag))), doc1));
+        var gr = ok(PathologyTestActors.as(doc1, () -> process.grossing(new GrossingReq(a, null, null, "首次取材 " + tag, false, null,
+                List.of(new BlockReq("肿物中心 " + tag))), doc1)));
         blockA = idOf(rows(gr, "blocks").get(0));
     }
 
@@ -130,7 +130,7 @@ class V62NodeRemarkCodeTest {
     @Test
     void sectionAndStainRemarksCarryChineseInsteadOfRawEnums() {
         long ihc = techOrder(a, blockA, "IHC", "CK7");
-        var sec = ok(process.slides(new SlideReq(blockA, 2, "IHC", "CK7", null, ihc), doc1));
+        var sec = ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 2, "IHC", "CK7", null, ihc), doc1)));
         long slideId = idOf(rows(sec, "slides").get(0));
 
         String section = latestRemark(a, "SECTION");
@@ -143,7 +143,7 @@ class V62NodeRemarkCodeTest {
         assertTrue(section.contains("特检医嘱#" + ihc + " 免疫组化 CK7"),
                 "医嘱标识走 techLabel（#id 保留 + 中文类型 + 项目；修复前是「#" + ihc + " IHC」）：" + section);
 
-        ok(process.stain(slideId, new StainReq("GOOD", null, null), doc1));
+        ok(PathologyTestActors.as(doc1, () -> process.stain(slideId, new StainReq("GOOD", null, null), doc1)));
         String stain = latestRemark(a, "STAIN");
         assertClean(stain, "STAIN");
         assertTrue(stain.contains("质量 优"),
@@ -159,8 +159,8 @@ class V62NodeRemarkCodeTest {
     @Test
     void grossingRemarkNamesTheResampleOrderInChinese() {
         long rs = techOrder(a, null, "RESAMPLE", null);
-        ok(process.grossing(new GrossingReq(a, null, null, null, true, null,
-                List.of(new BlockReq("切缘一 " + tag), new BlockReq("切缘二 " + tag)), rs), doc1));
+        ok(PathologyTestActors.as(doc1, () -> process.grossing(new GrossingReq(a, null, null, null, true, null,
+                List.of(new BlockReq("切缘一 " + tag), new BlockReq("切缘二 " + tag)), rs), doc1)));
 
         String grossing = latestRemark(a, "GROSSING");
         assertClean(grossing, "GROSSING");
@@ -248,14 +248,14 @@ class V62NodeRemarkCodeTest {
 
     @Test
     void batchCompleteIsTheOtherStainEntryAndItsRemarkIsCleanToo() {
-        var sec = ok(process.slides(new SlideReq(blockA, 3, "HE", null, null, null), doc1));
+        var sec = ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 3, "HE", null, null, null), doc1)));
         var slides = rows(sec, "slides");
         assertEquals(3, slides.size(), "夹具：一次切 3 张，才凑得出复核者原话里的「批量核销染色 3 张」");
         var ids = new java.util.ArrayList<Long>();
         for (var sl : slides) ids.add(idOf(sl));
 
         // **真的走 batchComplete**——不是断返回体，是把这条写入路径真跑一遍
-        var res = ok(process.batchComplete(new BatchCompleteReq(ids, "good", null, null), doc1));
+        var res = ok(PathologyTestActors.as(doc1, () -> process.batchComplete(new BatchCompleteReq(ids, "good", null, null), doc1)));
         assertEquals(3, ((Number) res.get("completed")).intValue(), "三张都核销掉");
 
         String remark = latestRemark(a, "STAIN");
@@ -277,8 +277,8 @@ class V62NodeRemarkCodeTest {
         // ---- 两个入口并排：同一个 GOOD，两条备注里的中文必须逐字相同 ----
         // （单张那条的染色类型是 HE，中文名「HE 染色」本身带 HE 两个字母，不走 assertClean 的
         //   裸枚举正则——那是 STAIN_TYPE_NAMES 的既有取名，不是本条要钉的事）
-        var sec2 = ok(process.slides(new SlideReq(blockA, 1, "HE", null, null, null), doc1));
-        ok(process.stain(idOf(rows(sec2, "slides").get(0)), new StainReq("GOOD", null, null), doc1));
+        var sec2 = ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 1, "HE", null, null, null), doc1)));
+        ok(PathologyTestActors.as(doc1, () -> process.stain(idOf(rows(sec2, "slides").get(0)), new StainReq("GOOD", null, null), doc1)));
         String single = latestRemark(a, "STAIN");
         assertTrue(single.contains("，质量 优") && remark.contains("，质量 优"),
                 "同一个节点的两个入口，质量中文逐字相同（修复前一个「优」一个「GOOD」）："
@@ -339,7 +339,7 @@ class V62NodeRemarkCodeTest {
     }
 
     private long techOrder(long specimenId, Long blockId, String type, String item) {
-        var t = ok(report.createTechOrder(new TechOrderReq(specimenId, blockId, type, item, "原因 " + tag), doc1));
+        var t = ok(PathologyTestActors.as(doc1, () -> report.createTechOrder(new TechOrderReq(specimenId, blockId, type, item, "原因 " + tag), doc1)));
         return ((Number) t.get("id")).longValue();
     }
 

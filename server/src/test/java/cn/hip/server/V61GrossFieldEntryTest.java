@@ -99,8 +99,8 @@ class V61GrossFieldEntryTest {
         var gross = new LinkedHashMap<String, String>();
         gross.put("标本大小", "5×4×3cm");
         gross.put("淋巴结清扫组数", "3 组");        // 内置模板里没有这一项
-        var r = ok(process.grossing(new GrossingReq(specimenId, null, gross, "自由描述 " + tag, false, null,
-                List.of(new BlockReq("肿物中心 " + tag))), doc));
+        var r = ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(specimenId, null, gross, "自由描述 " + tag, false, null,
+                List.of(new BlockReq("肿物中心 " + tag))), doc)));
         assertEquals(2, ((Number) r.get("grossFieldCount")).intValue());
         assertEquals(List.of("标本大小", "淋巴结清扫组数"), labelsOfRevision(1), "任意字段名按入参顺序落库");
 
@@ -130,8 +130,8 @@ class V61GrossFieldEntryTest {
         var first = new LinkedHashMap<String, String>();
         first.put("标本大小", "5×4×3cm");
         first.put("切面", "灰白");
-        ok(process.grossing(new GrossingReq(specimenId, null, first, "首次 " + tag, false, null,
-                List.of(new BlockReq("首块 " + tag))), doc));
+        ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(specimenId, null, first, "首次 " + tag, false, null,
+                List.of(new BlockReq("首块 " + tag))), doc)));
         var v1 = ok(process.grossingView(specimenId));
         assertEquals(Boolean.TRUE, v1.get("fieldsCurrent"), "首写：字段就是当前文本的全部来源");
         assertEquals(Boolean.FALSE, v1.get("textIsCumulative"));
@@ -140,8 +140,8 @@ class V61GrossFieldEntryTest {
         var second = new LinkedHashMap<String, String>();
         second.put("补取块数", "2 块");
         second.put("最大径", "0.8cm");
-        ok(process.grossing(new GrossingReq(specimenId, null, second, "补取材 " + tag, true, null,
-                List.of(new BlockReq("补块 " + tag))), doc));
+        ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(specimenId, null, second, "补取材 " + tag, true, null,
+                List.of(new BlockReq("补块 " + tag))), doc)));
 
         var v2 = ok(process.grossingView(specimenId));
         String text = String.valueOf(v2.get("grossFinding"));
@@ -198,8 +198,8 @@ class V61GrossFieldEntryTest {
 
     /** 非法字段名：必须被拒（5222，与 assembleGross 同源），且一个字都不许写进去 */
     private void assertRejected(Map<String, String> gross, String why) {
-        var r = process.grossing(new GrossingReq(specimenId, null, new LinkedHashMap<>(gross), null, false, null,
-                List.of(new BlockReq("块 " + tag))), doc);
+        var r = PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(specimenId, null, new LinkedHashMap<>(gross), null, false, null,
+                List.of(new BlockReq("块 " + tag))), doc));
         assertEquals(5222, r.getCode(), why + " 应被拒：" + r.getMessage());
     }
 

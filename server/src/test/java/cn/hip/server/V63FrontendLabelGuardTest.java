@@ -136,8 +136,8 @@ class V63FrontendLabelGuardTest {
     @Test
     void pairedCodeAndNameColumnsRenderTwoDifferentHeadersAndTheCodeColumnShowsTheCode() {
         long sid = newSpecimen(1);
-        ok(process.grossing(new GrossingReq(sid, null, grossOf("标本大小", "5×4×3cm"), "首次取材 " + tag,
-                false, null, List.of(new BlockReq("块甲 " + tag))), doc));
+        ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(sid, null, grossOf("标本大小", "5×4×3cm"), "首次取材 " + tag,
+                false, null, List.of(new BlockReq("块甲 " + tag))), doc)));
 
         Map<String, String> zh = V59QcLabelsTest.zhEntries(read(FORMAT_TS));
         Map<String, String> backend = V59QcLabelsTest.backendLabels(read(QC_CONTROLLER));
@@ -220,13 +220,13 @@ class V63FrontendLabelGuardTest {
     @Test
     void coverageSectionsLabelPerSectionAndCountColumnsNeverBecomeAPercentage() {
         long sid = newSpecimen(2);
-        var gr = process.grossing(new GrossingReq(sid, null, grossOf("标本大小", "3×2cm"), "取材 " + tag,
-                false, null, List.of(new BlockReq("块一 " + tag), new BlockReq("块二 " + tag))), doc);
+        var gr = PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(sid, null, grossOf("标本大小", "3×2cm"), "取材 " + tag,
+                false, null, List.of(new BlockReq("块一 " + tag), new BlockReq("块二 " + tag))), doc));
         assertEquals(0, gr.getCode(), gr.getMessage());
         List<Long> blockIds = new ArrayList<>();
         for (var b : rows(gr.getData(), "blocks")) blockIds.add(((Number) b.get("id")).longValue());
         assertEquals(2, blockIds.size(), "夹具：两个蜡块");
-        ok(process.slides(new SlideReq(blockIds.get(0), 3, "HE", null, null), doc));
+        ok(PathologyTestActors.as(doc, () -> process.slides(new SlideReq(blockIds.get(0), 3, "HE", null, null), doc)));
 
         Map<String, String> zh = V59QcLabelsTest.zhEntries(read(FORMAT_TS));
         List<CovSec> secs = coverageSections(read(QC_VIEW));
@@ -403,10 +403,10 @@ class V63FrontendLabelGuardTest {
     void fieldsNoteIsTheOnlyWordingSourceAndSupersededKnowsAboutCumulativeText() {
         // --- 库态 A（复核者的 demo 镜头）：补取材也填了字段 → 字段版 = 文本版、当前文本是累积全文 ---
         long a = newSpecimen(3);
-        ok(process.grossing(new GrossingReq(a, null, grossOf("标本大小", "5cm"), "首次 " + tag,
-                false, null, List.of(new BlockReq("A1 " + tag))), doc));
-        ok(process.grossing(new GrossingReq(a, null, grossOf("补取块数", "2 块"), "补取材 " + tag,
-                true, null, List.of(new BlockReq("A2 " + tag))), doc));
+        ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(a, null, grossOf("标本大小", "5cm"), "首次 " + tag,
+                false, null, List.of(new BlockReq("A1 " + tag))), doc)));
+        ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(a, null, grossOf("补取块数", "2 块"), "补取材 " + tag,
+                true, null, List.of(new BlockReq("A2 " + tag))), doc)));
         var va = ok(process.grossingView(a));
         assertEquals(Boolean.TRUE, va.get("textIsCumulative"));
         assertEquals(2, ((Number) va.get("fieldsRevisionSeq")).intValue());
@@ -421,10 +421,10 @@ class V63FrontendLabelGuardTest {
 
         // --- 库态 B（复核者的 data 镜头）：最后一次补取材只写自由描述 → 该版零行字段 ---
         long b = newSpecimen(4);
-        ok(process.grossing(new GrossingReq(b, null, grossOf("标本大小", "4cm"), "首次 " + tag,
-                false, null, List.of(new BlockReq("B1 " + tag))), doc));
-        ok(process.grossing(new GrossingReq(b, null, new LinkedHashMap<>(), "补取材只写描述 " + tag,
-                true, null, List.of(new BlockReq("B2 " + tag))), doc));
+        ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(b, null, grossOf("标本大小", "4cm"), "首次 " + tag,
+                false, null, List.of(new BlockReq("B1 " + tag))), doc)));
+        ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(b, null, new LinkedHashMap<>(), "补取材只写描述 " + tag,
+                true, null, List.of(new BlockReq("B2 " + tag))), doc)));
         var vb = ok(process.grossingView(b));
         assertEquals(Boolean.TRUE, vb.get("textIsCumulative"), "当前文本仍是累积全文");
         assertEquals(1, ((Number) vb.get("fieldsRevisionSeq")).intValue(),

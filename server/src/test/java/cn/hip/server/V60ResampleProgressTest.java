@@ -145,8 +145,8 @@ class V60ResampleProgressTest {
         assertNull(orderBlockId(rs), "下达时块还不存在，RESAMPLE 医嘱 block_id 必为空");
         assertEquals(1L, nodes(a, "GROSSING"), "夹具前提：首次取材一条 GROSSING 节点");
 
-        var gr = ok(process.grossing(new GrossingReq(a, null, null, "补取材灰白组织两块 " + tag, true, "补切缘 " + tag,
-                List.of(new BlockReq("切缘一 " + tag), new BlockReq("切缘二 " + tag)), rs), doc1));
+        var gr = ok(PathologyTestActors.as(doc1, () -> process.grossing(new GrossingReq(a, null, null, "补取材灰白组织两块 " + tag, true, "补切缘 " + tag,
+                List.of(new BlockReq("切缘一 " + tag), new BlockReq("切缘二 " + tag)), rs), doc1)));
         assertEquals(rs, asLong(gr.get("techOrderId")), "返回体回带本次挂接的医嘱");
         assertEquals(Boolean.TRUE, gr.get("techOrderBlockBackfilled"), "医嘱 block_id 由空回写为本次首块");
         var created = rows(gr, "blocks");
@@ -180,10 +180,10 @@ class V60ResampleProgressTest {
         assertProgress(rs, "SAMPLED", "已补取材待切片", 0, 0);
         assertDerived(rs, code1 + "、" + code2, 2, null);
         // 刚下达的返回体仍是 PENDING_SECTION（此时不可能有块）——既有契约不动
-        assertEquals("PENDING_SECTION", ok(report.createTechOrder(new TechOrderReq(a, null, "RESAMPLE", null, null), doc1)).get("progress"));
+        assertEquals("PENDING_SECTION", ok(PathologyTestActors.as(doc1, () -> report.createTechOrder(new TechOrderReq(a, null, "RESAMPLE", null, null), doc1))).get("progress"));
 
         // 再补一块：block_id 已有值不覆盖，块数 3
-        var gr2 = ok(process.grossing(new GrossingReq(a, null, null, null, true, null, List.of(new BlockReq("切缘三 " + tag)), rs), doc1));
+        var gr2 = ok(PathologyTestActors.as(doc1, () -> process.grossing(new GrossingReq(a, null, null, null, true, null, List.of(new BlockReq("切缘三 " + tag)), rs), doc1)));
         assertEquals(Boolean.FALSE, gr2.get("techOrderBlockBackfilled"), "block_id 已非空：不覆盖");
         assertEquals(nb1, orderBlockId(rs));
         long nb3 = idOf(rows(gr2, "blocks").get(0));
@@ -193,33 +193,33 @@ class V60ResampleProgressTest {
         assertDerived(rs, code1 + "、" + code2 + "、" + code3, 3, null);
 
         // 切片挂接：首块（医嘱回写的 block_id）→ SECTIONING；为该医嘱补出的第 2 块也可挂（v60 放宽 5272 一档）
-        var s1 = rows(ok(process.slides(new SlideReq(nb1, 1, "HE", null, null, rs), doc1)), "slides");
+        var s1 = rows(ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(nb1, 1, "HE", null, null, rs), doc1))), "slides");
         assertProgress(rs, "SECTIONING", "切片中", 1, 0);
-        var s2 = rows(ok(process.slides(new SlideReq(nb2, 1, "HE", null, null, rs), doc1)), "slides");
+        var s2 = rows(ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(nb2, 1, "HE", null, null, rs), doc1))), "slides");
         assertProgress(rs, "SECTIONING", "切片中", 2, 0);
         assertDerived(rs, code1 + "、" + code2 + "、" + code3, 3, "HE 染色 ×2");
         // 既非医嘱指定块、也非为它补出的块：仍 5272，一张片不插
-        var bad = process.slides(new SlideReq(blockA, 1, "HE", null, null, rs), doc1);
+        var bad = PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 1, "HE", null, null, rs), doc1));
         assertEquals(5272, bad.getCode(), bad.getMessage());
         assertTrue(bad.getMessage().contains("为它补出的蜡块"), bad.getMessage());
         assertEquals(0L, slidesOf(blockA, rs));
         // 他医嘱指定了别的块：原 5272 路径不受放宽影响（块是为 rs 补出的，不是为 ihc）
         long ihc = techOrder(a, blockA, "IHC", "CK7", null);
-        assertEquals(5272, process.slides(new SlideReq(nb2, 1, "IHC", "CK7", null, ihc), doc1).getCode());
+        assertEquals(5272, PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(nb2, 1, "IHC", "CK7", null, ihc), doc1)).getCode());
         // 类型不符仍 5274（RESAMPLE → HE）
-        assertEquals(5274, process.slides(new SlideReq(nb3, 1, "IHC", "x", null, rs), doc1).getCode());
+        assertEquals(5274, PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(nb3, 1, "IHC", "x", null, rs), doc1)).getCode());
         assertProgress(rs, "SECTIONING", "切片中", 2, 0);
 
-        ok(process.stain(idOf(s1.get(0)), new StainReq("GOOD", null, null), doc1));
+        ok(PathologyTestActors.as(doc1, () -> process.stain(idOf(s1.get(0)), new StainReq("GOOD", null, null), doc1)));
         assertProgress(rs, "SECTIONING", "切片中", 2, 1);
-        ok(process.stain(idOf(s2.get(0)), new StainReq("GOOD", null, null), doc1));
+        ok(PathologyTestActors.as(doc1, () -> process.stain(idOf(s2.get(0)), new StainReq("GOOD", null, null), doc1)));
         assertProgress(rs, "STAINED", "已染色待确认", 2, 2);
-        var done = ok(report.doneTechOrder(rs, doc1));
+        var done = ok(PathologyTestActors.as(doc1, () -> report.doneTechOrder(rs, doc1)));
         assertEquals("DONE", done.get("progress"));
         assertEquals(List.of(), done.get("warnings"), "染完再确认：没有告警");
         assertProgress(rs, "DONE", "已完成", 2, 2);
         // 已完成的医嘱不能再挂补取材块
-        assertEquals(5275, process.grossing(new GrossingReq(a, null, null, null, true, null, List.of(new BlockReq("x")), rs), doc1).getCode());
+        assertEquals(5275, PathologyTestActors.as(doc1, () -> process.grossing(new GrossingReq(a, null, null, null, true, null, List.of(new BlockReq("x")), rs), doc1)).getCode());
     }
 
     // =====================================================================================
@@ -231,7 +231,7 @@ class V60ResampleProgressTest {
         long rs = techOrder(a, null, "RESAMPLE", null, null);
 
         // 修复前的世界：append 不读不写医嘱——不传 techOrderId 照旧（七参形态，v59 契约）
-        var gr = ok(process.grossing(new GrossingReq(a, null, null, null, true, null, List.of(new BlockReq("旧世界补取材 " + tag))), doc1));
+        var gr = ok(PathologyTestActors.as(doc1, () -> process.grossing(new GrossingReq(a, null, null, null, true, null, List.of(new BlockReq("旧世界补取材 " + tag))), doc1)));
         var legacy = rows(gr, "blocks").get(0);
         long legacyBlock = idOf(legacy);
         String legacyCode = String.valueOf(legacy.get("block_code"));
@@ -283,7 +283,7 @@ class V60ResampleProgressTest {
         long ihc = techOrder(a, blockA, "IHC", "CK7", null);
         long onB = techOrder(b, null, "RESAMPLE", null, null);
         long cancelled = techOrder(a, null, "RESAMPLE", null, null);
-        ok(report.cancelTechOrder(cancelled, new CancelTechOrderReq("不补了 " + tag), doc1));
+        ok(PathologyTestActors.as(doc1, () -> report.cancelTechOrder(cancelled, new CancelTechOrderReq("不补了 " + tag), doc1)));
         long good = techOrder(a, null, "RESAMPLE", null, null);
 
         Map<String, Object> before = snapshot(a);
@@ -294,7 +294,7 @@ class V60ResampleProgressTest {
         cases.put(cancelled, "待执行");
         cases.put(-1L, "不存在");
         for (var e : cases.entrySet()) {
-            var r = process.grossing(new GrossingReq(a, null, null, desc, true, null, List.of(new BlockReq("x " + tag)), e.getKey()), doc1);
+            var r = PathologyTestActors.as(doc1, () -> process.grossing(new GrossingReq(a, null, null, desc, true, null, List.of(new BlockReq("x " + tag)), e.getKey()), doc1));
             assertEquals(5275, r.getCode(), "techOrderId=" + e.getKey() + "：" + r.getMessage());
             assertTrue(r.getMessage().contains(e.getValue()), "techOrderId=" + e.getKey() + " 消息应点明原因「" + e.getValue() + "」，实际 " + r.getMessage());
             assertEquals(before, snapshot(a), "techOrderId=" + e.getKey() + " 被拒后零写入");
@@ -306,20 +306,19 @@ class V60ResampleProgressTest {
         long c = specimen("C");
         long rsC = techOrder(c, null, "RESAMPLE", null, null);
         Map<String, Object> beforeC = snapshot(c);
-        var first = process.grossing(new GrossingReq(c, null, null, "首次取材 " + tag, false, null, List.of(new BlockReq("x")), rsC), doc1);
+        var first = PathologyTestActors.as(doc1, () -> process.grossing(new GrossingReq(c, null, null, "首次取材 " + tag, false, null, List.of(new BlockReq("x")), rsC), doc1));
         assertEquals(5222, first.getCode(), first.getMessage());
         assertTrue(first.getMessage().contains("首次取材不能挂接补取材医嘱"), first.getMessage());
         assertEquals(beforeC, snapshot(c), "5222 零写入");
         assertNull(orderBlockId(rsC));
         // 同一标本 append=false 不带 techOrderId 照旧能首次取材（旧契约）
-        ok(process.grossing(new GrossingReq(c, null, null, "首次取材 " + tag, false, null, List.of(new BlockReq("x")), null), doc1));
+        ok(PathologyTestActors.as(doc1, () -> process.grossing(new GrossingReq(c, null, null, "首次取材 " + tag, false, null, List.of(new BlockReq("x")), null), doc1)));
 
-        // 5224 仍在任何写入之前：合法医嘱 + 解析不出的登录人 → 不落块、不回写 block_id
+        // v118：实际员工守卫1005仍在任何写入之前：合法医嘱 + 解析不出的登录人 → 不落块、不回写 block_id
         var stranger = new UsernamePasswordAuthenticationToken(tag + "nobody", null,
                 List.of(new SimpleGrantedAuthority("ROLE_DOCTOR_OUTP")));
-        var r = process.grossing(new GrossingReq(a, null, null, null, true, null, List.of(new BlockReq("y")), good), stranger);
-        assertEquals(5224, r.getCode(), r.getMessage());
-        assertEquals(before, snapshot(a), "5224 零写入");
+        org.junit.jupiter.api.Assertions.assertThrows(org.springframework.security.access.AccessDeniedException.class, () -> PathologyTestActors.as(stranger, () -> process.grossing(new GrossingReq(a, null, null, null, true, null, List.of(new BlockReq("y")), good), stranger)));
+        assertEquals(before, snapshot(a), "1005 零写入");
         assertNull(orderBlockId(good));
         assertProgress(good, "PENDING_SECTION", "待切片", 0, 0);
     }
@@ -332,13 +331,13 @@ class V60ResampleProgressTest {
     void derivedColumnsAcrossListingBranches() {
         String codeA = blockCode(blockA);
         // 第二块（不挂医嘱）：块号 2，块码按块号排在 A 之后
-        long blockA2 = idOf(rows(ok(process.grossing(new GrossingReq(a, null, null, null, true, null, List.of(new BlockReq("第二块 " + tag))), doc1)), "blocks").get(0));
+        long blockA2 = idOf(rows(ok(PathologyTestActors.as(doc1, () -> process.grossing(new GrossingReq(a, null, null, null, true, null, List.of(new BlockReq("第二块 " + tag))), doc1))), "blocks").get(0));
         String codeA2 = blockCode(blockA2);
 
         // 未指定蜡块的 IHC：修复前从某块挂了片后「蜡块」仍是「—」——现在按挂接切片所在块派生
         long ck7 = techOrder(a, null, "IHC", "CK7", null);
         assertDerived(ck7, null, 0, null);
-        ok(process.slides(new SlideReq(blockA, 2, "IHC", "CK7", null, ck7), doc1));
+        ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 2, "IHC", "CK7", null, ck7), doc1)));
         assertDerived(ck7, codeA, 0, "免疫组化 CK7 ×2");
         assertAttachedStainUnchanged(ck7, "IHC CK7 ×2");
         // 旧世界（直接 SQL）挂在第二块上的一张 HE：两块按块号「、」相连；中文汇总按 stain_type、stain_item 排序
@@ -352,23 +351,23 @@ class V60ResampleProgressTest {
         // 指定了蜡块的：block_id 非空取其块码，不受挂接切片影响
         long pas = techOrder(a, blockA2, "SPECIAL_STAIN", "PAS", null);
         assertDerived(pas, codeA2, 0, null);
-        ok(process.slides(new SlideReq(blockA2, 1, "SPECIAL", "PAS", null, pas), doc1));
+        ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA2, 1, "SPECIAL", "PAS", null, pas), doc1)));
         assertDerived(pas, codeA2, 0, "特殊染色 PAS ×1");
         long egfr = techOrder(a, null, "MOLECULAR", "EGFR", null);
-        ok(process.slides(new SlideReq(blockA, 1, "MOLECULAR", "EGFR", null, egfr), doc1));
+        ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 1, "MOLECULAR", "EGFR", null, egfr), doc1)));
         assertDerived(egfr, codeA, 0, "分子病理 EGFR ×1");
         // 深切无项目：中文名后不带项目
         long deep = techOrder(a, null, "DEEP_CUT", null, null);
-        ok(process.slides(new SlideReq(blockA, 3, "HE", null, null, deep), doc1));
+        ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 3, "HE", null, null, deep), doc1)));
         assertDerived(deep, codeA, 0, "HE 染色 ×3");
 
         // 挂接蜡块 + 挂接切片所在块并集去重：为 rs 补出的块上切了片 + 另一块（block_id 空的场景用直接 SQL 造）
         long rs = techOrder(a, null, "RESAMPLE", null, null);
-        long nb = idOf(rows(ok(process.grossing(new GrossingReq(a, null, null, null, true, null, List.of(new BlockReq("补块 " + tag)), rs), doc1)), "blocks").get(0));
+        long nb = idOf(rows(ok(PathologyTestActors.as(doc1, () -> process.grossing(new GrossingReq(a, null, null, null, true, null, List.of(new BlockReq("补块 " + tag)), rs), doc1))), "blocks").get(0));
         String codeNb = blockCode(nb);
         jdbc.update("update path_tech_order set block_id = null where id = ?", rs);   // 造出「有挂接蜡块但 block_id 空」的行
         assertDerived(rs, codeNb, 1, null);
-        ok(process.slides(new SlideReq(nb, 1, "HE", null, null, rs), doc1));
+        ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(nb, 1, "HE", null, null, rs), doc1)));
         assertDerived(rs, codeNb, 1, "HE 染色 ×1");   // 同一块：去重
         jdbc.update("""
                 insert into path_slide(block_id, slide_no, slide_code, stain_type, stain_item, tech_order_id)
@@ -390,11 +389,11 @@ class V60ResampleProgressTest {
         var g1 = new LinkedHashMap<String, String>();
         g1.put("大小", "3×2×1cm");
         g1.put("颜色", "灰白");
-        ok(process.grossing(new GrossingReq(d, null, g1, "切面实性 " + tag, false, null, List.of(new BlockReq("肿物中心"))), doc1));
+        ok(PathologyTestActors.as(doc1, () -> process.grossing(new GrossingReq(d, null, g1, "切面实性 " + tag, false, null, List.of(new BlockReq("肿物中心"))), doc1)));
         var g2 = new LinkedHashMap<String, String>();
         g2.put("质地", "质硬");
-        ok(process.grossing(new GrossingReq(d, null, g2, null, true, null, List.of(new BlockReq("切缘"))), doc1));
-        ok(process.grossing(new GrossingReq(d, null, null, "再补一块，未填字段 " + tag, true, null, List.of(new BlockReq("再补"))), doc1));
+        ok(PathologyTestActors.as(doc1, () -> process.grossing(new GrossingReq(d, null, g2, null, true, null, List.of(new BlockReq("切缘"))), doc1)));
+        ok(PathologyTestActors.as(doc1, () -> process.grossing(new GrossingReq(d, null, null, "再补一块，未填字段 " + tag, true, null, List.of(new BlockReq("再补"))), doc1)));
 
         var view = ok(process.grossingView(d));
         var byRev = rows(view, "fieldsByRevision");
@@ -676,14 +675,14 @@ class V60ResampleProgressTest {
     }
 
     private long gross(long specimenId, String tissue) {
-        var gr = process.grossing(new GrossingReq(specimenId, null, null, "灰白组织一块 " + tag, false, null,
-                List.of(new BlockReq(tissue))), doc1);
+        var gr = PathologyTestActors.as(doc1, () -> process.grossing(new GrossingReq(specimenId, null, null, "灰白组织一块 " + tag, false, null,
+                List.of(new BlockReq(tissue))), doc1));
         assertEquals(0, gr.getCode(), gr.getMessage());
         return idOf(rows(gr.getData(), "blocks").get(0));
     }
 
     private long techOrder(long specimenId, Long blockId, String type, String item, String reason) {
-        var t = report.createTechOrder(new TechOrderReq(specimenId, blockId, type, item, reason), doc1);
+        var t = PathologyTestActors.as(doc1, () -> report.createTechOrder(new TechOrderReq(specimenId, blockId, type, item, reason), doc1));
         assertEquals(0, t.getCode(), t.getMessage());
         return ((Number) t.getData().get("id")).longValue();
     }

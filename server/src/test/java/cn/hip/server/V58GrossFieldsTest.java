@@ -128,8 +128,8 @@ class V58GrossFieldsTest {
         String free = "切面实性 " + tag;
         Fixture f = specimen("A");
 
-        var gr = ok(process.grossing(new GrossingReq(f.id(), null, gross, free, false, null,
-                List.of(new BlockReq("肿物中心"))), doc));
+        var gr = ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(f.id(), null, gross, free, false, null,
+                List.of(new BlockReq("肿物中心"))), doc)));
 
         // 文本契约与 v57 前逐字一致：字段「标签：值」以「；」相连，末尾「。」接自由文本
         String expected = "大小：3×2×1cm；颜色：灰白；质地：质硬。" + free;
@@ -205,8 +205,8 @@ class V58GrossFieldsTest {
         assertEquals(1, revisionRows(f.id()).size());
 
         // 补取材、本次不传 gross/grossText：只加蜡块，两张表零变化
-        var gr = ok(process.grossing(new GrossingReq(f.id(), null, null, null, true, null,
-                List.of(new BlockReq("补取材 " + tag))), doc));
+        var gr = ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(f.id(), null, null, null, true, null,
+                List.of(new BlockReq("补取材 " + tag))), doc)));
         assertEquals(Boolean.FALSE, gr.get("grossFindingWritten"));
         assertEquals(0, ((Number) gr.get("grossFieldCount")).intValue());
         assertEquals(2, fieldRows(f.id()).size(), "没有新描述就没有新字段行");
@@ -218,8 +218,8 @@ class V58GrossFieldsTest {
         // 「append=false 仍 5222」的反向事实与拼接文本口径钉在 V59GrossReviseTest (e)。
         var again = new LinkedHashMap<String, String>();
         again.put("大小", "3×2cm");
-        var gr2 = ok(process.grossing(new GrossingReq(f.id(), null, again, null, true, null,
-                List.of(new BlockReq("x"))), doc));
+        var gr2 = ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(f.id(), null, again, null, true, null,
+                List.of(new BlockReq("x"))), doc)));
         assertEquals(Boolean.TRUE, gr2.get("grossFindingWritten"));
         assertEquals(1, ((Number) gr2.get("grossFieldCount")).intValue());
         assertEquals(3, fieldRows(f.id()).size(), "v59：追加版的一行字段加在第 1 版两行之后（不同 revision_seq）");
@@ -361,8 +361,8 @@ class V58GrossFieldsTest {
         assertNotEquals(input, sorted, "对照：这三个字段名按字符序排会被打乱，否则本测试什么都证明不了");
 
         Fixture f = specimen("D");
-        var gr = ok(process.grossing(new GrossingReq(f.id(), null, gross, null, false, null,
-                List.of(new BlockReq("x"))), doc));
+        var gr = ok(PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(f.id(), null, gross, null, false, null,
+                List.of(new BlockReq("x"))), doc)));
         assertEquals("质地：质硬；大小：3×2×1cm；颜色：灰白", gr.get("grossFinding"), "文本也按入参序");
 
         var rows = fieldRows(f.id());
@@ -465,7 +465,7 @@ class V58GrossFieldsTest {
 
     // ==================== 夹具与取值 ====================
 
-    // v58 审阅补（审阅者探针实测：修复前 5224 路径 gross_finding 已写、字段/修订/蜡块/节点全无）：
+    // v58 审阅补（审阅者探针实测：修复前 1005 路径 gross_finding 已写、字段/修订/蜡块/节点全无）：
     // 当前用户解析不出、字段名 trim 后重复，两条被拒路径都不得留下任何写入。
     @Test
     void unknownUserAndDuplicateLabelWriteNothing() {
@@ -474,16 +474,15 @@ class V58GrossFieldsTest {
         gross.put("大小", "3×2×1cm");
         Authentication ghost = new UsernamePasswordAuthenticationToken("ghost_" + tag, null,
                 List.of(new SimpleGrantedAuthority("ROLE_DOCTOR_OUTP")));   // sys_user 里没有这个人
-        var r = process.grossing(new GrossingReq(f.id(), null, gross, "切面灰白 " + tag, false, null,
-                List.of(new BlockReq("肿物中心"))), ghost);
-        assertEquals(5224, r.getCode(), r.getMessage());
-        assertNothingWritten(f.id(), "5224 路径");
+        org.junit.jupiter.api.Assertions.assertThrows(org.springframework.security.access.AccessDeniedException.class, () -> PathologyTestActors.as(ghost, () -> process.grossing(new GrossingReq(f.id(), null, gross, "切面灰白 " + tag, false, null,
+                List.of(new BlockReq("肿物中心"))), ghost)));
+        assertNothingWritten(f.id(), "1005 路径");
 
         var dup = new LinkedHashMap<String, String>();
         dup.put("大小", "a");
         dup.put(" 大小 ", "b");            // Jackson 里是两个键，trim 后同名
-        var d = process.grossing(new GrossingReq(f.id(), null, dup, null, false, null,
-                List.of(new BlockReq("肿物中心"))), doc);
+        var d = PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(f.id(), null, dup, null, false, null,
+                List.of(new BlockReq("肿物中心"))), doc));
         assertEquals(5222, d.getCode(), d.getMessage());
         assertTrue(d.getMessage().contains("重复"), d.getMessage());
         assertNothingWritten(f.id(), "字段名重复路径");
@@ -526,8 +525,8 @@ class V58GrossFieldsTest {
     /** 核收后走真实 grossing：结构化字段 + 自由文本 + 一块蜡块 */
     private Fixture specimenWithGross(String suffix, Map<String, String> gross, String freeText) {
         Fixture f = specimen(suffix);
-        var gr = process.grossing(new GrossingReq(f.id(), null, gross, freeText, false, null,
-                List.of(new BlockReq("肿物中心"))), doc);
+        var gr = PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(f.id(), null, gross, freeText, false, null,
+                List.of(new BlockReq("肿物中心"))), doc));
         assertEquals(0, gr.getCode(), gr.getMessage());
         assertEquals(Boolean.TRUE, gr.getData().get("grossFindingWritten"), "夹具前提：取材端点真的写了大体所见");
         assertEquals("RECEIVED", jdbc.queryForObject(

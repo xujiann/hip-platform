@@ -112,14 +112,14 @@ class V55PathologyReachTest {
         c = specimen("C", "now() - interval '3 days'");
 
         // ---- A：取材写大体所见 → 切片（蜡块无包埋记录，端点只告警）→ 染色一张 ----
-        var gr = process.grossing(new GrossingReq(a, null, null, "灰白组织一块 " + tag, false, null,
-                List.of(new BlockReq("肿物中心"))), doc1);
+        var gr = PathologyTestActors.as(doc1, () -> process.grossing(new GrossingReq(a, null, null, "灰白组织一块 " + tag, false, null,
+                List.of(new BlockReq("肿物中心"))), doc1));
         assertEquals(0, gr.getCode(), gr.getMessage());
         blockA = idOf(rows(gr.getData(), "blocks").get(0));
-        var sl = process.slides(new SlideReq(blockA, 2, "HE", null, null), doc1);
+        var sl = PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 2, "HE", null, null), doc1));
         assertEquals(0, sl.getCode(), sl.getMessage());
         long slideId = idOf(rows(sl.getData(), "slides").get(0));
-        var st = process.stain(slideId, new StainReq("GOOD", null, null), doc1);
+        var st = PathologyTestActors.as(doc1, () -> process.stain(slideId, new StainReq("GOOD", null, null), doc1));
         assertEquals(0, st.getCode(), st.getMessage());
 
         // ---- B：诊断（走库，既有 diagnose 端点按 barcode 且状态机已在别处覆盖）→ 初签 → 缺复签即签发 ----
@@ -138,13 +138,13 @@ class V55PathologyReachTest {
         jdbc.update("update path_specimen set urgent = true where id = ?", b);
 
         // ---- 技术医嘱：B 一条待执行的免疫组化，A 一条已完成的深切 ----
-        var t1 = report.createTechOrder(new TechOrderReq(b, null, "IHC", "CK7", "免疫组化 " + tag), doc1);
+        var t1 = PathologyTestActors.as(doc1, () -> report.createTechOrder(new TechOrderReq(b, null, "IHC", "CK7", "免疫组化 " + tag), doc1));
         assertEquals(0, t1.getCode(), t1.getMessage());
         techOnB = ((Number) t1.getData().get("id")).longValue();
-        var t2 = report.createTechOrder(new TechOrderReq(a, blockA, "DEEP_CUT", null, null), doc1);
+        var t2 = PathologyTestActors.as(doc1, () -> report.createTechOrder(new TechOrderReq(a, blockA, "DEEP_CUT", null, null), doc1));
         assertEquals(0, t2.getCode(), t2.getMessage());
         techOnA = ((Number) t2.getData().get("id")).longValue();
-        assertEquals(0, report.doneTechOrder(techOnA, doc1).getCode());
+        assertEquals(0, PathologyTestActors.as(doc1, () -> report.doneTechOrder(techOnA, doc1)).getCode());
     }
 
     @AfterEach

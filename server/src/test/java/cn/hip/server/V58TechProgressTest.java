@@ -161,7 +161,7 @@ class V58TechProgressTest {
         assertRecent(ordered.get("occurred_at"), "TECH_ORDER.occurred_at");
 
         // 完成（默认 warn、0 片：放行但节点写明缺口）
-        var done = ok(report.doneTechOrder(ihc, doc2));
+        var done = ok(PathologyTestActors.as(doc2, () -> report.doneTechOrder(ihc, doc2)));
         assertEquals("DONE", done.get("status"));
         var doneNode = node(a, "TECH_DONE", ihc);
         assertEquals(userId(tag + "d2").longValue(), asLong(doneNode.get("operator_id")), "TECH_DONE 的操作人是确认人");
@@ -174,7 +174,7 @@ class V58TechProgressTest {
         // 取消（带原因）
         long deep = techOrder(a, blockA, "DEEP_CUT", null, null);
         String why = "临床撤回 " + tag;
-        var cancelled = ok(report.cancelTechOrder(deep, new CancelTechOrderReq(why), doc2));
+        var cancelled = ok(PathologyTestActors.as(doc2, () -> report.cancelTechOrder(deep, new CancelTechOrderReq(why), doc2)));
         assertEquals("CANCELLED", cancelled.get("status"));
         assertEquals("CANCELLED", cancelled.get("progress"));
         var cancelNode = node(a, "TECH_CANCEL", deep);
@@ -189,9 +189,9 @@ class V58TechProgressTest {
         // 被拒路径不留节点：5271（无原因）/ 5268（重复完成、重复取消）
         long again = techOrder(a, blockA, "RECUT", null, null);
         assertEquals(5L, techNodes(a));
-        assertEquals(5271, report.cancelTechOrder(again, null, doc1).getCode());
-        assertEquals(5268, report.doneTechOrder(ihc, doc1).getCode());
-        assertEquals(5268, report.cancelTechOrder(deep, new CancelTechOrderReq("再取消"), doc1).getCode());
+        assertEquals(5271, PathologyTestActors.as(doc1, () -> report.cancelTechOrder(again, null, doc1)).getCode());
+        assertEquals(5268, PathologyTestActors.as(doc1, () -> report.doneTechOrder(ihc, doc1)).getCode());
+        assertEquals(5268, PathologyTestActors.as(doc1, () -> report.cancelTechOrder(deep, new CancelTechOrderReq("再取消"), doc1)).getCode());
         assertEquals(5L, techNodes(a), "三条被拒路径一条节点都不许留");
     }
 
@@ -201,22 +201,22 @@ class V58TechProgressTest {
 
     @Test
     void progressIsDerivedFromAttachedSlidesThroughFiveStates() {
-        var created = ok(report.createTechOrder(new TechOrderReq(a, blockA, "IHC", "CK7", null), doc1));
+        var created = ok(PathologyTestActors.as(doc1, () -> report.createTechOrder(new TechOrderReq(a, blockA, "IHC", "CK7", null), doc1)));
         long ihc = asLong(created.get("id"));
         assertEquals("PENDING_SECTION", created.get("progress"), "刚下达：待切片");
         assertEquals("待切片", created.get("progressName"));
         assertProgress(ihc, "PENDING_SECTION", "待切片", 0, 0);
 
-        var sl = ok(process.slides(new SlideReq(blockA, 2, "IHC", "CK7", null, ihc), doc1));
+        var sl = ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 2, "IHC", "CK7", null, ihc), doc1)));
         List<Long> slideIds = new ArrayList<>();
         for (var s : rows(sl, "slides")) slideIds.add(idOf(s));
         assertEquals(2, slideIds.size());
         assertProgress(ihc, "SECTIONING", "切片中", 2, 0);
 
-        ok(process.stain(slideIds.get(0), new StainReq("GOOD", null, null), doc1));
+        ok(PathologyTestActors.as(doc1, () -> process.stain(slideIds.get(0), new StainReq("GOOD", null, null), doc1)));
         assertProgress(ihc, "SECTIONING", "切片中", 2, 1);
 
-        ok(process.stain(slideIds.get(1), new StainReq("GOOD", null, null), doc1));
+        ok(PathologyTestActors.as(doc1, () -> process.stain(slideIds.get(1), new StainReq("GOOD", null, null), doc1)));
         assertProgress(ihc, "STAINED", "已染色待确认", 2, 2);
 
         // slideId 反查：只回该切片挂接的那条医嘱；普通切片反查为空，且普通切片不进任何医嘱的计数
@@ -224,13 +224,13 @@ class V58TechProgressTest {
         assertEquals(1, rows(bySlide, "items").size(), "slideId 反查应恰一行");
         assertEquals(ihc, idOf(rows(bySlide, "items").get(0)));
         assertEquals(slideIds.get(0).longValue(), asLong(bySlide.get("slideId")));
-        var plain = ok(process.slides(new SlideReq(blockA, 1, "HE", null, null), doc1));
+        var plain = ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 1, "HE", null, null), doc1)));
         long plainSlide = idOf(rows(plain, "slides").get(0));
         assertEquals(0, rows(ok(report.techOrders(a, "ALL", null, null, null, null, null, null, null, plainSlide)),
                 "items").size(), "普通切片不挂任何医嘱，反查为空");
         assertProgress(ihc, "STAINED", "已染色待确认", 2, 2);
 
-        var done = ok(report.doneTechOrder(ihc, doc1));
+        var done = ok(PathologyTestActors.as(doc1, () -> report.doneTechOrder(ihc, doc1)));
         assertEquals("DONE", done.get("progress"));
         assertEquals(2L, asLong(done.get("slideCount")));
         assertEquals(2L, asLong(done.get("stainedCount")));
@@ -239,7 +239,7 @@ class V58TechProgressTest {
 
         long pas = techOrder(a, blockA, "SPECIAL_STAIN", "PAS", null);
         assertProgress(pas, "PENDING_SECTION", "待切片", 0, 0);
-        ok(report.cancelTechOrder(pas, new CancelTechOrderReq("不做了 " + tag), doc1));
+        ok(PathologyTestActors.as(doc1, () -> report.cancelTechOrder(pas, new CancelTechOrderReq("不做了 " + tag), doc1)));
         assertProgress(pas, "CANCELLED", "已取消", 0, 0);
 
         // 历史行（直连改库只改 status）：派生照状态走，不猜
@@ -264,10 +264,10 @@ class V58TechProgressTest {
                 long id = techOrder(a, blockA, "IHC", item, null);
                 if (stained) {
                     // v59（2563 一致性）：挂接切片的项目须与医嘱相同（此前传 "T" 也能挂上——正是 5274 要堵的路径）
-                    long slide = idOf(rows(ok(process.slides(new SlideReq(blockA, 1, "IHC", item, null, id), doc1)), "slides").get(0));
-                    ok(process.stain(slide, new StainReq("GOOD", null, null), doc1));
+                    long slide = idOf(rows(ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 1, "IHC", item, null, id), doc1))), "slides").get(0));
+                    ok(PathologyTestActors.as(doc1, () -> process.stain(slide, new StainReq("GOOD", null, null), doc1)));
                 }
-                var r = report.doneTechOrder(id, doc1);
+                var r = PathologyTestActors.as(doc1, () -> report.doneTechOrder(id, doc1));
                 boolean blocked = "block".equals(gate) && !stained;
                 if (blocked) {
                     assertEquals(5273, r.getCode(), label + "：block 且无挂接切片应返 5273，实际 " + r.getMessage());
@@ -321,7 +321,7 @@ class V58TechProgressTest {
         // 坏配置 'blocked' → 按 warn：放行 + 告警
         assertEquals(1, setGate("blocked"));
         long bad = techOrder(a, blockA, "IHC", "T-bad", null);
-        var badR = ok(report.doneTechOrder(bad, doc1));
+        var badR = ok(PathologyTestActors.as(doc1, () -> report.doneTechOrder(bad, doc1)));
         assertEquals("warn", badR.get("techDoneGate"), "坏配置回落 warn 而非 off");
         assertEquals(1, ((List<?>) badR.get("warnings")).size());
         assertEquals("DONE", badR.get("status"));
@@ -329,24 +329,24 @@ class V58TechProgressTest {
         // 5273 的第二条路径：有挂接切片但未全部染色
         assertEquals(1, setGate("block"));
         long partial = techOrder(a, blockA, "IHC", "T-partial", null);
-        var slides = rows(ok(process.slides(new SlideReq(blockA, 2, "IHC", "T-partial", null, partial), doc1)), "slides");
-        ok(process.stain(idOf(slides.get(0)), new StainReq("GOOD", null, null), doc1));
-        var partialR = report.doneTechOrder(partial, doc1);
+        var slides = rows(ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 2, "IHC", "T-partial", null, partial), doc1))), "slides");
+        ok(PathologyTestActors.as(doc1, () -> process.stain(idOf(slides.get(0)), new StainReq("GOOD", null, null), doc1)));
+        var partialR = PathologyTestActors.as(doc1, () -> report.doneTechOrder(partial, doc1));
         assertEquals(5273, partialR.getCode(), partialR.getMessage());
         assertTrue(partialR.getMessage().contains("1 片尚未染色"), "消息应指出未染色片数，实际 " + partialR.getMessage());
         assertEquals("ORDERED", techRowInDb(partial).get("status"));
         assertProgress(partial, "SECTIONING", "切片中", 2, 1);
         // 染完后同一档位放行
-        ok(process.stain(idOf(slides.get(1)), new StainReq("GOOD", null, null), doc1));
-        assertEquals(0, report.doneTechOrder(partial, doc1).getCode(), "block 档染完即放行");
+        ok(PathologyTestActors.as(doc1, () -> process.stain(idOf(slides.get(1)), new StainReq("GOOD", null, null), doc1)));
+        assertEquals(0, PathologyTestActors.as(doc1, () -> report.doneTechOrder(partial, doc1)).getCode(), "block 档染完即放行");
 
-        // 既有守卫不变：5268（不存在 / 非 ORDERED）、5270（完成人解析不出）——两者都不碰库、不写节点
-        assertEquals(5268, report.doneTechOrder(-1L, doc1).getCode());
-        assertEquals(5268, report.doneTechOrder(partial, doc1).getCode(), "已 DONE 再完成仍 5268");
+        // 既有守卫不变：5268（不存在 / 非 ORDERED）、v118员工守卫1005（完成人不存在）——两者都不碰库、不写节点
+        assertEquals(5268, PathologyTestActors.as(doc1, () -> report.doneTechOrder(-1L, doc1)).getCode());
+        assertEquals(5268, PathologyTestActors.as(doc1, () -> report.doneTechOrder(partial, doc1)).getCode(), "已 DONE 再完成仍 5268");
         long guarded = techOrder(a, blockA, "IHC", "T-guard", null);
         var stranger = new UsernamePasswordAuthenticationToken(tag + "nobody", null,
                 List.of(new SimpleGrantedAuthority("ROLE_DOCTOR_OUTP")));
-        assertEquals(5270, report.doneTechOrder(guarded, stranger).getCode());
+        org.junit.jupiter.api.Assertions.assertThrows(org.springframework.security.access.AccessDeniedException.class, () -> PathologyTestActors.as(stranger, () -> report.doneTechOrder(guarded, stranger)));
         assertEquals("ORDERED", techRowInDb(guarded).get("status"));
         assertNull(nodeOrNull(a, "TECH_DONE", guarded));
     }
@@ -526,14 +526,14 @@ class V58TechProgressTest {
     }
 
     private long gross(long specimenId, String tissue) {
-        var gr = process.grossing(new GrossingReq(specimenId, null, null, "灰白组织一块 " + tag, false, null,
-                List.of(new BlockReq(tissue))), doc1);
+        var gr = PathologyTestActors.as(doc1, () -> process.grossing(new GrossingReq(specimenId, null, null, "灰白组织一块 " + tag, false, null,
+                List.of(new BlockReq(tissue))), doc1));
         assertEquals(0, gr.getCode(), gr.getMessage());
         return idOf(rows(gr.getData(), "blocks").get(0));
     }
 
     private long techOrder(long specimenId, Long blockId, String type, String item, String reason) {
-        var t = report.createTechOrder(new TechOrderReq(specimenId, blockId, type, item, reason), doc1);
+        var t = PathologyTestActors.as(doc1, () -> report.createTechOrder(new TechOrderReq(specimenId, blockId, type, item, reason), doc1));
         assertEquals(0, t.getCode(), t.getMessage());
         return ((Number) t.getData().get("id")).longValue();
     }

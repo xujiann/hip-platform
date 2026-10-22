@@ -22,6 +22,11 @@ PATTERN = re.compile(r'(?:R\.fail|new \w*Exception)\(\s*(\d{4})\s*,\s*"([^"]{2,1
 # 消息为变量或手写 JSON 信封（过滤器层进不了 R.fail）时正则抓不到——在此手工登记。
 # 新增前先核对 docs/错误码分段.md 的号段归属
 MANUAL = {
+    # v118: retain allocated historical codes for support lookup; current pathology writes
+    # reject nonexistent/disabled/impersonated employees through the shared 1005 guard.
+    '5224': ('历史取材员工无法识别；v118起实际员工权限统一1005', '病理历史'),
+    '5248': ('历史制片员工无法识别；v118起实际员工权限统一1005', '病理历史'),
+    '5270': ('历史病理签名或特检员工无法识别；现统一1005', '病理历史'),
     '9704': ('分诊记录不存在（急诊对象守卫动态传码）', '急诊'),
     '1007': ('新密码不符合强度要求（至少 8 位且含字母与数字）', '认证'),
     '1009': ('请先修改初始密码（强制改密兜底，改密后自动恢复）', '认证'),

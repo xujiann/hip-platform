@@ -101,8 +101,8 @@ class V61TechLabelTest {
                         now() - interval '2 days' - interval '1 hour', now() - interval '2 days', false)
                 returning id
                 """, Long.class, orderId, "PB" + tag, tag + "-1", "派生标标本" + tag);
-        var gr = ok(process.grossing(new GrossingReq(a, null, null, "首次取材 " + tag, false, null,
-                List.of(new BlockReq("肿物中心 " + tag))), doc1));
+        var gr = ok(PathologyTestActors.as(doc1, () -> process.grossing(new GrossingReq(a, null, null, "首次取材 " + tag, false, null,
+                List.of(new BlockReq("肿物中心 " + tag))), doc1)));
         blockA = idOf(rows(gr, "blocks").get(0));
         codeA = blockCode(blockA);
     }
@@ -123,14 +123,14 @@ class V61TechLabelTest {
 
         // (c) 只挂接派生：不指定块，从 blockA 挂片 → DERIVED
         long derived = techOrder(a, null, "IHC", "CK7");
-        ok(process.slides(new SlideReq(blockA, 1, "IHC", "CK7", null, derived), doc1));
+        ok(PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(blockA, 1, "IHC", "CK7", null, derived), doc1)));
         assertSource(derived, codeA, "DERIVED");
 
         // (d) 补取材：挂接出两块。医嘱 block_id 被回写为首块——**回写来的块算派生不算指定**，
         //     所以两块全派生 → DERIVED（修复前前端按 !block_code 判，此场景恒不标派生）
         long resample = techOrder(a, null, "RESAMPLE", null);
-        var gr = ok(process.grossing(new GrossingReq(a, null, null, null, true, null,
-                List.of(new BlockReq("补块一 " + tag), new BlockReq("补块二 " + tag)), resample), doc1));
+        var gr = ok(PathologyTestActors.as(doc1, () -> process.grossing(new GrossingReq(a, null, null, null, true, null,
+                List.of(new BlockReq("补块一 " + tag), new BlockReq("补块二 " + tag)), resample), doc1)));
         var created = rows(gr, "blocks");
         String c1 = String.valueOf(created.get(0).get("block_code"));
         String c2 = String.valueOf(created.get(1).get("block_code"));
@@ -141,7 +141,7 @@ class V61TechLabelTest {
         //     v57 的 5272 规定「医嘱指定了蜡块就只能挂那一块」（v60 只为「为该医嘱补出的块」放宽一档），
         //     所以「既有医师指定的块、又有别处挂片派生来的块」这一组合走端点走不出来。
         long specified = techOrder(a, blockA, "DEEP_CUT", null);
-        var blocked = process.slides(new SlideReq(idOf(created.get(0)), 1, "HE", null, null, specified), doc1);
+        var blocked = PathologyTestActors.as(doc1, () -> process.slides(new SlideReq(idOf(created.get(0)), 1, "HE", null, null, specified), doc1));
         assertEquals(5272, blocked.getCode(), "指定了蜡块的医嘱不能往别的块挂片（v57 规则），故 MIXED 端点不可达");
         assertSource(specified, codeA, "ORDERED");
         // SQL 仍能算出 MIXED：直接造一条「指定块 + 别处挂片」的库状态证明判定本身正确，
@@ -165,11 +165,11 @@ class V61TechLabelTest {
         assertTrue(ordered.contains("免疫组化"), "类型用中文：" + ordered);
         assertNoRawEnum(ordered, "TECH_ORDER");
 
-        ok(report.doneTechOrder(ihc, doc1));
+        ok(PathologyTestActors.as(doc1, () -> report.doneTechOrder(ihc, doc1)));
         assertNoRawEnum(remarkOf(a, "TECH_DONE", ihc), "TECH_DONE");
 
         long other = techOrder(a, null, "SPECIAL_STAIN", "PAS");
-        ok(report.cancelTechOrder(other, new CancelTechOrderReq("不做了 " + tag), doc1));
+        ok(PathologyTestActors.as(doc1, () -> report.cancelTechOrder(other, new CancelTechOrderReq("不做了 " + tag), doc1)));
         String cancelled = remarkOf(a, "TECH_CANCEL", other);
         assertTrue(cancelled.contains("特殊染色"), "类型用中文：" + cancelled);
         assertNoRawEnum(cancelled, "TECH_CANCEL");
@@ -253,7 +253,7 @@ class V61TechLabelTest {
     }
 
     private long techOrder(long specimenId, Long blockId, String type, String item) {
-        var t = ok(report.createTechOrder(new TechOrderReq(specimenId, blockId, type, item, "原因 " + tag), doc1));
+        var t = ok(PathologyTestActors.as(doc1, () -> report.createTechOrder(new TechOrderReq(specimenId, blockId, type, item, "原因 " + tag), doc1)));
         return ((Number) t.get("id")).longValue();
     }
 

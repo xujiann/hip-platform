@@ -282,8 +282,8 @@ class V57GrossKeepTest {
         assertEquals(0, rc.getCode(), rc.getMessage());
         long id = jdbc.queryForObject("select id from path_specimen where barcode = ?", Long.class, barcode);
 
-        var gr = process.grossing(new GrossingReq(id, null, null, gross, false, null,
-                List.of(new BlockReq("肿物中心"))), doc);
+        var gr = PathologyTestActors.as(doc, () -> process.grossing(new GrossingReq(id, null, null, gross, false, null,
+                List.of(new BlockReq("肿物中心"))), doc));
         assertEquals(0, gr.getCode(), gr.getMessage());
         assertEquals(Boolean.TRUE, gr.getData().get("grossFindingWritten"), "取材端点应真的写了大体所见");
         assertEquals(gross, jdbc.queryForObject(
