@@ -23,7 +23,7 @@
         </el-table>
       </el-tab-pane>
 
-      <el-tab-pane v-if="canTech" label="病理" name="path">
+      <el-tab-pane v-if="canPathology" label="病理" name="path">
         <h4>待取材 <el-button link type="primary" size="small" @click="loadPathPending">刷新</el-button></h4>
         <el-table :data="pathPending" size="small" border>
           <el-table-column prop="patient_name" label="患者" width="90" />
@@ -44,7 +44,7 @@
           <el-table-column prop="diagnosis" label="诊断" show-overflow-tooltip />
           <el-table-column label="操作" width="160">
             <template #default="{ row }">
-              <el-button v-if="row.status === 'COLLECTED'" link type="primary" size="small" :loading="busyId === row.id" @click="receive(row)">
+              <el-button v-if="canPathology && row.status === 'COLLECTED' && !row.rejected_at && !row.report_issued_at" link type="primary" size="small" :loading="busyId === row.id" :disabled="pathologySaving" @click="receive(row)">
                 核收</el-button>
               <el-button v-if="row.status === 'RECEIVED'" link type="success" size="small" @click="goWorkbench">
                 去病理工作台书写报告</el-button>
@@ -250,7 +250,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -263,6 +263,10 @@ const auth = useAuthStore()
 const route = useRoute()
 const hasRole = (...roles: string[]) => auth.user?.roles.some(r => roles.includes(r)) ?? false
 const canTech = computed(() => hasRole('ADMIN','TECHNICIAN'))
+const canPathology = computed(() => hasRole('ADMIN','TECHNICIAN','DOCTOR_OUTP'))
+const pathologySaving = ref(false)
+let pathologyActive = true
+let pathologyReadVersion = 0
 const canEmergency = computed(() => hasRole('ADMIN','NURSE','DOCTOR_OUTP'))
 const canAnes = computed(() => hasRole('ADMIN','DOCTOR_OUTP','TECHNICIAN'))
 function canDecide(row: Record<string, unknown>) {
@@ -373,7 +377,12 @@ const outcomeText = (o: string) => ({ DISCHARGED: '已离院', ADMITTED: '已住
 
 async function loadRis() { risList.value = (await client.get('/ris/worklist', { params: { modality: modality.value } })).data.data }
 async function loadPathPending() { pathPending.value = (await client.get('/pathology/pending')).data.data }
-async function loadSpecimens() { specimens.value = (await client.get('/pathology/specimens')).data.data }
+async function loadSpecimens() {
+  if (!pathologyActive || !canPathology.value || tab.value !== 'path') return
+  const read = ++pathologyReadVersion
+  const rows = (await client.get('/pathology/specimens')).data.data
+  if (pathologyActive && read === pathologyReadVersion && tab.value === 'path') specimens.value = rows
+}
 async function loadEr() {
   clearEr()
   if (!canEmergency.value) return
@@ -424,11 +433,22 @@ async function verify(row: Record<string, unknown>) {
 // （把活检写成别的标本类型，之后被检索 / history / grossing 头回出）。登记一律去病理工作台，
 // 那里的登记页要人填真实描述，后端也改为必填（4554）。
 async function receive(row: Record<string, unknown>) {
-  busyId.value = row.id
+  if (!pathologyActive || !canPathology.value || pathologySaving.value || tab.value !== 'path'
+    || row.status !== 'COLLECTED' || row.rejected_at || row.report_issued_at || !row.barcode) return
+  const id = row.id
+  const barcode = String(row.barcode)
+  pathologySaving.value = true
+  busyId.value = id
   try {
-    await client.put(`/pathology/specimens/${row.barcode}/receive`)
-    await loadSpecimens()
-  } finally { busyId.value = null }
+    await client.put(`/pathology/specimens/${barcode}/receive`)
+    if (pathologyActive && tab.value === 'path') await loadSpecimens()
+  } catch (error) {
+    if ((error as { bizCode?: number }).bizCode !== 4551) throw error
+    if (pathologyActive && tab.value === 'path') await loadSpecimens()
+  } finally {
+    pathologySaving.value = false
+    if (busyId.value === id) busyId.value = null
+  }
 }
 // 2530：本页曾在这里把两段写死的大体 / 镜下所见连同诊断整体提交给诊断端点，
 // 取材工位写入的大体所见被静默抹掉，入库的还是伪造的临床文本。首次报告一律去
@@ -614,6 +634,7 @@ async function endRescue(row: Record<string, unknown>, outcome: string) {
 }
 
 watch(tab, (t) => {
+  ++pathologyReadVersion
   clearEr()
   clearIcuScope()
   if (t === 'icu') loadIcuChoices()
@@ -621,4 +642,5 @@ watch(tab, (t) => {
   if (t === 'er') loadEr()
 })
 onMounted(() => { if (tab.value === 'er') loadEr(); else if (canTech.value) loadRis() })
+onUnmounted(() => { pathologyActive = false; ++pathologyReadVersion })
 </script>

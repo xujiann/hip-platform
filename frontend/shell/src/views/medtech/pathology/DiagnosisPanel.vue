@@ -139,31 +139,31 @@
       <div class="bar">
         <el-tooltip :disabled="!diagnoseBlockedReason" :content="diagnoseBlockedReason">
           <span>
-            <el-button type="primary" size="small" :disabled="!!diagnoseBlockedReason"
+            <el-button type="primary" size="small" :disabled="saving || !!diagnoseBlockedReason"
                        @click="openDiagnose">书写首次报告</el-button>
           </span>
         </el-tooltip>
         <el-tooltip :disabled="!firstSignBlockedReason" :content="firstSignBlockedReason">
           <span>
-            <el-button type="primary" size="small" :disabled="!!firstSignBlockedReason"
+            <el-button type="primary" size="small" :disabled="saving || !!firstSignBlockedReason"
                        :loading="saving" @click="firstSign">初诊签名</el-button>
           </span>
         </el-tooltip>
         <el-tooltip :disabled="!secondSignBlockedReason" :content="secondSignBlockedReason">
           <span>
-            <el-button type="primary" size="small" :disabled="!!secondSignBlockedReason"
+            <el-button type="primary" size="small" :disabled="saving || !!secondSignBlockedReason"
                        :loading="saving" @click="secondSign">复诊签名</el-button>
           </span>
         </el-tooltip>
         <el-tooltip :disabled="!issueBlockedReason" :content="issueBlockedReason">
           <span>
-            <el-button type="success" size="small" :disabled="!!issueBlockedReason"
+            <el-button type="success" size="small" :disabled="saving || !!issueBlockedReason"
                        :loading="saving" @click="issue">正式签发</el-button>
           </span>
         </el-tooltip>
-        <el-button size="small" :disabled="!primary.diagnosis" @click="supplementDialog = true">
+        <el-button size="small" :disabled="saving || !!supplementBlockedReason" @click="openSupplement">
           出补充报告</el-button>
-        <el-button size="small" @click="techDialog = true">下达特检技术医嘱</el-button>
+        <el-button size="small" :disabled="saving || !!reportUnavailable" @click="techDialog = true">下达特检技术医嘱</el-button>
         <el-button link type="primary" size="small" @click="loadReport">刷新</el-button>
       </div>
 
@@ -318,9 +318,9 @@
             </el-table-column>
             <el-table-column label="操作" width="130" fixed="right">
               <template #default="{ row }">
-                <el-button link type="primary" size="small" :disabled="row.status !== 'ORDERED'"
+                <el-button link type="primary" size="small" :disabled="saving || row.status !== 'ORDERED'"
                            @click="techDone(row)">完成</el-button>
-                <el-button link type="danger" size="small" :disabled="row.status !== 'ORDERED'"
+                <el-button link type="danger" size="small" :disabled="saving || row.status !== 'ORDERED'"
                            @click="techCancel(row)">取消</el-button>
               </template>
             </el-table-column>
@@ -466,7 +466,7 @@
         查看既往（{{ priorRows.length }} 条，同屏对照）</el-button>
       <span v-if="!priorRows.length" class="muted">该患者无其它已出结果的病理标本</span>
     </div>
-    <el-form label-width="90px" size="small">
+    <el-form label-width="90px" size="small" :disabled="saving">
       <el-form-item label="大体所见">
         <el-input v-model="diagnoseForm.grossFinding" type="textarea" :rows="3" />
       </el-form-item>
@@ -480,7 +480,7 @@
     </el-form>
     <template #footer>
       <el-button size="small" @click="diagnoseDialog = false">取消</el-button>
-      <el-button type="primary" size="small" :loading="saving" @click="submitDiagnose">保存</el-button>
+      <el-button type="primary" size="small" :loading="saving" :disabled="saving || !!diagnoseBlockedReason" @click="submitDiagnose">保存</el-button>
     </template>
   </el-dialog>
 
@@ -488,7 +488,7 @@
   <el-dialog v-model="supplementDialog" title="出具补充报告（追加，不修改原报告）" width="680px">
     <el-alert type="warning" show-icon :closable="false" class="cav"
               title="补充报告是新增一份文书，按序号留全历史：原报告的大体所见 / 镜下所见 / 诊断三列一个字都不会被改。免疫组化回报后的补充诊断、会诊意见都走这里。" />
-    <el-form label-width="90px" size="small">
+    <el-form label-width="90px" size="small" :disabled="saving">
       <el-form-item label="补充内容" required>
         <el-input v-model="supplementForm.content" type="textarea" :rows="5"
                   placeholder="如：免疫组化结果 CK7(+)、TTF-1(+)…，结合形态学，符合……" />
@@ -500,14 +500,14 @@
     </el-form>
     <template #footer>
       <el-button size="small" @click="supplementDialog = false">取消</el-button>
-      <el-button type="primary" size="small" :loading="saving" @click="submitSupplement">
+      <el-button type="primary" size="small" :loading="saving" :disabled="saving || !!supplementBlockedReason" @click="submitSupplement">
         追加补充报告</el-button>
     </template>
   </el-dialog>
 
   <!-- ============ 特检技术医嘱 ============ -->
   <el-dialog v-model="techDialog" title="下达特检技术医嘱" width="560px">
-    <el-form label-width="90px" size="small">
+    <el-form label-width="90px" size="small" :disabled="saving">
       <el-form-item label="技术类型" required>
         <el-select v-model="techForm.techType" style="width: 220px">
           <el-option v-for="t in techTypes" :key="String(t.value)" :value="String(t.value)"
@@ -532,7 +532,7 @@
     </el-form>
     <template #footer>
       <el-button size="small" @click="techDialog = false">取消</el-button>
-      <el-button type="primary" size="small" :loading="saving" @click="submitTech">下达</el-button>
+      <el-button type="primary" size="small" :loading="saving" :disabled="saving || !!reportUnavailable" @click="submitTech">下达</el-button>
     </template>
   </el-dialog>
 </template>
@@ -551,7 +551,7 @@
  *       补充报告在时间线里逐份追加，一眼能看出原报告一字未动。</li>
  * </ul>
  */
-import { computed, reactive, ref } from 'vue'
+import { computed, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../../api/client'
 import { useAuthStore } from '../../../stores/auth'
@@ -564,6 +564,17 @@ const emit = defineEmits<{ (e: 'changed'): void }>()
 
 const auth = useAuthStore()
 const meId = computed<number | null>(() => (auth.user ? Number(auth.user.id) : null))
+const canDiagnose = computed(() => auth.user?.roles.some(role => ['ADMIN', 'TECHNICIAN', 'DOCTOR_OUTP'].includes(role)) ?? false)
+const canSign = computed(() => auth.user?.roles.some(role => ['ADMIN', 'DOCTOR_OUTP'].includes(role)) ?? false)
+let active = true
+let listVersion = 0
+let reportVersion = 0
+let reportReadVersion = 0
+let techReadVersion = 0
+let blockReadVersion = 0
+let priorReadVersion = 0
+let diagnoseVersion = 0
+let supplementVersion = 0
 
 /* ---------------- 阅片工作列表 ---------------- */
 const rows = ref<Row[]>([])
@@ -582,23 +593,32 @@ const range = ref<[string, string] | null>(null)
 const tracing = computed(() => query.scope === 'diagnosed' || query.scope === 'any')
 
 async function load() {
+  if (!active) return
+  const version = ++listVersion
+  const params = listParams()
+  const key = JSON.stringify(params)
   loading.value = true
   try {
     const d = (await client.get('/pathology/report/worklist', {
-      params: {
-        scope: query.scope,
-        specimenType: query.specimenType || undefined,
-        urgentOnly: query.urgentOnly || undefined,
-        keyword: query.keyword || undefined,
-        from: range.value?.[0] || undefined,
-        to: range.value?.[1] || undefined,
-      },
+      params,
     })).data.data as Row
+    if (!active || version !== listVersion || key !== JSON.stringify(listParams())) return
     rows.value = (d.items ?? []) as Row[]
     truncated.value = d.truncated === true
     limit.value = num(d.limit) || 100
   } finally {
-    loading.value = false
+    if (active && version === listVersion) loading.value = false
+  }
+}
+
+function listParams() {
+  return {
+    scope: query.scope,
+    specimenType: query.specimenType || undefined,
+    urgentOnly: query.urgentOnly || undefined,
+    keyword: query.keyword || undefined,
+    from: range.value?.[0] || undefined,
+    to: range.value?.[1] || undefined,
   }
 }
 
@@ -621,7 +641,26 @@ const drawerTitle = computed(
 )
 
 function openReport(id: number) {
+  if (!active || !Number.isSafeInteger(id) || id <= 0) return
+  ++reportVersion
+  ++diagnoseVersion
+  ++supplementVersion
+  diagnoseDialog.value = false
+  supplementDialog.value = false
+  techDialog.value = false
+  compareDialog.value = false
   specimenId.value = id
+  specimen.value = {}
+  primary.value = {}
+  hasPrimary.value = false
+  supplements.value = []
+  processRows.value = []
+  doubleSignGate.value = ''
+  techRows.value = []
+  priorRows.value = []
+  priorResolved.value = null
+  priorNote.value = ''
+  specimenBlocks.value = []
   reportTab.value = 'report'
   drawer.value = true
   void loadReport()
@@ -640,9 +679,13 @@ function openReportById() {
 }
 
 async function loadReport() {
+  if (!active || !drawer.value || !specimenId.value) return
+  const target = reportTarget()
+  const read = ++reportReadVersion
   reportLoading.value = true
   try {
-    const d = (await client.get(`/pathology/report/${specimenId.value}/reports`)).data.data as Row
+    const d = (await client.get(`/pathology/report/${target.id}/reports`)).data.data as Row
+    if (!sameReport(target) || read !== reportReadVersion || Number((d.specimen as Row | undefined)?.id) !== target.id) return
     specimen.value = (d.specimen ?? {}) as Row
     primary.value = (d.primary ?? {}) as Row
     hasPrimary.value = d.hasPrimary === true
@@ -651,8 +694,34 @@ async function loadReport() {
     processRows.value = (d.process ?? []) as Row[]
     doubleSignGate.value = String(d.doubleSignGate ?? '')
   } finally {
-    reportLoading.value = false
+    if (active && read === reportReadVersion) reportLoading.value = false
   }
+}
+
+function reportTarget() {
+  return { id: specimenId.value, version: reportVersion, barcode: String(specimen.value.barcode ?? '') }
+}
+
+function sameReport(target: ReturnType<typeof reportTarget>) {
+  return active && drawer.value && reportVersion === target.version && specimenId.value === target.id
+}
+
+const reportUnavailable = computed(() => {
+  if (!active || !drawer.value || !specimenId.value) return '未选择标本'
+  if (reportLoading.value || Number(specimen.value.id) !== specimenId.value) return '正在读取标本，请稍候'
+  return ''
+})
+
+async function refreshAfterWrite(target: ReturnType<typeof reportTarget>) {
+  if (!active) return
+  // The old specimen must never reload into the newly opened patient's drawer.
+  await Promise.allSettled([load(), sameReport(target) ? loadReport() : Promise.resolve()])
+}
+
+async function refreshConflict(error: unknown, target: ReturnType<typeof reportTarget>) {
+  const code = (error as { bizCode?: number }).bizCode ?? 0
+  if (![4553, 5260, 5261, 5262, 5263, 5264, 5265].includes(code)) throw error
+  await refreshAfterWrite(target)
 }
 
 /* ---------------- 双签前置判定（与后端同一条判据，提前提示而不是等提交被拒） ---------------- */
@@ -667,7 +736,8 @@ const firstSignerId = computed<number | null>(
  * 而不是摆一个点下去必然吃 4553 的「修订」入口。
  */
 const diagnoseBlockedReason = computed(() => {
-  if (!specimenId.value) return '未选择标本'
+  if (!canDiagnose.value) return '当前岗位不能书写病理诊断'
+  if (reportUnavailable.value) return reportUnavailable.value
   if (specimen.value.rejected_at) return '该标本已拒收，不能出报告'
   if (specimen.value.report_issued_at) return '报告已签发，更正请出补充报告'
   if (specimen.value.status === 'DIAGNOSED' || hasPrimary.value) {
@@ -680,7 +750,8 @@ const diagnoseBlockedReason = computed(() => {
 })
 
 const firstSignBlockedReason = computed(() => {
-  if (!specimenId.value) return '未选择标本'
+  if (!canSign.value) return '当前岗位不能完成报告签名'
+  if (reportUnavailable.value) return reportUnavailable.value
   if (specimen.value.rejected_at) return '该标本已拒收，不能签名'
   if (specimen.value.report_issued_at) return '报告已签发，不能再补签名（如需更正请出补充报告）'
   if (!hasPrimary.value) return '尚未书写病理诊断，不能初诊签名'
@@ -689,7 +760,8 @@ const firstSignBlockedReason = computed(() => {
 })
 
 const secondSignBlockedReason = computed(() => {
-  if (!specimenId.value) return '未选择标本'
+  if (!canSign.value) return '当前岗位不能完成报告签名'
+  if (reportUnavailable.value) return reportUnavailable.value
   if (specimen.value.rejected_at) return '该标本已拒收，不能签名'
   if (specimen.value.report_issued_at) return '报告已签发，不能再补签名（如需更正请出补充报告）'
   if (!primary.value.firstSignedAt) return '尚未完成初诊签名，不能复诊签名'
@@ -709,7 +781,8 @@ const missingSigns = computed<string[]>(() => {
 })
 
 const issueBlockedReason = computed(() => {
-  if (!specimenId.value) return '未选择标本'
+  if (!canSign.value) return '当前岗位不能签发报告'
+  if (reportUnavailable.value) return reportUnavailable.value
   if (specimen.value.rejected_at) return '该标本已拒收，不能签发报告'
   if (specimen.value.report_issued_at) return `报告已于 ${fmtTime(specimen.value.report_issued_at)} 签发，不可重复签发`
   if (!hasPrimary.value) return '尚未书写病理诊断，不能签发报告'
@@ -733,47 +806,66 @@ const signAlertTitle = computed(() => {
 })
 
 async function firstSign() {
+  if (!active || saving.value || firstSignBlockedReason.value) return
+  const target = reportTarget()
   saving.value = true
   try {
-    await client.put(`/pathology/report/${specimenId.value}/first-sign`, null)
-    ElMessage.success('初诊签名完成')
-    await loadReport()
-    emit('changed')
+    await client.put(`/pathology/report/${target.id}/first-sign`, null)
+    if (!active) return
+    if (sameReport(target)) ElMessage.success('初诊签名完成')
+    await refreshAfterWrite(target)
+    if (active) emit('changed')
+  } catch (error) {
+    await refreshConflict(error, target)
   } finally {
     saving.value = false
   }
 }
 
 async function secondSign() {
+  if (!active || saving.value || secondSignBlockedReason.value) return
+  const target = reportTarget()
   saving.value = true
   try {
-    await client.put(`/pathology/report/${specimenId.value}/second-sign`, null)
-    ElMessage.success('复诊签名完成')
-    await loadReport()
-    emit('changed')
+    await client.put(`/pathology/report/${target.id}/second-sign`, null)
+    if (!active) return
+    if (sameReport(target)) ElMessage.success('复诊签名完成')
+    await refreshAfterWrite(target)
+    if (active) emit('changed')
+  } catch (error) {
+    await refreshConflict(error, target)
   } finally {
     saving.value = false
   }
 }
 
 async function issue() {
-  if (missingSigns.value.length) {
-    const ok = await ElMessageBox.confirm(
-      `本次签发缺 ${missingSigns.value.join('、')}（本院当前的双签要求：${gateName(doubleSignGate.value)}）。`
-      + '放行不等于没发生过：缺签情况会写进「流转节点」页签里签发那一条，事后可追。确认签发？',
-      '未完成双签即签发', { type: 'warning' },
-    ).catch(() => null)
-    if (!ok) return
-  }
+  if (!active || saving.value || issueBlockedReason.value) return
+  const target = reportTarget()
+  const missing = [...missingSigns.value]
+  const gate = doubleSignGate.value
   saving.value = true
   try {
-    const d = (await client.put(`/pathology/report/${specimenId.value}/issue`, null)).data.data as Row
+    if (missing.length) {
+      const ok = await ElMessageBox.confirm(
+        `本次签发缺 ${missing.join('、')}（本院当前的双签要求：${gateName(gate)}）。`
+        + '放行不等于没发生过：缺签情况会写进「流转节点」页签里签发那一条，事后可追。确认签发？',
+        '未完成双签即签发', { type: 'warning' },
+      ).catch(() => null)
+      if (!ok) return
+    }
+    if (!sameReport(target) || issueBlockedReason.value) return
+    const d = (await client.put(`/pathology/report/${target.id}/issue`, null)).data.data as Row
+    if (!active) return
     const warnings = (d.warnings ?? []) as string[]
-    ElMessage.success(`报告已签发（${fmtTime(d.reportIssuedAt)}）`)
-    if (warnings.length) ElMessage.warning(warnings.join('；'))
-    await loadReport()
-    await load()
-    emit('changed')
+    if (sameReport(target)) {
+      ElMessage.success(`报告已签发（${fmtTime(d.reportIssuedAt)}）`)
+      if (warnings.length) ElMessage.warning(warnings.join('；'))
+    }
+    await refreshAfterWrite(target)
+    if (active) emit('changed')
+  } catch (error) {
+    await refreshConflict(error, target)
   } finally {
     saving.value = false
   }
@@ -784,6 +876,8 @@ const diagnoseDialog = ref(false)
 const diagnoseForm = reactive({ grossFinding: '', microFinding: '', diagnosis: '' })
 
 function openDiagnose() {
+  if (!active || diagnoseBlockedReason.value) return
+  ++diagnoseVersion
   // 预填现有三列：既有端点是整体覆盖写，不预填就会把取材时写入的大体所见清空
   diagnoseForm.grossFinding = String(primary.value.grossFinding ?? '')
   diagnoseForm.microFinding = String(primary.value.microFinding ?? '')
@@ -792,22 +886,30 @@ function openDiagnose() {
 }
 
 async function submitDiagnose() {
+  if (!active || saving.value || !diagnoseDialog.value || diagnoseBlockedReason.value) return
   if (!diagnoseForm.diagnosis.trim()) {
     ElMessage.warning('病理诊断不能为空')
     return
   }
+  const target = reportTarget()
+  const draft = { ...diagnoseForm }
+  const version = diagnoseVersion
   saving.value = true
   try {
-    await client.put(`/pathology/specimens/${String(specimen.value.barcode)}/diagnose`, {
-      grossFinding: diagnoseForm.grossFinding || null,
-      microFinding: diagnoseForm.microFinding || null,
-      diagnosis: diagnoseForm.diagnosis,
+    await client.put(`/pathology/specimens/${target.barcode}/diagnose`, {
+      grossFinding: draft.grossFinding || null,
+      microFinding: draft.microFinding || null,
+      diagnosis: draft.diagnosis,
     })
-    ElMessage.success('已保存首次报告')
-    diagnoseDialog.value = false
-    await loadReport()
-    await load()
-    emit('changed')
+    if (!active) return
+    if (sameReport(target) && version === diagnoseVersion && diagnoseDialog.value) {
+      ElMessage.success('已保存首次报告')
+      diagnoseDialog.value = false
+    }
+    await refreshAfterWrite(target)
+    if (active) emit('changed')
+  } catch (error) {
+    await refreshConflict(error, target)
   } finally {
     saving.value = false
   }
@@ -816,24 +918,48 @@ async function submitDiagnose() {
 /* ---------------- 补充报告 ---------------- */
 const supplementDialog = ref(false)
 const supplementForm = reactive({ content: '', reason: '' })
+const supplementBlockedReason = computed(() => {
+  if (!canSign.value) return '当前岗位不能出具补充报告'
+  if (reportUnavailable.value) return reportUnavailable.value
+  if (specimen.value.rejected_at) return '该标本已拒收，不能出补充报告'
+  if (!hasPrimary.value) return '尚未书写首次诊断，不能出补充报告'
+  return ''
+})
+
+function openSupplement() {
+  if (!active || supplementBlockedReason.value) return
+  ++supplementVersion
+  supplementForm.content = ''
+  supplementForm.reason = ''
+  supplementDialog.value = true
+}
 
 async function submitSupplement() {
+  if (!active || saving.value || !supplementDialog.value || supplementBlockedReason.value) return
   if (!supplementForm.content.trim()) {
     ElMessage.warning('补充报告内容不能为空')
     return
   }
+  const target = reportTarget()
+  const draft = { ...supplementForm }
+  const version = supplementVersion
   saving.value = true
   try {
-    const d = (await client.post(`/pathology/report/${specimenId.value}/supplement`, {
-      content: supplementForm.content,
-      reason: supplementForm.reason || undefined,
+    const d = (await client.post(`/pathology/report/${target.id}/supplement`, {
+      content: draft.content,
+      reason: draft.reason || undefined,
     })).data.data as Row
-    ElMessage.success(`已追加补充报告 #${fmt(d.seqNo)}（原报告未被修改）`)
-    supplementDialog.value = false
-    supplementForm.content = ''
-    supplementForm.reason = ''
-    await loadReport()
-    emit('changed')
+    if (!active) return
+    if (sameReport(target) && version === supplementVersion && supplementDialog.value) {
+      ElMessage.success(`已追加补充报告 #${fmt(d.seqNo)}（原报告未被修改）`)
+      supplementDialog.value = false
+      supplementForm.content = ''
+      supplementForm.reason = ''
+    }
+    await refreshAfterWrite(target)
+    if (active) emit('changed')
+  } catch (error) {
+    await refreshConflict(error, target)
   } finally {
     saving.value = false
   }
@@ -914,26 +1040,36 @@ function progressLabel(row: Row): string {
 
 async function loadTechDict() {
   const d = (await client.get('/pathology/report/tech-orders/dict')).data.data as Row
+  if (!active) return
   techTypes.value = (d.techTypes ?? []) as Row[]
   techProgressStates.value = (d.progressStates ?? []) as Row[]
   if (!techForm.techType && techTypes.value.length) techForm.techType = String(techTypes.value[0].value)
 }
 
 async function loadTech() {
+  if (!active || !drawer.value || !specimenId.value) return
+  const target = reportTarget()
+  const read = ++techReadVersion
   const d = (await client.get('/pathology/report/tech-orders', {
-    params: { specimenId: specimenId.value },
+    params: { specimenId: target.id },
   })).data.data as Row
+  if (!sameReport(target) || read !== techReadVersion) return
   techRows.value = (d.items ?? []) as Row[]
 }
 
 async function loadSpecimenBlocks() {
+  if (!active || !drawer.value || !specimenId.value) return
+  const target = reportTarget()
+  const read = ++blockReadVersion
   const d = (await client.get('/pathology/process/blocks', {
-    params: { specimenId: specimenId.value },
+    params: { specimenId: target.id },
   })).data.data as Row
+  if (!sameReport(target) || read !== blockReadVersion) return
   specimenBlocks.value = (d.items ?? []) as Row[]
 }
 
 async function submitTech() {
+  if (!active || saving.value || !canDiagnose.value || !techDialog.value || reportUnavailable.value) return
   if (!techForm.techType) {
     ElMessage.warning('请选择技术类型')
     return
@@ -942,61 +1078,80 @@ async function submitTech() {
     ElMessage.warning('该技术类型必须指明具体项目（如 CK7、Ki-67、PAS），否则技师无从执行')
     return
   }
+  const target = reportTarget()
+  const draft = { ...techForm }
   saving.value = true
   try {
     await client.post('/pathology/report/tech-orders', {
-      specimenId: specimenId.value,
-      blockId: techForm.blockId,
-      techType: techForm.techType,
-      techItem: techForm.techItem || undefined,
-      reason: techForm.reason || undefined,
+      specimenId: target.id,
+      blockId: draft.blockId,
+      techType: draft.techType,
+      techItem: draft.techItem || undefined,
+      reason: draft.reason || undefined,
     })
-    ElMessage.success('已下达特检技术医嘱')
-    techDialog.value = false
-    techForm.techItem = ''
-    techForm.reason = ''
-    techForm.blockId = undefined
-    await loadTech()
-    emit('changed')
+    if (!active) return
+    if (sameReport(target)) {
+      ElMessage.success('已下达特检技术医嘱')
+      techDialog.value = false
+      techForm.techItem = ''
+      techForm.reason = ''
+      techForm.blockId = undefined
+      await loadTech()
+    }
+    if (active) emit('changed')
   } finally {
     saving.value = false
   }
 }
 
 async function techDone(row: Row) {
-  const d = (await client.put(`/pathology/report/tech-orders/${Number(row.id)}/done`, null)).data.data as Row
-  // v64（2563 复核第一条）：原样印后端给的那一句（doneRemark）——它与写进 TECH_DONE 流转节点的备注
-  // 是同一个字符串。修复前这里自己挑 slideCount / stainedCount 重拼一句，把补取材医嘱唯一的执行证据
-  // 「已出块 N」整句抹掉；而本页「流转节点」页签就在隔壁，同一次完成两套口径。
-  ElMessage.success(String(d.doneRemark ?? ''))
-  // 有缺口仍放行时后端回带 warnings，逐条提示；被拦下时由 client 统一报错
-  for (const w of (d.warnings ?? []) as string[]) ElMessage.warning(w)
-  await loadTech()
-  await loadReport()   // 完成进了流转节点页签，一并刷新
+  if (!active || saving.value || !canDiagnose.value || reportUnavailable.value || row.status !== 'ORDERED') return
+  const target = reportTarget()
+  const id = Number(row.id)
+  saving.value = true
+  try {
+    const d = (await client.put(`/pathology/report/tech-orders/${id}/done`, null)).data.data as Row
+    if (!sameReport(target)) return
+    // v64（2563 复核第一条）：原样印后端给的那一句（doneRemark）——它与写进 TECH_DONE 流转节点的备注
+    // 是同一个字符串。修复前这里自己挑 slideCount / stainedCount 重拼一句，把补取材医嘱唯一的执行证据
+    // 「已出块 N」整句抹掉；而本页「流转节点」页签就在隔壁，同一次完成两套口径。
+    ElMessage.success(String(d.doneRemark ?? ''))
+    // 有缺口仍放行时后端回带 warnings，逐条提示；被拦下时由 client 统一报错
+    for (const w of (d.warnings ?? []) as string[]) ElMessage.warning(w)
+    await loadTech()
+    if (sameReport(target)) await loadReport()   // 完成进了流转节点页签，一并刷新
+  } finally { saving.value = false }
 }
 
 async function techCancel(row: Row) {
-  // v57：取消须留原因——后端 5271 拒空白 / 超 255 字；取消原因写 cancel_reason，下达原因 reason 不覆盖
-  const res = await ElMessageBox.prompt(
-    `取消「${techName(row.tech_type)} ${String(row.tech_item ?? '')}」须填写取消原因（留痕：取消人 / 取消时刻 / 取消原因；下达原因不覆盖）`,
-    '取消特检技术医嘱',
-    {
-      type: 'warning',
-      inputType: 'textarea',
-      inputPlaceholder: '如：临床已另行送检、标本量不足、医师撤回',
-      inputValidator: (v: string) => {
-        const t = (v ?? '').trim()
-        if (!t) return '取消原因不能为空'
-        if (t.length > 255) return '取消原因最多 255 字'
-        return true
+  if (!active || saving.value || !canDiagnose.value || reportUnavailable.value || row.status !== 'ORDERED') return
+  const target = reportTarget()
+  const id = Number(row.id)
+  saving.value = true
+  try {
+    // v57：取消须留原因——后端 5271 拒空白 / 超 255 字；取消原因写 cancel_reason，下达原因 reason 不覆盖
+    const res = await ElMessageBox.prompt(
+      `取消「${techName(row.tech_type)} ${String(row.tech_item ?? '')}」须填写取消原因（留痕：取消人 / 取消时刻 / 取消原因；下达原因不覆盖）`,
+      '取消特检技术医嘱',
+      {
+        type: 'warning',
+        inputType: 'textarea',
+        inputPlaceholder: '如：临床已另行送检、标本量不足、医师撤回',
+        inputValidator: (v: string) => {
+          const t = (v ?? '').trim()
+          if (!t) return '取消原因不能为空'
+          if (t.length > 255) return '取消原因最多 255 字'
+          return true
+        },
       },
-    },
-  ).catch(() => null)
-  const reason = res?.value?.trim()
-  if (!reason) return   // 空则不发
-  await client.put(`/pathology/report/tech-orders/${Number(row.id)}/cancel`, { reason })
-  ElMessage.success('已取消并留痕')
-  await loadTech()
+    ).catch(() => null)
+    const reason = res?.value?.trim()
+    if (!reason || !sameReport(target) || !canDiagnose.value || reportUnavailable.value) return
+    await client.put(`/pathology/report/tech-orders/${id}/cancel`, { reason })
+    if (!sameReport(target)) return
+    ElMessage.success('已取消并留痕')
+    await loadTech()
+  } finally { saving.value = false }
 }
 
 /* ---------------- 既往病理 ---------------- */
@@ -1006,14 +1161,18 @@ const priorResolved = ref<boolean | null>(null)
 const priorNote = ref('')
 
 async function loadPrior() {
+  if (!active || !drawer.value || !specimenId.value) return
+  const target = reportTarget()
+  const read = ++priorReadVersion
   priorLoading.value = true
   try {
-    const d = (await client.get(`/pathology/report/${specimenId.value}/prior`)).data.data as Row
+    const d = (await client.get(`/pathology/report/${target.id}/prior`)).data.data as Row
+    if (!sameReport(target) || read !== priorReadVersion) return
     priorRows.value = (d.items ?? []) as Row[]
     priorResolved.value = d.patientResolved === true
     priorNote.value = String(d.note ?? '')
   } finally {
-    priorLoading.value = false
+    if (active && read === priorReadVersion) priorLoading.value = false
   }
 }
 
@@ -1051,6 +1210,18 @@ function openCompare(row?: Row) {
  * 否则用户得记下标本 id、切过来、再手输一遍——那正是本版要消灭的「后端做了、前端够不着」。
  */
 defineExpose({ reload: load, openReport })
+
+onUnmounted(() => {
+  active = false
+  ++reportVersion
+  ++listVersion
+  ++reportReadVersion
+  ++techReadVersion
+  ++blockReadVersion
+  ++priorReadVersion
+  ++diagnoseVersion
+  ++supplementVersion
+})
 
 void load()
 void loadTechDict()

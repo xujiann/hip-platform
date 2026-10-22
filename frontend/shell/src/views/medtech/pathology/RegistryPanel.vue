@@ -165,11 +165,11 @@
         </el-table-column>
         <el-table-column label="操作" width="210" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" size="small"
-                       :disabled="saving || row.status !== 'COLLECTED' || !!row.rejected_at"
+            <el-button v-if="canRegister" link type="primary" size="small"
+                       :disabled="saving || !receivable(row)"
                        @click="openReceive(row)">接收核对</el-button>
-            <el-button link type="danger" size="small"
-                       :disabled="saving || !!row.rejected_at || row.status === 'DIAGNOSED'"
+            <el-button v-if="canRegister" link type="danger" size="small"
+                       :disabled="saving || !rejectable(row)"
                        @click="openReject(row)">拒收</el-button>
             <el-button link type="info" size="small" @click="openHistory(row)">既往病理</el-button>
           </template>
@@ -273,10 +273,10 @@
   <el-dialog v-model="receiveDialog" title="接收核对" width="520px">
     <el-alert type="info" :closable="false" show-icon class="cav"
               title="核对不相符的标本不要在这里「先核收再说」——直接走拒收，否则台账上就成了一份已正常核收的标本。" />
-    <el-form label-width="90px" size="small">
+    <el-form label-width="90px" size="small" :disabled="saving">
       <el-form-item label="标本">
-        <span class="code">{{ fmt(current.path_no) }} / {{ fmt(current.barcode) }}</span>
-        　{{ fmt(current.patient_name) }}
+        <span class="code">{{ fmt(receiveTarget.path_no) }} / {{ fmt(receiveTarget.barcode) }}</span>
+        　{{ fmt(receiveTarget.patient_name) }}
       </el-form-item>
       <el-form-item label="接收时刻">
         <el-date-picker v-model="receiveForm.receivedAt" type="datetime"
@@ -290,7 +290,7 @@
     </el-form>
     <template #footer>
       <el-button size="small" @click="receiveDialog = false">取消</el-button>
-      <el-button type="primary" size="small" :loading="saving" @click="submitReceive">核收</el-button>
+      <el-button type="primary" size="small" :loading="saving" :disabled="saving || !canRegister || !receivable(receiveTarget)" @click="submitReceive">核收</el-button>
     </template>
   </el-dialog>
 
@@ -298,10 +298,10 @@
   <el-dialog v-model="rejectDialog" title="拒收标本" width="520px">
     <el-alert type="warning" show-icon :closable="false" class="cav"
               title="拒收不删记录：只写拒收原因/时刻/人并落一条 REJECT 流转节点，行还在，仍计入送检总数的分母。拒收后临床重送同一部位是常态，该部位序号不会被烧掉。" />
-    <el-form label-width="90px" size="small">
+    <el-form label-width="90px" size="small" :disabled="saving">
       <el-form-item label="标本">
-        <span class="code">{{ fmt(current.path_no) }} / {{ fmt(current.barcode) }}</span>
-        　{{ fmt(current.patient_name) }}
+        <span class="code">{{ fmt(rejectTarget.path_no) }} / {{ fmt(rejectTarget.barcode) }}</span>
+        　{{ fmt(rejectTarget.patient_name) }}
       </el-form-item>
       <el-form-item label="拒收原因" required>
         <el-input v-model="rejectForm.reason" type="textarea" :rows="2" maxlength="255" show-word-limit
@@ -314,7 +314,7 @@
     </el-form>
     <template #footer>
       <el-button size="small" @click="rejectDialog = false">取消</el-button>
-      <el-button type="danger" size="small" :loading="saving" @click="submitReject">确认拒收</el-button>
+      <el-button type="danger" size="small" :loading="saving" :disabled="saving || !canRegister || !rejectable(rejectTarget)" @click="submitReject">确认拒收</el-button>
     </template>
   </el-dialog>
 
@@ -622,8 +622,26 @@ const receiveDialog = ref(false)
 const rejectDialog = ref(false)
 const receiveForm = reactive({ receivedAt: '', remark: '' })
 const rejectForm = reactive({ reason: '', rejectedAt: '' })
+const receiveTarget = ref<Row>({})
+const rejectTarget = ref<Row>({})
+let receiveVersion = 0
+let rejectVersion = 0
+let receiveSource: Row = {}
+let rejectSource: Row = {}
+
+function receivable(row: Row) {
+  return !!num(row.id) && row.status === 'COLLECTED' && !row.rejected_at && !row.report_issued_at
+}
+
+function rejectable(row: Row) {
+  return !!num(row.id) && ['COLLECTED', 'RECEIVED'].includes(String(row.status)) && !row.rejected_at && !row.report_issued_at
+}
 
 function openReceive(row: Row) {
+  if (!active || !canRegister.value || !receivable(row)) return
+  ++receiveVersion
+  receiveSource = row
+  receiveTarget.value = { ...row }
   current.value = row
   receiveForm.receivedAt = ''
   receiveForm.remark = ''
@@ -631,23 +649,40 @@ function openReceive(row: Row) {
 }
 
 async function submitReceive() {
-  if (!active || saving.value) return
+  if (!active || !canRegister.value || saving.value || !receiveDialog.value || !receivable(receiveTarget.value)
+    || receiveSource.id !== receiveTarget.value.id || receiveSource.barcode !== receiveTarget.value.barcode || !receivable(receiveSource)) return
+  const latest = specimens.value.find(row => row.id === receiveTarget.value.id)
+  if (latest && !receivable(latest)) return
+  const target = { ...receiveTarget.value }
+  const draft = { ...receiveForm }
+  const version = receiveVersion
+  const sameDialog = () => active && receiveDialog.value && version === receiveVersion && receiveTarget.value.id === target.id
   saving.value = true
   try {
-    await client.put(`/pathology/registry/specimens/${Number(current.value.id)}/receive-check`, {
-      receivedAt: receiveForm.receivedAt || undefined,
-      remark: receiveForm.remark || undefined,
+    await client.put(`/pathology/registry/specimens/${Number(target.id)}/receive-check`, {
+      receivedAt: draft.receivedAt || undefined,
+      remark: draft.remark || undefined,
     })
-    ElMessage.success('已核收')
-    receiveDialog.value = false
-    await loadSpecimens()
-    emit('changed')
+    if (!active) return
+    if (sameDialog()) {
+      ElMessage.success('已核收')
+      receiveDialog.value = false
+    }
+    await refreshRegistrationQueues()
+    if (active) emit('changed')
+  } catch (error) {
+    if (![5206, 5208].includes((error as { bizCode?: number }).bizCode ?? 0)) throw error
+    if (active) await refreshRegistrationQueues()
   } finally {
     saving.value = false
   }
 }
 
 function openReject(row: Row) {
+  if (!active || !canRegister.value || !rejectable(row)) return
+  ++rejectVersion
+  rejectSource = row
+  rejectTarget.value = { ...row }
   current.value = row
   rejectForm.reason = ''
   rejectForm.rejectedAt = ''
@@ -655,21 +690,34 @@ function openReject(row: Row) {
 }
 
 async function submitReject() {
-  if (!active || saving.value) return
+  if (!active || !canRegister.value || saving.value || !rejectDialog.value || !rejectable(rejectTarget.value)
+    || rejectSource.id !== rejectTarget.value.id || rejectSource.barcode !== rejectTarget.value.barcode || !rejectable(rejectSource)) return
+  const latest = specimens.value.find(row => row.id === rejectTarget.value.id)
+  if (latest && !rejectable(latest)) return
   if (!rejectForm.reason.trim()) {
     ElMessage.warning('拒收原因必填')
     return
   }
+  const target = { ...rejectTarget.value }
+  const draft = { ...rejectForm }
+  const version = rejectVersion
+  const sameDialog = () => active && rejectDialog.value && version === rejectVersion && rejectTarget.value.id === target.id
   saving.value = true
   try {
-    await client.put(`/pathology/registry/specimens/${Number(current.value.id)}/reject`, {
-      reason: rejectForm.reason,
-      rejectedAt: rejectForm.rejectedAt || undefined,
+    await client.put(`/pathology/registry/specimens/${Number(target.id)}/reject`, {
+      reason: draft.reason,
+      rejectedAt: draft.rejectedAt || undefined,
     })
-    ElMessage.success('已拒收（记录保留，仍计入送检分母）')
-    rejectDialog.value = false
-    await loadSpecimens()
-    emit('changed')
+    if (!active) return
+    if (sameDialog()) {
+      ElMessage.success('已拒收（记录保留，仍计入送检分母）')
+      rejectDialog.value = false
+    }
+    await refreshRegistrationQueues()
+    if (active) emit('changed')
+  } catch (error) {
+    if (![5206, 5208].includes((error as { bizCode?: number }).bizCode ?? 0)) throw error
+    if (active) await refreshRegistrationQueues()
   } finally {
     saving.value = false
   }
@@ -735,6 +783,8 @@ onUnmounted(() => {
   ++pendingReadVersion
   ++specimenReadVersion
   ++registrationVersion
+  ++receiveVersion
+  ++rejectVersion
 })
 
 void loadPending()
