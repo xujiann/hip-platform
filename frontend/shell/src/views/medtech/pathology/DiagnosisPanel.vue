@@ -163,7 +163,7 @@
         </el-tooltip>
         <el-button size="small" :disabled="saving || !!supplementBlockedReason" @click="openSupplement">
           出补充报告</el-button>
-        <el-button size="small" :disabled="saving || !!reportUnavailable" @click="techDialog = true">下达特检技术医嘱</el-button>
+        <el-button size="small" :disabled="saving || !canDiagnose || !!reportUnavailable || !!specimen.rejected_at" @click="openTech">下达特检技术医嘱</el-button>
         <el-button link type="primary" size="small" @click="loadReport">刷新</el-button>
       </div>
 
@@ -318,9 +318,9 @@
             </el-table-column>
             <el-table-column label="操作" width="130" fixed="right">
               <template #default="{ row }">
-                <el-button link type="primary" size="small" :disabled="saving || row.status !== 'ORDERED'"
+                <el-button link type="primary" size="small" :disabled="saving || !canTechWrite(row) || !!specimen.rejected_at"
                            @click="techDone(row)">完成</el-button>
-                <el-button link type="danger" size="small" :disabled="saving || row.status !== 'ORDERED'"
+                <el-button link type="danger" size="small" :disabled="saving || !canTechWrite(row)"
                            @click="techCancel(row)">取消</el-button>
               </template>
             </el-table-column>
@@ -532,7 +532,7 @@
     </el-form>
     <template #footer>
       <el-button size="small" @click="techDialog = false">取消</el-button>
-      <el-button type="primary" size="small" :loading="saving" :disabled="saving || !!reportUnavailable" @click="submitTech">下达</el-button>
+      <el-button type="primary" size="small" :loading="saving" :disabled="saving || !canDiagnose || !!reportUnavailable || !!specimen.rejected_at" @click="submitTech">下达</el-button>
     </template>
   </el-dialog>
 </template>
@@ -575,6 +575,7 @@ let blockReadVersion = 0
 let priorReadVersion = 0
 let diagnoseVersion = 0
 let supplementVersion = 0
+let techDraftVersion = 0
 
 /* ---------------- 阅片工作列表 ---------------- */
 const rows = ref<Row[]>([])
@@ -645,6 +646,7 @@ function openReport(id: number) {
   ++reportVersion
   ++diagnoseVersion
   ++supplementVersion
+  ++techDraftVersion
   diagnoseDialog.value = false
   supplementDialog.value = false
   techDialog.value = false
@@ -967,6 +969,25 @@ async function submitSupplement() {
 
 /* ---------------- 特检技术医嘱 ---------------- */
 const techDialog = ref(false)
+function canTechWrite(row: Row): boolean {
+  const latest = techRows.value.find(t => Number(t.id) === Number(row.id))
+  return canDiagnose.value && !reportUnavailable.value && Number(row.id) > 0 && row.status === 'ORDERED'
+    && Number(row.specimen_id) === specimenId.value && !!latest && latest.status === 'ORDERED'
+    && Number(latest.specimen_id) === specimenId.value
+}
+function openTech() {
+  if (!active || !canDiagnose.value || reportUnavailable.value || specimen.value.rejected_at) return
+  ++techDraftVersion
+  Object.assign(techForm, { techType: techTypes.value.length ? String(techTypes.value[0].value) : '', techItem: '', blockId: undefined, reason: '' })
+  techDialog.value = true
+}
+async function refreshTechConflict(error: unknown, target: ReturnType<typeof reportTarget>) {
+  if (!active) return
+  if (![5260, 5261, 5268, 5269, 5272, 5273].includes(Number((error as { bizCode?: number }).bizCode))) throw error
+  await load()
+  if (sameReport(target)) await Promise.all([loadReport(), loadTech(), loadSpecimenBlocks()])
+}
+
 const techRows = ref<Row[]>([])
 const techTypes = ref<Row[]>([])
 const specimenBlocks = ref<Row[]>([])
@@ -1069,7 +1090,7 @@ async function loadSpecimenBlocks() {
 }
 
 async function submitTech() {
-  if (!active || saving.value || !canDiagnose.value || !techDialog.value || reportUnavailable.value) return
+  if (!active || saving.value || !canDiagnose.value || !techDialog.value || reportUnavailable.value || specimen.value.rejected_at) return
   if (!techForm.techType) {
     ElMessage.warning('请选择技术类型')
     return
@@ -1080,6 +1101,8 @@ async function submitTech() {
   }
   const target = reportTarget()
   const draft = { ...techForm }
+  if (draft.blockId && !specimenBlocks.value.some(b => Number(b.id) === Number(draft.blockId) && Number(b.specimen_id) === target.id)) return
+  const version = techDraftVersion
   saving.value = true
   try {
     await client.post('/pathology/report/tech-orders', {
@@ -1090,7 +1113,7 @@ async function submitTech() {
       reason: draft.reason || undefined,
     })
     if (!active) return
-    if (sameReport(target)) {
+    if (sameReport(target) && techDialog.value && version === techDraftVersion) {
       ElMessage.success('已下达特检技术医嘱')
       techDialog.value = false
       techForm.techItem = ''
@@ -1099,13 +1122,12 @@ async function submitTech() {
       await loadTech()
     }
     if (active) emit('changed')
-  } finally {
-    saving.value = false
-  }
+  } catch (error) { await refreshTechConflict(error, target) }
+  finally { saving.value = false }
 }
 
 async function techDone(row: Row) {
-  if (!active || saving.value || !canDiagnose.value || reportUnavailable.value || row.status !== 'ORDERED') return
+  if (!active || saving.value || !canTechWrite(row) || specimen.value.rejected_at) return
   const target = reportTarget()
   const id = Number(row.id)
   saving.value = true
@@ -1120,12 +1142,14 @@ async function techDone(row: Row) {
     for (const w of (d.warnings ?? []) as string[]) ElMessage.warning(w)
     await loadTech()
     if (sameReport(target)) await loadReport()   // 完成进了流转节点页签，一并刷新
-  } finally { saving.value = false }
+  } catch (error) { await refreshTechConflict(error, target) }
+  finally { saving.value = false }
 }
 
 async function techCancel(row: Row) {
-  if (!active || saving.value || !canDiagnose.value || reportUnavailable.value || row.status !== 'ORDERED') return
+  if (!active || saving.value || !canTechWrite(row)) return
   const target = reportTarget()
+  const original = { ...row }
   const id = Number(row.id)
   saving.value = true
   try {
@@ -1146,12 +1170,13 @@ async function techCancel(row: Row) {
       },
     ).catch(() => null)
     const reason = res?.value?.trim()
-    if (!reason || !sameReport(target) || !canDiagnose.value || reportUnavailable.value) return
+    if (!reason || reason.length > 255 || !sameReport(target) || !canTechWrite(original)) return
     await client.put(`/pathology/report/tech-orders/${id}/cancel`, { reason })
     if (!sameReport(target)) return
     ElMessage.success('已取消并留痕')
     await loadTech()
-  } finally { saving.value = false }
+  } catch (error) { await refreshTechConflict(error, target) }
+  finally { saving.value = false }
 }
 
 /* ---------------- 既往病理 ---------------- */
@@ -1221,6 +1246,7 @@ onUnmounted(() => {
   ++priorReadVersion
   ++diagnoseVersion
   ++supplementVersion
+  ++techDraftVersion
 })
 
 void load()

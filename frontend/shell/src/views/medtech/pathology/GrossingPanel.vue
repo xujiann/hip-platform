@@ -73,9 +73,9 @@
     </el-table-column>
     <el-table-column label="操作" width="290" fixed="right">
       <template #default="{ row }">
-        <el-button link type="primary" size="small" @click="openGrossing(row)">取材登记</el-button>
+        <el-button link type="primary" size="small" :disabled="saving || !canGross(row)" @click="openGrossing(row)">取材登记</el-button>
         <!-- v59（2530 复核）：未诊断前取材员可改自己录的字段与文本，出新版本；诊断后由诊断端点修订 -->
-        <el-button v-if="canRevise(row)" link type="warning" size="small" @click="openRevise(row)">修订取材描述</el-button>
+        <el-button v-if="canRevise(row)" :disabled="saving" link type="warning" size="small" @click="openRevise(row)">修订取材描述</el-button>
         <el-button link type="primary" size="small" @click="openView(Number(row.id))">查看大体所见</el-button>
       </template>
     </el-table-column>
@@ -358,8 +358,8 @@
 
     <template #footer>
       <el-button size="small" @click="dialog = false">取消</el-button>
-      <el-button v-if="mode === 'GROSSING'" type="primary" size="small" :loading="saving" @click="submit">登记取材</el-button>
-      <el-button v-else type="warning" size="small" :loading="saving" @click="submitRevise">提交修订</el-button>
+      <el-button v-if="mode === 'GROSSING'" type="primary" size="small" :loading="saving" :disabled="saving || !canProcess || !currentValid()" @click="submit">登记取材</el-button>
+      <el-button v-else type="warning" size="small" :loading="saving" :disabled="saving || !canProcess || !currentValid(true)" @click="submitRevise">提交修订</el-button>
     </template>
   </el-dialog>
 
@@ -434,21 +434,58 @@
  * {@code hours_since_received} 是原始事实（距签收小时数），<b>本页不判超时</b>：
  * 时限阈值口径归病理质控页唯一定义，两处各判一次必然分叉。
  */
-import { computed, reactive, ref } from 'vue'
+import { computed, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import { useAuthStore } from '../../../stores/auth'
 import client, { type BizError } from '../../../api/client'
 import { SPECIMEN_TYPES, fmt, fmtTime, grossFieldsNote, mdText, num, typeName, type Row } from './format'
 
 const emit = defineEmits<{ (e: 'changed'): void }>()
 
+const auth = useAuthStore()
+const canProcess = computed(() => auth.user?.roles.some(role => ['ADMIN', 'TECHNICIAN', 'DOCTOR_OUTP'].includes(role)) ?? false)
+let active = true
 const rows = ref<Row[]>([])
 const loading = ref(false)
 const truncated = ref(false)
 const limit = ref(100)
 const note = ref('')
 const query = reactive({ scope: 'pending', specimenType: '', urgentOnly: false, keyword: '' })
+let listVersion = 0
+let draftVersion = 0
+let existingVersion = 0
+let resampleVersion = 0
+let viewReadVersion = 0
+let resultReadVersion = 0
+
+function canGross(row: Row): boolean {
+  return canProcess.value && Number(row.id) > 0 && row.received_at != null && row.rejected_at == null
+}
+
+function currentValid(revise = false): boolean {
+  const latest = rows.value.find(row => Number(row.id) === Number(current.value.id))
+  return !!latest && canGross(current.value) && canGross(latest)
+    && String(latest.barcode ?? '') === String(current.value.barcode ?? '')
+    && (!revise || canRevise(latest))
+}
+
+function draftTarget() { return { id: Number(current.value.id), version: draftVersion, mode: mode.value } }
+function sameDraft(target: ReturnType<typeof draftTarget>) {
+  return active && dialog.value && Number(current.value.id) === target.id && draftVersion === target.version && mode.value === target.mode
+}
+
+async function refreshConflict(error: unknown, target: ReturnType<typeof draftTarget>) {
+  if (!active) return
+  if (![5220, 5221, 5223, 5275, 5277].includes(Number((error as BizError).bizCode))) throw error
+  await load()
+  if (sameDraft(target)) await Promise.all([loadExistingGross(target.id), loadResampleOrders(target.id)])
+}
+
 
 async function load() {
+  if (!active) return
+  const version = ++listVersion
+  const key = JSON.stringify(query)
   loading.value = true
   try {
     const d = (await client.get('/pathology/process/grossing/worklist', {
@@ -459,12 +496,13 @@ async function load() {
         keyword: query.keyword || undefined,
       },
     })).data.data as Row
+    if (!active || version !== listVersion || key !== JSON.stringify(query)) return
     rows.value = (d.items ?? []) as Row[]
     truncated.value = d.truncated === true
     limit.value = num(d.limit) || 100
     note.value = String(d.note ?? '')
   } finally {
-    loading.value = false
+    if (active && version === listVersion) loading.value = false
   }
 }
 
@@ -474,6 +512,7 @@ const templateNote = ref('')
 
 async function loadTemplates() {
   const d = (await client.get('/pathology/process/grossing/templates')).data.data as Row
+  if (!active) return
   templates.value = (d.items ?? []) as Row[]
   templateNote.value = String(d.note ?? '')
 }
@@ -557,18 +596,22 @@ const resampleLoading = ref(false)
  * 回来再按 tech_type / status 过一遍，后端返回口径变了也不会把别的类型混进来。取不到就没得挂：下拉为空、仍可自由补取材。
  */
 async function loadResampleOrders(specimenId: number) {
+  if (!active) return
+  const version = ++resampleVersion
+  const target = draftTarget()
   resampleLoading.value = true
   resampleOrders.value = []
   try {
     const d = (await client.get('/pathology/report/tech-orders', {
       params: { specimenId, status: 'ORDERED', techType: 'RESAMPLE' },
     })).data.data as Row
+    if (!sameDraft(target) || version !== resampleVersion || target.id !== specimenId) return
     resampleOrders.value = ((d.items ?? []) as Row[])
       .filter((o) => o.tech_type === 'RESAMPLE' && o.status === 'ORDERED')
   } catch {
-    resampleOrders.value = []
+    if (sameDraft(target) && version === resampleVersion) resampleOrders.value = []
   } finally {
-    resampleLoading.value = false
+    if (active && version === resampleVersion) resampleLoading.value = false
   }
 }
 
@@ -597,22 +640,29 @@ const existingTextSeq = ref<unknown>(null)   // v59：既有文本的版号（te
 const existingLoading = ref(false)
 
 async function loadExistingGross(specimenId: number) {
+  if (!active) return
+  const version = ++existingVersion
+  const target = draftTarget()
   existingLoading.value = true
   try {
     const d = (await client.get(`/pathology/process/grossing/${specimenId}`)).data.data as Row
+    if (!sameDraft(target) || version !== existingVersion || target.id !== specimenId) return
     existingGross.value = d.grossFindingPresent === true ? String(d.grossFinding ?? '') : ''
     existingTextSeq.value = d.textRevisionSeq ?? null
   } catch {
+    if (!sameDraft(target) || version !== existingVersion) return
     existingGross.value = ''   // 取不到就按「未知」处理：仍允许填写，由后端最终裁决
     existingTextSeq.value = null
   } finally {
-    existingLoading.value = false
+    if (active && version === existingVersion) existingLoading.value = false
   }
 }
 
 function openGrossing(row: Row) {
+  if (!active || !canGross(row)) return
+  ++draftVersion
   mode.value = 'GROSSING'
-  current.value = row
+  current.value = { ...row }
   Object.assign(form, {
     templateCode: '',
     gross: {},
@@ -641,7 +691,7 @@ const revisePrefillNote = ref('')
 
 /** 只对未诊断的标本给入口：诊断后由诊断端点修订，后端也会以 5221 拒 */
 function canRevise(row: Row): boolean {
-  return row.diagnosed_at == null && row.rejected_at == null
+  return canGross(row) && row.diagnosed_at == null && row.report_issued_at == null
 }
 
 /** 取材追加时后端拼的分隔标记（PathologyProcessController.grossing：新文本 = 既有文本 + 「。补取材：」 + 本次拼装） */
@@ -798,18 +848,22 @@ const reviseCoverNote = computed(() => {
 })
 
 async function openRevise(row: Row) {
+  if (!active || !canRevise(row)) return
+  const version = ++draftVersion
+  dialog.value = false
   let d: Row
   try {
     d = (await client.get(`/pathology/process/grossing/${Number(row.id)}`)).data.data as Row
   } catch {
     return   // 拦截器已提示；取不到当前内容就不开表单，免得对着空白改
   }
+  if (!active || version !== draftVersion || !canRevise(row)) return
   if (d.grossFindingPresent !== true) {
     ElMessage.warning('该标本尚无大体所见，无从修订：请先「取材登记」填写')
     return
   }
   mode.value = 'REVISE'
-  current.value = row
+  current.value = { ...row }
   const text = String(d.grossFinding ?? '')
   // v62（2530 复核 decompose 镜头，本轮头号纪律）：预填**不再依赖 fieldsCurrent**。
   // fieldsCurrent 回答的是「字段版是否等于文本版」，而修订表单要预填的是「库里最新一版有字段行的那一版」——
@@ -846,29 +900,28 @@ async function openRevise(row: Row) {
 }
 
 async function submitRevise() {
+  if (!active || saving.value || !dialog.value || mode.value !== 'REVISE' || !currentValid(true)) return
+  const target = draftTarget()
+  const gross = { ...reviseFormFields.value }
+  const draft = { templateCode: form.templateCode, grossText: form.grossText }
+  if (!Object.keys(gross).length && !draft.grossText.trim()) { ElMessage.warning('字段与自由描述至少填一项'); return }
   saving.value = true
   try {
-    // v65：提交带哪几项字段与屏上那句「这次提交会发生什么」同源（reviseFormFields），不各算一遍
-    const gross = reviseFormFields.value
-    if (!Object.keys(gross).length && !form.grossText.trim()) {
-      ElMessage.warning('字段与自由描述至少填一项')
-      return
-    }
-    const r = (await client.put(`/pathology/process/grossing/${Number(current.value.id)}/fields`, {
-      templateCode: form.templateCode || undefined,
+    const r = (await client.put(`/pathology/process/grossing/${target.id}/fields`, {
+      templateCode: draft.templateCode || undefined,
       gross: Object.keys(gross).length ? gross : undefined,
-      grossText: form.grossText || undefined,
+      grossText: draft.grossText || undefined,
     })).data.data as Row
-    dialog.value = false
-    ElMessage.success(`已生成第 ${fmt(r.revisionSeq)} 版取材描述（字段 ${num(r.grossFieldCount)} 项）`)
-    // v62：gate emr.gate.pathology.grossfield=warn 时后端照常落库但回带 warnings
-    //（本次修订后该标本不再有结构化字段）——不静默吞掉，block 档则根本走不到这里（5277 由拦截器提示）
-    for (const w of ((r.warnings ?? []) as unknown[])) ElMessage.warning(String(w))
+    if (!active) return
+    if (sameDraft(target)) {
+      dialog.value = false
+      ElMessage.success(`已生成第 ${fmt(r.revisionSeq)} 版取材描述（字段 ${num(r.grossFieldCount)} 项）`)
+      for (const w of ((r.warnings ?? []) as unknown[])) ElMessage.warning(String(w))
+    }
     await load()
-    emit('changed')
-  } finally {
-    saving.value = false
-  }
+    if (active) emit('changed')
+  } catch (error) { await refreshConflict(error, target) }
+  finally { saving.value = false }
 }
 
 /* ---------------- 大体所见查看（只读，2530） ---------------- */
@@ -1039,74 +1092,73 @@ const resultFieldsLoading = ref(false)
 
 /** 展示的是库里的 path_gross_field 行（GET /grossing/{id}），不是表单里的值——落库了什么就显示什么 */
 async function loadResultFields(specimenId: number) {
+  if (!active) return
+  const version = ++resultReadVersion
   resultFieldsLoading.value = true
   resultView.value = {}
   try {
-    resultView.value = (await client.get(`/pathology/process/grossing/${specimenId}`)).data.data as typeof resultView.value
+    const value = (await client.get(`/pathology/process/grossing/${specimenId}`)).data.data as typeof resultView.value
+    if (active && resultDialog.value && version === resultReadVersion) resultView.value = value
   } catch {
-    resultView.value = {}   // 回读失败按「无记录」显示，不拿表单值冒充库里的行
+    if (active && version === resultReadVersion) resultView.value = {}   // 回读失败按「无记录」显示，不拿表单值冒充库里的行
   } finally {
-    resultFieldsLoading.value = false
+    if (active && version === resultReadVersion) resultFieldsLoading.value = false
   }
 }
 
 async function openView(specimenId: number) {
+  if (!active) return
+  const version = ++viewReadVersion
   viewDialog.value = true
   viewLoading.value = true
   viewVersionSeq.value = null
   try {
-    view.value = (await client.get(`/pathology/process/grossing/${specimenId}`)).data.data as typeof view.value
+    const value = (await client.get(`/pathology/process/grossing/${specimenId}`)).data.data as typeof view.value
+    if (!active || !viewDialog.value || version !== viewReadVersion) return
+    view.value = value
     // v60：默认停在最新有字段的版；被取代版本由人切下拉去看
     const def = latestVersionWithFields(viewFieldVersions.value)
     viewVersionSeq.value = def == null || def.revisionSeq == null ? null : Number(def.revisionSeq)
   } finally {
-    viewLoading.value = false
+    if (active && version === viewReadVersion) viewLoading.value = false
   }
 }
 
 async function submit() {
-  if (form.blocks.length === 0) {
-    ElMessage.warning('取材必须至少产出 1 个蜡块')
-    return
+  if (!active || saving.value || !dialog.value || mode.value !== 'GROSSING' || !currentValid()) return
+  const latest = rows.value.find(row => Number(row.id) === Number(current.value.id))!
+  if (!form.append && (latest.diagnosed_at != null || latest.report_issued_at != null || num(latest.block_count) > 0)) return
+  if (form.blocks.length === 0) { ElMessage.warning('取材必须至少产出 1 个蜡块'); return }
+  const target = draftTarget()
+  const gross: Record<string, string> = {}
+  for (const [k, v] of Object.entries(form.gross)) if (v && v.trim()) gross[k] = v.trim()
+  const sendGross = !existingGross.value || form.append
+  const body = {
+    specimenId: target.id, templateCode: form.templateCode || undefined,
+    gross: sendGross && Object.keys(gross).length ? gross : undefined,
+    grossText: sendGross && form.grossText ? form.grossText : undefined,
+    append: form.append, techOrderId: form.append && form.techOrderId ? Number(form.techOrderId) : undefined,
+    remark: form.remark || undefined, blocks: form.blocks.map(b => ({ tissueDesc: b.tissueDesc || undefined })),
   }
   saving.value = true
   try {
-    // 值为空的结构化字段整条不传：后端会把空值字段略去，前端也不必送出「大小：」这种半截话
-    const gross: Record<string, string> = {}
-    for (const [k, v] of Object.entries(form.gross)) if (v && v.trim()) gross[k] = v.trim()
-
-    // v59：无既有大体所见 → 首写；已有且勾了补取材 → 作为新版本追加；已有且未勾 → 一律不传（后端会拒 5222）
-    const sendGross = !existingGross.value || form.append
-    // v60：只有勾了补取材才带 techOrderId（车道 B 契约：append=true 时挂接 RESAMPLE 医嘱，非法 5275）；未勾即使残留也不传
-    const techOrderId = form.append && form.techOrderId ? Number(form.techOrderId) : undefined
-    result.value = (await client.post('/pathology/process/grossing', {
-      specimenId: Number(current.value.id),
-      templateCode: form.templateCode || undefined,
-      gross: sendGross && Object.keys(gross).length ? gross : undefined,
-      grossText: sendGross && form.grossText ? form.grossText : undefined,
-      append: form.append,
-      techOrderId,
-      remark: form.remark || undefined,
-      blocks: form.blocks.map((b) => ({ tissueDesc: b.tissueDesc || undefined })),
-    }, { __silentCodes: [5275] })).data.data as Row
-    dialog.value = false
-    resultDialog.value = true
-    void loadResultFields(Number(current.value.id))   // 回读库里的字段行，不用表单值冒充
-    await load()
-    emit('changed')
-  } catch (e) {
-    // 5275：挂接的补取材医嘱非法（不存在 / 非 RESAMPLE / 不属于该标本 / 非 ORDERED，四路径同码）——后端在任何写入之前拒绝，
-    // 这里把后端原话给人看并刷新下拉（多半是别人刚取消 / 完成了那条医嘱）；其余码由拦截器统一红字，照旧抛出
-    if ((e as BizError).bizCode === 5275) {
-      ElMessage.error(`补取材医嘱挂接被拒（5275）：${(e as Error).message || '医嘱非法'}——请重新选择或改为不挂接`)
-      void loadResampleOrders(Number(current.value.id))
-      return
+    const d = (await client.post('/pathology/process/grossing', body, { __silentCodes: [5275] })).data.data as Row
+    if (!active) return
+    if (sameDraft(target)) {
+      result.value = d
+      dialog.value = false
+      resultDialog.value = true
+      void loadResultFields(target.id)
     }
-    throw e
-  } finally {
-    saving.value = false
-  }
+    await load()
+    if (active) emit('changed')
+  } catch (error) {
+    if (active && sameDraft(target) && Number((error as BizError).bizCode) === 5275) ElMessage.error(`补取材医嘱挂接被拒（5275）：${(error as Error).message || '医嘱非法'}——请重新选择或改为不挂接`)
+    await refreshConflict(error, target)
+  } finally { saving.value = false }
 }
+
+onUnmounted(() => { active = false; ++draftVersion; ++listVersion; ++existingVersion; ++resampleVersion; ++viewReadVersion; ++resultReadVersion })
 
 defineExpose({ reload: load })
 

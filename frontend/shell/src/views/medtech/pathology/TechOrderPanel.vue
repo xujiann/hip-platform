@@ -139,9 +139,9 @@
     </el-table-column>
     <el-table-column label="操作" width="190" fixed="right">
       <template #default="{ row }">
-        <el-button link type="primary" size="small" :disabled="row.status !== 'ORDERED'"
+        <el-button link type="primary" size="small" :disabled="saving || !canWrite(row)"
                    @click="done(row)">完成</el-button>
-        <el-button link type="danger" size="small" :disabled="row.status !== 'ORDERED'"
+        <el-button link type="danger" size="small" :disabled="saving || !canWrite(row)"
                    @click="cancel(row)">取消</el-button>
         <el-button link type="primary" size="small" @click="emit('open-specimen', Number(row.specimen_id))">
           打开报告</el-button>
@@ -187,14 +187,30 @@
  * <p>「打开报告」把标本 id 交给工作台切到诊断工位并直接打开抽屉：技师做完免疫组化后，
  * 病理医师要出补充报告的入口就在那里。
  */
-import { computed, reactive, ref } from 'vue'
+import { computed, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useAuthStore } from '../../../stores/auth'
 import client from '../../../api/client'
 import { fmtDateTime } from '../../../utils/date'
 import { TECH_STATUSES, fmt, fmtTime, num, techStatusName, techStatusTag, typeName, type Row } from './format'
 
 const emit = defineEmits<{ (e: 'changed'): void; (e: 'open-specimen', specimenId: number): void }>()
 
+const auth = useAuthStore()
+const canProcess = computed(() => auth.user?.roles.some(role => ['ADMIN', 'TECHNICIAN', 'DOCTOR_OUTP'].includes(role)) ?? false)
+let active = true
+const saving = ref(false)
+let listVersion = 0
+function canWrite(row: Row): boolean {
+  const latest = rows.value.find(r => Number(r.id) === Number(row.id))
+  return canProcess.value && Number(row.id) > 0 && Number(row.specimen_id) > 0 && row.status === 'ORDERED'
+    && !!latest && latest.status === 'ORDERED' && Number(latest.specimen_id) === Number(row.specimen_id)
+}
+async function refreshConflict(error: unknown) {
+  if (!active) return
+  if (![5260, 5261, 5268, 5269, 5272, 5273].includes(Number((error as { bizCode?: number }).bizCode))) throw error
+  await load()
+}
 const rows = ref<Row[]>([])
 const loading = ref(false)
 const truncated = ref(false)
@@ -210,6 +226,7 @@ const techTypes = ref<Row[]>([])
 
 async function loadDict() {
   const d = (await client.get('/pathology/report/tech-orders/dict')).data.data as Row
+  if (!active) return
   techTypes.value = (d.techTypes ?? []) as Row[]
   progressStates.value = (d.progressStates ?? []) as Row[]
 }
@@ -267,6 +284,9 @@ function progressLabel(row: Row): string {
 }
 
 async function load() {
+  if (!active) return
+  const version = ++listVersion
+  const key = JSON.stringify({ ...query, range: range.value })
   loading.value = true
   try {
     const d = (await client.get('/pathology/report/tech-orders', {
@@ -281,52 +301,55 @@ async function load() {
         keyword: query.keyword || undefined,
       },
     })).data.data as Row
+    if (!active || version !== listVersion || key !== JSON.stringify({ ...query, range: range.value })) return
     rows.value = (d.items ?? []) as Row[]
     truncated.value = d.truncated === true
     limit.value = Number(d.limit ?? 100) || 100
     // v64：页首那条完成规则原样印后端下发的这一句；整段 note 是给调用方看的接口说明，不上屏
     gateRule.value = String(d.techDoneGateRule ?? '')
   } finally {
-    loading.value = false
+    if (active && version === listVersion) loading.value = false
   }
 }
 
 async function done(row: Row) {
-  const d = (await client.put(`/pathology/report/tech-orders/${Number(row.id)}/done`, null)).data.data as Row
-  // v64（2563 复核第一条）：原样印后端给的那一句（doneRemark）——它与写进 TECH_DONE 流转节点的备注
-  // 是同一个字符串（同一个变量拼一次）。修复前这里自己挑 slideCount / stainedCount 重拼一句，
-  // 把补取材医嘱唯一的执行证据「已出块 2」整句抹掉：屏上读作「什么都没做就点了完成」，
-  // 而同一个工作台切到流转节点看同一条，备注却写着「已出块 2」——同一次状态变更两套口径。
-  ElMessage.success(String(d.doneRemark ?? ''))
-  // 有缺口仍放行时后端回带 warnings，逐条提示；被拦下时由 client 统一报错
-  for (const w of (d.warnings ?? []) as string[]) ElMessage.warning(w)
-  await load()
-  emit('changed')
+  if (!active || saving.value || !canWrite(row)) return
+  const id = Number(row.id)
+  saving.value = true
+  try {
+    const d = (await client.put(`/pathology/report/tech-orders/${id}/done`, null)).data.data as Row
+    if (!active) return
+    ElMessage.success(String(d.doneRemark ?? ''))
+    for (const w of (d.warnings ?? []) as string[]) ElMessage.warning(w)
+    await load()
+    if (active) emit('changed')
+  } catch (error) { await refreshConflict(error) }
+  finally { saving.value = false }
 }
 
 async function cancel(row: Row) {
-  const res = await ElMessageBox.prompt(
-    `取消「${techName(row.tech_type)} ${String(row.tech_item ?? '')}」须填写取消原因（留痕：取消人 / 取消时刻 / 取消原因；下达原因不覆盖）`,
-    '取消特检技术医嘱',
-    {
-      type: 'warning',
-      inputType: 'textarea',
-      inputPlaceholder: '如：临床已另行送检、标本量不足、医师撤回',
-      inputValidator: (v: string) => {
-        const t = (v ?? '').trim()
-        if (!t) return '取消原因不能为空'
-        if (t.length > 255) return '取消原因最多 255 字'
-        return true
-      },
-    },
-  ).catch(() => null)
-  const reason = res?.value?.trim()
-  if (!reason) return   // 空则不发：后端 5271 同样会拒，这里只是省一次往返
-  await client.put(`/pathology/report/tech-orders/${Number(row.id)}/cancel`, { reason })
-  ElMessage.success('已取消并留痕')
-  await load()
-  emit('changed')
+  if (!active || saving.value || !canWrite(row)) return
+  const original = { ...row }, id = Number(row.id)
+  saving.value = true
+  try {
+    const res = await ElMessageBox.prompt(
+      `取消「${techName(original.tech_type)} ${String(original.tech_item ?? '')}」须填写取消原因（下达原因不覆盖）`, '取消特检技术医嘱',
+      { type: 'warning', inputType: 'textarea', inputPlaceholder: '如：临床已另行送检、标本量不足、医师撤回', inputValidator: (value: string) => {
+        const t = (value ?? '').trim(); return !t ? '取消原因不能为空' : t.length > 255 ? '取消原因最多 255 字' : true
+      } },
+    ).catch(() => null)
+    const reason = res?.value?.trim()
+    if (!reason || reason.length > 255 || !active || !canWrite(original)) return
+    await client.put(`/pathology/report/tech-orders/${id}/cancel`, { reason })
+    if (!active) return
+    ElMessage.success('已取消并留痕')
+    await load()
+    if (active) emit('changed')
+  } catch (error) { await refreshConflict(error) }
+  finally { saving.value = false }
 }
+
+onUnmounted(() => { active = false; ++listVersion })
 
 defineExpose({ reload: load })
 

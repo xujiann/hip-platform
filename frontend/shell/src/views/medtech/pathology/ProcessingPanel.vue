@@ -30,7 +30,7 @@
         <el-input v-model="batchNo" size="small" placeholder="脱水批次号（上限 32 字）"
                   style="width: 200px" />
         <el-input v-model="batchRemark" size="small" placeholder="分篮备注（可空）" style="width: 200px" />
-        <el-button type="primary" size="small" :disabled="selectedBlocks.length === 0"
+        <el-button type="primary" size="small" :disabled="saving || !canProcess || selectedBlocks.length === 0"
                    :loading="saving" @click="submitBatch">
           归入脱水篮（已选 {{ selectedBlocks.length }} 块）
         </el-button>
@@ -76,9 +76,9 @@
         </el-table-column>
         <el-table-column label="操作" width="150" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" size="small" :disabled="!!row.embedded_at"
+            <el-button link type="primary" size="small" :disabled="saving || !validBlock(row, true)"
                        @click="embed(row)">包埋</el-button>
-            <el-button link type="primary" size="small" @click="openSlide(row)">切片</el-button>
+            <el-button link type="primary" size="small" :disabled="saving || !validBlock(row)" @click="openSlide(row)">切片</el-button>
           </template>
         </el-table-column>
         <template #empty>无命中蜡块</template>
@@ -182,7 +182,7 @@
         </el-select>
         <el-input v-model="batchStainItem" size="small" placeholder="染色项目（留空则保留原值）"
                   style="width: 190px" />
-        <el-button type="primary" size="small" :disabled="selectedSlides.length === 0"
+        <el-button type="primary" size="small" :disabled="saving || !canProcess || selectedSlides.length === 0"
                    :loading="saving" @click="submitBatchComplete">
           批量核销染色（已选 {{ selectedSlides.length }} 张）
         </el-button>
@@ -228,7 +228,7 @@
         </el-table-column>
         <el-table-column label="操作" width="90" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" size="small" :disabled="!!row.stained_at"
+            <el-button link type="primary" size="small" :disabled="saving || !validSlide(row)"
                        @click="openStain(row)">染色</el-button>
           </template>
         </el-table-column>
@@ -279,7 +279,7 @@
               title="新建切片尚未染色（染色时刻为空）；玻片打码机属设备直连，平台只给编码字符串，不负责打印。挂接了特检医嘱的切片会带 tech_order_id，医嘱清单据此计「挂接切片数」。" />
     <template #footer>
       <el-button size="small" @click="slideDialog = false">取消</el-button>
-      <el-button type="primary" size="small" :loading="saving" @click="submitSlide">登记切片</el-button>
+      <el-button type="primary" size="small" :loading="saving" :disabled="saving || !canProcess || !validBlock(currentBlock)" @click="submitSlide">登记切片</el-button>
     </template>
   </el-dialog>
 
@@ -310,7 +310,7 @@
               title="质量是染色切片优良率的唯一数据源。不评就留空——留空计入「未评」，比默认填「优」诚实（默认优会让优良率恒等于 100%）。" />
     <template #footer>
       <el-button size="small" @click="stainDialog = false">取消</el-button>
-      <el-button type="primary" size="small" :loading="saving" @click="submitStain">登记染色</el-button>
+      <el-button type="primary" size="small" :loading="saving" :disabled="saving || !canProcess || !validSlide(currentSlide)" @click="submitStain">登记染色</el-button>
     </template>
   </el-dialog>
 </template>
@@ -340,15 +340,48 @@
  * （医嘱无项目——深切 / 重切 / 补取材——才可填）。修复前 onTechOrderPick 只做预填，下拉仍可改回 HE，
  * 一条「免疫组化 CK7」医嘱能挂上 2 张 HE 片推到「已染色待确认」。后端同口径 5274 兜底，前端锁定只是省一次被打回。
  */
-import { computed, reactive, ref } from 'vue'
+import { computed, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useAuthStore } from '../../../stores/auth'
 import client from '../../../api/client'
 import { SLIDE_QUALITIES, STAIN_TYPES, fmt, fmtTime, num, stainName, type Row } from './format'
 
 const emit = defineEmits<{ (e: 'changed'): void }>()
 
+const auth = useAuthStore()
+const canProcess = computed(() => auth.user?.roles.some(role => ['ADMIN', 'TECHNICIAN', 'DOCTOR_OUTP'].includes(role)) ?? false)
+let active = true
 const tab = ref('blocks')
 const saving = ref(false)
+let blockReadVersion = 0
+let slideReadVersion = 0
+let batchReadVersion = 0
+let slideDraftVersion = 0
+let stainDraftVersion = 0
+
+function sameChild(row: Row, latest: Row | undefined): boolean {
+  return !!latest && Number(row.id) > 0 && Number(row.specimen_id) > 0 && Number(row.specimen_id) === Number(latest.specimen_id)
+    && String(row.block_id ?? '') === String(latest.block_id ?? '')
+    && row.rejected_at == null && latest.rejected_at == null
+}
+function validBlock(row: Row, embedOnly = false): boolean {
+  const latest = blocks.value.find(b => Number(b.id) === Number(row.id))
+  return canProcess.value && sameChild(row, latest) && (!embedOnly || (row.embedded_at == null && latest?.embedded_at == null))
+}
+function validSlide(row: Row): boolean {
+  const latest = slides.value.find(sl => Number(sl.id) === Number(row.id))
+  return canProcess.value && sameChild(row, latest) && row.stained_at == null && latest?.stained_at == null
+}
+function sameSlideDraft(id: number, version: number): boolean { return active && slideDialog.value && Number(currentBlock.value.id) === id && version === slideDraftVersion }
+function sameStainDraft(id: number, version: number): boolean { return active && stainDialog.value && Number(currentSlide.value.id) === id && version === stainDraftVersion }
+async function refreshProcessing() { if (active) await Promise.all([loadBlocks(), loadSlides(), loadBatches()]) }
+async function refreshConflict(error: unknown) {
+  if (!active) return
+  if (![5240, 5241, 5244, 5245, 5272, 5274, 5275].includes(Number((error as { bizCode?: number }).bizCode))) throw error
+  await refreshProcessing()
+  if (active && slideDialog.value) await loadTechOptions({ ...currentBlock.value }, slideDraftVersion)
+}
+
 
 /* ---------------- 蜡块 ---------------- */
 const blocks = ref<Row[]>([])
@@ -366,6 +399,9 @@ function onBlockSelect(rows: Row[]) {
 }
 
 async function loadBlocks() {
+  if (!active) return
+  const version = ++blockReadVersion
+  const key = JSON.stringify({ ...blockQuery, embedded: embeddedFlag.value })
   blockLoading.value = true
   try {
     const d = (await client.get('/pathology/process/blocks', {
@@ -376,11 +412,12 @@ async function loadBlocks() {
         keyword: blockQuery.keyword || undefined,
       },
     })).data.data as Row
+    if (!active || version !== blockReadVersion || key !== JSON.stringify({ ...blockQuery, embedded: embeddedFlag.value })) return
     blocks.value = (d.items ?? []) as Row[]
     blockTruncated.value = d.truncated === true
     blockLimit.value = num(d.limit) || 100
   } finally {
-    blockLoading.value = false
+    if (active && version === blockReadVersion) blockLoading.value = false
   }
 }
 
@@ -389,42 +426,36 @@ const batchNo = ref('')
 const batchRemark = ref('')
 
 async function submitBatch() {
-  if (!batchNo.value.trim()) {
-    ElMessage.warning('脱水批次号不能为空')
-    return
-  }
+  if (!active || saving.value || !canProcess.value || !selectedBlocks.value.length || !selectedBlocks.value.every(row => validBlock(row, true))) return
+  if (!batchNo.value.trim()) { ElMessage.warning('脱水批次号不能为空'); return }
+  const body = { batchNo: batchNo.value.trim(), blockIds: selectedBlocks.value.map(b => Number(b.id)), remark: batchRemark.value || undefined }
   saving.value = true
   try {
-    const d = (await client.put('/pathology/process/blocks/dehydrate-batch', {
-      batchNo: batchNo.value.trim(),
-      blockIds: selectedBlocks.value.map((b) => Number(b.id)),
-      remark: batchRemark.value || undefined,
-    })).data.data as Row
+    const d = (await client.put('/pathology/process/blocks/dehydrate-batch', body)).data.data as Row
+    if (!active) return
     const moved = (d.moved ?? []) as Row[]
     ElMessage.success(`已归入批次 ${fmt(d.batchNo)}：${num(d.blockCount)} 块 / ${num(d.specimenCount)} 例`)
-    if (moved.length) {
-      // 「从别的批次改判过来」是后端刻意回带的事实，不能吞掉——它会改变别的批次的分母
-      await ElMessageBox.alert(
-        moved.map((m) => `${fmt(m.blockCode)}：${fmt(m.fromBatchNo)} → ${fmt(d.batchNo)}`).join('\n'),
-        `有 ${moved.length} 块从其它批次改判`, { type: 'warning' },
-      ).catch(() => null)
-    }
-    await loadBlocks()
-    await loadBatches()
-    emit('changed')
-  } finally {
-    saving.value = false
-  }
+    if (moved.length) await ElMessageBox.alert(moved.map(m => `${fmt(m.blockCode)}：${fmt(m.fromBatchNo)} → ${fmt(d.batchNo)}`).join('\n'), `有 ${moved.length} 块从其它批次改判`, { type: 'warning' }).catch(() => null)
+    await refreshProcessing()
+    if (active) emit('changed')
+  } catch (error) { await refreshConflict(error) }
+  finally { saving.value = false }
 }
 
 async function embed(row: Row) {
-  const d = (await client.put(`/pathology/process/blocks/${Number(row.id)}/embed`, null))
-    .data.data as Row
-  const warnings = (d.warnings ?? []) as string[]
-  if (warnings.length) ElMessage.warning(warnings.join('；'))
-  else ElMessage.success(`已包埋 ${fmt(d.blockCode)}`)
-  await loadBlocks()
-  emit('changed')
+  if (!active || saving.value || !validBlock(row, true)) return
+  const id = Number(row.id)
+  saving.value = true
+  try {
+    const d = (await client.put(`/pathology/process/blocks/${id}/embed`, null)).data.data as Row
+    if (!active) return
+    const warnings = (d.warnings ?? []) as string[]
+    if (warnings.length) ElMessage.warning(warnings.join('；'))
+    else ElMessage.success(`已包埋 ${fmt(d.blockCode)}`)
+    await refreshProcessing()
+    if (active) emit('changed')
+  } catch (error) { await refreshConflict(error) }
+  finally { saving.value = false }
 }
 
 /* ---------------- 脱水批次进度 ---------------- */
@@ -434,6 +465,9 @@ const batchNote = ref('')
 const batchQuery = reactive({ batchNo: '', onlyPending: false })
 
 async function loadBatches() {
+  if (!active) return
+  const version = ++batchReadVersion
+  const key = JSON.stringify(batchQuery)
   batchLoading.value = true
   try {
     const d = (await client.get('/pathology/process/dehydrate/batches', {
@@ -442,10 +476,11 @@ async function loadBatches() {
         onlyPending: batchQuery.onlyPending || undefined,
       },
     })).data.data as Row
+    if (!active || version !== batchReadVersion || key !== JSON.stringify(batchQuery)) return
     batches.value = (d.items ?? []) as Row[]
     batchNote.value = String(d.note ?? '')
   } finally {
-    batchLoading.value = false
+    if (active && version === batchReadVersion) batchLoading.value = false
   }
 }
 
@@ -473,14 +508,20 @@ const slideForm = reactive({
 const techOrderOptions = ref<Row[]>([])
 
 async function openSlide(row: Row) {
-  currentBlock.value = row
+  if (!active || !validBlock(row)) return
+  const version = ++slideDraftVersion
+  currentBlock.value = { ...row }
   Object.assign(slideForm, { count: 1, stainType: 'HE', stainItem: '', remark: '', techOrderId: null })
   techOrderOptions.value = []
   slideDialog.value = true
-  const d = await client.get('/pathology/report/tech-orders', {
-    params: { specimenId: Number(row.specimen_id), status: 'ORDERED' },
-  }).then((r) => r.data.data as Row).catch(() => ({} as Row))
-  techOrderOptions.value = (d.items ?? []) as Row[]
+  await loadTechOptions({ ...row }, version)
+}
+
+async function loadTechOptions(row: Row, version: number) {
+  const d = await client.get('/pathology/report/tech-orders', { params: { specimenId: Number(row.specimen_id), status: 'ORDERED' } })
+    .then(r => r.data.data as Row).catch(() => ({} as Row))
+  if (!sameSlideDraft(Number(row.id), version)) return
+  techOrderOptions.value = ((d.items ?? []) as Row[]).filter(t => t.status === 'ORDERED' && Number(t.specimen_id) === Number(row.specimen_id))
 }
 
 /**
@@ -533,33 +574,31 @@ function onTechOrderPick(id: unknown) {
 }
 
 async function submitSlide() {
+  if (!active || saving.value || !slideDialog.value || !validBlock(currentBlock.value)) return
+  const id = Number(currentBlock.value.id), version = slideDraftVersion
+  const picked = pickedTechOrder.value
+  if (slideForm.techOrderId && !picked) return
+  const draft = { ...slideForm }
+  if (picked) {
+    const st = TECH_TO_STAIN[String(picked.tech_type)]
+    if (st) draft.stainType = st
+    if (picked.tech_item) draft.stainItem = String(picked.tech_item)
+  }
+  const body = { blockId: id, count: draft.count, stainType: draft.stainType, stainItem: draft.stainItem || undefined, remark: draft.remark || undefined, techOrderId: draft.techOrderId || undefined }
   saving.value = true
   try {
-    // 挂接医嘱时以医嘱为准再钉一次（只读输入挡不住脚本改值；后端 5274 是最终守卫）
-    const picked = pickedTechOrder.value
-    if (picked) {
-      const st = TECH_TO_STAIN[String(picked.tech_type)]
-      if (st) slideForm.stainType = st
-      if (picked.tech_item) slideForm.stainItem = String(picked.tech_item)
+    const d = (await client.post('/pathology/process/slides', body)).data.data as Row
+    if (!active) return
+    if (sameSlideDraft(id, version)) {
+      ElMessage.success(`已产出切片 ${num(d.slideCount)} 张`)
+      const warnings = (d.warnings ?? []) as string[]
+      if (warnings.length) ElMessage.warning(warnings.join('；'))
+      slideDialog.value = false
     }
-    const d = (await client.post('/pathology/process/slides', {
-      blockId: Number(currentBlock.value.id),
-      count: slideForm.count,
-      stainType: slideForm.stainType,
-      stainItem: slideForm.stainItem || undefined,
-      remark: slideForm.remark || undefined,
-      techOrderId: slideForm.techOrderId || undefined,
-    })).data.data as Row
-    const warnings = (d.warnings ?? []) as string[]
-    ElMessage.success(`已产出切片 ${num(d.slideCount)} 张`)
-    if (warnings.length) ElMessage.warning(warnings.join('；'))
-    slideDialog.value = false
-    await loadBlocks()
-    await loadSlides()
-    emit('changed')
-  } finally {
-    saving.value = false
-  }
+    await refreshProcessing()
+    if (active) emit('changed')
+  } catch (error) { await refreshConflict(error) }
+  finally { saving.value = false }
 }
 
 /* ---------------- 切片检索与染色 ---------------- */
@@ -581,6 +620,9 @@ function onSlideSelect(rows: Row[]) {
 }
 
 async function loadSlides() {
+  if (!active) return
+  const version = ++slideReadVersion
+  const key = JSON.stringify({ ...slideQuery, stained: stainedFlag.value, range: slideRange.value })
   slideLoading.value = true
   try {
     const d = (await client.get('/pathology/process/slides/search', {
@@ -595,12 +637,13 @@ async function loadSlides() {
         keyword: slideQuery.keyword || undefined,
       },
     })).data.data as Row
+    if (!active || version !== slideReadVersion || key !== JSON.stringify({ ...slideQuery, stained: stainedFlag.value, range: slideRange.value })) return
     slides.value = (d.items ?? []) as Row[]
     slideTruncated.value = d.truncated === true
     slideLimit.value = num(d.limit) || 100
     slideNote.value = String(d.note ?? '')
   } finally {
-    slideLoading.value = false
+    if (active && version === slideReadVersion) slideLoading.value = false
   }
 }
 
@@ -609,29 +652,32 @@ const currentSlide = ref<Row>({})
 const stainForm = reactive({ quality: '', stainItem: '', remark: '' })
 
 function openStain(row: Row) {
-  currentSlide.value = row
+  if (!active || !validSlide(row)) return
+  ++stainDraftVersion
+  currentSlide.value = { ...row }
   Object.assign(stainForm, { quality: '', stainItem: '', remark: '' })
   stainDialog.value = true
 }
 
 async function submitStain() {
+  if (!active || saving.value || !stainDialog.value || !validSlide(currentSlide.value)) return
+  const original = { ...currentSlide.value }, id = Number(original.id), version = stainDraftVersion
+  const body = { quality: stainForm.quality || undefined, stainItem: stainForm.stainItem || undefined, remark: stainForm.remark || undefined }
   saving.value = true
   try {
-    const d = (await client.put(`/pathology/process/slides/${Number(currentSlide.value.id)}/stain`, {
-      quality: stainForm.quality || undefined,
-      stainItem: stainForm.stainItem || undefined,
-      remark: stainForm.remark || undefined,
-    })).data.data as Row
-    const warnings = (d.warnings ?? []) as string[]
-    ElMessage.success('已登记染色')
-    if (warnings.length) ElMessage.warning(warnings.join('；'))
-    stainDialog.value = false
-    await notifyTechProgress(currentSlide.value)
-    await loadSlides()
-    emit('changed')
-  } finally {
-    saving.value = false
-  }
+    const d = (await client.put(`/pathology/process/slides/${id}/stain`, body)).data.data as Row
+    if (!active) return
+    if (sameStainDraft(id, version)) {
+      ElMessage.success('已登记染色')
+      const warnings = (d.warnings ?? []) as string[]
+      if (warnings.length) ElMessage.warning(warnings.join('；'))
+      stainDialog.value = false
+    }
+    await notifyTechProgress(original)
+    await refreshProcessing()
+    if (active) emit('changed')
+  } catch (error) { await refreshConflict(error) }
+  finally { saving.value = false }
 }
 
 /**
@@ -640,10 +686,11 @@ async function submitStain() {
  * 由清单按 slideId 反查（0 或 1 行）；普通切片查不到就不提示。读失败不影响已登记的染色结果。
  */
 async function notifyTechProgress(slide: Row) {
-  if (!slide.id) return
+  if (!active || !slide.id) return
   const d = await client.get('/pathology/report/tech-orders', {
     params: { specimenId: Number(slide.specimen_id), status: 'ALL', slideId: Number(slide.id) },
   }).then((r) => r.data.data as Row).catch(() => ({} as Row))
+  if (!active) return
   for (const t of (d.items ?? []) as Row[]) {
     const item = t.tech_item ? ` ${String(t.tech_item)}` : ''
     ElMessage.info(`医嘱 #${String(t.id)} ${String(t.tech_type_name ?? t.tech_type)}${item} 进度：`
@@ -656,26 +703,22 @@ const batchQuality = ref('')
 const batchStainItem = ref('')
 
 async function submitBatchComplete() {
+  if (!active || saving.value || !canProcess.value || !selectedSlides.value.length || !selectedSlides.value.every(row => validSlide(row))) return
+  const body = { slideIds: selectedSlides.value.map(sl => Number(sl.id)), quality: batchQuality.value || undefined, stainItem: batchStainItem.value || undefined }
   saving.value = true
   try {
-    const d = (await client.put('/pathology/process/slides/batch-complete', {
-      slideIds: selectedSlides.value.map((s) => Number(s.id)),
-      quality: batchQuality.value || undefined,
-      stainItem: batchStainItem.value || undefined,
-    })).data.data as Row
-    // requested 与 completed 分别显示：只报「已完成」会掩盖两者不等的情形
-    ElMessage.success(`本次提交 ${num(d.requested)} 张，实际核销 ${num(d.completed)} 张，`
-      + `涉及 ${num(d.specimenCount)} 例`)
-    if (num(d.completed) < num(d.requested)) {
-      ElMessage.warning('有切片未被核销（可能已被他人先行染色），请核对后重试')
-    }
-    if (!batchQuality.value) ElMessage.warning('本批未评定切片质量，计入「未评」而非优良')
-    await loadSlides()
-    emit('changed')
-  } finally {
-    saving.value = false
-  }
+    const d = (await client.put('/pathology/process/slides/batch-complete', body)).data.data as Row
+    if (!active) return
+    ElMessage.success(`本次提交 ${num(d.requested)} 张，实际核销 ${num(d.completed)} 张，涉及 ${num(d.specimenCount)} 例`)
+    if (num(d.completed) < num(d.requested)) ElMessage.warning('有切片未被核销（可能已被他人先行染色），请核对后重试')
+    if (!body.quality) ElMessage.warning('本批未评定切片质量，计入「未评」而非优良')
+    await refreshProcessing()
+    if (active) emit('changed')
+  } catch (error) { await refreshConflict(error) }
+  finally { saving.value = false }
 }
+
+onUnmounted(() => { active = false; ++blockReadVersion; ++slideReadVersion; ++batchReadVersion; ++slideDraftVersion; ++stainDraftVersion })
 
 defineExpose({ reload: loadBlocks })
 
