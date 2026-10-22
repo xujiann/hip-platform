@@ -2,6 +2,7 @@ package cn.hip.medtech.web;
 
 import cn.hip.platform.core.common.R;
 import cn.hip.platform.core.security.CurrentUserService;
+import cn.hip.medtech.service.PathologyRegistrationAccess;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.Authentication;
@@ -27,6 +28,7 @@ public class PathologyController {
 
     private final JdbcTemplate jdbc;
     private final CurrentUserService currentUserService;
+    private final PathologyRegistrationAccess registrationAccess;
 
     /** 待取材：已收费、项目名含「病理/活检」的申请 */
     @GetMapping("/pending")
@@ -56,7 +58,12 @@ public class PathologyController {
     @Transactional
     public R<Map<String, Object>> collect(@RequestParam Long orderId,
                                           @RequestParam(required = false) String specimenDesc) {
+        registrationAccess.operator(null);
         if (specimenDesc == null || specimenDesc.isBlank()) return R.fail(4554, "取材登记标本描述不能为空");
+        String status = registrationAccess.lockSource(true, orderId, null);
+        if (!"CHARGED".equals(status) || Boolean.TRUE.equals(jdbc.queryForObject(
+                "select exists(select 1 from path_specimen where order_id=?)", Boolean.class, orderId)))
+            return R.fail(4550, "申请不存在/未收费/已取材");
         String barcode = "PB" + jdbc.queryForObject("select nextval('path_specimen_seq')", Long.class);
         int n = jdbc.update("""
                 insert into path_specimen(order_id, barcode, specimen_desc)

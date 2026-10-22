@@ -4,6 +4,7 @@ import cn.hip.platform.core.common.R;
 import cn.hip.platform.core.config.HipProfiles;
 import cn.hip.platform.core.security.CurrentUserService;
 import cn.hip.platform.core.service.ConfigReader;
+import cn.hip.medtech.service.PathologyRegistrationAccess;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.ResultSetExtractor;
@@ -87,6 +88,7 @@ public class PathologyRegistryController {
     private final JdbcTemplate jdbc;
     private final CurrentUserService currentUserService;
     private final ConfigReader configReader;
+    private final PathologyRegistrationAccess registrationAccess;
 
     /** 待办与检索硬上限：命中超过它说明条件太宽，应收窄而不是翻页（同 v43 车道D 口径） */
     private static final int SEARCH_LIMIT = 200;
@@ -277,6 +279,7 @@ public class PathologyRegistryController {
 
     private R<Map<String, Object>> doRegister(RegisterReq req, boolean manual, String manualRemark,
                                               Authentication auth) {
+        registrationAccess.operator(auth);
         boolean outp = req.orderId() != null;
         boolean inp = req.inpOrderId() != null;
         if (outp == inp) return R.fail(5200, "来源非法：orderId 与 inpOrderId 必须恰有其一");
@@ -303,20 +306,20 @@ public class PathologyRegistryController {
         }
 
         // 来源校验。手工登记放宽的正是这里：门诊不再要求已收费（标本实物已到，见端点注释）
+        // Take O before numbering; both producers now serialize with refund C -> O.
+        String sourceStatus = registrationAccess.lockSource(outp, outp ? req.orderId() : req.inpOrderId(), auth);
         if (outp) {
-            var rows = jdbc.queryForList("select status from outp_order where id = ?", String.class, req.orderId());
-            if (rows.isEmpty()) return R.fail(5201, "门诊申请不存在");
-            if (!manual && !"CHARGED".equals(rows.get(0))) {
+            if (sourceStatus == null) return R.fail(5201, "门诊申请不存在");
+            if (!manual && !"CHARGED".equals(sourceStatus)) {
                 return R.fail(5201, "门诊申请未收费（标本实物已送达时走 /specimens/manual 登记并留痕）");
             }
         } else {
-            var rows = jdbc.queryForList("select status from inp_order where id = ?", String.class, req.inpOrderId());
-            if (rows.isEmpty()) return R.fail(5201, "住院医嘱不存在");
-            if ("CANCELLED".equals(rows.get(0))) return R.fail(5201, "住院医嘱已作废，不能登记标本");
+            if (sourceStatus == null) return R.fail(5201, "住院医嘱不存在");
+            if ("CANCELLED".equals(sourceStatus)) return R.fail(5201, "住院医嘱已作废，不能登记标本");
         }
 
-        // 部位重复预检。真并发下最终仍由 V144 的部分唯一索引兜底（走全局异常处理返 4090），
-        // 这里预检是为了给出「这个部位已经登记过」这句人话，而不是一句数据库约束名
+        // Both producers hold O: the later request sees committed parts and gets a readable refusal.
+        // The partial unique index remains a last defence, not the normal duplicate response.
         Integer dup = jdbc.queryForObject(outp
                         // **排除已拒收行**（V145）：拒收后临床重送同一部位是常态，
                         // 不排除的话拒收就等于把这个部位序号永久烧掉、只能被迫顺延，
@@ -333,6 +336,8 @@ public class PathologyRegistryController {
             return R.fail(5205, e.getMessage());
         }
 
+        // Numbering may have waited on the year/type advisory lock: resolve the employee again.
+        Long actor = registrationAccess.operator(auth);
         // 条码沿用既有规则（PB + path_specimen_seq），与病理号并存：扫码枪扫条码，报告上印病理号
         String barcode = "PB" + jdbc.queryForObject("select nextval('path_specimen_seq')", Long.class);
 
@@ -354,7 +359,7 @@ public class PathologyRegistryController {
             jdbc.update("""
                     insert into path_process(specimen_id, node, occurred_at, operator_id, remark)
                     values (?, 'RECEIVE', now(), ?, ?)
-                    """, id, currentUserService.idOf(auth), manualRemark);
+                    """, id, actor, manualRemark);
         }
 
         var out = new LinkedHashMap<String, Object>();
