@@ -242,7 +242,9 @@ async function verify(row: Record<string, unknown>) {
 <b>${location.origin}${share.url}</b></div>`,
       '报告分享')
   } catch (error) {
-    await recoverWrite(error, 9945, sameView)
+    // 审核已成功后，分享仍可能因报告/源状态改变而失效；回读真实列表，保留新草稿。
+    const code = (error as { bizCode?: number }).bizCode === 4660 ? 4660 : 9945
+    await recoverWrite(error, code, sameView)
   } finally { busyId.value = null }
 }
 
