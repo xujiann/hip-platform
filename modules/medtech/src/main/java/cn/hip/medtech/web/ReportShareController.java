@@ -1,79 +1,130 @@
 package cn.hip.medtech.web;
 
+import cn.hip.platform.core.common.Masking;
 import cn.hip.platform.core.common.R;
+import jakarta.persistence.EntityManager;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 
-/** 二十九期：云胶片/报告对外分享——短链 token 匿名访问，限时失效，姓名脱敏 */
+/** 限时脱敏报告外链。与报告生产者相同锁序 O -> E -> share，锁后裁决发布事实及实际有效期。 */
 @RestController
 @RequiredArgsConstructor
 public class ReportShareController {
-
     private final JdbcTemplate jdbc;
-
-    /** 有效期上限 30 天：曾可传 ?expireMinutes=52560000 造出百年外链（1.1.4 B-10） */
+    private final EntityManager entityManager;
     private static final int MAX_EXPIRE_MINUTES = 30 * 24 * 60;
 
-    /** 生成分享链接（默认 72 小时有效，上限 30 天） */
     @PostMapping("/api/ris/exams/{id}/share")
     @org.springframework.security.access.prepost.PreAuthorize("hasAnyRole('ADMIN','TECHNICIAN','DOCTOR_OUTP')")
     @Transactional
     public R<Map<String, Object>> share(@PathVariable Long id,
                                         @RequestParam(defaultValue = "4320") int expireMinutes) {
-        if (expireMinutes <= 0 || expireMinutes > MAX_EXPIRE_MINUTES) {
+        operator();
+        if (expireMinutes <= 0 || expireMinutes > MAX_EXPIRE_MINUTES)
             return R.fail(4663, "有效期须为 1 分钟至 30 天");
-        }
-        Integer verified = jdbc.queryForObject(
-                "select count(*) from ris_exam where id = ? and status = 'VERIFIED'", Integer.class, id);
-        if (verified == null || verified == 0) return R.fail(4660, "报告不存在或未审核发布");
+        var locked = lockExam(id, true);
+        if (locked == null || !locked.publishable()) return unavailable();
         String token = UUID.randomUUID().toString().replace("-", "");
         jdbc.update("""
                 insert into report_share(token, exam_id, expire_at)
-                values (?,?, now() + make_interval(mins => ?))
+                values (?,?, clock_timestamp() + make_interval(mins => ?))
                 """, token, id, expireMinutes);
         return R.ok(Map.of("token", token, "url", "/api/share/" + token, "expireMinutes", expireMinutes));
     }
 
-    /** 吊销：链接泄漏后的唯一回收手段——直接置为已过期（B-10，此前无任何 revoke 端点） */
+    /** 失效源或已撤回报告仍可吊销善后；不要求当前可发布。 */
     @DeleteMapping("/api/ris/exams/{id}/share")
     @org.springframework.security.access.prepost.PreAuthorize("hasAnyRole('ADMIN','TECHNICIAN','DOCTOR_OUTP')")
     @Transactional
     public R<Map<String, Object>> revoke(@PathVariable Long id) {
-        int n = jdbc.update(
-                "update report_share set expire_at = now() where exam_id = ? and expire_at > now()", id);
+        operator();
+        var locked = lockExam(id, true);
+        if (locked == null) return R.ok(Map.of("revoked", 0));
+        jdbc.queryForList("select id from report_share where exam_id=? order by id for update", id);
+        operator();
+        int n = jdbc.update("""
+                update report_share set expire_at = clock_timestamp()
+                where exam_id = ? and expire_at > clock_timestamp()
+                """, id);
         return R.ok(Map.of("revoked", n));
     }
 
-    /** 匿名访问分享报告（permitAll）：过期即失效，姓名脱敏 */
+    /** permitAll 仅允许有效短链读取当前仍可发布的原对象；拒绝不计成功访问。 */
     @GetMapping("/api/share/{token}")
     @Transactional
     public R<Map<String, Object>> view(@PathVariable String token) {
-        var rows = jdbc.queryForList("""
-                select s.id as share_id, s.expire_at < now() as expired, e.findings, e.impression, e.verified_at,
-                       o.item_name, p.name as patient_name, e.modality
-                from report_share s
-                join ris_exam e on e.id = s.exam_id
-                join outp_order o on o.id = e.order_id
-                join outp_registration r on r.id = o.registration_id
-                join empi_patient p on p.id = r.patient_id
-                where s.token = ?
-                """, token);
-        if (rows.isEmpty()) return R.fail(4661, "分享链接不存在");
-        var row = rows.get(0);
-        if (Boolean.TRUE.equals(row.get("expired"))) return R.fail(4662, "分享链接已过期");
-        jdbc.update("update report_share set access_cnt = access_cnt + 1 where id = ?", row.get("share_id"));
-        String name = (String) row.get("patient_name");
-        return R.ok(Map.of(
-                "patientName", cn.hip.platform.core.common.Masking.name(name),
-                "itemName", row.get("item_name"),
-                "modality", row.get("modality"),
-                "findings", row.get("findings"),
-                "impression", row.get("impression"),
-                "verifiedAt", String.valueOf(row.get("verified_at"))));
+        entityManager.flush();
+        var refs = jdbc.queryForList("select id,exam_id from report_share where token=?", token);
+        if (refs.isEmpty()) return missing();
+        var ref = refs.getFirst();
+        Long examId = ((Number) ref.get("exam_id")).longValue();
+        var locked = lockExam(examId, false);
+        if (locked == null) return missing();
+        var links = jdbc.queryForList("""
+                select id from report_share where id=? and token=? and exam_id=? for update
+                """, ref.get("id"), token, examId);
+        if (links.isEmpty()) return missing();
+        // now() is the transaction start: a token can expire while waiting for O, E or share.
+        Boolean active = jdbc.queryForObject("select expire_at > clock_timestamp() from report_share where id=?",
+                Boolean.class, ref.get("id"));
+        if (!Boolean.TRUE.equals(active)) return R.fail(4662, "分享链接已过期");
+        if (!locked.publishable()) return unavailable();
+        var people = jdbc.queryForList("""
+                select o.item_name,p.name as patient_name from outp_order o
+                join outp_registration r on r.id=o.registration_id
+                join empi_patient p on p.id=r.patient_id where o.id=?
+                """, locked.exam().get("order_id"));
+        if (people.isEmpty()) return unavailable();
+        var person = people.getFirst();
+        var exam = locked.exam();
+        var out = new LinkedHashMap<String, Object>();
+        out.put("patientName", Masking.name((String) person.get("patient_name")));
+        out.put("itemName", person.get("item_name"));
+        out.put("modality", exam.get("modality"));
+        out.put("findings", exam.get("findings"));
+        out.put("impression", exam.get("impression"));
+        out.put("verifiedAt", String.valueOf(exam.get("verified_at")));
+        jdbc.update("update report_share set access_cnt=access_cnt+1 where id=?", ref.get("id"));
+        return R.ok(out);
     }
+
+    private record LockedExam(Map<String, Object> exam, boolean publishable) {}
+
+    /** No E lock is held while waiting for O. An in-flight request never follows an E rebind. */
+    private LockedExam lockExam(Long id, boolean staff) {
+        if (staff) operator();
+        entityManager.flush();
+        var refs = jdbc.queryForList("select order_id from ris_exam where id=?", Long.class, id);
+        if (refs.isEmpty()) return null;
+        Long orderId = refs.getFirst();
+        var orders = jdbc.queryForList("select id,order_type,status from outp_order where id=? for update", orderId);
+        if (staff) operator();
+        var exams = jdbc.queryForList("select * from ris_exam where id=? for update", id);
+        if (staff) operator();
+        if (orders.isEmpty() || exams.isEmpty() || !Objects.equals(orderId, exams.getFirst().get("order_id"))) return null;
+        var order = orders.getFirst();
+        var exam = exams.getFirst();
+        boolean publishable = "EXAM".equals(order.get("order_type"))
+                && Set.of("CHARGED", "EXECUTED").contains(String.valueOf(order.get("status")))
+                && "VERIFIED".equals(exam.get("status"));
+        return new LockedExam(exam, publishable);
+    }
+
+    private void operator() {
+        var auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null || !auth.isAuthenticated() || auth.getAuthorities().stream().noneMatch(a ->
+                Set.of("ROLE_ADMIN", "ROLE_TECHNICIAN", "ROLE_DOCTOR_OUTP").contains(a.getAuthority())))
+            throw new AccessDeniedException("无报告分享权限");
+        var ids = jdbc.queryForList("select id from sys_user where username=? and enabled=true", Long.class, auth.getName());
+        if (ids.isEmpty()) throw new AccessDeniedException("报告分享操作人不存在或已停用");
+    }
+
+    private R<Map<String, Object>> missing() { return R.fail(4661, "分享链接不存在或关联已变化"); }
+    private R<Map<String, Object>> unavailable() { return R.fail(4660, "报告不存在、未审核发布或源医嘱已失效"); }
 }
