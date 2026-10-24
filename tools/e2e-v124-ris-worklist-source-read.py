@@ -9,8 +9,6 @@ import json
 import time
 import urllib.error
 from decimal import Decimal
-from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier
 from urllib.parse import urlencode
 
 from e2elib import call, login, provision_user, today_bj
@@ -170,13 +168,6 @@ def queue(f, who='admin', modality=None, code=0):
     assert [x['id'] for x in own] == sorted(x['id'] for x in own)
     assert len({x['group_no'] for x in own}) == len(own), 'Duplicate selected-order queue entry'
     return own
-
-
-def financial_snapshot(f):
-    regs = {v['registration']['id'] for v in f.visits.values()}
-    return {'workspaces': {str(x): f.api('GET', f'/outpatient/doctor/{x}/workspace') for x in regs},
-            'charges': [x for x in f.api('GET', '/outpatient/charges/recent', who='cashier') if x['registrationId'] in regs],
-            'execution': {str(x): f.api('GET', f'/outpatient/exec/reports?registrationId={x}') for x in regs}}
 
 
 def main():
