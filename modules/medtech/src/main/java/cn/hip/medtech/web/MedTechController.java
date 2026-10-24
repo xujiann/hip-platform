@@ -273,7 +273,7 @@ public class MedTechController {
 
     // ===== RIS =====
 
-    /** 待报告：已收费检查申请（自动登记，按项目名归类模态：心电/内镜/超声/普放） */
+    /** 待报告：仅列来源仍有效的检查申请；自动登记按项目名归类心电/内镜/超声/普放。 */
     @GetMapping("/api/ris/worklist")
     @Transactional
     public R<List<Map<String, Object>>> risWorklist(@RequestParam(required = false) String modality) {
@@ -306,6 +306,7 @@ public class MedTechController {
                 join outp_registration r on r.id = o.registration_id
                 join empi_patient p on p.id = r.patient_id
                 where e.status <> 'VERIFIED'
+                  and o.order_type = 'EXAM' and o.status in ('CHARGED','EXECUTED')
                 """ + filter + " order by e.id";
         return R.ok(modality == null ? jdbc.queryForList(sql) : jdbc.queryForList(sql, modality));
     }
