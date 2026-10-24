@@ -107,22 +107,32 @@ public class PrintReportController {
         return R.ok();
     }
 
-    /** 检验报告单数据 */
+    /** 已执行且有本申请结果的检验报告；机器回传可以没有样本，页眉与结果同一语句快照。 */
     @GetMapping("/api/print/lab-report/{orderId}")
     public R<Map<String, Object>> labReport(@PathVariable Long orderId) {
         var rows = jdbc.queryForList("""
                 select o.id, o.item_name, o.group_no, o.created_at,
-                       p.name as patient_name, p.sex, p.patient_no
+                       p.name as patient_name, p.sex, p.patient_no,
+                       x.item_name as result_name, x.result_value, x.unit, x.ref_range, x.abnormal_flag
                 from outp_order o
                 join outp_registration r on r.id = o.registration_id
                 join empi_patient p on p.id = r.patient_id
-                where o.id = ? and o.order_type = 'LAB'
+                join outp_lab_result x on x.order_id = o.id
+                where o.id = ? and o.order_type = 'LAB' and o.status = 'EXECUTED'
+                order by x.id
                 """, orderId);
-        if (rows.isEmpty()) return R.fail(9932, "检验申请不存在");
-        var report = rows.get(0);
-        report.put("results", jdbc.queryForList(
-                "select item_name, result_value, unit, ref_range, abnormal_flag from outp_lab_result where order_id = ? order by id",
-                orderId));
+        if (rows.isEmpty()) return R.fail(9932, "检验报告不存在、未执行或暂无结果");
+        var report = new LinkedHashMap<String, Object>();
+        for (String key : List.of("id", "item_name", "group_no", "created_at", "patient_name", "sex", "patient_no"))
+            report.put(key, rows.getFirst().get(key));
+        var results = new ArrayList<Map<String, Object>>();
+        for (var row : rows) {
+            var result = new LinkedHashMap<String, Object>();
+            result.put("item_name", row.get("result_name"));
+            for (String key : List.of("result_value", "unit", "ref_range", "abnormal_flag")) result.put(key, row.get(key));
+            results.add(result);
+        }
+        report.put("results", results);
         return R.ok(report);
     }
 
