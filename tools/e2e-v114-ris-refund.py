@@ -182,7 +182,7 @@ def refund(case, code=0):
     else:
         assert returned['status'] == 'REFUNDED' and bill(case)['status'] == 'REFUNDED'
         assert source(case)['status'] == 'CREATED' and source(case)['chargeId'] is None
-        assert worklist(case) == [dict(before['exam'][0], order_status='CREATED')]
+        assert worklist(case) == [], 'v124 removes refunded sources from the active queue; persisted E is retained'
         assert alerts(case) == before['alerts'] and recent(case) == before['recent']
         assert portal_reports(case) == before['portal'] == []
 
@@ -278,8 +278,9 @@ write(draft_refund, 'report', 'doctor', body=report_body('保留旧草稿'))
 refund(draft_refund)
 for action, code in [('arrive', 9944), ('report', 9944), ('verify', 9945), ('critical', 9945)]:
     assert_refused(draft_refund, action, code, 'doctor')
-assert worklist(draft_refund)[0]['status'] == 'REPORTED'
-assert worklist(draft_refund)[0]['findings'] == report_body('保留旧草稿')['findings']
+assert worklist(draft_refund) == []
+# Full retained draft columns and actual recharge restoring the same E/body are
+# separately locked by V124RisWorklistSourceReadTest and e2e-v124-ris-worklist-source-read.
 
 # A critical draft is still refundable. Its existing alert survives the legal
 # refund, but stale marking cannot duplicate it and stale review cannot publish.
@@ -293,9 +294,7 @@ for action, code in [('arrive', 9944), ('report', 9944), ('verify', 9945), ('cri
 assert len(alerts(critical_refund)) == 1
 for who in roles:
     for case in [registered_refund, draft_refund, critical_refund]:
-        row = worklist(case, who)[0]
-        assert row['order_status'] == 'CREATED' and set(row) == expected_keys
-        assert row['group_no'] == case['order']['groupNo']
+        assert worklist(case, who) == []
 print('[3] Refund-first REGISTERED/REPORTED/critical drafts reject all four stale writes without changing retained facts')
 
 # Actual repayment makes the existing exam actionable again; this is a real new

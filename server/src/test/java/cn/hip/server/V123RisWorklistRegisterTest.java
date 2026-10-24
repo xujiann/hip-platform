@@ -204,9 +204,9 @@ class V123RisWorklistRegisterTest {
         Long second=order("首单超声","EXAM","CHARGED");richExam(second,"REPORTED");richExam(order,"ARRIVED");
         var stored=exams();var rows=own(ok(request(admin,null)));assertEquals(2,rows.size());assertEquals(stored.stream().map(x->((Number)x.get("id")).longValue()).toList(),rows.stream().map(x->x.get("id").asLong()).toList());assertEquals(stored,exams());
     }
-    @Test void existingHistoricalSourceDisplayPolicyIsNotSilentlyTightenedByRegistrationFix() throws Exception {
+    @Test void v124InvalidSourceIsFilteredWhileTheOriginalExamIsRetained() throws Exception {
         richExam(order,"REPORTED");jdbc.update("update outp_order set status='CREATED',order_type='LAB' where id=?",order);Object before=otherFacts();var stored=exams();var rows=own(ok(request(admin,null)));
-        assertEquals(1,rows.size());assertEquals("CREATED",rows.getFirst().get("order_status").asText());assertEquals(stored,exams());assertEquals(before,otherFacts());
+        assertTrue(rows.isEmpty());assertEquals(stored,exams());assertEquals(before,otherFacts());
     }
     @Test void unrelatedUniqueConstraintStillFailsAtomicallyAndRetryRegistersTheWholeBatch() throws Exception {
         Long second=order("另一单","EXAM","CHARGED");Object before=otherFacts();independentIndex="v123_independent_"+tag.toLowerCase();
