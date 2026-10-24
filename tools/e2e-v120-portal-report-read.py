@@ -148,7 +148,10 @@ class Fixture:
                 'charges': [r for r in self.api('GET', '/outpatient/charges/recent', who='cashier')
                             if r['registrationId'] == self.registration['id']],
                 'execution': self.api('GET', '/outpatient/exec/reports?registrationId=' + str(self.registration['id'])),
-                'specimens': [r for r in self.api('GET', '/pathology/specimens') if r.get('patient_id') == self.owner['id']]}
+                'specimens': [r for r in self.api('GET', '/pathology/specimens')
+                              if r.get('order_id') in {c['order']['id'] for c in self.cases.values()}],
+                'pathReports': {str(c['specimen']['id']): self.api('GET', f"/pathology/report/{c['specimen']['id']}/reports")
+                                for c in self.cases.values() if 'specimen' in c}}
 
 
 def main():
