@@ -186,7 +186,9 @@ public class PortalController {
     /**
      * 检查/病理报告（已审核发布）。
      *
-     * <p><b>EXAM 分支</b>：{@code ris_exam.status = 'VERIFIED'}，report_date 取 {@code verified_at}——不动。
+     * <p><b>EXAM 分支（v120）</b>：已审核且来源仍是 EXAM、CHARGED/EXECUTED，
+     * 与匿名报告分享使用相同发布资格。历史退款/作废/错类来源不能只凭旧 VERIFIED 返回正文；
+     * 合法 CHARGED 存量仍兼容，report_date 仍取 verified_at，时间序列化保持。
      *
      * <p><b>PATH 分支（v57，2576）：发布 = 签发。</b>此前 where 是 {@code s.status = 'DIAGNOSED'}、
      * report_date 取 {@code diagnosed_at}——病理医师一写完诊断、还没初签 / 复签 / 签发，患者端就能看到，
@@ -209,6 +211,7 @@ public class PortalController {
                 join outp_order o on o.id = e.order_id
                 join outp_registration r on r.id = o.registration_id
                 where r.patient_id = ? and e.status = 'VERIFIED'
+                  and o.order_type = 'EXAM' and o.status in ('CHARGED','EXECUTED')
                 union all
                 select 'PATH', o.item_name, s.diagnosis, s.micro_finding, s.report_issued_at
                 from path_specimen s
