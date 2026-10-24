@@ -234,6 +234,7 @@ const booking = ref(false)
 let alive = true
 let catalogRequest = 0
 let slotRequest = 0
+let mineRequest = 0
 // v40 我的住院
 const admissions = ref<Record<string, unknown>[]>([])
 const admission = ref<Record<string, unknown> | null>(null)
@@ -275,12 +276,21 @@ async function loadSchedules(keepSelection = false) {
   }
 }
 
+function clearMine() {
+  for (const rows of [regs, labs, charges, examReports, bills, appts, admissions]) rows.value = []
+}
+
 async function loadMine() {
+  if (!alive) return
+  const request = ++mineRequest
+  const identity = localStorage.getItem('hip_portal_token')
+  clearMine()
   const [r, l, c, e, b, a, adm] = await Promise.all([
     portal.get('/my/registrations'), portal.get('/my/lab-reports'), portal.get('/my/charges'),
     portal.get('/my/exam-reports'), portal.get('/my/pending-bill'),
     portal.get('/my/appointments'), portal.get('/my/admissions'),
   ])
+  if (!alive || request !== mineRequest || identity !== localStorage.getItem('hip_portal_token')) return
   regs.value = r.data.data
   labs.value = l.data.data
   charges.value = c.data.data
@@ -403,11 +413,13 @@ async function loadDailyFees() {
 }
 
 function logout() {
+  mineRequest++
+  clearMine()
   localStorage.removeItem('hip_portal_token')
   router.push('/portal')
 }
 
-onUnmounted(() => { alive = false; catalogRequest++; clearSlots() })
+onUnmounted(() => { alive = false; mineRequest++; catalogRequest++; clearSlots() })
 
 onMounted(() => {
   loadSchedules()
