@@ -37,12 +37,22 @@ class Fixture:
                     'username': username, 'realName': username, 'roleCodes': ['INTERFACE']})
                 assert updated['roleCodes'] == ['INTERFACE'] and updated['enabled']
                 self.tokens[who] = login(username, 'Work@1234')
+                self.identities[who] = self.api('GET', '/auth/me', who=who)
         self.department = self.api('POST', '/system/depts', {
             'code': 'V122D' + self.suffix, 'name': 'V122模拟互认门诊' + self.suffix,
             'type': 'CLINICAL', 'sortNo': 9999})
         self.exam_department = self.api('POST', '/system/depts', {
             'code': 'V122E' + self.suffix, 'name': 'V122模拟互认影像' + self.suffix,
             'type': 'MEDTECH', 'sortNo': 9999})
+        for who, role, dept in [('tech', 'TECHNICIAN', self.exam_department),
+                                ('nurse', 'NURSE', self.exam_department),
+                                ('doctor', 'DOCTOR_OUTP', self.department)]:
+            person = self.identities[who]
+            self.api('PUT', f"/system/users/{person['id']}", {
+                'username': self.users[who], 'realName': self.users[who],
+                'deptId': dept['id'], 'roleCodes': [role]})
+            self.identities[who] = self.api('GET', '/auth/me', who=who)
+            assert self.identities[who]['deptId'] == dept['id']
         self.schedule = self.api('POST', '/outpatient/schedules', {
             'deptId': self.department['id'], 'scheduleDate': today_bj().isoformat(), 'fee': 0, 'capacity': 30})
         imported = self.api('POST', '/masterdata/charge-items/import', text=
