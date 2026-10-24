@@ -1,6 +1,6 @@
-# v119 复核：RIS 报告分享匿名读取一致性（验收中，未定版）
+# v119 复核：RIS 报告分享匿名读取一致性
 
-基线本地 v1.8.37 f4d9832。本轮仅在 codex/v119-report-share 开发，未合并 main、未创建 v1.8.38 tag、未推送。最终定版统计仍以规划顶节和 README 为准；本文件记录当前可验证证据，不代签负责人。
+基线本地 v1.8.37 f4d9832。本轮在 codex/v119-report-share 完成后本地定版，main快进及annotated v1.8.38标签随定版提交核验，未推送或部署生产。最终统计以规划顶节/README及work/v119-final-verification.json为准；没有代负责人签认。
 
 ## 修复边界
 
@@ -10,9 +10,19 @@ ReportShareController 三入口统一按真实源医嘱 O→检查 E→短链加
 
 RisView 对审核成功后分享4660回读真实列表，不展示失效 URL，不清掉新打开草稿；原审核成功不被误记失败。两项实际 SFC 测试在纯旧页面断言红，修后绿；既有测试保持。后端纯旧生产54项：33项断言红/21正向/0运行错误，全部失败为 AssertionFailedError；证据独立 v119-tests/work/v119-red.*。只读审阅候选未发现可确认剩余 P1/P2。
 
-## 待完成
+## 全量、新库及独立包
 
-全新 hip_codex_v119_junit_final_20261023 的 UTC 全模块 clean package、前端完整测试及类型/Vite、五门禁、全新 hip_codex_v119_ci_20261023 的 workflow 原 prep/全部 E2E/demo 原顺序均通过。完整数量及实际 PG Lock 观察见 work/v119-facts.json，不提前回填定版统计。独立 hip_codex_v119_release_20261023 的实际包自报1.8.38，与源码及浏览器服务同 build.time 2026-10-23T05:34:09.080Z，包内本轮公共JWT从头通过，包括真实一分钟自然过期。已验证发布JAR与全量源码JAR逐条目仅 build-info.properties 的版本戳不同，JAR SHA256 1327b33c24b54059d385ab8336ce64e47ef4a76e8b8b436150c580f4baefa1f0。Windows computer-use 在首次捕获 Chrome 新标签页时，因无法可靠确认当前 URL 而自动安全停止；本轮没有完成实际浏览器操作，没有把脚本访问冒称为浏览器验收。需下轮由用户先手动打开可识别本地 URL 后继续。浏览器夹具/完整回账助手位于 work/v119-browser.py，使用独立模拟数据，不访问真实患者。首轮历史夹具对更新时间的预期遗漏V47/V50触发器，确认为三个源医嘱及相应挂号的六个updated_at列；该轮不算通过。重启调度期间一次提前seed连接被关闭，日志保留为work/v119-browser-seed-initial-failed.log（它不是首次断言失败完整日志）；首次断言错误仅工具回报留存，不虚称已有完整前态。修助手为写前保存合法全列与fixture、写后保存实际/预期，再用同事务返回时刻严格核这六列。已切全新hip_codex_v119_browser2_20261023从头造数成功，browser-legal-seed/history-observed/history-expected/initial及独立audit均保留。八个模拟病例与七链已准备，尚未进行浏览器访问，不把准备成功当实际读取或完整回账通过。
+全新 hip_codex_v119_junit_final_20261023 的 UTC 全模块 clean package、前端完整测试及类型/Vite、五门禁、全新 hip_codex_v119_ci_20261023 的 workflow 原 prep/全部 E2E/demo 原顺序均通过。完整数量及实际 PG Lock 观察见 work/v119-facts.json，定版时已回填规划顶节和README。独立 hip_codex_v119_release_20261023 的实际包自报1.8.38，与源码及浏览器服务同 build.time 2026-10-23T05:34:09.080Z，包内本轮公共JWT从头通过，包括真实一分钟自然过期。已验证发布JAR与全量源码JAR逐条目仅 build-info.properties 的版本戳不同，JAR SHA256 1327b33c24b54059d385ab8336ce64e47ef4a76e8b8b436150c580f4baefa1f0。
+
+## 浏览器与完整回账
+
+前两次Windows界面读取因URL识别安全检查中止，未算通过。2026-10-24使用已连接的内置浏览器(2)打开最终dist5391→8567，显示实际登录页后直接访问公共匿名报告路由；恢复服务仍是同一已测JAR和build.time，没有重新构建或改生产代码。
+
+模拟positive与历史CHARGED报告实际显示code0、姓名V**、原项目/US/所见/结论/审核时间；撤回、退款和非EXAM历史源均4660且data=null，过期4662且data=null。待吊销链先真实读取成功，再由公共JWT技师DELETE吊销，实际浏览器刷新同一URL后4662且无正文。三合法访问各计数恰一次，其余失败零增；所有患者、挂号、医嘱及CDR更新时间、费用、检查、报告、标本/执行/告警/配置等完整列不变，只有三计数及原吊销链过期时间是允许变化。58项完整列回账通过。原57条审计逐列不变，仅新增恰一条真实技师DELETE吊销；匿名GET沿原审计策略没有新增记录，未声称八条匿名审计。截图/AX与work/v119-browser-observations.json及browser-final*.json保留。
+
+CHARGED页曾有一次CDP导航和AX超时，实际请求已成功计数一次；随后用原标签页截图恢复核验，未重载或再次访问该链，未将超时当业务拒绝，也未抹掉访问记录。最短一分钟自然过期和确定PG锁等待分别来自独立包公共E2E和真实提交Java用例，本次浏览器预置过期夹具不冒称现场等待一分钟。临床报告创建/两人审核与吊销通过公共API造数/操作，浏览器只实测匿名读取和吊销后原链刷新，不宣称手点报告编辑/审核或SFC竞态；前端实际SFC两项专测验证4660刷新及新草稿保护。
+
+首轮历史夹具遗漏V47/V50连带触发的三个O及三个R.updated_at，该轮不算通过；首次断言错误仅工具回报留存，重启调度早期seed连接关闭日志不冒充首次完整日志。修助手为写前保留合法全列/fixture、写后保留观察与预期，并以同事务时刻精确核六列；全新hip_codex_v119_browser2_20261023从头准备通过。浏览器前再次精确比较initial全列一致，然后实际访问，未复用首轮失效准备结果。
 
 ## 后续风险
 
