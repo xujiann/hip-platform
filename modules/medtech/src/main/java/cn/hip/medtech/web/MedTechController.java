@@ -277,6 +277,7 @@ public class MedTechController {
     @GetMapping("/api/ris/worklist")
     @Transactional
     public R<List<Map<String, Object>>> risWorklist(@RequestParam(required = false) String modality) {
+        // 同一医嘱并发登记只保留胜出行；不覆盖报告，下一条查询读取等待后的新快照。
         jdbc.update("""
                 insert into ris_exam(order_id, modality)
                 select o.id, case when o.item_name like '%心电%' then 'ECG'
@@ -286,6 +287,7 @@ public class MedTechController {
                 from outp_order o
                 where o.order_type = 'EXAM' and o.status = 'CHARGED'
                   and not exists (select 1 from ris_exam e where e.order_id = o.id)
+                on conflict (order_id) do nothing
                 """);
         String filter = modality == null ? "" : " and e.modality = ? ";
         String sql = """
