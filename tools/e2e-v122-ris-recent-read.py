@@ -37,7 +37,10 @@ class Fixture:
                     'username': username, 'realName': username, 'roleCodes': ['INTERFACE']})
                 assert updated['roleCodes'] == ['INTERFACE'] and updated['enabled']
                 self.tokens[who] = login(username, 'Work@1234')
-                self.identities[who] = self.api('GET', '/auth/me', who=who)
+                # INTERFACE deliberately cannot consume staff /auth/me. Keep
+                # the authoritative admin update DTO as its role evidence;
+                # the renewed machine JWT is used for wrong-domain assertions.
+                self.identities[who] = updated
         self.department = self.api('POST', '/system/depts', {
             'code': 'V122D' + self.suffix, 'name': 'V122模拟互认门诊' + self.suffix,
             'type': 'CLINICAL', 'sortNo': 9999})
