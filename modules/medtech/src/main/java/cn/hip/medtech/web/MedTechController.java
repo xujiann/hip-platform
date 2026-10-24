@@ -323,8 +323,8 @@ public class MedTechController {
     }
 
     /**
-     * v38 结果互认提醒：该患者 N 天内已出报告（VERIFIED）的同名检查（只提示不阻断，控费/医保飞检项）。
-     * 开单或登记时前端调用，命中即提示"可复用近期结果"。
+     * 结果互认读取：该患者 N 天内已审核、来源仍为有效 EXAM 的同名检查。
+     * 保留历史 CHARGED 已审核报告；当前前端无调用方，不代表已提供互认提示交互。
      */
     @GetMapping("/api/ris/recent-exams")
     public R<List<Map<String, Object>>> recentExams(@RequestParam Long patientId,
@@ -337,6 +337,7 @@ public class MedTechController {
                 join outp_order o on o.id = e.order_id
                 join outp_registration r on r.id = o.registration_id
                 where r.patient_id = ? and e.status = 'VERIFIED'
+                  and o.order_type = 'EXAM' and o.status in ('CHARGED','EXECUTED')
                   and e.verified_at > now() - make_interval(days => ?)
                 """ + nameFilter + " order by e.verified_at desc limit 20";
         return R.ok(itemName == null || itemName.isBlank()
