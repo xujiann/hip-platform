@@ -227,8 +227,9 @@ assert snapshot(pending) == before
 refund = expect(0, 'POST', f"/outpatient/charges/{pending['charge']['id']}/refund", who='cashier')
 assert refund['status'] == 'REFUNDED'
 assert source(pending)['status'] == 'CREATED' and source(pending)['chargeId'] is None
-assert worklist(pending)[0]['status'] == 'REPORTED'
-assert worklist(pending)[0]['findings'] == pending['findings']
+assert worklist(pending) == [], 'v124 filters refunded sources from the active worklist'
+# Retained draft columns and real recharge restoring the same E are covered by
+# the v124 source-read tests and public refund/recharge regression.
 before = snapshot(pending)
 share(pending, code=4660)
 assert revoke(pending)['revoked'] == 0 and snapshot(pending) == before
