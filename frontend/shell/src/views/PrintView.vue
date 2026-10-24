@@ -323,14 +323,14 @@
       </template>
       <hr v-if="!isClinicalDoc" />
       <p v-if="!isClinicalDoc" class="foot">打印时间：{{ now }}　{{ footNote }}</p>
-      <el-button class="no-print" type="primary" @click="doPrint">打 印</el-button>
+      <el-button class="no-print" type="primary" :disabled="type === 'lab-report' && (loading || labPrinting || !data)" @click="doPrint">打 印</el-button>
     </div>
-    <el-empty v-else description="加载中或单据不存在" />
+    <el-empty v-else :description="type === 'lab-report' ? (loading ? '正在核验检验报告' : '检验报告不可打印，请刷新后重试') : '加载中或单据不存在'" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import client from '../api/client'
 import { fmtDate, fmtDateTime } from '../utils/date'
@@ -433,6 +433,9 @@ const ZOOM_MAX = 2
 const week = ref(Math.max(1, Number(route.query.week ?? 1) || 1))
 const zoom = ref(1)
 const loading = ref(false)
+const labPrinting = ref(false)
+let active = true
+let labRequest = 0
 const hdr = computed(() => (data.value?.header as Record<string, unknown>) ?? {})
 const totalWeeks = computed(() => Number(data.value?.totalWeeks ?? 1) || 1)
 
@@ -475,8 +478,35 @@ function endpoint(): string {
   return `/print/${type}/${id}`
 }
 
-/** 翻页重取（越界由后端返 4821，拦截器已弹红字，此处只保住已渲染的上一页不被清空） */
+function sameLabRoute() {
+  return String(route.query.type ?? 'registration') === type && String(route.query.id ?? '') === id
+}
+function invalidateLab() {
+  labRequest++
+  data.value = null
+  loading.value = false
+}
+
+/** 非检验翻周失败仍保留上一页；检验报告每次重新核验，失败不留可打印的旧正文。 */
 async function reload() {
+  if (type === 'lab-report') {
+    if (!active || !sameLabRoute()) { invalidateLab(); return false }
+    const request = ++labRequest
+    const identity = localStorage.getItem('hip_token')
+    data.value = null
+    loading.value = true
+    try {
+      const response = await client.get(endpoint())
+      if (!active || request !== labRequest || !sameLabRoute() || identity !== localStorage.getItem('hip_token')) return false
+      data.value = response.data.data
+      return data.value != null
+    } catch {
+      // 统一客户端已提示原业务/网络/权限错误；此处不打印旧数据或再报成功。
+      return false
+    } finally {
+      if (active && request === labRequest) loading.value = false
+    }
+  }
   loading.value = true
   try {
     data.value = (await client.get(endpoint())).data.data
@@ -485,9 +515,24 @@ async function reload() {
   }
 }
 
-function doPrint() {
-  window.print()
+async function doPrint() {
+  if (type !== 'lab-report') { window.print(); return }
+  if (!active || loading.value || labPrinting.value || !data.value) return
+  if (!sameLabRoute()) { invalidateLab(); return }
+  const request = labRequest + 1
+  const identity = localStorage.getItem('hip_token')
+  labPrinting.value = true
+  try {
+    if (!await reload()) return
+    await nextTick()
+    if (!active || request !== labRequest) return
+    if (!sameLabRoute() || identity !== localStorage.getItem('hip_token')) { invalidateLab(); return }
+    if (data.value && !loading.value) window.print()
+  } finally { labPrinting.value = false }
 }
+
+watch(() => [route.query.type, route.query.id], () => { if (type === 'lab-report') invalidateLab() })
+onUnmounted(() => { active = false; if (type === 'lab-report') invalidateLab() })
 
 onMounted(async () => {
   const [, cfg] = await Promise.all([
