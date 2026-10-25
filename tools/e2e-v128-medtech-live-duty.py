@@ -156,9 +156,13 @@ def main():
         f.refused(lab, lambda: f.publish(lab, who, 9942))
         f.refused(lab, lambda: f.api('POST', f"/outpatient/charges/{lab['charge']['id']}/refund", who='cashier', code=5005))
 
-        exam = f.visit('影像四岗' + who, 'EXAM')
-        baseline = f.facts(exam)
+        exam = f.visit('影像四岗' + who, 'EXAM', register=False)
+        # Each legal duty performs actual automatic registration, even when the
+        # final modality filter hides its new US exam from this first response.
+        assert f.worklist(exam, who, 'ECG') == []
         row = f.worklist(exam, who)[0]
+        exam['exam_id'] = row['id']
+        baseline = f.facts(exam)
         assert row['modality'] == 'US' and row['order_status'] == 'CHARGED'
         assert row['patient_name'] == exam['patient']['name'] and row['clinical_summary'] == 'V128模拟摘要'
         assert row['exam_purpose'] == 'V128模拟目的' and row['notice'] == 'V128模拟注意' and row['urgent'] is True
