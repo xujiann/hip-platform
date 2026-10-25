@@ -4,8 +4,8 @@
 Creates only test employees and QC rows. No SQL/configuration mutation, patient
 fixture or algorithm extension. Real database waits and the raw operator/12-column
 ledger are proved by Java/private acceptance; this script checks public contracts.
-The PORTAL-role employee credential below exercises the role-domain denial;
-it is explicitly not a patient-subject token.
+The virtual patient-subject role is covered by Java; this script does not create
+a patient or invent a persisted PORTAL employee role.
 """
 import json
 import time
@@ -32,12 +32,12 @@ class Fixture:
         if not minimal:
             roles += [('doctor', 'DOCTOR_OUTP'), ('nurse', 'NURSE'),
                       ('cashier', 'CASHIER'), ('pharmacist', 'PHARMACIST'),
-                      ('interface', 'INTERFACE'), ('portal_role', 'PORTAL'),
+                      ('interface', 'INTERFACE'), ('inpatient_doctor', 'DOCTOR_INP'),
                       ('disabled', 'TECHNICIAN')]
         for who, role in roles:
             name = prefix + '_' + who + '_' + self.suffix
             self.users[who] = name
-            temporary_role = 'TECHNICIAN' if role in {'INTERFACE', 'PORTAL'} else role
+            temporary_role = 'TECHNICIAN' if role == 'INTERFACE' else role
             self.tokens[who] = provision_user(self.tokens['admin'], name, temporary_role)
             person = self.api('GET', '/auth/me', who=who)
             assert not person.get('mustChangePassword', False)
@@ -148,7 +148,7 @@ def main():
     for value in [None, 0, -1]:
         bad = dict(valid); bad['sd'] = value
         f.qc(bad, code=7110)
-    for who in ['cashier', 'pharmacist', 'interface', 'portal_role', None]:
+    for who in ['cashier', 'pharmacist', 'interface', 'inpatient_doctor', None]:
         f.qc(valid, who=who, code=1000 if who is None else 1005)
     f.api('PUT', f"/system/users/{f.identities['disabled']['id']}/enabled?enabled=false")
     f.qc(valid, who='disabled', code=1000)
