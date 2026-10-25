@@ -52,12 +52,14 @@ public class MedTechController {
                 "viewerUrl", pacsUrl == null || pacsUrl.isBlank() ? "" : pacsUrl + "/app/explorer.html"));
     }
 
-    /** AI 子服务：检验结果智能解读（子服务不可达时优雅降级） */
+    /** AI 子服务：仅转发已执行检验申请的本单结果；子服务不可达时优雅降级。 */
     @GetMapping("/api/ai/lab-advice")
     public cn.hip.platform.core.common.R<Map<String, Object>> labAdvice(@RequestParam Long orderId) {
         var results = jdbc.queryForList("""
-                select item_name as name, result_value as value, abnormal_flag as flag
-                from outp_lab_result where order_id = ? order by id
+                select x.item_name as name, x.result_value as value, x.abnormal_flag as flag
+                from outp_order o join outp_lab_result x on x.order_id = o.id
+                where o.id = ? and o.order_type = 'LAB' and o.status = 'EXECUTED'
+                order by x.id
                 """, orderId);
         // 9952：原 9950 与故障工单幂等、死亡登记必填两处撞车（三义），排障时无法按码定位（P2）
         if (results.isEmpty()) return cn.hip.platform.core.common.R.fail(9952, "该申请暂无结果");
