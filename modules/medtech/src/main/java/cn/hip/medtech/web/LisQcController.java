@@ -3,17 +3,21 @@ package cn.hip.medtech.web;
 import cn.hip.platform.core.common.R;
 import cn.hip.platform.core.security.CurrentUserService;
 import cn.hip.platform.core.service.ConfigReader;
+import jakarta.persistence.EntityManager;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -28,6 +32,7 @@ public class LisQcController {
     private final JdbcTemplate jdbc;
     private final CurrentUserService currentUserService;
     private final ConfigReader configReader;
+    private final EntityManager entityManager;
 
     // ===== ① 微生物培养 + 药敏 =====
 
@@ -49,9 +54,25 @@ public class LisQcController {
     @PostMapping("/api/lis/micro/{barcode}")
     @Transactional
     public R<Void> micro(@PathVariable String barcode, @RequestBody MicroReq req, Authentication auth) {
-        var rows = jdbc.queryForList(
-                "select id, order_id from lis_sample where barcode = ? and status = 'RECEIVED'", barcode);
-        if (rows.isEmpty()) return R.fail(7106, "标本不存在或未核收");
+        microOperator(auth);
+        entityManager.flush();
+        // Capture the relation without claiming S, then follow the same O -> S
+        // order as manual publication. FK key-share waits do not recheck eligibility.
+        var links = jdbc.queryForList("select order_id from lis_sample where barcode=?", Long.class, barcode);
+        if (links.isEmpty()) return R.fail(7106, "标本或源医嘱状态不允许录入，请刷新");
+        Long orderId = links.getFirst();
+        var sources = jdbc.queryForList("select order_type,status from outp_order where id=? for update", orderId);
+        microOperator(auth);
+        // A separate statement reads the sample after the O wait; the S lock
+        // also protects against a concurrent publication or relation change.
+        var rows = jdbc.queryForList("select id,order_id,status from lis_sample where barcode=? for update", barcode);
+        Long actor = microOperator(auth);
+        if (sources.isEmpty() || rows.isEmpty()
+                || !Objects.equals(orderId, ((Number) rows.getFirst().get("order_id")).longValue())
+                || !"RECEIVED".equals(rows.getFirst().get("status"))
+                || !"LAB".equals(sources.getFirst().get("order_type"))
+                || !("CHARGED".equals(sources.getFirst().get("status")) || "EXECUTED".equals(sources.getFirst().get("status"))))
+            return R.fail(7106, "标本或源医嘱状态不允许录入，请刷新");
         if (req.organism() == null || req.organism().isBlank()) return R.fail(7107, "菌种名必填");
         if (req.ast() != null) {
             for (var a : req.ast()) {
@@ -62,7 +83,6 @@ public class LisQcController {
             }
         }
         Long sampleId = ((Number) rows.get(0).get("id")).longValue();
-        Long orderId = ((Number) rows.get(0).get("order_id")).longValue();
         var kh = new GeneratedKeyHolder();
         jdbc.update(con -> {
             var ps = con.prepareStatement("""
@@ -75,7 +95,7 @@ public class LisQcController {
             ps.setString(4, req.organism());
             ps.setString(5, req.colonyCount());
             ps.setString(6, req.gram());
-            ps.setObject(7, currentUserService.idOf(auth));
+            ps.setObject(7, actor);
             return ps;
         }, kh);
         long microId = kh.getKey().longValue();
@@ -86,6 +106,23 @@ public class LisQcController {
             }
         }
         return R.ok();
+    }
+
+    /** Preserve the four clinical duties; recheck the current employee after O/S waits. */
+    private Long microOperator(Authentication supplied) {
+        var auth = SecurityContextHolder.getContext().getAuthentication();
+        var roles = Set.of("ROLE_ADMIN", "ROLE_TECHNICIAN", "ROLE_DOCTOR_OUTP", "ROLE_NURSE");
+        if (auth == null || !auth.isAuthenticated()
+                || auth.getAuthorities().stream().noneMatch(a -> roles.contains(a.getAuthority()))
+                || (supplied != null && !Objects.equals(auth.getName(), supplied.getName())))
+            throw new AccessDeniedException("无微生物录入权限");
+        var ids = jdbc.queryForList("""
+                select u.id from sys_user u where u.username=? and u.enabled=true
+                  and exists (select 1 from sys_user_role ur join sys_role r on r.id=ur.role_id
+                              where ur.user_id=u.id and r.code in ('ADMIN','TECHNICIAN','DOCTOR_OUTP','NURSE'))
+                """, Long.class, auth.getName());
+        if (ids.isEmpty()) throw new AccessDeniedException("微生物录入人不存在、已停用或岗位已变化");
+        return ids.getFirst();
     }
 
     @GetMapping("/api/lis/micro")
