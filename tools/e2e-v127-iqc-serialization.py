@@ -32,7 +32,7 @@ class Fixture:
         if not minimal:
             roles += [('doctor', 'DOCTOR_OUTP'), ('nurse', 'NURSE'),
                       ('cashier', 'CASHIER'), ('pharmacist', 'PHARMACIST'),
-                      ('interface', 'INTERFACE'), ('inpatient_doctor', 'DOCTOR_INP'),
+                      ('interface', 'INTERFACE'), ('quality', 'QUALITY'),
                       ('disabled', 'TECHNICIAN')]
         for who, role in roles:
             name = prefix + '_' + who + '_' + self.suffix
@@ -148,7 +148,7 @@ def main():
     for value in [None, 0, -1]:
         bad = dict(valid); bad['sd'] = value
         f.qc(bad, code=7110)
-    for who in ['cashier', 'pharmacist', 'interface', 'inpatient_doctor', None]:
+    for who in ['cashier', 'pharmacist', 'interface', 'quality', None]:
         f.qc(valid, who=who, code=1000 if who is None else 1005)
     f.api('PUT', f"/system/users/{f.identities['disabled']['id']}/enabled?enabled=false")
     f.qc(valid, who='disabled', code=1000)
