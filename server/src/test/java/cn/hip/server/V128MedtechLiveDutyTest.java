@@ -162,7 +162,7 @@ class V128MedtechLiveDutyTest {
         try{tx().executeWithoutResult(t->{if(point.equals("registration"))before.set(winner(original,w.pg()));else{lock(point);before.set(original);}int holder=jdbc.queryForObject("select pg_backend_pid()",Integer.class);future.add(pool.submit(()->request(op,actor.token())));waitForHolder(holder,future.getFirst(),op+":"+point+":"+mode);roles(actor,"NURSE");expectedAuth.set(authFacts());});assertEquals(expectedAuth.get(),authFacts());if(op.equals("worklist")){code(finish(future.getFirst()),200,0);assertEquals(before.get(),facts());}else accepted(op,finish(future.getFirst()),actor,before.get(),w);}finally{close(pool);}
     }
 
-    @ParameterizedTest @CsvSource({"publish,S","report,E","worklist,unique"})
+    @ParameterizedTest @CsvSource({"publish,S","report,E","worklist,registration"})
     void rolledBackRoleWithdrawalLeavesTheWaitingRequestLegitimate(String op,String point)throws Exception{
         prepare(op);var before=facts();var authBefore=authFacts();var pool=Executors.newSingleThreadExecutor();var future=new ArrayList<Future<Outcome>>();Window w=window();
         try{tx().executeWithoutResult(t->{if(point.equals("registration"))winner(before,w.pg());else lock(point);int holder=jdbc.queryForObject("select pg_backend_pid()",Integer.class);future.add(pool.submit(()->request(op,actor.token())));waitForHolder(holder,future.getFirst(),op+":"+point+":role-rollback");roles(actor,"QUALITY");t.setRollbackOnly();});assertEquals(authBefore,authFacts());accepted(op,finish(future.getFirst()),actor,before,w);}finally{close(pool);}
