@@ -12,6 +12,9 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Set;
 
@@ -22,9 +25,10 @@ import java.util.Set;
  * 链内拦下的请求根本到不了这里；方法级拒绝虽会路过本过滤器的 finally，但那一刻
  * accessDeniedHandler 尚未写 403，按 response.getStatus() 记会得到一行误导性的 200。
  * 故安全拒绝统一由 SecurityAuditWriter 在 handler 内留痕，本过滤器检测到在途的
- * 安全异常即跳过（否则同一次拒绝记两行）。
+ * 安全异常（包括 MVC 的包装）且响应尚未提交时跳过，否则同一次拒绝记两行。
+ * 已提交响应及顶层 IOException 无法由安全链补写，仍保留普通审计。
  */
-@org.springframework.core.annotation.Order(30)   // 审计最外层：请求进出都要留痕
+@org.springframework.core.annotation.Order(30)   // 安全链之后：普通业务访问留痕
 @Component
 @RequiredArgsConstructor
 public class AuditLogFilter extends OncePerRequestFilter {
@@ -54,15 +58,35 @@ public class AuditLogFilter extends OncePerRequestFilter {
         return false;
     }
 
+    /** Match ExceptionTranslationFilter's cause extractors without changing propagation. */
+    private static boolean securityCause(Throwable failure) {
+        Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        while (failure != null && seen.add(failure)) {
+            if (failure instanceof org.springframework.security.access.AccessDeniedException
+                    || failure instanceof org.springframework.security.core.AuthenticationException) {
+                return true;
+            }
+            if (failure instanceof ServletException servlet) {
+                failure = servlet.getRootCause();
+            } else if (failure instanceof InvocationTargetException invocation) {
+                failure = invocation.getTargetException();
+            } else {
+                failure = failure.getCause();
+            }
+        }
+        return false;
+    }
+
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
                                     FilterChain chain) throws ServletException, IOException {
         boolean securityDenied = false;
         try {
             chain.doFilter(request, response);
-        } catch (org.springframework.security.access.AccessDeniedException
-                 | org.springframework.security.core.AuthenticationException e) {
-            securityDenied = true;   // 由 SecurityAuditWriter 留痕（带准确的 401/403 状态）
+        } catch (ServletException | RuntimeException e) {
+            // ETF rethrows a top-level IOException and cannot handle committed responses.
+            // Only an uncommitted security failure will be audited by its later handler.
+            securityDenied = !response.isCommitted() && securityCause(e);
             throw e;
         } finally {
             String path = request.getRequestURI();
