@@ -268,8 +268,12 @@ public class MedTechController {
                 || auth.getAuthorities().stream().noneMatch(a -> roles.contains(a.getAuthority()))
                 || (supplied != null && !Objects.equals(auth.getName(), supplied.getName())))
             throw new AccessDeniedException("无检验操作权限");
-        var ids = jdbc.queryForList("select id from sys_user where username=? and enabled=true", Long.class, auth.getName());
-        if (ids.isEmpty()) throw new AccessDeniedException("检验操作人不存在或已停用");
+        var ids = jdbc.queryForList("""
+                select u.id from sys_user u where u.username=? and u.enabled=true
+                  and exists (select 1 from sys_user_role ur join sys_role r on r.id=ur.role_id
+                              where ur.user_id=u.id and r.code in ('ADMIN','TECHNICIAN','DOCTOR_OUTP','NURSE'))
+                """, Long.class, auth.getName());
+        if (ids.isEmpty()) throw new AccessDeniedException("检验操作人不存在、已停用或岗位已变化");
         return ids.getFirst();
     }
 
@@ -279,6 +283,7 @@ public class MedTechController {
     @GetMapping("/api/ris/worklist")
     @Transactional
     public R<List<Map<String, Object>>> risWorklist(@RequestParam(required = false) String modality) {
+        risOperator(null);
         // 同一医嘱并发登记只保留胜出行；不覆盖报告，下一条查询读取等待后的新快照。
         jdbc.update("""
                 insert into ris_exam(order_id, modality)
@@ -291,6 +296,7 @@ public class MedTechController {
                   and not exists (select 1 from ris_exam e where e.order_id = o.id)
                 on conflict (order_id) do nothing
                 """);
+        risOperator(null);
         String filter = modality == null ? "" : " and e.modality = ? ";
         String sql = """
                 -- v44 合版补：临床摘要/检查目的/注意事项/加急是技师写报告的依据，
@@ -459,8 +465,12 @@ public class MedTechController {
                 || auth.getAuthorities().stream().noneMatch(a -> roles.contains(a.getAuthority()))
                 || (supplied != null && !Objects.equals(auth.getName(), supplied.getName())))
             throw new AccessDeniedException("无RIS报告操作权限");
-        var ids = jdbc.queryForList("select id from sys_user where username=? and enabled=true", Long.class, auth.getName());
-        if (ids.isEmpty()) throw new AccessDeniedException("RIS操作人不存在或已停用");
+        var ids = jdbc.queryForList("""
+                select u.id from sys_user u where u.username=? and u.enabled=true
+                  and exists (select 1 from sys_user_role ur join sys_role r on r.id=ur.role_id
+                              where ur.user_id=u.id and r.code in ('ADMIN','TECHNICIAN','DOCTOR_OUTP','NURSE'))
+                """, Long.class, auth.getName());
+        if (ids.isEmpty()) throw new AccessDeniedException("RIS操作人不存在、已停用或岗位已变化");
         return ids.getFirst();
     }
 
