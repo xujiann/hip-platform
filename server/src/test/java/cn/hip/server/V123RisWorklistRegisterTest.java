@@ -27,7 +27,8 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 
 /** Real JWT requests, committed PostgreSQL fixtures and independently committing transactions.
- * The unique-key races prove the actual INSERT waits on the named holder backend before release.
+ * The registration races prove the actual INSERT waits on the named holder backend before release.
+ * Since v130 FOR UPDATE, this can wait on source O before the unique check; no unique-lock claim.
  * No outer test transaction, fake controller or assumption that two started threads raced.
  * Historical row fields/source mismatches are explicit fixtures, not current write-API claims. */
 @SpringBootTest
@@ -99,7 +100,7 @@ class V123RisWorklistRegisterTest {
                 """,Long.class,source,state,employees.getFirst(),employees.getFirst());
     }
     TransactionTemplate tx() {var transaction=new TransactionTemplate(manager);transaction.setTimeout(20);return transaction;}
-    void waitForUniqueHolder(int holder,Future<?> request) {
+    void waitForRegistrationHolder(int holder,Future<?> request) {
         long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(12);
         while(System.nanoTime()<deadline) {
             // This monitor runs inside the holder transaction: refresh its cached statistics view.
@@ -109,8 +110,8 @@ class V123RisWorklistRegisterTest {
                     where pid<>pg_backend_pid() and wait_event_type='Lock' and ?=any(pg_blocking_pids(pid))
                       and query like '%insert into ris_exam(order_id, modality)%'
                     """,holder);
-            if(!waiters.isEmpty()) {System.out.println("V123 PG_LOCK unique-holder="+holder+" waiters="+waiters);return;}
-            if(request.isDone())fail("JWT worklist request finished before its required unique-key Lock wait");
+            if(!waiters.isEmpty()) {System.out.println("V123 PG_LOCK registration-holder="+holder+" waiters="+waiters);return;}
+            if(request.isDone())fail("JWT worklist request finished before its required registration-holder Lock wait");
             try {Thread.sleep(20);}catch(InterruptedException e){Thread.currentThread().interrupt();throw new RuntimeException(e);}
         }
         fail("Must observe actual INSERT Lock wait blocked by the known uncommitted holder");
@@ -149,7 +150,7 @@ class V123RisWorklistRegisterTest {
         try {
             tx().executeWithoutResult(t->{
                 richExam(order,state);expected.addAll(exams());int holder=jdbc.queryForObject("select pg_backend_pid()",Integer.class);
-                futures.add(executor.submit(()->request(token,null)));waitForUniqueHolder(holder,futures.getFirst());
+                futures.add(executor.submit(()->request(token,null)));waitForRegistrationHolder(holder,futures.getFirst());
             });
             Outcome response=finish(futures.getFirst());
             assertEquals(expected,exams());assertEquals(before,otherFacts());
@@ -164,7 +165,7 @@ class V123RisWorklistRegisterTest {
     @Test void rolledBackUniqueHolderLetsTheWaitingJwtRequestCreateItsOwnDefaultRow() throws Exception {
         Object before=otherFacts();var executor=Executors.newSingleThreadExecutor();var futures=new ArrayList<Future<Outcome>>();
         try {
-            tx().executeWithoutResult(t->{richExam(order,"REPORTED");int holder=jdbc.queryForObject("select pg_backend_pid()",Integer.class);futures.add(executor.submit(()->request(admin,null)));waitForUniqueHolder(holder,futures.getFirst());t.setRollbackOnly();});
+            tx().executeWithoutResult(t->{richExam(order,"REPORTED");int holder=jdbc.queryForObject("select pg_backend_pid()",Integer.class);futures.add(executor.submit(()->request(admin,null)));waitForRegistrationHolder(holder,futures.getFirst());t.setRollbackOnly();});
             var rows=own(ok(finish(futures.getFirst())));assertEquals(1,rows.size());var e=exams().getFirst();assertEquals(1,exams().size());
             assertEquals("REGISTERED",e.get("status"));assertEquals("US",e.get("modality"));assertNull(e.get("findings"));assertNull(e.get("impression"));assertNull(e.get("reporter_id"));assertNull(e.get("verified_at"));assertEquals(false,e.get("critical_flag"));assertEquals(before,otherFacts());
         } finally {close(executor);}

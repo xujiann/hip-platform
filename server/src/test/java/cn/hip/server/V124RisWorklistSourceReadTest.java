@@ -33,6 +33,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 
 /** Real JWT requests, committed PostgreSQL fixtures and independently committing transactions.
  * The refund race proves the actual INSERT waits on the named uncommitted E holder before release.
+ * Since v130 FOR UPDATE, the holder FK KEY SHARE blocks source O first; no unique-lock claim.
  * The holder uses the real refund service with a live cashier, then commits/rolls back its actual writes.
  * No outer test transaction, fake controller or assumption that two started threads raced.
  * Historical row fields/source mismatches are explicit fixtures, not current write-API claims. */
@@ -107,7 +108,7 @@ class V124RisWorklistSourceReadTest {
                 """,Long.class,source,state,employees.getFirst(),employees.getFirst());
     }
     TransactionTemplate tx() {var transaction=new TransactionTemplate(manager);transaction.setTimeout(20);return transaction;}
-    void waitForUniqueHolder(int holder,Future<?> request) {
+    void waitForRegistrationHolder(int holder,Future<?> request) {
         long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(12);
         while(System.nanoTime()<deadline) {
             // This monitor runs inside the holder transaction: refresh its cached statistics view.
@@ -117,8 +118,8 @@ class V124RisWorklistSourceReadTest {
                     where pid<>pg_backend_pid() and wait_event_type='Lock' and ?=any(pg_blocking_pids(pid))
                       and query like '%insert into ris_exam(order_id, modality)%'
                     """,holder);
-            if(!waiters.isEmpty()) {System.out.println("V124 PG_LOCK unique-holder="+holder+" waiters="+waiters);return;}
-            if(request.isDone())fail("JWT worklist request finished before its required unique-key Lock wait");
+            if(!waiters.isEmpty()) {System.out.println("V124 PG_LOCK registration-holder="+holder+" waiters="+waiters);return;}
+            if(request.isDone())fail("JWT worklist request finished before its required registration-holder Lock wait");
             try {Thread.sleep(20);}catch(InterruptedException e){Thread.currentThread().interrupt();throw new RuntimeException(e);}
         }
         fail("Must observe actual INSERT Lock wait blocked by the known uncommitted holder");
@@ -207,22 +208,22 @@ class V124RisWorklistSourceReadTest {
         Long first=richExam(order,"REPORTED"), invalid=order("首单超声","LAB","CHARGED"), second=order("首单超声","EXAM","EXECUTED");richExam(invalid,"ARRIVED");Long secondE=richExam(second,"ARRIVED");
         var e=exams();var before=otherFacts();var rows=own(ok(request(admin,null)));assertEquals(List.of(first,secondE),rows.stream().map(x->x.get("id").asLong()).toList());assertEquals(e,exams());assertEquals(before,otherFacts());
     }
-    @Test void committedRealRefundDuringUniqueWaitIsAppliedByTheFollowingSelect() throws Exception {
+    @Test void committedRealRefundDuringRegistrationWaitIsAppliedByTheFollowingSelect() throws Exception {
         var executor=Executors.newSingleThreadExecutor();var futures=new ArrayList<Future<Outcome>>();var expected=new ArrayList<Map<String,Object>>();final Object[] afterRefund=new Object[1];
         try {
             tx().executeWithoutResult(t->{
                 richExam(order,"REPORTED");expected.addAll(exams());int holder=jdbc.queryForObject("select pg_backend_pid()",Integer.class);
-                futures.add(executor.submit(()->request(admin,null)));waitForUniqueHolder(holder,futures.getFirst());actualServiceRefund();afterRefund[0]=otherFacts();
+                futures.add(executor.submit(()->request(admin,null)));waitForRegistrationHolder(holder,futures.getFirst());actualServiceRefund();afterRefund[0]=otherFacts();
             });
             var response=finish(futures.getFirst());assertEquals(expected,exams());assertEquals(afterRefund[0],otherFacts());assertEquals(200,response.status());assertEquals(0,response.code());
             System.out.println("V124 REFUND_WAIT HTTP="+response.status()+" code="+response.code()+" rows="+own(response.data()).size());assertTrue(own(response.data()).isEmpty());
         } finally {close(executor);}
     }
-    @Test void rolledBackRealRefundDuringUniqueWaitLeavesTheOriginalChargeAndAllowsDefaultRegistration() throws Exception {
+    @Test void rolledBackRealRefundDuringRegistrationWaitLeavesTheOriginalChargeAndAllowsDefaultRegistration() throws Exception {
         var before=otherFacts();var executor=Executors.newSingleThreadExecutor();var futures=new ArrayList<Future<Outcome>>();
         try {
             tx().executeWithoutResult(t->{
-                richExam(order,"REPORTED");int holder=jdbc.queryForObject("select pg_backend_pid()",Integer.class);futures.add(executor.submit(()->request(admin,null)));waitForUniqueHolder(holder,futures.getFirst());actualServiceRefund();t.setRollbackOnly();
+                richExam(order,"REPORTED");int holder=jdbc.queryForObject("select pg_backend_pid()",Integer.class);futures.add(executor.submit(()->request(admin,null)));waitForRegistrationHolder(holder,futures.getFirst());actualServiceRefund();t.setRollbackOnly();
             });
             var rows=own(ok(finish(futures.getFirst())));assertEquals(1,rows.size());var e=exams();assertEquals(1,e.size());assertEquals("REGISTERED",e.getFirst().get("status"));assertEquals("US",e.getFirst().get("modality"));assertNull(e.getFirst().get("findings"));assertEquals(before,otherFacts());
         } finally {close(executor);}

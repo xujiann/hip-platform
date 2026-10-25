@@ -28,7 +28,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 /** Real JWT requests, committed fixtures and named PostgreSQL holder observations.
  * No enclosing test transaction. Role changes are separately allocated holder facts;
  * they are not clinical mutations. Historical fixtures do not claim a clinical setup API.
- * This suite covers only existing manual duties and the INSERT-bearing RIS worklist. */
+ * This suite covers only existing manual duties and the INSERT-bearing RIS worklist.
+ * Since v130 the existing-E holder may block source FOR UPDATE before the unique check. */
 @SpringBootTest
 @AutoConfigureMockMvc
 class V128MedtechLiveDutyTest {
@@ -147,24 +148,24 @@ class V128MedtechLiveDutyTest {
     }
 
     @ParameterizedTest @ValueSource(strings={"disable","revoke"})
-    void worklistRejectsAfterItsUniqueWaitAndRollsBackOnlyItsOwnRegistrations(String mode)throws Exception{
+    void worklistRejectsAfterItsRegistrationWaitAndRollsBackOnlyItsOwnRegistrations(String mode)throws Exception{
         prepare("worklist");Long first=order;prepare("worklist");Long second=order;order=first;var original=facts();Instant lower=pgClock();var pool=Executors.newSingleThreadExecutor();var future=new ArrayList<Future<Outcome>>();var expected=new AtomicReference<Map<String,List<Map<String,Object>>>>();var expectedAuth=new AtomicReference<AuthFacts>();
-        try{tx().executeWithoutResult(t->{expected.set(winner(original,lower));int holder=jdbc.queryForObject("select pg_backend_pid()",Integer.class);future.add(pool.submit(()->request("worklist",actor.token())));waitForHolder(holder,future.getFirst(),"worklist:unique:"+mode);if(mode.equals("disable"))jdbc.update("update sys_user set enabled=false where id=?",actor.id());else roles(actor,"QUALITY");expectedAuth.set(authFacts());});assertEquals(expectedAuth.get(),authFacts());denied(finish(future.getFirst()),expected.get());assertEquals(0,jdbc.queryForObject("select count(*) from ris_exam where order_id=?",Integer.class,second));jdbc.update("update sys_user set enabled=true where id=?",actor.id());roles(actor,"NURSE");order=second;Window w=window();accepted("worklist",request("worklist",actor.token()),actor,expected.get(),w);}finally{close(pool);}
+        try{tx().executeWithoutResult(t->{expected.set(winner(original,lower));int holder=jdbc.queryForObject("select pg_backend_pid()",Integer.class);future.add(pool.submit(()->request("worklist",actor.token())));waitForHolder(holder,future.getFirst(),"worklist:registration:"+mode);if(mode.equals("disable"))jdbc.update("update sys_user set enabled=false where id=?",actor.id());else roles(actor,"QUALITY");expectedAuth.set(authFacts());});assertEquals(expectedAuth.get(),authFacts());denied(finish(future.getFirst()),expected.get());assertEquals(0,jdbc.queryForObject("select count(*) from ris_exam where order_id=?",Integer.class,second));jdbc.update("update sys_user set enabled=true where id=?",actor.id());roles(actor,"NURSE");order=second;Window w=window();accepted("worklist",request("worklist",actor.token()),actor,expected.get(),w);}finally{close(pool);}
     }
 
     @ParameterizedTest @ValueSource(strings={"ADMIN","TECHNICIAN","DOCTOR_OUTP","NURSE"})
     void originalFourDutiesRetainEveryEndpointAndExactBusinessEffects(String role)throws Exception{roles(actor,role);for(String op:OPS){prepare(op);var before=facts();Window w=window();accepted(op,request(op,actor.token()),actor,before,w);}}
 
-    @ParameterizedTest @CsvSource({"publish,S,retain","publish,O,transfer","verify,E,retain","report,O,transfer","worklist,unique,retain","worklist,unique,transfer"})
+    @ParameterizedTest @CsvSource({"publish,S,retain","publish,O,transfer","verify,E,retain","report,O,transfer","worklist,registration,retain","worklist,registration,transfer"})
     void anotherRemainingOrTransferredOriginalDutyStillWorksAfterWaiting(String op,String point,String mode)throws Exception{
         if(mode.equals("retain"))grant(actor,"NURSE");prepare(op);var original=facts();var before=new AtomicReference<Map<String,List<Map<String,Object>>>>();var expectedAuth=new AtomicReference<AuthFacts>();var pool=Executors.newSingleThreadExecutor();var future=new ArrayList<Future<Outcome>>();Window w=window();
-        try{tx().executeWithoutResult(t->{if(point.equals("unique"))before.set(winner(original,w.pg()));else{lock(point);before.set(original);}int holder=jdbc.queryForObject("select pg_backend_pid()",Integer.class);future.add(pool.submit(()->request(op,actor.token())));waitForHolder(holder,future.getFirst(),op+":"+point+":"+mode);roles(actor,"NURSE");expectedAuth.set(authFacts());});assertEquals(expectedAuth.get(),authFacts());if(op.equals("worklist")){code(finish(future.getFirst()),200,0);assertEquals(before.get(),facts());}else accepted(op,finish(future.getFirst()),actor,before.get(),w);}finally{close(pool);}
+        try{tx().executeWithoutResult(t->{if(point.equals("registration"))before.set(winner(original,w.pg()));else{lock(point);before.set(original);}int holder=jdbc.queryForObject("select pg_backend_pid()",Integer.class);future.add(pool.submit(()->request(op,actor.token())));waitForHolder(holder,future.getFirst(),op+":"+point+":"+mode);roles(actor,"NURSE");expectedAuth.set(authFacts());});assertEquals(expectedAuth.get(),authFacts());if(op.equals("worklist")){code(finish(future.getFirst()),200,0);assertEquals(before.get(),facts());}else accepted(op,finish(future.getFirst()),actor,before.get(),w);}finally{close(pool);}
     }
 
     @ParameterizedTest @CsvSource({"publish,S","report,E","worklist,unique"})
     void rolledBackRoleWithdrawalLeavesTheWaitingRequestLegitimate(String op,String point)throws Exception{
         prepare(op);var before=facts();var authBefore=authFacts();var pool=Executors.newSingleThreadExecutor();var future=new ArrayList<Future<Outcome>>();Window w=window();
-        try{tx().executeWithoutResult(t->{if(point.equals("unique"))winner(before,w.pg());else lock(point);int holder=jdbc.queryForObject("select pg_backend_pid()",Integer.class);future.add(pool.submit(()->request(op,actor.token())));waitForHolder(holder,future.getFirst(),op+":"+point+":role-rollback");roles(actor,"QUALITY");t.setRollbackOnly();});assertEquals(authBefore,authFacts());accepted(op,finish(future.getFirst()),actor,before,w);}finally{close(pool);}
+        try{tx().executeWithoutResult(t->{if(point.equals("registration"))winner(before,w.pg());else lock(point);int holder=jdbc.queryForObject("select pg_backend_pid()",Integer.class);future.add(pool.submit(()->request(op,actor.token())));waitForHolder(holder,future.getFirst(),op+":"+point+":role-rollback");roles(actor,"QUALITY");t.setRollbackOnly();});assertEquals(authBefore,authFacts());accepted(op,finish(future.getFirst()),actor,before,w);}finally{close(pool);}
     }
 
     @ParameterizedTest @ValueSource(strings={"CASHIER","PORTAL","anonymous","disabled"})

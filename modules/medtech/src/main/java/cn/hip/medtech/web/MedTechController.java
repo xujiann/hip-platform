@@ -284,7 +284,9 @@ public class MedTechController {
     @Transactional
     public R<List<Map<String, Object>>> risWorklist(@RequestParam(required = false) String modality) {
         risOperator(null);
-        // 同一医嘱并发登记只保留胜出行；不覆盖报告，下一条查询读取等待后的新快照。
+        // 按源ID升序锁定候选；等退款/源更新提交后由RC重新判资格，锁持有至本事务结束。
+        // FOR UPDATE也排除E插入的FK KEY SHARE，避免持源锁等E唯一、holder再升级源锁的环。
+        // 同一医嘱并发登记仍只保留胜出行；不覆盖报告，下一条查询读取新的快照。
         jdbc.update("""
                 insert into ris_exam(order_id, modality)
                 select o.id, case when o.item_name like '%心电%' then 'ECG'
@@ -294,6 +296,8 @@ public class MedTechController {
                 from outp_order o
                 where o.order_type = 'EXAM' and o.status = 'CHARGED'
                   and not exists (select 1 from ris_exam e where e.order_id = o.id)
+                order by o.id
+                for update of o
                 on conflict (order_id) do nothing
                 """);
         risOperator(null);
