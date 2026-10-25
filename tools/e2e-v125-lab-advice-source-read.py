@@ -2,7 +2,8 @@
 """Public JWT regression for the laboratory AI advice source boundary.
 
 Clinical fixtures use the existing real-API laboratory fixture. No SQL or
-configuration mutation, no AI mock, and no assertion on the algorithm's wording.
+configuration mutation. Uses the running bundled rule-based AI service and
+does not assert the algorithm's wording.
 Historical invalid result/type rows and exact outbound payload capture are the
 dedicated Java tests' responsibility. This script only proves legal HTTP paths.
 """
