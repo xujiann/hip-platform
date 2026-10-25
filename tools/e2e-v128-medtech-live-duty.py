@@ -157,8 +157,8 @@ def main():
         f.refused(lab, lambda: f.api('POST', f"/outpatient/charges/{lab['charge']['id']}/refund", who='cashier', code=5005))
 
         exam = f.visit('影像四岗' + who, 'EXAM', register=False)
-        # Each legal duty performs actual automatic registration, even when the
-        # final modality filter hides its new US exam from this first response.
+        # Ordinary role/modality compatibility. The independent cases below
+        # distinguish registration-before-filter from registration-on-next-read.
         assert f.worklist(exam, who, 'ECG') == []
         row = f.worklist(exam, who)[0]
         exam['exam_id'] = row['id']
@@ -192,6 +192,18 @@ def main():
         assert published['alerts'] == draft['alerts'] and not published['results'] and not published['execution']
         f.refused(exam, lambda: f.write(exam, 'report', editor, 9944))
         f.refused(exam, lambda: f.api('POST', f"/outpatient/charges/{exam['charge']['id']}/refund", who='cashier', code=5005))
+    for who in ROLES:
+        hidden = f.visit('过滤前已登记' + who, 'EXAM', register=False)
+        assert f.worklist(hidden, who, 'ECG') == []
+        # Once EXECUTED, this O is no longer an INSERT candidate. A later row
+        # must therefore have been registered by the filtered first request.
+        execution = f.api('POST', f"/outpatient/exec/{hidden['order']['id']}",
+                          {'resultText': 'V128模拟过滤证明执行'}, who='tech')
+        assert execution == {'orderId': hidden['order']['id'], 'status': 'EXECUTED'}
+        assert f.source(hidden)['status'] == 'EXECUTED'
+        rows = f.worklist(hidden, who)
+        assert len(rows) == 1 and rows[0]['status'] == 'REGISTERED'
+        assert rows[0]['modality'] == 'US' and rows[0]['order_status'] == 'EXECUTED'
     print('[1] Original four duties, cross-department/employee collaboration, eight entries, fourteen worklist keys, original business refusals, double signature and clinical side effects retain their contracts; money is unchanged')
 
     lab, exam = f.visit('拒绝检验'), f.visit('拒绝影像', 'EXAM')
