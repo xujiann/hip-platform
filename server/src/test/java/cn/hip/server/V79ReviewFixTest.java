@@ -102,6 +102,8 @@ class V79ReviewFixTest {
     private Authentication doctorAuth(String username) {
         jdbc.update("insert into sys_user(username, password, real_name, enabled) "
                 + "values (?, 'x', ?, true) on conflict (username) do nothing", username, username + "医生");
+        jdbc.update("insert into sys_user_role(user_id,role_id) select u.id,r.id from sys_user u cross join sys_role r "
+                + "where u.username=? and r.code='DOCTOR_OUTP' on conflict (user_id,role_id) do nothing", username);
         return new UsernamePasswordAuthenticationToken(username, null,
                 List.of(new SimpleGrantedAuthority("ROLE_DOCTOR_OUTP")));
     }
