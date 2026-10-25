@@ -258,8 +258,8 @@ def main():
     # No system property/config key is changed. Only these two harmless denied
     # requests are sent after a quiet cooldown, and the second must be throttled.
     time.sleep(10.1)
-    audit.request('PUT', report_path, None, 1000, 401, body)
     start = time.monotonic()
+    audit.request('PUT', report_path, None, 1000, 401, body)
     audit.request('PUT', report_path, None, 1000, 401, body, count=0)
     assert time.monotonic() - start < 10, 'Throttle probe exceeded the existing default window'
     assert f.clinical() == saved
