@@ -101,7 +101,10 @@ def main():
     refunded = f.api('POST', f"/outpatient/charges/{old_bill['id']}/refund", who='cashier')
     assert refunded['status'] == 'REFUNDED' and refunded['id'] == old_bill['id']
     assert f.source(original)['status'] == 'CREATED' and f.source(original)['chargeId'] is None
-    assert f.samples(original) == before_sample and f.micros(original) == history
+    # This queue projection includes O.status; the physical S and other fields
+    # stay unchanged, while the actual refund must change only order_status.
+    assert f.samples(original) == [{**row, 'order_status': 'CREATED'} for row in before_sample]
+    assert f.micros(original) == history
     assert f.micro_queue(original)[0]['id'] == original['sample_id'], 'Physical history stays visible'
     f.micro(original, body('V126模拟退款旧模态'), code=7106)
     new_bill = f.api('POST', '/outpatient/charges/settle', {
