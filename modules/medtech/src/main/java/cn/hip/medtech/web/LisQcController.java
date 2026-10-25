@@ -1,11 +1,11 @@
 package cn.hip.medtech.web;
 
 import cn.hip.platform.core.common.R;
-import cn.hip.platform.core.security.CurrentUserService;
 import cn.hip.platform.core.service.ConfigReader;
 import jakarta.persistence.EntityManager;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.ResultSetExtractor;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.access.AccessDeniedException;
@@ -30,7 +30,6 @@ import java.util.Set;
 public class LisQcController {
 
     private final JdbcTemplate jdbc;
-    private final CurrentUserService currentUserService;
     private final ConfigReader configReader;
     private final EntityManager entityManager;
 
@@ -141,12 +140,23 @@ public class LisQcController {
                         BigDecimal targetValue, BigDecimal sd, BigDecimal measuredValue) {}
 
     @PostMapping("/api/lis/qc")
+    @Transactional
     public R<Map<String, Object>> qc(@RequestBody QcReq req, Authentication auth) {
         if (req.itemCode() == null || req.itemCode().isBlank() || req.level() == null || req.level().isBlank()
                 || req.lotNo() == null || req.lotNo().isBlank() || req.targetValue() == null || req.measuredValue() == null) {
             return R.fail(7109, "质控项目/水平/批号/靶值/实测值必填");
         }
         if (req.sd() == null || req.sd().compareTo(BigDecimal.ZERO) <= 0) return R.fail(7110, "标准差 SD 必须大于 0");
+        qcOperator(auth);
+        entityManager.flush();
+        // All points share the original item/level sequence, including normal
+        // points that reset it. Keep this lock through the INSERT and commit.
+        // JSONB separates raw tuple values; a hash collision only adds waiting.
+        jdbc.query("""
+                select pg_advisory_xact_lock(hashtextextended(
+                    jsonb_build_array('hip:medtech:iqc', ?::text, ?::text)::text, 0))
+                """, (ResultSetExtractor<Void>) rs -> null, req.itemCode(), req.level());
+        Long actor = qcOperator(auth);
         double z = req.measuredValue().subtract(req.targetValue()).doubleValue() / req.sd().doubleValue();
         String rule = null;
         boolean inControl = true;
@@ -173,8 +183,25 @@ public class LisQcController {
                         z_score, rule_broken, in_control, operator_id)
                 values (?,?,?,?,?,?,?,?,?,?)
                 """, req.itemCode(), req.level(), req.lotNo(), req.targetValue(), req.sd(), req.measuredValue(),
-                zr, rule, inControl, currentUserService.idOf(auth));
+                zr, rule, inControl, actor);
         return R.ok(Map.of("inControl", inControl, "zScore", zr, "rule", rule == null ? "" : rule));
+    }
+
+    /** Check the live employee again after the series lock, using the original four duties. */
+    private Long qcOperator(Authentication supplied) {
+        var auth = SecurityContextHolder.getContext().getAuthentication();
+        var roles = Set.of("ROLE_ADMIN", "ROLE_TECHNICIAN", "ROLE_DOCTOR_OUTP", "ROLE_NURSE");
+        if (auth == null || !auth.isAuthenticated()
+                || auth.getAuthorities().stream().noneMatch(a -> roles.contains(a.getAuthority()))
+                || (supplied != null && !Objects.equals(auth.getName(), supplied.getName())))
+            throw new AccessDeniedException("无室内质控录入权限");
+        var ids = jdbc.queryForList("""
+                select u.id from sys_user u where u.username=? and u.enabled=true
+                  and exists (select 1 from sys_user_role ur join sys_role r on r.id=ur.role_id
+                              where ur.user_id=u.id and r.code in ('ADMIN','TECHNICIAN','DOCTOR_OUTP','NURSE'))
+                """, Long.class, auth.getName());
+        if (ids.isEmpty()) throw new AccessDeniedException("室内质控录入人不存在、已停用或岗位已变化");
+        return ids.getFirst();
     }
 
     /** Levey-Jennings 序列（供前端画图） */
