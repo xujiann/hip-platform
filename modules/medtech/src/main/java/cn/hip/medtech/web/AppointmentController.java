@@ -153,7 +153,9 @@ public class AppointmentController {
     @Transactional
     public R<Map<String, Object>> batchCancel(@RequestBody BatchCancelReq req) {
         int n = 0;
-        for (Long id : req.ids()) {
+        // Overlapping batches must acquire appointment rows in the same order.
+        // Sort a copy while retaining null/duplicate no-op entries and caller input.
+        for (Long id : req.ids().stream().sorted(java.util.Comparator.nullsFirst(Long::compareTo)).toList()) {
             n += jdbc.update("update med_appointment set status = 'CANCELLED' where id = ? and status = 'BOOKED'", id);
             // Check after every possible wait. Refusal also undoes earlier rows.
             appointmentOperator();
