@@ -42,9 +42,12 @@ public class AppointmentController {
     @Transactional
     public R<Map<String, Object>> book(@RequestBody BookReq req) {
         if (!"AM".equals(req.period()) && !"PM".equals(req.period())) return R.fail(4510, "时段只能为 AM/PM");
+        // Keep the source locked through booking. RC rechecks eligibility after
+        // a refund/source update wait; an INSERT FK wait alone cannot do that.
         var orders = jdbc.queryForList(
-                "select id from outp_order where id = ? and order_type in ('EXAM','LAB') and status = 'CHARGED'",
+                "select id from outp_order where id = ? and order_type in ('EXAM','LAB') and status = 'CHARGED' for update",
                 req.orderId());
+        appointmentOperator();
         if (orders.isEmpty()) return R.fail(4510, "申请单不存在或未收费");
         Integer booked = jdbc.queryForObject(
                 "select count(*) from med_appointment where order_id = ?", Integer.class, req.orderId());
@@ -60,6 +63,9 @@ public class AppointmentController {
                 on conflict do nothing
                 returning seq_no
                 """, Integer.class, req.orderId(), req.slotDate(), req.period(), req.slotDate(), req.period());
+        // ON CONFLICT may also wait on an independent appointment/slot winner.
+        // Reject a lost current duty by exception so our insertion rolls back.
+        appointmentOperator();
         if (seqRows.isEmpty()) {
             return R.fail(4514, "该时段预约并发繁忙，请重试");   // 唯一索引裁决落败方
         }
@@ -113,7 +119,7 @@ public class AppointmentController {
         }
         // UPDATE rechecks BOOKED after a row wait. Recheck the live employee too;
         // an exception crosses this transaction boundary and undoes our update.
-        rescheduleOperator();
+        appointmentOperator();
         if (seqRows.isEmpty()) {
             return R.fail(4513, "仅未叫号的预约可改约");
         }
@@ -121,19 +127,19 @@ public class AppointmentController {
     }
 
     /** Preserve the original three duties, including cross-department cooperation. */
-    private void rescheduleOperator() {
+    private void appointmentOperator() {
         var auth = SecurityContextHolder.getContext().getAuthentication();
         var duties = java.util.Set.of("ROLE_ADMIN", "ROLE_TECHNICIAN", "ROLE_NURSE");
         if (auth == null || !auth.isAuthenticated()
                 || auth.getAuthorities().stream().noneMatch(a -> duties.contains(a.getAuthority())))
-            throw new AccessDeniedException("无医技预约改约权限");
+            throw new AccessDeniedException("无医技预约操作权限");
         var employees = jdbc.queryForList("""
                 select u.id from sys_user u where u.username=? and u.enabled=true
                   and exists (select 1 from sys_user_role ur join sys_role r on r.id=ur.role_id
                               where ur.user_id=u.id and r.code in ('ADMIN','TECHNICIAN','NURSE'))
                 """, Long.class, auth.getName());
         if (employees.isEmpty())
-            throw new AccessDeniedException("改约人不存在、已停用或岗位已变化");
+            throw new AccessDeniedException("预约操作人不存在、已停用或岗位已变化");
     }
 
     public record BatchCancelReq(List<Long> ids) {}
