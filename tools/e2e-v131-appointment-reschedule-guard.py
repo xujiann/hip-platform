@@ -3,8 +3,9 @@
 
 All employees, patients, paid LAB/EXAM orders and appointments are private API
 fixtures. This script checks ordinary sequential role and state boundaries; it
-does not claim an in-flight PG lock race. Dedicated Java/private browser tests
-prove the named-holder wait, exact raw columns and current-duty recheck. The
+does not claim an in-flight PG lock race. Dedicated Java tests prove the named
+holder wait and current-duty recheck; private browser acceptance checks actual
+UI responses and exact raw columns. The
 source eligibility of book and the refund policy are separate work.
 """
 import datetime

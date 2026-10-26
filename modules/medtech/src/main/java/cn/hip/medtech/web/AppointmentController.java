@@ -5,6 +5,8 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -103,16 +105,35 @@ public class AppointmentController {
                     update med_appointment set slot_date = ?::date, period = ?,
                            seq_no = coalesce((select max(m.seq_no) from med_appointment m
                                               where m.slot_date = ?::date and m.period = ?), 0) + 1
-                    where id = ?
+                    where id = ? and status = 'BOOKED'
                     returning seq_no
                     """, Integer.class, req.slotDate(), req.period(), req.slotDate(), req.period(), id);
         } catch (org.springframework.dao.DuplicateKeyException e) {
             return R.fail(4514, "该时段预约并发繁忙，请重试");
         }
+        // UPDATE rechecks BOOKED after a row wait. Recheck the live employee too;
+        // an exception crosses this transaction boundary and undoes our update.
+        rescheduleOperator();
         if (seqRows.isEmpty()) {
             return R.fail(4513, "仅未叫号的预约可改约");
         }
         return R.ok(Map.of("seqNo", seqRows.get(0)));
+    }
+
+    /** Preserve the original three duties, including cross-department cooperation. */
+    private void rescheduleOperator() {
+        var auth = SecurityContextHolder.getContext().getAuthentication();
+        var duties = java.util.Set.of("ROLE_ADMIN", "ROLE_TECHNICIAN", "ROLE_NURSE");
+        if (auth == null || !auth.isAuthenticated()
+                || auth.getAuthorities().stream().noneMatch(a -> duties.contains(a.getAuthority())))
+            throw new AccessDeniedException("无医技预约改约权限");
+        var employees = jdbc.queryForList("""
+                select u.id from sys_user u where u.username=? and u.enabled=true
+                  and exists (select 1 from sys_user_role ur join sys_role r on r.id=ur.role_id
+                              where ur.user_id=u.id and r.code in ('ADMIN','TECHNICIAN','NURSE'))
+                """, Long.class, auth.getName());
+        if (employees.isEmpty())
+            throw new AccessDeniedException("改约人不存在、已停用或岗位已变化");
     }
 
     public record BatchCancelReq(List<Long> ids) {}
