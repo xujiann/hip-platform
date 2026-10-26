@@ -112,11 +112,21 @@ async function book(row: Record<string, unknown>) {
     if ((error as BizError)?.bizCode !== 4510) throw error
   } finally { bookBusy.value = null }
 }
+function isAppointmentPermissionDenied(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null || !('response' in error)) return false
+  const response = error.response
+  if (typeof response !== 'object' || response === null
+      || !('status' in response) || response.status !== 403 || !('data' in response)) return false
+  const data = response.data
+  return typeof data === 'object' && data !== null && 'code' in data && data.code === 1005
+}
 async function done(row: Record<string, unknown>) {
   busyId.value = row.id
   try {
     await client.put(`/appointments/${row.id}/done`)
     await loadAppts()
+  } catch (error) {
+    if (!isAppointmentPermissionDenied(error)) throw error
   } finally { busyId.value = null }
 }
 async function reschedule(row: Record<string, unknown>) {
@@ -142,6 +152,8 @@ async function batchCancel() {
     ElMessage.success(`已取消 ${resp.data.data.cancelled} 条`)
     selection.value = []
     await Promise.all([loadPending(), loadAppts()])
+  } catch (error) {
+    if (!isAppointmentPermissionDenied(error)) throw error
   } finally { batchCancelLoading.value = false }
 }
 async function callNext(type: string) {
