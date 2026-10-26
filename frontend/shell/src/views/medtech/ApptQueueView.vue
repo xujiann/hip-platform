@@ -72,7 +72,7 @@
 import { onMounted, reactive, ref, watch } from 'vue'
 import { todayLocal } from '../../utils/date'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import client from '../../api/client'
+import client, { type BizError } from '../../api/client'
 
 const tab = ref('appt')
 const pending = ref<Record<string, unknown>[]>([])
@@ -127,6 +127,9 @@ async function reschedule(row: Record<string, unknown>) {
     const resp = await client.put(`/appointments/${row.id}/reschedule`, { slotDate, period })
     ElMessage.success(`已改约，新顺序号 ${resp.data.data.seqNo}`)
     await loadAppts()
+  } catch (error) {
+    // The shared client already showed this expected stale-appointment refusal.
+    if ((error as BizError)?.bizCode !== 4513) throw error
   } finally { busyId.value = null }
 }
 async function batchCancel() {
