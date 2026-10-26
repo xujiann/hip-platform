@@ -107,6 +107,9 @@ async function book(row: Record<string, unknown>) {
     const resp = await client.post('/appointments', { orderId: row.order_id, slotDate: row._date, period: row._period })
     ElMessage.success(`预约成功，顺序号 ${resp.data.data.seqNo}`)
     await Promise.all([loadPending(), loadAppts()])
+  } catch (error) {
+    // The shared client already showed this expected source-eligibility refusal.
+    if ((error as BizError)?.bizCode !== 4510) throw error
   } finally { bookBusy.value = null }
 }
 async function done(row: Record<string, unknown>) {
