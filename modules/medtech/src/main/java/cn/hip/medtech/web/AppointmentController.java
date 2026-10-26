@@ -88,9 +88,13 @@ public class AppointmentController {
 
     /** 完成检查/检验（执行侧从队列消除） */
     @PutMapping("/{id}/done")
+    @Transactional
     public R<Void> done(@PathVariable Long id) {
         int n = jdbc.update(
                 "update med_appointment set status = 'DONE' where id = ? and status in ('BOOKED','CALLED')", id);
+        // Keep the update in this transaction: a lost duty after a row wait
+        // must roll back our status change, including the zero-row path.
+        appointmentOperator();
         return n == 0 ? R.fail(4512, "预约不存在或已完成") : R.ok();
     }
 
@@ -151,7 +155,10 @@ public class AppointmentController {
         int n = 0;
         for (Long id : req.ids()) {
             n += jdbc.update("update med_appointment set status = 'CANCELLED' where id = ? and status = 'BOOKED'", id);
+            // Check after every possible wait. Refusal also undoes earlier rows.
+            appointmentOperator();
         }
+        appointmentOperator(); // Includes empty and entirely no-op batches.
         return R.ok(Map.of("cancelled", n));
     }
 }
