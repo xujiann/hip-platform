@@ -2,6 +2,16 @@
 
 版本纪律：语义化版本；平台迁移段 V1–V999，实施段 V10000+；升级 = 停服→备份→换产物→自动前滚→回归抽查（多医院部署操作指南 §三）。
 
+## 1.8.58（2026-10-27）
+
+SurgeryAccess复用A住院→S手术→C术中子行的锁序，在每个锁后独立SQL复核当前enabled与当前数据库岗位，并以已持有的住院主管信息重判scope。医疗决策沿原ADMIN/DOCTOR_OUTP二岗，普通操作沿原ADMIN/DOCTOR_OUTP/NURSE/TECHNICIAN四岗，麻醉记录沿原ADMIN/DOCTOR_OUTP/TECHNICIAN三岗；AnesController改走独立麻醉锁方法，不把护士扩入麻醉记录。当前合法非医师岗位按对应模式保留跨主管能力，当前DOCTOR仅本人或未分配主管可写，其他主管仍9018。岗位转为DOCTOR后不保留旧跨主管权，合法岗位互换、多岗保留及撤岗回滚可继续。原请求开始的岗位门槛与严格ROLE_、已认证身份检查保持，null-auth可信非HTTP服务调用保留，原scope/read策略不改。现有员工停用或失去职责返回403/1005；原不存在医师的模拟上下文保持9018拒绝，不为凑绿创建缺失员工。
+
+申请、完成、取消、时间点、roomNo-only技术更新与临床分量更新的边界保持；管路、术中输血、事件CRUD及麻醉INTRA/PACU原状态、时间窗、字典、operator/自体血和评分规则不改。锁后拒绝不产生本次临床写，已提交岗位变动保留；不承诺最后检查语句之后任意时点撤权。前端仅七个原未消费的handler精准消费同时HTTP403与code1005：SurgeryView.save/complete、SurgeryIntraopView.saveTube/saveTransfusion/saveEvent/removeRow、SpecialtyView.recordAnes。原finally、草稿与未知异常传播保留，removeRow原无busy不新增，已有catch-all不改。临床写已成功而随后读取403不表示已写回滚；本轮无写结论仅适用于原临床写请求本身403并由回执和全列回账证明。
+
+2026-10-27本地定版：最终源全新专库UTC全模块clean package，全部tracked Java/Vue/TS/SQL/YML/XML及屏上登记簿SHA/mtime前后稳定；服务端3263项0失败/0错误/2既有跳过，集成6项全绿。新增真实JWT专项179项，完整纯旧99业务RED/80正向/0errors，覆盖37不同写入锁点、139次指定holder实证；修后同源全绿。新增完整SFC77项，纯旧14业务RED/63正向，修后全绿；前端1040项/类型/Vite、六检查全过。native Linux全新CI原prep/保留原107命令并追加新专项，共108/108；独立实际1.8.58包同build.time/包内专项通过。真实麻醉UI先TECH→NURSE在S锁等待后原POST403，无麻醉写入且草稿保留；恢复TECH后明确新POST一次成功。63项回账检查/56组完整投影/7条新增审计通过。五类旧fixture只补原模拟身份对应的真实员工/角色，原59项、断言与测试主体保持，最终59全绿。自有服务与锁控制进程退出，共享PG保留。无新迁移、菜单、配置、返回键或错误码，仍V184/100支持键/574码。仅本地定版未推送，不代负责人签认。 详见docs/验收/v139复核-手术与麻醉等待后当前岗位.md。
+
+最后已推版本仍v1.8.56，main提交c566351f3712da1493b6175ae416f068ee3112aa；其GitHub CI [40468419320](https://github.com/xujiann/hip-platform/actions/runs/40468419320)四个任务均success，原回执保留于v138工作树。v1.8.57及v1.8.58均仅本地定版、未推送，没有对应远端CI结果。
+
 ## 1.8.57（2026-10-27）
 
 ReportShareController.operator在独立SQL复核当前enabled及原ADMIN/TECHNICIAN/DOCTOR_OUTP三岗的DB关系，复用原入口与O、E、share行等待后检查点；当前TECH转NURSE虽仍可执行四岗RIS审核，已不再具有三岗外链创建/吊销权限，旧JWT不能沿等待继续写。保留原O→E→share锁序，不加员工行锁、患者或科室独占限制。已提交岗位调整保留，拒绝仅回滚本次分享写；合法完成的审核不因后续分享拒绝回滚。检查语句之后任意时点撤权不在承诺范围。
