@@ -548,3 +548,20 @@ it.each(['startVisit', 'signEmr'])('%s write-triggered queue read cannot overwri
   expect(h.v.worklist.value).toEqual(latest)
   expect(state(h)).toEqual(before); expect(h.calls).toEqual([])
 })
+
+it('manual template confirmation preserves a non-target section inserted by a real pending prior-record read', async () => {
+  const h = setup(); await h.open(h.a)
+  h.v.structTemplateId.value = 71
+  h.v.emrTemplates.value = [{ id: 71, name: '仅主诉模板', content: '{"chiefComplaint":"模板新主诉"}' }]
+  const prior = h.hold('GET', '/emr-templates/prior-records/content'), confirmation = deferred()
+  h.confirm.mockImplementation(() => confirmation.promise)
+  const reading = h.v.usePriorRecord({ source: 'OUTP', record_id: 110 })
+  const applying = h.v.applyTemplateBody()
+  expect(h.confirm).toHaveBeenCalledOnce()
+  prior.resolve({ content: '同一次就诊的合法在途既往引用' }); await reading
+  const untargeted = h.v.emr.presentIllness
+  expect(untargeted).toContain('同一次就诊的合法在途既往引用')
+  confirmation.raw(true); await applying
+  expect(h.v.emr.chiefComplaint).toBe('模板新主诉')
+  expect(h.v.emr.presentIllness).toBe(untargeted)
+})
