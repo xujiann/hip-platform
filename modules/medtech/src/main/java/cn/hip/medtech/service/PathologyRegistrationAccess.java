@@ -25,9 +25,12 @@ public class PathologyRegistrationAccess {
                 || auth.getAuthorities().stream().noneMatch(a -> roles.contains(a.getAuthority()))
                 || (supplied != null && !Objects.equals(auth.getName(), supplied.getName())))
             throw new AccessDeniedException("无病理登记权限");
-        var ids = jdbc.queryForList("select id from sys_user where username=? and enabled=true",
-                Long.class, auth.getName());
-        if (ids.isEmpty()) throw new AccessDeniedException("病理登记操作人不存在或已停用");
+        var ids = jdbc.queryForList("""
+                select u.id from sys_user u where u.username=? and u.enabled=true
+                  and exists (select 1 from sys_user_role ur join sys_role r on r.id=ur.role_id
+                              where ur.user_id=u.id and r.code in ('ADMIN','TECHNICIAN','DOCTOR_OUTP'))
+                """, Long.class, auth.getName());
+        if (ids.isEmpty()) throw new AccessDeniedException("病理登记操作人不存在、已停用或岗位已变化");
         return ids.getFirst();
     }
 

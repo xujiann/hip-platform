@@ -21,9 +21,18 @@ public class PathologySpecimenAccess {
 
     public Long actor(Authentication supplied, boolean signerOnly) {
         Long uid = registrationAccess.operator(supplied);
-        if (signerOnly && SecurityContextHolder.getContext().getAuthentication().getAuthorities().stream()
-                .noneMatch(a -> Set.of("ROLE_ADMIN", "ROLE_DOCTOR_OUTP").contains(a.getAuthority())))
-            throw new AccessDeniedException("无病理报告签名权限");
+        if (signerOnly) {
+            if (SecurityContextHolder.getContext().getAuthentication().getAuthorities().stream()
+                    .noneMatch(a -> Set.of("ROLE_ADMIN", "ROLE_DOCTOR_OUTP").contains(a.getAuthority())))
+                throw new AccessDeniedException("无病理报告签名权限");
+            // A current technical duty alone cannot authorize a signature after O/S waits.
+            var signers = jdbc.queryForList("""
+                    select u.id from sys_user u where u.id=? and u.enabled=true
+                      and exists (select 1 from sys_user_role ur join sys_role r on r.id=ur.role_id
+                                  where ur.user_id=u.id and r.code in ('ADMIN','DOCTOR_OUTP'))
+                    """, Long.class, uid);
+            if (signers.isEmpty()) throw new AccessDeniedException("病理报告签名人不存在、已停用或岗位已变化");
+        }
         return uid;
     }
 
