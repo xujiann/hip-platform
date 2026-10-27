@@ -2,6 +2,16 @@
 
 版本纪律：语义化版本；平台迁移段 V1–V999，实施段 V10000+；升级 = 停服→备份→换产物→自动前滚→回归抽查（多医院部署操作指南 §三）。
 
+## 1.8.57（2026-10-27）
+
+ReportShareController.operator在独立SQL复核当前enabled及原ADMIN/TECHNICIAN/DOCTOR_OUTP三岗的DB关系，复用原入口与O、E、share行等待后检查点；当前TECH转NURSE虽仍可执行四岗RIS审核，已不再具有三岗外链创建/吊销权限，旧JWT不能沿等待继续写。保留原O→E→share锁序，不加员工行锁、患者或科室独占限制。已提交岗位调整保留，拒绝仅回滚本次分享写；合法完成的审核不因后续分享拒绝回滚。检查语句之后任意时点撤权不在承诺范围。
+
+原三岗互换、多岗保留、跨科协作、EXAM/CHARGED|EXECUTED及VERIFIED来源资格、默认72小时与1分钟至30天有效期、等待后clock_timestamp到期判断保持。创建外链data仍恰token/url/expireMinutes三键，吊销仍返回revoked；已失效源或撤回报告的吊销善后保持。匿名接口继续无员工身份要求，原六键脱敏、资格与成功访问计数不改。原4660/4661/4662/4663与403/1005语义保持。原测试用例、声明、参数和断言保持，未新增合法员工fixture修补或改旧迁移。前端仅RisView.verify catch消费同时HTTP403与业务code1005的已由共享client提示的权限拒绝；原审核成功提示和事实保持，分享拒绝不造成功链接、不额外刷新或代用户重试，finally释放忙态。其他403码、纯业务1005、401、网络或未知错误继续传播；recoverWrite、arrive/report/critical与原合法成功/冲突规则不改。
+
+2026-10-27本地定版：全新专库UTC全模块clean package，最终全部tracked Java/Vue/TS/SQL/YML/XML及屏上登记簿SHA/mtime前后不变；服务端3084项0失败/0错误/2既有跳过，集成6项全绿。新增真实JWT/指定PGholder专项60项，纯旧15业务红/45正向/0errors，修后同源全绿；新增真实整份RisView SFC专项21项，纯旧5业务红/16正向/0夹具错误/0未处理异常，修后同源全绿。前端963项/类型/Vite与六门禁通过；native Linux全新CI原prep/保留原106命令并追加本轮专项，共107/107；独立实际1.8.57同build.time及包内本轮JWT专项通过。最终dist真实RisView对A先合法审核，原share在指定O锁真实等待期间TECH转NURSE，原403/1005无A分享且A已审核事实保持；恢复TECH后B真实UI审核与分享各一次成功，成功框显示原链接文本。53项检查/44组raw全列/9条精确新审计通过；原请求及响应字节留证，不重放已知或未知写，不为截图重复提交。自有五服务、holder、watcher与保活身份全部退出，共享PG保留。无新迁移/菜单/配置/后端响应键/错误码，仍V184/100支持键/574码。仅本地定版未推送，不代负责人签认。 详见docs/验收/v138复核-报告外链等待后当前岗位.md。
+
+v1.8.56/main已原子推送并回读为c566351f3712da1493b6175ae416f068ee3112aa，annotated标签对象05f93414f69d2816174e8018a0806bbdcccbb07c。该提交GitHub push CI [40468419320](https://github.com/xujiann/hip-platform/actions/runs/40468419320)四个原job均completed/success，包括后端、前端、试点配置与完整E2E；按GitHub connector实际job回执留证。v1.8.57仅本地定版，尚未推送，没有本版远端CI结果。
+
 ## 1.8.56（2026-10-27）
 
 共享PathologyRegistrationAccess.operator在独立SQL中复核当前enabled与原ADMIN/TECHNICIAN/DOCTOR_OUTP三岗；PathologySpecimenAccess.actor(signerOnly)另外复核当前ADMIN/DOCTOR_OUTP二岗。因此DOCTOR转为仍合法技术岗的TECH不能沿旧请求完成初签/复签/签发/补充，技术岗转QUALITY不能沿旧请求继续病理生产。复用原O→S、编号与批量等待后的检查点，不新增员工行锁、付款条件、患者或科室独占限制，不扩大原岗位集合。已提交holder的撤岗事实保留，本请求拒绝回滚自身临床、流转与财务写；只覆盖检查语句当时的当前员工，不承诺其后任意时点撤权。
