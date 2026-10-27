@@ -53,13 +53,16 @@
           过敏：{{ current.allergyHistory }}
         </el-tag>
         <el-button v-if="current.status === 'REGISTERED'" type="primary" size="small" style="float: right"
-                   @click="startVisit">
+                   :disabled="!workspaceReady" @click="startVisit">
           接 诊
         </el-button>
         <!-- v37 门诊病历连续调阅：历次就诊/既往诊断抽屉 -->
-        <el-button size="small" style="float: right; margin-right: 8px" @click="openHistory">历史就诊</el-button>
+        <el-button size="small" style="float: right; margin-right: 8px" :disabled="!workspaceReady" @click="openHistory">历史就诊</el-button>
       </template>
 
+      <el-alert v-if="!workspaceReady" :title="workspaceLoading ? '正在加载本次就诊，请稍候' : '本次就诊未加载，请重新选择患者'"
+                type="info" :closable="false" show-icon />
+      <template v-else>
       <!-- ============ v51 车道F4：CDSS 合理用药审查提示（warn 档） ============
            后端把审查警告挂在开单返回体的**订单元素**上（字段 cdssWarnings，@JsonInclude(NON_EMPTY)）。
            warn 档的全部意义就是「不拦截，但医生当场看得见」——前端不显示，
@@ -150,7 +153,7 @@
               已选结构化元素时，保存会把结构化内容追加到现病史末尾；套用正文若也写了现病史，两部分会并存。
             </span>
           </div>
-          <StructuredFieldForm v-if="structFields.length" v-model="structValues" :fields="structFields"
+          <StructuredFieldForm :key="workspaceRenderKey + ':' + structTemplateId" v-if="structFields.length" v-model="structValues" :fields="structFields"
                                :disabled="emrSigned" preview-label="保存后写入现病史" />
 
           <!-- 1082★ 复制粘贴管控挂在正文输入区的外层容器上：copy/cut/paste 从内部 textarea 冒泡上来，
@@ -491,12 +494,13 @@
           </el-table>
         </el-tab-pane>
       </el-tabs>
+      </template>
     </el-card>
     <el-empty v-else class="workspace"
               :description="visitDenied ? '无权查阅该次就诊：不是当日就诊，且不是本人接诊（挂号不在本人名下、病历也不是本人书写）。请从左侧选择其他就诊' : '从左侧队列选择患者'" />
 
     <!-- v37 历史就诊抽屉：近 50 次就诊（剔退号）+ 各次诊断/主诉/处理意见 -->
-    <el-drawer v-model="historyVisible" title="历史就诊" size="480px">
+    <el-drawer v-if="workspaceReady" :key="'history-' + workspaceRenderKey" v-model="historyVisible" title="历史就诊" size="480px">
       <el-empty v-if="!history.length" :image-size="60"
                 :description="historyDenied ? '该患者非当日就诊，且本人未接诊过其往次就诊，不显示其历次就诊' : '无历史就诊'" />
       <!-- v79 审阅修补（三）（乙组反驳 B1-E2/B2-4c，1082★）：抽屉不在编辑区复制容器里，copy 冒不到那一层；
@@ -520,10 +524,10 @@
     </el-drawer>
 
     <!-- v44 诊断助手（979）：历史 / 常用 / 高频 三源，点一下带入诊断表 -->
-    <el-drawer v-model="assistVisible" title="诊断助手" size="460px">
+    <el-drawer v-if="workspaceReady" :key="'assist-' + workspaceRenderKey" v-model="assistVisible" title="诊断助手" size="460px">
       <el-input v-model="assistKeyword" placeholder="按名称或编码筛选三段结果" clearable
-                style="margin-bottom: 10px" @keyup.enter="loadAssist" @clear="loadAssist">
-        <template #append><el-button @click="loadAssist">筛选</el-button></template>
+                style="margin-bottom: 10px" @keyup.enter="loadAssist()" @clear="loadAssist()">
+        <template #append><el-button @click="loadAssist()">筛选</el-button></template>
       </el-input>
       <el-tabs v-model="assistTab">
         <el-tab-pane :label="`历史诊断(${assist.history.length})`" name="history">
@@ -558,7 +562,7 @@
     </el-drawer>
 
     <!-- v44 医保特殊病种「院内登记」（984）：只登记，不报送 -->
-    <el-dialog v-model="specialVisible" title="医保特殊病种（慢特病）· 院内登记" width="640px">
+    <el-dialog v-if="workspaceReady" :key="'special-' + workspaceRenderKey" v-model="specialVisible" title="医保特殊病种（慢特病）· 院内登记" width="640px">
       <el-alert type="info" :closable="false" show-icon style="margin-bottom: 10px"
                 title="本功能为院内登记：记录患者已认定的特殊病种与院内认定有效期，供诊断与开单时提示。
                        向医保经办机构备案报送需走当地医保接口，属外部对接条件，本平台不提供。" />
@@ -601,7 +605,7 @@
     <!-- ============ v51 车道F4：CDSS 审查提示全文（开单成功后自动弹出，可随时重看） ============
          刻意用对话框而不是 ElMessage：toast 几秒就没了，医生正在看下一位患者时警告已经消失，
          那与「只写进 cdss_alert 表」没有区别。这里必须能被看完、能被回看。 -->
-    <el-dialog v-model="cdssWarnDialog" width="760px" :close-on-click-modal="false"
+    <el-dialog v-if="workspaceReady" :key="'cdss-' + workspaceRenderKey" v-model="cdssWarnDialog" width="760px" :close-on-click-modal="false"
                title="合理用药审查提示（不拦截开单，请逐条确认）">
       <el-alert type="warning" show-icon :closable="false" class="cdss-dlg-note"
                 title="本次开单已成立。以下提示由后端合理用药审查（过敏 / 交叉过敏 / 重复用药 / 特殊人群 / 相互作用 / 疗程）随开单返回体下发，原文照录。">
@@ -625,7 +629,7 @@
 
     <!-- v45 车道J：临床资料引用抽屉（992★ 基本资料/检验/检查/历史病历，点条目插入正文） -->
     <!-- v69 包 A：既往病历清单。只读挑选，选中即取正文插入当前病历的选定段。 -->
-  <el-dialog v-model="priorVisible" title="按既往病历新建（取正文插入当前病历）" width="720px">
+  <el-dialog v-if="workspaceReady" :key="'prior-' + workspaceRenderKey" v-model="priorVisible" title="按既往病历新建（取正文插入当前病历）" width="720px">
     <el-alert type="info" :closable="false" show-icon style="margin-bottom: 8px"
               :title="`选中一条即把它的正文插入「${sectionLabel}」；原病历只读不改，改完仍点「暂存」写入本次就诊。`" />
     <el-table :data="priorRecords" height="360" v-loading="priorLoading">
@@ -650,7 +654,7 @@
   </el-dialog>
 
   <!-- v79 审阅修补（三）（乙组反驳 B1-E2①）：引用抽屉「历史病历」页签正文的复制上抛到这里登记来源（当前患者） -->
-  <EmrRefDrawer v-model="refVisible" :registration-id="(current?.registrationId as number) ?? null"
+  <EmrRefDrawer v-if="workspaceReady" :key="workspaceRenderKey" v-model="refVisible" :registration-id="(current?.registrationId as number) ?? null"
                   :disabled="emrSigned" @insert="insertText" @copy="onCopy" />
   </div>
 </template>
@@ -687,6 +691,60 @@ const current = ref<Record<string, unknown> | null>(null)
 let workspaceGeneration = 0
 let workspaceAlive = true
 const cancellingOrder = ref<number | null>(null)
+const workspaceLoading = ref(false)
+const workspaceReady = ref(false)
+const workspaceRenderKey = ref(0)
+type WorkspaceContext = {
+  visit: Record<string, unknown>; registrationId: number; patientId: number | undefined; generation: number; valid: () => boolean
+}
+const workspaceActions = reactive(new Set<string>())
+function captureWorkspace(requireReady = true): WorkspaceContext | null {
+  const visit = current.value
+  if (!workspaceAlive || !visit || (requireReady && (!workspaceReady.value || workspaceLoading.value))) return null
+  const generation = workspaceGeneration
+  const registrationId = visit.registrationId as number
+  const patientId = visit.patientId as number | undefined
+  return { visit, registrationId, patientId, generation, valid: () => workspaceAlive && generation === workspaceGeneration
+    && current.value === visit && visit.registrationId === registrationId && visit.patientId === patientId }
+}
+function workspaceActionPending(action: string) {
+  return !!current.value && workspaceActions.has(action + ':' + current.value.registrationId)
+}
+function beginWorkspaceAction(context: WorkspaceContext, action: string) {
+  if (!context.valid() || !workspaceReady.value || workspaceLoading.value) return null
+  const key = action + ':' + context.registrationId
+  if (workspaceActions.has(key)) return null
+  workspaceActions.add(key)
+  return () => { workspaceActions.delete(key) }
+}
+async function inWorkspace<T>(context: WorkspaceContext, request: () => Promise<T>): Promise<T | undefined> {
+  if (!context.valid()) return
+  try {
+    const result = await request()
+    return context.valid() ? result : undefined
+  } catch (error) { if (context.valid()) throw error }
+}
+function clearWorkspace() {
+  workspaceReady.value = false
+  Object.assign(emr, { chiefComplaint: '', presentIllness: '', pastHistory: '', physicalExam: '', advice: '' })
+  currentEmrId.value = null; emrAuthorId.value = null
+  emrSigned.value = false; emrSignerName.value = ''; emrSignedAtText.value = ''
+  autoTpl.value = null; basicBrought.value = ''; prefilledNote.value = ''
+  diagList.value = []; icdOptions.value = []; diagSystem.value = 'ICD10'; icdPick.value = null; tcmName.value = ''
+  orders.value = []; rxLines.value = []; labLines.value = []; skinTests.value = []; amendments.value = []
+  specialDiseases.value = []; specialVisible.value = false
+  Object.assign(specialForm, { diseaseName: '', diseaseCode: '', insuranceType: '', startDate: todayLocal(), endDate: '', remark: '' })
+  amendForm.amendText = ''; amendForm.reason = ''
+  stockWarnings.value = []; cdssTips.value = []; rxCdssWarnings.value = []
+  cdssWarnBarClosed.value = false; cdssWarnDialog.value = false
+  refVisible.value = false; insertTarget.value = 'presentIllness'
+  structTemplateId.value = null; structFields.value = []; structValues.value = {}; structHint.value = ''
+  priorVisible.value = false; priorRecords.value = []; historyVisible.value = false; history.value = []; historyDenied.value = false
+  assistVisible.value = false; assistHistoryDenied.value = false
+  assist.value = { history: [], favorite: [], frequent: [] }; assistKeyword.value = ''; assistTab.value = 'history'
+  tplHint.value = ''; tplPicked.value = undefined; summaryTruncWarned = false
+  rxDrugId.value = null; labItemId.value = null
+}
 onUnmounted(() => { workspaceAlive = false; workspaceGeneration++ })
 const historyVisible = ref(false)
 const history = ref<Record<string, unknown>[]>([])
@@ -695,22 +753,21 @@ const visitDenied = ref(false)
 /** v80 审阅修补二（R2-2）：历次就诊被 4036 拒时为真——抽屉照开，空态换一句说明，不说成「无历史就诊」 */
 const historyDenied = ref(false)
 async function openHistory() {
-  if (!current.value) return
+  const context = captureWorkspace(); if (!context) return
   historyDenied.value = false
   try {
-    history.value = (await client.get(`/outpatient/doctor/patient/${current.value.patientId}/history`,
-      { __silentCodes: [4036] })).data.data
-  } catch (e) {
-    if ((e as BizError).bizCode !== 4036) throw e
-    // 与诊断助手一致：不弹红字、不留未处理的 rejection，抽屉里说明为什么是空的
-    history.value = []
-    historyDenied.value = true
+    const response = await inWorkspace(context, () => client.get(`/outpatient/doctor/patient/${context.patientId}/history`, { __silentCodes: [4036] }))
+    if (!response) return
+    history.value = response.data.data
+  } catch (error) {
+    if ((error as BizError).bizCode !== 4036) throw error
+    history.value = []; historyDenied.value = true
   }
-  historyVisible.value = true
+  if (context.valid()) historyVisible.value = true
 }
 const tab = ref('emr')
-const savingEmr = ref(false)
-const submitting = ref(false)
+const savingEmr = computed(() => workspaceActionPending('save'))
+const submitting = computed(() => workspaceActionPending('orders'))
 
 const emr = reactive({ chiefComplaint: '', presentIllness: '', pastHistory: '', physicalExam: '', advice: '' })
 
@@ -746,10 +803,14 @@ const structHint = ref('')
 const { mode: copyMode, loadPolicy: loadCopyPolicy, onCopy, onPaste } = useEmrPasteGuard(() => ({
   patientId: (current.value?.patientId as number | undefined) ?? null,
   patientName: String(current.value?.patientName ?? ''),
-}))
+}), () => {
+  const context = captureWorkspace()
+  return () => !!context?.valid() && workspaceReady.value && !emrSigned.value
+})
 
 /** 把引用片段/资料写进选定的正文段（已签名冻结时不写） */
 function insertText(text: string) {
+  if (!captureWorkspace()) return
   if (!text.trim()) return
   if (emrSigned.value) {
     ElMessage.warning('病历已签名冻结，不能再插入内容；如需更正请追加补正记录')
@@ -766,28 +827,23 @@ function insertText(text: string) {
  * 才把过敏史预填进既往史——门诊病历五段里只有它有对应落点，姓名/门诊号没有列可填，
  * 故以"已自动带出"摘要 + 一键插入呈现，而不是硬塞进某段临床叙述里。
  */
-async function loadBasicRef(isNewEmr: boolean) {
-  basicBrought.value = ''
-  prefilledNote.value = ''
-  if (!current.value?.registrationId) return
+async function loadBasicRef(isNewEmr: boolean, context = captureWorkspace()) {
+  if (!context) return
+  basicBrought.value = ''; prefilledNote.value = ''
   try {
-    const resp = await client.get('/outpatient/emr-ref', {
-      params: { registrationId: current.value.registrationId, kind: 'BASIC' },
-    })
-    const seg = resp.data.data as { prefill?: Record<string, unknown> }
-    const p = seg.prefill ?? {}
+    const response = await inWorkspace(context, () => client.get('/outpatient/emr-ref', {
+      params: { registrationId: context.registrationId, kind: 'BASIC' },
+    }))
+    if (!response) return
+    const p = (response.data.data as { prefill?: Record<string, unknown> }).prefill ?? {}
     basicBrought.value = [p.patientName, p.sexText, p.age == null ? '' : `${p.age} 岁`,
-      p.patientNo ? `门诊号 ${p.patientNo}` : '', p.allergyHistory ? `过敏 ${p.allergyHistory}` : '']
-      .filter((s) => !!s).join(' · ')
+      p.patientNo ? `门诊号 ${p.patientNo}` : '', p.allergyHistory ? `过敏 ${p.allergyHistory}` : ''].filter(Boolean).join(' · ')
     const allergy = String(p.allergyHistory ?? '').trim()
     if (isNewEmr && allergy && !emr.pastHistory.trim()) {
       emr.pastHistory = `过敏史：${allergy}`
-      prefilledNote.value = '已按引用数据源自动带出患者基础信息；其中过敏史已预填进「既往史」，'
-        + '医生可修改或删除后再保存。'
+      prefilledNote.value = '已按引用数据源自动带出患者基础信息；其中过敏史已预填进「既往史」，医生可修改或删除后再保存。'
     }
-  } catch {
-    /* 引用端点不可用/无权：摘要留空即可，不打断接诊主流程 */
-  }
+  } catch { /* Optional reference data never interrupts the live workspace. */ }
 }
 
 /** 本科室可用的病历模板（沿用住院侧同一个冻结契约端点；本页只用来挑结构化模板） */
@@ -811,36 +867,30 @@ async function loadEmrTemplates() {
  * 只改本页表单，仍须点「保存病历」才落库；已签名在这里先拦，后端 4008 兜底。
  */
 async function applyTemplateBody() {
-  if (emrSigned.value) {
-    ElMessage.warning('病历已签名冻结，不能套用模板；如需更正请追加补正记录')
-    return
-  }
-  const t = emrTemplates.value.find((x) => x.id === structTemplateId.value)
-  if (!t) return
-  let content = t.content as string | null | undefined
+  const context = captureWorkspace(); if (!context) return
+  if (emrSigned.value) { ElMessage.warning('病历已签名冻结，不能套用模板；如需更正请追加补正记录'); return }
+  const template = emrTemplates.value.find(x => x.id === structTemplateId.value)
+  if (!template) return
+  let content = template.content as string | null | undefined
   if (content === undefined) {
-    // 列表行不带正文时按 id 取一次（只读端点，不可见/已停用返 4066 由拦截器提示）
-    content = (await client.get(`/emr-templates/${t.id}`)).data.data?.content as string | null | undefined
+    const response = await inWorkspace(context, () => client.get(`/emr-templates/${template.id}`))
+    if (!response) return
+    content = response.data.data?.content as string | null | undefined
   }
   const split = splitTemplateContent(content, insertTarget.value)
-  if (split.format === 'empty') {
-    ElMessage.warning(`模板「${t.name}」没有正文可套用`)
-    return
-  }
-  const r = await applyTemplateToEmr(emr, split.parts, {
-    confirmOverwrite: (labels) => ElMessageBox.confirm(
-      `「${labels.join('、')}」已有内容，套用模板将覆盖它，是否继续？`, '套用模板正文', { type: 'warning' })
-      .then(() => true, () => false),
-  })
-  if (r.cancelled) return
-  ElMessage.success(`已套用模板「${t.name}」到：${r.applied.map((k) => EMR_SECTIONS.find((x) => x.key === k)?.label).join('、')}；点「暂存」后生效`)
+  if (split.format === 'empty') { ElMessage.warning(`模板「${template.name}」没有正文可套用`); return }
+  const draft = { ...emr }
+  const result = await inWorkspace(context, () => applyTemplateToEmr(draft, split.parts, {
+    confirmOverwrite: labels => ElMessageBox.confirm(`「${labels.join('、')}」已有内容，套用模板将覆盖它，是否继续？`, '套用模板正文', { type: 'warning' }).then(() => true, () => false),
+  }))
+  if (!result || result.cancelled || emrSigned.value) return
+  Object.assign(emr, draft)
+  ElMessage.success(`已套用模板「${template.name}」到：${result.applied.map(k => EMR_SECTIONS.find(x => x.key === k)?.label).join('、')}；点「暂存」后生效`)
   if (split.skipped.length) {
-    const labels = split.skipped.map((x) => x.label)
-    ElMessage.info(`模板里的「${labels.join('、')}」不属于病历正文五段，未套用${labels.some((l) => l.includes('诊断')) ? '；诊断请在下方诊断区录入' : ''}`)
+    const labels = split.skipped.map(x => x.label)
+    ElMessage.info(`模板里的「${labels.join('、')}」不属于病历正文五段，未套用${labels.some(l => l.includes('诊断')) ? '；诊断请在下方诊断区录入' : ''}`)
   }
-  if (r.overLimit.length) {
-    ElMessage.warning(`${r.overLimit.map((o) => `${o.label}${o.length}字（上限 ${o.limit}）`).join('、')}，超出部分保存时可能失败，请先精简`)
-  }
+  if (result.overLimit.length) ElMessage.warning(`${result.overLimit.map(x => `${x.label}${x.length}字（上限 ${x.limit}）`).join('、')}，超出部分保存时可能失败，请先精简`)
 }
 
 /* ===================== v79 车道B（988★）：新病历自动套用科室默认模板 =====================
@@ -865,75 +915,66 @@ const autoTpl = ref<AutoTplState | null>(null)
 /** 本页会话里医生对哪些就诊点过「撤销」：开单/作废后同一就诊重新进页，不再自动套回去 */
 const declinedAutoTpl = new Set<number>()
 
-async function fetchDefaultTemplate(row: Record<string, unknown>): Promise<DefaultTemplate | null> {
-  const deptId = row.deptId
-  if (typeof deptId !== 'number') return null
+async function fetchDefaultTemplate(row: Record<string, unknown>, context = captureWorkspace(false)): Promise<DefaultTemplate | null> {
+  if (!context || typeof row.deptId !== 'number') return null
   try {
-    const resp = await client.get('/emr-templates/default',
-      { params: { deptId, recordType: 'OUTP' }, __silentCodes: [4066, 4067] })
-    const t = pickDefaultTemplate(resp.data.data)
-    if (t && t.content === undefined && t.id !== null) {
-      t.content = (await client.get(`/emr-templates/${t.id}`, { __silentCodes: [4066] })).data.data?.content as
-        string | null | undefined
+    const response = await inWorkspace(context, () => client.get('/emr-templates/default', {
+      params: { deptId: row.deptId, recordType: 'OUTP' }, __silentCodes: [4066, 4067],
+    }))
+    if (!response) return null
+    const template = pickDefaultTemplate(response.data.data)
+    if (template && template.content === undefined && template.id !== null) {
+      const detail = await inWorkspace(context, () => client.get(`/emr-templates/${template.id}`, { __silentCodes: [4066] }))
+      if (!detail) return null
+      template.content = detail.data.data?.content as string | null | undefined
     }
-    return t
-  } catch {
-    return null   // 自动套用是锦上添花：取不到就当没有默认模板，不打断接诊
-  }
+    return template
+  } catch { return null }
 }
 
-async function autoApplyDefaultTemplate(row: Record<string, unknown>, t: DefaultTemplate) {
-  const regId = row.registrationId as number
-  // 请求在途时医生已切到别的患者 / 已签名：不套
-  if ((current.value?.registrationId as number | undefined) !== regId || emrSigned.value) return
+async function autoApplyDefaultTemplate(row: Record<string, unknown>, template: DefaultTemplate, context = captureWorkspace(false)) {
+  if (!context?.valid() || context.registrationId !== row.registrationId || emrSigned.value) return
   const before: EmrFields = { ...emr }
-  const plan = planDefaultTemplate(t.content, before)
+  const plan = planDefaultTemplate(template.content, before)
   if (!plan) return
-  // plan 里某段若原有值，已合并成「原值 + 换行 + 模板值」，覆盖无损，故覆盖确认直接放行
-  const r = await applyTemplateToEmr(emr, plan.parts, { confirmOverwrite: () => Promise.resolve(true) })
-  if (r.cancelled) return
+  const draft = { ...emr }
+  const result = await inWorkspace(context, () => applyTemplateToEmr(draft, plan.parts, { confirmOverwrite: () => Promise.resolve(true) }))
+  if (!result || result.cancelled || emrSigned.value) return
+  Object.assign(emr, draft)
   const notes: string[] = []
-  if (plan.skipped.length) {
-    notes.push(`模板里的「${plan.skipped.map((x) => x.label).join('、')}」不属于病历正文五段，未套用`)
-  }
-  if (r.overLimit.length) {
-    notes.push(`${r.overLimit.map((o) => `${o.label}${o.length}字（上限 ${o.limit}）`).join('、')}，超出部分暂存时可能失败，请先精简`)
-  }
-  autoTpl.value = { regId, name: t.name, before, written: plan.parts, after: { ...emr }, notes }
+  if (plan.skipped.length) notes.push(`模板里的「${plan.skipped.map(x => x.label).join('、')}」不属于病历正文五段，未套用`)
+  if (result.overLimit.length) notes.push(`${result.overLimit.map(x => `${x.label}${x.length}字（上限 ${x.limit}）`).join('、')}，超出部分暂存时可能失败，请先精简`)
+  autoTpl.value = { regId: context.registrationId, name: template.name, before, written: plan.parts, after: { ...emr }, notes }
 }
 
 async function undoAutoTemplate() {
-  const s = autoTpl.value
-  if (!s) return
-  const edited = editedSinceApplied(emr, s.written)
+  const context = captureWorkspace(), state = autoTpl.value
+  if (!context || !state || state.regId !== context.registrationId) return
+  const edited = editedSinceApplied(emr, state.written)
   if (edited.length) {
-    const labels = EMR_SECTIONS.filter((x) => edited.includes(x.key)).map((x) => x.label)
-    const ok = await ElMessageBox.confirm(
-      `「${labels.join('、')}」在套用后已被修改，撤销会连同这些修改一起恢复为套用前的内容，是否继续？`,
-      '撤销默认模板', { type: 'warning' }).then(() => true, () => false)
-    if (!ok) return
+    const labels = EMR_SECTIONS.filter(x => edited.includes(x.key)).map(x => x.label)
+    const accepted = await ElMessageBox.confirm(`「${labels.join('、')}」在套用后已被修改，撤销会连同这些修改一起恢复为套用前的内容，是否继续？`, '撤销默认模板', { type: 'warning' }).then(() => true, () => false)
+    if (!accepted || !context.valid()) return
   }
-  revertDefaultTemplate(emr, s.before, s.written)
-  declinedAutoTpl.add(s.regId)
-  autoTpl.value = null
+  if (!context.valid() || emrSigned.value) return
+  revertDefaultTemplate(emr, state.before, state.written)
+  declinedAutoTpl.add(state.regId); autoTpl.value = null
   ElMessage.success('已撤销自动套用的科室默认模板')
 }
 
 /** 取模板的结构化字段定义（车道 I：GET /api/emr/templates/{id}/fields，只回启用中的） */
 async function loadStructFields() {
-  structFields.value = []
-  structValues.value = {}
-  structHint.value = ''
-  if (!structTemplateId.value) return
+  const context = captureWorkspace(); if (!context) return
+  const templateId = structTemplateId.value
+  structFields.value = []; structValues.value = {}; structHint.value = ''
+  if (!templateId) return
   try {
-    const resp = await client.get(`/emr/templates/${structTemplateId.value}/fields`)
-    structFields.value = (resp.data.data ?? []) as EmrTemplateField[]
-    // v74 复核改：原文案写「在「病历模板」维护」，而那个页面（EmrTemplateView）管的是模板本体
-    // （作用范围/授权/启停/默认），对字段定义端点零调用——照这句话走过去什么也做不了。
-    // 结构化元素定义当前只有后端端点、没有维护界面，须由管理员在实施期配置。不指假路。
+    const response = await inWorkspace(context, () => client.get(`/emr/templates/${templateId}/fields`))
+    if (!response || structTemplateId.value !== templateId) return
+    structFields.value = (response.data.data ?? []) as EmrTemplateField[]
     if (!structFields.value.length) structHint.value = '该模板尚未配置结构化元素，本次按自由文本书写即可（元素定义须由管理员配置）'
   } catch {
-    structHint.value = '结构化元素定义暂不可读，本次仍可按自由文本书写病历'
+    if (context.valid() && structTemplateId.value === templateId) structHint.value = '结构化元素定义暂不可读，本次仍可按自由文本书写病历'
   }
 }
 
@@ -966,70 +1007,62 @@ const canOpenEmrVersion = computed(() => {
  * 既往病历一侧只读：取正文 → 插入当前正文段 → 仍走既有「保存病历」写入。
  */
 const priorVisible = ref(false)
-const priorLoading = ref(false)
+const priorLoading = computed(() => workspaceActionPending('prior'))
 const priorRecords = ref<Record<string, unknown>[]>([])
-const savingTpl = ref(false)
+const savingTpl = computed(() => workspaceActionPending('save-template'))
 const sectionLabel = computed(
   () => EMR_SECTIONS.find((x) => x.key === insertTarget.value)?.label ?? '现病史')
 
 async function openPriorRecords() {
-  const pid = current.value?.patientId as number | undefined
-  if (!pid) { ElMessage.warning('请先选中患者'); return }
+  const context = captureWorkspace(); if (!context?.patientId) return
+  const finish = beginWorkspaceAction(context, 'prior'); if (!finish) return
   priorVisible.value = true
-  priorLoading.value = true
   try {
-    priorRecords.value = (await client.get('/emr-templates/prior-records',
-      { params: { patientId: pid } })).data.data ?? []
-  } finally {
-    priorLoading.value = false
-  }
+    const response = await inWorkspace(context, () => client.get('/emr-templates/prior-records', { params: { patientId: context.patientId } }))
+    if (response) priorRecords.value = response.data.data ?? []
+  } finally { finish() }
 }
 
 async function usePriorRecord(row: Record<string, unknown>) {
-  const pid = current.value?.patientId as number | undefined
-  if (!pid) return
-  // patientId 是归属校验参数不是过滤条件：不属于该患者后端一律 4068，这里照端点契约原样带上
-  const body = (await client.get('/emr-templates/prior-records/content', {
-    params: { patientId: pid, source: row.source, recordId: row.record_id },
-  })).data.data
-  const text = String(body?.content ?? '')
+  const context = captureWorkspace(); if (!context?.patientId) return
+  const response = await inWorkspace(context, () => client.get('/emr-templates/prior-records/content', {
+    params: { patientId: context.patientId, source: row.source, recordId: row.record_id },
+  }))
+  if (!response) return
+  const text = String(response.data.data?.content ?? '')
   if (!text.trim()) { ElMessage.warning('这份既往病历没有正文可取'); return }
-  insertText(text)          // 已签名冻结时由 insertText 自己挡住并提示
+  insertText(text)
   priorVisible.value = false
 }
 
 async function saveAsTemplate() {
-  if (!currentEmrId.value) return
-  const pid = current.value?.patientId as number | undefined
-  if (!pid) { ElMessage.warning('请先选中患者'); return }
-  const name = await ElMessageBox.prompt('模板名称', '把当前病历存为个人模板', {
-    inputValue: `${String(current.value?.patientName ?? '')}门诊病历模板`.trim(),
-    inputValidator: (v: string) => (v && v.trim().length > 0) || '请填写模板名称',
-  }).then((r) => (r as { value: string }).value).catch(() => null)
-  if (name == null) return
-  savingTpl.value = true
+  const context = captureWorkspace(), recordId = currentEmrId.value
+  if (!context?.patientId || !recordId) return
+  const finish = beginWorkspaceAction(context, 'save-template'); if (!finish) return
   try {
-    const out = (await client.post('/emr-templates/from-record', {
-      source: 'OUTP', recordId: currentEmrId.value, patientId: pid,
-      name: name.trim(), scope: 'PERSONAL',
-    })).data.data
-    // 后端对超长正文**显式回 truncated 而不是无声截断**，这里如实转达，不替它把话说圆
-    ElMessage.success(out?.truncated
-      ? `已存为个人模板，但来源正文 ${out.sourceLength} 字超过模板上限 ${out.maxContent} 字，已截断保存前 ${out.contentLength} 字`
-      : '已存为个人模板（仅本人与被授权人可用）')
-  } finally {
-    savingTpl.value = false
-  }
+    const name = await ElMessageBox.prompt('模板名称', '把当前病历存为个人模板', {
+      inputValue: `${String(context.visit.patientName ?? '')}门诊病历模板`.trim(),
+      inputValidator: (value: string) => (value && value.trim().length > 0) || '请填写模板名称',
+    }).then(result => (result as { value: string }).value).catch(() => null)
+    if (name == null || !context.valid()) return
+    const response = await inWorkspace(context, () => client.post('/emr-templates/from-record', {
+      source: 'OUTP', recordId, patientId: context.patientId, name: name.trim(), scope: 'PERSONAL',
+    }))
+    if (!response) return
+    const out = response.data.data
+    ElMessage.success(out?.truncated ? `已存为个人模板，但来源正文 ${out.sourceLength} 字超过模板上限 ${out.maxContent} 字，已截断保存前 ${out.contentLength} 字` : '已存为个人模板（仅本人与被授权人可用）')
+  } finally { finish() }
 }
 
 function openEmrVersions() {
+  if (!captureWorkspace()) return
   if (!currentEmrId.value) return
   const q = new URLSearchParams({ emrType: 'OUTP', emrId: String(currentEmrId.value), from: 'doctor' })
   window.open(`/emr-version?${q.toString()}`, '_blank')
 }
-const signing = ref(false)
+const signing = computed(() => workspaceActionPending('sign'))
 const amendForm = reactive({ amendText: '', reason: '' })
-const amending = ref(false)
+const amending = computed(() => workspaceActionPending('amend'))
 const amendments = ref<Record<string, unknown>[]>([])
 const stockWarnings = ref<string[]>([])
 const cdssTips = ref<string[]>([])
@@ -1099,7 +1132,7 @@ type SpecialDisease = { id: number; diseaseCode?: string; diseaseName: string; i
                         startDate?: string; endDate?: string; remark?: string }
 const specialDiseases = ref<SpecialDisease[]>([])
 const specialVisible = ref(false)
-const savingSpecial = ref(false)
+const savingSpecial = computed(() => workspaceActionPending('special'))
 const specialForm = reactive({ diseaseName: '', diseaseCode: '', insuranceType: '',
   startDate: todayLocal(), endDate: '', remark: '' })
 
@@ -1124,38 +1157,32 @@ async function loadRxTemplates() {
 
 /** 套用：按 orderType 分流、**追加而非覆盖**（医生常先手工加一行再套模板）。 */
 async function applyTemplate(id: number | undefined) {
-  if (!id) return
-  const resp = await client.get(`/outpatient/rx-templates/${id}/lines`)
-  if (resp.data.code !== 0) {
-    ElMessage.error(resp.data.message)
-    await loadRxTemplates()   // 4060：多半是被停用了，刷新列表
-    tplPicked.value = undefined
+  const context = captureWorkspace(); if (!context || !id) return
+  const response = await inWorkspace(context, () => client.get(`/outpatient/rx-templates/${id}/lines`))
+  if (!response) return
+  if (response.data.code !== 0) {
+    ElMessage.error(response.data.message)
+    await loadRxTemplates()
+    if (context.valid()) tplPicked.value = undefined
     return
   }
-  // v80 审阅修补（D2）：每行打上来源模板 id 与本次套用批次号，撤组只撤这一批（同一模板套两次也是两批）
-  const lines = stampTemplateLines((resp.data.data ?? []) as Record<string, unknown>[], id, `${id}-${++tplBatchSeq}`)
-  const warn: string[] = []
-  for (const ln of lines) {
-    // 落地提示，不拦截——真正的判定仍在开单端点
-    if (ln.itemExists === false) warn.push(`${ln.itemName ?? ln.itemId}：项目已不存在，请移除该行`)
-    else if (ln.itemEnabled === false) warn.push(`${ln.itemName}：该药已停用，开单时会被拒`)
-    else if (typeof ln.stock === 'number' && typeof ln.qty === 'number' && ln.stock < ln.qty) {
-      warn.push(`${ln.itemName}：库存不足（余 ${ln.stock}）`)
-    }
-    if (ln.orderType === 'DRUG') rxLines.value.push({ ...ln })
-    else {
-      const line = { ...ln }
-      prefillClinicalSummary(line)   // v77：模板行同样预填临床摘要（模板自带值则不覆盖）
-      labLines.value.push(line)
-    }
+  const lines = stampTemplateLines((response.data.data ?? []) as Record<string, unknown>[], id, `${id}-${++tplBatchSeq}`)
+  const warnings: string[] = []
+  for (const line of lines) {
+    if (line.itemExists === false) warnings.push(`${line.itemName ?? line.itemId}：项目已不存在，请移除该行`)
+    else if (line.itemEnabled === false) warnings.push(`${line.itemName}：该药已停用，开单时会被拒`)
+    else if (typeof line.stock === 'number' && typeof line.qty === 'number' && line.stock < line.qty) warnings.push(`${line.itemName}：库存不足（余 ${line.stock}）`)
+    if (line.orderType === 'DRUG') rxLines.value.push({ ...line })
+    else { const item = { ...line }; prefillClinicalSummary(item); labLines.value.push(item) }
   }
-  tplHint.value = `已套用 ${lines.length} 行` + (warn.length ? `；${warn.length} 行需注意` : '')
-  if (warn.length) ElMessage.warning(warn.join('；'))
+  tplHint.value = `已套用 ${lines.length} 行` + (warnings.length ? `；${warnings.length} 行需注意` : '')
+  if (warnings.length) ElMessage.warning(warnings.join('；'))
   tplPicked.value = undefined
 }
 
 /** 协定处方整组撤回（locked 行不可单行删）；v80 审阅修补（D2）：只撤 row 所在那一批，药品与检查检验一并计数 */
 function dropAgreedGroup(row: Record<string, unknown>) {
+  if (!captureWorkspace()) return
   const r = dropTemplateBatch(rxLines.value, labLines.value, row)
   rxLines.value = r.rx
   labLines.value = r.lab
@@ -1199,94 +1226,77 @@ async function loadWorklist() {
   worklist.value = resp.data.data
 }
 
-async function openPatient(row: Record<string, unknown> | null) {
+async function openPatient(row: Record<string, unknown> | null): Promise<WorkspaceContext | null> {
   workspaceGeneration++
+  workspaceRenderKey.value = workspaceGeneration
   warnIfLeavingUnsigned(row)
   current.value = row
-  currentEmrId.value = null   // v55：切患者先清，别让上一位的 id 挂在这一位的按钮上
-  autoTpl.value = null        // v79：默认模板黄条只属于套用它的那一次进页
+  clearWorkspace()
   visitDenied.value = false
-  if (!row) return
-  let resp
+  workspaceLoading.value = !!row
+  if (!row) return null
+  const context = captureWorkspace(false)!
   try {
-    resp = await client.get(`/outpatient/doctor/${row.registrationId}/workspace`, { __silentCodes: [4036] })
-  } catch (e) {
-    if ((e as BizError).bizCode !== 4036) throw e
-    // v80 审阅修补二（R2-2）：跨日期队列点开他人往次挂号 → 4036。清掉 current 回到空态并写明原因——
-    // 不白屏，也不让上一位患者的病历、诊断留在编辑区里冒充这一位
-    current.value = null
-    visitDenied.value = true
-    return
-  }
-  const ws = resp.data.data
-  currentEmrId.value = typeof ws.emr?.id === 'number' ? ws.emr.id : null   // v55：版本留痕按钮的唯一数据来源之一
-  emrAuthorId.value = typeof ws.emr?.doctorId === 'number' ? ws.emr.doctorId : null
-  Object.assign(emr, {
-    chiefComplaint: ws.emr?.chiefComplaint ?? '', presentIllness: ws.emr?.presentIllness ?? '',
-    pastHistory: ws.emr?.pastHistory ?? '', physicalExam: ws.emr?.physicalExam ?? '', advice: ws.emr?.advice ?? '',
-  })
-  diagList.value = (ws.diagnoses ?? []).map((d: Partial<DiagRow>) => {
-    if (d.icdCode) knownIcd.set(d.icdCode, d.icdName ?? d.icdCode)
-    return {
-      icdCode: d.icdCode ?? '', icdName: d.icdName ?? '',
-      // 历史行 diagSystem 为 null：读侧按西医显示，但不回写数据库（保存时原样回传空值）
-      diagSystem: d.diagSystem ?? '',
-      prefix: d.prefix ?? '', suffix: d.suffix ?? '',
-      certainty: d.certainty ?? '', customName: d.customName ?? '',
+    let response
+    try {
+      response = await inWorkspace(context, () => client.get(`/outpatient/doctor/${context.registrationId}/workspace`, { __silentCodes: [4036] }))
+    } catch (error) {
+      if ((error as BizError).bizCode !== 4036) throw error
+      current.value = null
+      visitDenied.value = true
+      return null
     }
-  })
-  icdOptions.value = (ws.diagnoses ?? [])
-    .filter((d: { icdCode?: string }) => !!d.icdCode)
-    .map((d: { icdCode: string; icdName: string }) => ({ code: d.icdCode, name: d.icdName }))
-  diagSystem.value = 'ICD10'
-  icdPick.value = null
-  tcmName.value = ''
-  assistVisible.value = false
-  await loadSpecialDiseases()
-  orders.value = ws.orders ?? []
-  emrSigned.value = !!ws.emr?.signature
-  emrSignerName.value = (ws.emrSignerName as string) ?? ''
-  emrSignedAtText.value = ws.emr?.signedAt ? new Date(ws.emr.signedAt as string).toLocaleString('zh-CN') : ''
-  stockWarnings.value = []
-  // v51 车道F4：切患者清空上一位的 CDSS 审查提示。
-  // 用药警告串到别的患者名下，比不显示更危险——那会让医生按 A 的过敏史判断 B 的处方。
-  rxCdssWarnings.value = []
-  cdssWarnBarClosed.value = false
-  cdssWarnDialog.value = false
-  amendForm.amendText = ''
-  amendForm.reason = ''
-  amendments.value = emrSigned.value ? await loadAmendments(row.registrationId as number) : []
-  skinTests.value = []   // v43：切患者清空，避免上一位的皮试结果串到本位
-  tplHint.value = ''     // v44：切患者清空模板提示
-  rxLines.value = []
-  labLines.value = []
-  summaryTruncWarned = false   // v77：换患者后截断提示重新提示一次
-  // v45：切患者清空引用抽屉与结构化录入状态（串患者是病历事故的常见来源）
-  refVisible.value = false
-  insertTarget.value = 'presentIllness'
-  structTemplateId.value = null
-  structFields.value = []
-  structValues.value = {}
-  structHint.value = ''
-  // v79（988★）：是否自动套默认模板按 workspace 原样判（新病历、未签、五段全空），必须在 1092★ 预填过敏史之前判；
-  // 取模板与带出并行，带出先落、模板后套，planDefaultTemplate 把预填的过敏史与模板既往史合并，一字不丢。
-  const tplEligible = eligibleForDefaultTemplate({
-    hasEmr: !!ws.emr, signed: emrSigned.value, emr, declined: declinedAutoTpl.has(row.registrationId as number),
-  })
-  const [, defaultTpl] = await Promise.all([
-    loadBasicRef(!ws.emr),   // 1092★：带出放在正文赋值之后，才知道既往史是不是空的
-    tplEligible ? fetchDefaultTemplate(row) : Promise.resolve(null),
-  ])
-  if (defaultTpl) await autoApplyDefaultTemplate(row, defaultTpl)
+    if (!response) return null
+    const ws = response.data.data
+    currentEmrId.value = typeof ws.emr?.id === 'number' ? ws.emr.id : null
+    emrAuthorId.value = typeof ws.emr?.doctorId === 'number' ? ws.emr.doctorId : null
+    Object.assign(emr, {
+      chiefComplaint: ws.emr?.chiefComplaint ?? '', presentIllness: ws.emr?.presentIllness ?? '',
+      pastHistory: ws.emr?.pastHistory ?? '', physicalExam: ws.emr?.physicalExam ?? '', advice: ws.emr?.advice ?? '',
+    })
+    diagList.value = (ws.diagnoses ?? []).map((d: Partial<DiagRow>) => {
+      if (d.icdCode) knownIcd.set(d.icdCode, d.icdName ?? d.icdCode)
+      return { icdCode: d.icdCode ?? '', icdName: d.icdName ?? '', diagSystem: d.diagSystem ?? '',
+        prefix: d.prefix ?? '', suffix: d.suffix ?? '', certainty: d.certainty ?? '', customName: d.customName ?? '' }
+    })
+    icdOptions.value = (ws.diagnoses ?? []).filter((d: { icdCode?: string }) => !!d.icdCode)
+      .map((d: { icdCode: string; icdName: string }) => ({ code: d.icdCode, name: d.icdName }))
+    orders.value = ws.orders ?? []
+    emrSigned.value = !!ws.emr?.signature
+    emrSignerName.value = (ws.emrSignerName as string) ?? ''
+    emrSignedAtText.value = ws.emr?.signedAt ? new Date(ws.emr.signedAt as string).toLocaleString('zh-CN') : ''
+    await loadSpecialDiseases(context)
+    if (!context.valid()) return null
+    if (emrSigned.value) {
+      const loaded = await inWorkspace(context, () => loadAmendments(context.registrationId))
+      if (!loaded) return null
+      amendments.value = loaded
+    }
+    const eligible = eligibleForDefaultTemplate({ hasEmr: !!ws.emr, signed: emrSigned.value, emr,
+      declined: declinedAutoTpl.has(context.registrationId) })
+    const [, template] = await Promise.all([
+      loadBasicRef(!ws.emr, context), eligible ? fetchDefaultTemplate(context.visit, context) : Promise.resolve(null),
+    ])
+    if (!context.valid()) return null
+    if (template) await autoApplyDefaultTemplate(context.visit, template, context)
+    if (!context.valid()) return null
+    workspaceReady.value = true
+    return context
+  } finally {
+    // A completion never releases the loading state owned by a newer B open.
+    if (context.generation === workspaceGeneration) workspaceLoading.value = false
+  }
 }
 
 /** v74 复核补入口：检验报告单（既有 PrintView 契约 ?type=lab-report&id=<orderId>，后端 /api/print/lab-report/{orderId}） */
 function printLabReport(row: Record<string, unknown>) {
+  if (!captureWorkspace()) return
   window.open(`/print?type=lab-report&id=${row.id}`, '_blank')
 }
 
 /** v43：五种日常单据打印（车道B 端点 /api/print/doc/{docType}/{registrationId}） */
 function printDoc(docType: string) {
+  if (!captureWorkspace()) return
   if (!current.value) return
   window.open(`/print?type=${docType}&id=${current.value.registrationId}`, '_blank')
 }
@@ -1294,11 +1304,11 @@ function printDoc(docType: string) {
 /** v43：皮试结果只读查看（车道D 端点，仅放开读；登记与出结果仍限护士） */
 const skinTests = ref<Record<string, unknown>[]>([])
 async function loadSkinTests() {
-  if (!current.value) return
-  const resp = await client.get('/outpatient/nurse/skin-tests/for-doctor',
-    { params: { registrationId: current.value.registrationId } })
-  skinTests.value = resp.data.data ?? []
-  if (skinTests.value.length === 0) ElMessage.info('本次就诊暂无皮试记录')
+  const context = captureWorkspace(); if (!context) return
+  const response = await inWorkspace(context, () => client.get('/outpatient/nurse/skin-tests/for-doctor', { params: { registrationId: context.registrationId } }))
+  if (!response) return
+  skinTests.value = response.data.data ?? []
+  if (!skinTests.value.length) ElMessage.info('本次就诊暂无皮试记录')
 }
 
 async function loadAmendments(registrationId: number) {
@@ -1308,36 +1318,30 @@ async function loadAmendments(registrationId: number) {
 
 // 阻塞4：签名冻结病历追加补正记录（原文保留，法定留痕）
 async function submitAmend() {
-  if (!current.value) return
-  if (!amendForm.amendText.trim() || !amendForm.reason.trim()) {
-    ElMessage.warning('补正内容与补正原因均须填写')
-    return
-  }
-  amending.value = true
+  const context = captureWorkspace(); if (!context) return
+  if (!amendForm.amendText.trim() || !amendForm.reason.trim()) { ElMessage.warning('补正内容与补正原因均须填写'); return }
+  const finish = beginWorkspaceAction(context, 'amend'); if (!finish) return
+  const body = { amendText: amendForm.amendText, reason: amendForm.reason }
   try {
-    const resp = await client.post(`/outpatient/doctor/${current.value.registrationId}/emr/amend`, {
-      amendText: amendForm.amendText,
-      reason: amendForm.reason,
-    })
-    if (resp.data.code !== 0) {
-      ElMessage.error(resp.data.message)
-      return
-    }
-    ElMessage.success('补正已留痕')
-    amendForm.amendText = ''
-    amendForm.reason = ''
-    amendments.value = await loadAmendments(current.value.registrationId as number)
-  } finally {
-    amending.value = false
-  }
+    const response = await inWorkspace(context, () => client.post(`/outpatient/doctor/${context.registrationId}/emr/amend`, body))
+    if (!response) return
+    if (response.data.code !== 0) { ElMessage.error(response.data.message); return }
+    ElMessage.success('补正已留痕'); amendForm.amendText = ''; amendForm.reason = ''
+    const loaded = await inWorkspace(context, () => loadAmendments(context.registrationId))
+    if (loaded) amendments.value = loaded
+  } finally { finish() }
 }
 
 async function startVisit() {
-  if (!current.value) return
-  const resp = await client.post(`/outpatient/doctor/${current.value.registrationId}/start`)
-  current.value.status = resp.data.data.status
-  ElMessage.success('已接诊')
-  await loadWorklist()
+  const context = captureWorkspace(); if (!context) return
+  const finish = beginWorkspaceAction(context, 'start'); if (!finish) return
+  try {
+    const response = await inWorkspace(context, () => client.post(`/outpatient/doctor/${context.registrationId}/start`))
+    if (!response) return
+    context.visit.status = response.data.data.status
+    ElMessage.success('已接诊')
+    await loadWorklist()
+  } finally { finish() }
 }
 
 async function searchIcd(kw: string) {
@@ -1348,39 +1352,26 @@ async function searchIcd(kw: string) {
 }
 
 async function saveEmr(): Promise<boolean> {
-  if (!current.value) return false
-  savingEmr.value = true
+  const context = captureWorkspace(); if (!context) return false
+  const finish = beginWorkspaceAction(context, 'save'); if (!finish) return false
   try {
-    // v45：只有真的填了结构化元素才上送 templateId/fields——不传时后端整段短路，
-    // content_json 与 template_id 连碰都不碰（既有病历上的侧车值不会被一次自由文本保存抹掉）
-    const usingStruct = structFields.value.length > 0 && Object.values(structValues.value).some(
-      (v) => v !== null && v !== undefined && v !== '' && !(Array.isArray(v) && v.length === 0))
-    const resp = await client.put(`/outpatient/doctor/${current.value.registrationId}/emr`, {
-      emr,
-      // v44：既有三键（icdCode/icdName + 顺序定主诊断）原样保留，新增五键留空即传空
-      // （后端 blank 视同 null，历史数据与旧调用方不受影响）
-      diagnoses: diagList.value.map((d) => ({
-        icdCode: d.icdCode, icdName: d.icdName,
-        prefix: d.prefix || null, suffix: d.suffix || null,
-        certainty: d.certainty || null, diagSystem: d.diagSystem || null,
-        customName: d.customName || null,
-      })),
-      templateId: usingStruct ? structTemplateId.value : undefined,
-      fields: usingStruct ? structValues.value : undefined,
-    })
-    if (resp.data.code !== 0) {
-      ElMessage.error(resp.data.message)
-      return false
-    }
+  const usingStruct = structFields.value.length > 0 && Object.values(structValues.value).some(
+    value => value !== null && value !== undefined && value !== '' && !(Array.isArray(value) && value.length === 0))
+  const body = { emr: { ...emr }, diagnoses: diagList.value.map(d => ({ icdCode: d.icdCode, icdName: d.icdName,
+    prefix: d.prefix || null, suffix: d.suffix || null, certainty: d.certainty || null,
+    diagSystem: d.diagSystem || null, customName: d.customName || null })),
+    templateId: usingStruct ? structTemplateId.value : undefined,
+    fields: usingStruct ? JSON.parse(JSON.stringify(structValues.value)) : undefined }
+    const response = await inWorkspace(context, () => client.put(`/outpatient/doctor/${context.registrationId}/emr`, body))
+    if (!response) return false
+    if (response.data.code !== 0) { ElMessage.error(response.data.message); return false }
     ElMessage.success('病历已暂存（未签名，仍可修改）')
-    if (typeof resp.data.data?.id === 'number') currentEmrId.value = resp.data.data.id   // v55：首次保存后按钮即出现
-    emrAuthorId.value = typeof resp.data.data?.doctorId === 'number' ? resp.data.data.doctorId : null   // 暂存人即书写人
-    autoTpl.value = null   // v79：默认模板已随暂存落库，黄条使命结束（撤销只对未落库的套用有意义）
-    await loadCdssTips()
-    return true
-  } finally {
-    savingEmr.value = false
-  }
+    if (typeof response.data.data?.id === 'number') currentEmrId.value = response.data.data.id
+    emrAuthorId.value = typeof response.data.data?.doctorId === 'number' ? response.data.data.doctorId : null
+    autoTpl.value = null
+    await loadCdssTips(context)
+    return context.valid()
+  } finally { finish() }
 }
 
 // ===================== v44 车道E：诊断录入 / 诊断助手 / 常用诊断 / 特殊病种 =====================
@@ -1391,12 +1382,14 @@ function alreadyPicked(code: string, name: string) {
 }
 
 function pushDiag(code: string, name: string, system: string) {
+  if (!captureWorkspace()) return
   if (!name || alreadyPicked(code, name)) return
   diagList.value.push({ icdCode: code, icdName: name, diagSystem: system,
     prefix: '', suffix: '', certainty: '', customName: '' })
 }
 
 function addDiagFromIcd(code: string) {
+  if (!captureWorkspace()) return
   if (!code) return
   pushDiag(code, knownIcd.get(code) ?? code, 'ICD10')
   icdPick.value = null
@@ -1407,6 +1400,7 @@ function addDiagFromIcd(code: string) {
  * 故中医诊断只录名称，icdCode 传空串——后端 icd_code 列非空约束不变，存空串不存假码。
  */
 function addDiagCustom() {
+  if (!captureWorkspace()) return
   const name = tcmName.value.trim()
   if (!name) return
   pushDiag('', name, 'TCM')
@@ -1414,56 +1408,56 @@ function addDiagCustom() {
 }
 
 function addDiagFrom(e: AssistEntry) {
+  if (!captureWorkspace()) return
   pushDiag(e.icdCode ?? '', e.icdName, e.diagSystem || (e.icdCode ? 'ICD10' : 'TCM'))
 }
 
 async function openAssist() {
+  const context = captureWorkspace(); if (!context) return
   assistVisible.value = true
-  await loadAssist()
+  await loadAssist(context)
 }
 
-async function loadAssist() {
-  if (!current.value) return
-  // patientId 可空：没有患者上下文时 history 段自然为空，常用与高频仍可用
+async function loadAssist(context = captureWorkspace()) {
+  if (!context) return
   const keyword = assistKeyword.value || undefined
   assistHistoryDenied.value = false
   try {
-    const resp = await client.get('/outpatient/doctor/diagnosis-assist', {
-      params: { patientId: current.value.patientId, keyword }, __silentCodes: [4036],
-    })
-    assist.value = resp.data.data
-  } catch (e) {
-    if ((e as BizError).bizCode !== 4036) throw e
-    // v80 审阅修补（D1）：本人名下无该患者有效挂号时后端不给历史诊断（4036）；常用与高频不是患者数据，照常取
+    const response = await inWorkspace(context, () => client.get('/outpatient/doctor/diagnosis-assist', { params: { patientId: context.patientId, keyword }, __silentCodes: [4036] }))
+    if (response) assist.value = response.data.data
+  } catch (error) {
+    if ((error as BizError).bizCode !== 4036) throw error
     assistHistoryDenied.value = true
-    const resp = await client.get('/outpatient/doctor/diagnosis-assist', { params: { keyword } })
-    assist.value = resp.data.data
+    const response = await inWorkspace(context, () => client.get('/outpatient/doctor/diagnosis-assist', { params: { keyword } }))
+    if (response) assist.value = response.data.data
   }
 }
 
 /** 加星到个人常用诊断（保存病历时本就会自动累加，这里是医生主动收藏） */
-async function starDiag(e: { icdCode?: string | null; icdName: string; diagSystem?: string | null }) {
-  await client.post('/outpatient/doctor/diagnosis-favorite', {
-    icdCode: e.icdCode || null, icdName: e.icdName, diagSystem: e.diagSystem || null,
-  })
+async function starDiag(entry: { icdCode?: string | null; icdName: string; diagSystem?: string | null }) {
+  const context = captureWorkspace()
+  await client.post('/outpatient/doctor/diagnosis-favorite', { icdCode: entry.icdCode || null, icdName: entry.icdName, diagSystem: entry.diagSystem || null })
+  if (context && !context.valid()) return
   ElMessage.success('已加入常用诊断')
-  if (assistVisible.value) await loadAssist()
+  if (context && assistVisible.value) await loadAssist(context)
 }
 
 async function removeFavorite(id?: number) {
   if (!id) return
+  const context = captureWorkspace()
   await client.delete(`/outpatient/doctor/diagnosis-favorite/${id}`)
+  if (context && !context.valid()) return
   ElMessage.success('已移出常用诊断')
-  await loadAssist()
+  if (context) await loadAssist(context)
 }
 
-async function loadSpecialDiseases() {
-  // patientId 缺失（队列行对应的患者档案已被清理）时不发请求：端点 patientId 必填，发了只会 400
-  if (!current.value?.patientId) { specialDiseases.value = []; return }
-  const resp = await client.get('/outpatient/doctor/special-disease', {
-    params: { patientId: current.value.patientId, activeOnly: true },
-  })
-  specialDiseases.value = resp.data.data ?? []
+async function loadSpecialDiseases(context = captureWorkspace()) {
+  if (!context) return
+  if (!context.patientId) { specialDiseases.value = []; return }
+  const response = await inWorkspace(context, () => client.get('/outpatient/doctor/special-disease', {
+    params: { patientId: context.patientId, activeOnly: true },
+  }))
+  if (response) specialDiseases.value = response.data.data ?? []
 }
 
 /**
@@ -1471,32 +1465,26 @@ async function loadSpecialDiseases() {
  * 属外部对接条件，本平台不提供，界面上也已写明，避免让院方误以为登记完就等于备案完成。
  */
 async function addSpecialDisease() {
-  if (!current.value) return
-  savingSpecial.value = true
+  const context = captureWorkspace(); if (!context) return
+  const finish = beginWorkspaceAction(context, 'special'); if (!finish) return
+  const body = { patientId: context.patientId, diseaseName: specialForm.diseaseName, diseaseCode: specialForm.diseaseCode,
+    insuranceType: specialForm.insuranceType, startDate: specialForm.startDate, endDate: specialForm.endDate || null, remark: specialForm.remark }
   try {
-    const resp = await client.post('/outpatient/doctor/special-disease', {
-      patientId: current.value.patientId,
-      diseaseName: specialForm.diseaseName, diseaseCode: specialForm.diseaseCode,
-      insuranceType: specialForm.insuranceType, startDate: specialForm.startDate,
-      endDate: specialForm.endDate || null, remark: specialForm.remark,
-    })
-    if (resp.data.code !== 0) {
-      ElMessage.error(resp.data.message)
-      return
-    }
-    ElMessage.success('已登记（院内）')
-    specialForm.diseaseName = ''
-    specialForm.diseaseCode = ''
-    specialForm.remark = ''
-    await loadSpecialDiseases()
-  } finally {
-    savingSpecial.value = false
-  }
+    const response = await inWorkspace(context, () => client.post('/outpatient/doctor/special-disease', body))
+    if (!response) return
+    if (response.data.code !== 0) { ElMessage.error(response.data.message); return }
+    ElMessage.success('已登记（院内）'); specialForm.diseaseName = ''; specialForm.diseaseCode = ''; specialForm.remark = ''
+    await loadSpecialDiseases(context)
+  } finally { finish() }
 }
 
 async function removeSpecialDisease(id: number) {
-  await client.delete(`/outpatient/doctor/special-disease/${id}`)
-  await loadSpecialDiseases()
+  const context = captureWorkspace(); if (!context) return
+  const finish = beginWorkspaceAction(context, 'special'); if (!finish) return
+  try {
+    const response = await inWorkspace(context, () => client.delete(`/outpatient/doctor/special-disease/${id}`))
+    if (response) await loadSpecialDiseases(context)
+  } finally { finish() }
 }
 
 function emrHasContent() {
@@ -1509,47 +1497,28 @@ function emrHasContent() {
  * 医生签不了名；而「已签名」才显示的补正区块因此永远不可达。签名成功后本页转冻结态。
  */
 async function signEmr() {
-  if (!current.value) return
-  if (!emrHasContent()) {
-    ElMessage.warning('病历内容为空，请先书写并暂存后再提交（签名）')
-    return
-  }
-  // v79 审阅修补（三）（乙组反驳 B3-1f）：自动套用的默认模板一字未改——修前有后端 4009 兜底，先暂存后没了
-  if (untouchedDefaultTemplate(autoTpl.value, emr)) {
-    ElMessage.warning('自动套用的模板尚未修改，请书写后再提交')
-    return
-  }
-  // 审阅修补（三）（乙组反驳 B3-2e）：书写医师是别人时不先暂存（暂存会把书写医师改成自己、架空 4023），
-  // 直接调签名端点，由后端回「仅病历书写医师本人可签名」；确认框按实际要做的事说
-  const presave = presaveBeforeSign({
-    hasEmr: currentEmrId.value != null, authorId: emrAuthorId.value, meId: auth.user?.id ?? null,
-  })
+  const context = captureWorkspace(); if (!context) return
+  if (!emrHasContent()) { ElMessage.warning('病历内容为空，请先书写并暂存后再提交（签名）'); return }
+  if (untouchedDefaultTemplate(autoTpl.value, emr)) { ElMessage.warning('自动套用的模板尚未修改，请书写后再提交'); return }
+  const finish = beginWorkspaceAction(context, 'sign'); if (!finish) return
+  const presave = presaveBeforeSign({ hasEmr: currentEmrId.value != null, authorId: emrAuthorId.value, meId: auth.user?.id ?? null })
   try {
-    await ElMessageBox.confirm(presave
-      ? '签名即提交：将先暂存屏上当前内容，再以此签名；签名后本次病历原文即冻结，不能再修改，只能追加补正记录。确认提交？'
-      : '签名即提交：这份病历的书写医师不是当前登录人，不会先暂存屏上内容，按已暂存的内容签名；签名后原文即冻结，只能追加补正记录。确认提交？',
-    '提交病历（签名）',
-    { type: 'warning', confirmButtonText: '确认提交（签名）', cancelButtonText: '再改改' })
-  } catch {
-    return   // 医生取消，不做任何事
-  }
-  // v79 复核（乙组审计者 D1）：签名端点签的是库里最后一次暂存的稿；此前若医生改完没点「暂存」直接提交，
-  // 签进去的是旧稿，签完重载还会把屏上未暂存的改动悄悄冲掉。提交前先把屏上内容暂存，暂存失败就不签。
-  // 审阅修补（三）（乙组反驳 B3）：按钮 loading 在暂存之前就置上，往返期间不能再点一次（再弹一次确认框）。
-  signing.value = true
-  try {
+    try {
+      await ElMessageBox.confirm(presave
+        ? '签名即提交：将先暂存屏上当前内容，再以此签名；签名后本次病历原文即冻结，不能再修改，只能追加补正记录。确认提交？'
+        : '签名即提交：这份病历的书写医师不是当前登录人，不会先暂存屏上内容，按已暂存的内容签名；签名后原文即冻结，只能追加补正记录。确认提交？',
+        '提交病历（签名）', { type: 'warning', confirmButtonText: '确认提交（签名）', cancelButtonText: '再改改' })
+    } catch { return }
+    if (!context.valid()) return
     if (presave && !(await saveEmr())) return
-    const resp = await client.post(`/outpatient/doctor/${current.value.registrationId}/emr/sign`)
-    if (resp.data.code !== 0) {
-      ElMessage.error(resp.data.message)
-      return
-    }
+    if (!context.valid()) return
+    const response = await inWorkspace(context, () => client.post(`/outpatient/doctor/${context.registrationId}/emr/sign`))
+    if (!response) return
+    if (response.data.code !== 0) { ElMessage.error(response.data.message); return }
     ElMessage.success('病历已提交（已签名）')
-    await openPatient(current.value)
-    await loadWorklist()
-  } finally {
-    signing.value = false
-  }
+    const refreshed = await openPatient(context.visit)
+    if (refreshed?.valid()) await loadWorklist()
+  } finally { finish() }
 }
 
 /**
@@ -1570,19 +1539,15 @@ function warnIfLeavingUnsigned(next: Record<string, unknown> | null) {
 }
 
 // CDSS：按主诊断给出诊疗建议
-async function loadCdssTips() {
+async function loadCdssTips(context = captureWorkspace()) {
+  if (!context) return
   cdssTips.value = []
-  // 主诊断口径不变：列表第一条即主诊断。中医/自定义诊断无 ICD 编码，CDSS 按编码检索，跳过
   const primary = diagList.value[0]?.icdCode
   if (!primary) return
-  // CDSS 可按院整体关闭（模块开关返回 404）——辅助提示拿不到就不显示，
-  // 不能让开关状态打断接诊主流程（v27-B：此前无 catch，关闭 cdss 后接诊必弹全局错误）
   try {
-    const resp = await client.get('/cdss/suggestions', { params: { icd: primary } })
-    cdssTips.value = (resp.data.data as { content: string }[]).map((s) => s.content)
-  } catch {
-    /* 模块未启用或临时不可用：静默降级 */
-  }
+    const response = await inWorkspace(context, () => client.get('/cdss/suggestions', { params: { icd: primary } }))
+    if (response && diagList.value[0]?.icdCode === primary) cdssTips.value = (response.data.data as { content: string }[]).map(s => s.content)
+  } catch { /* Optional advice remains a silent fallback. */ }
 }
 
 async function searchDrugs(kw: string) {
@@ -1591,6 +1556,7 @@ async function searchDrugs(kw: string) {
 }
 
 function addRxLine() {
+  if (!captureWorkspace()) return
   const drug = drugOptions.value.find((d) => d.id === rxDrugId.value)
   if (!drug) return
   rxLines.value.push({
@@ -1616,6 +1582,7 @@ async function loadSpecimenTypes() {
 }
 
 function addLabLine() {
+  if (!captureWorkspace()) return
   const item = chargeItemOptions.value.find((c) => c.id === labItemId.value)
   if (!item) return
   const line: Record<string, unknown> = { orderType: item.category, itemId: item.id, itemName: item.name, category: item.category, qty: 1 }
@@ -1653,60 +1620,31 @@ function prefillClinicalSummary(line: Record<string, unknown>) {
 }
 
 async function submitOrders(kind: 'rx' | 'lab') {
-  if (!current.value) return
-  const lines = kind === 'rx' ? rxLines.value : labLines.value
-  submitting.value = true
+  const context = captureWorkspace(); if (!context) return
+  const finish = beginWorkspaceAction(context, 'orders'); if (!finish) return
   try {
-    const resp = await client.post(`/outpatient/doctor/${current.value.registrationId}/orders`, { lines })
-    const created = (resp.data.data ?? []) as Record<string, unknown>[]
-    // v77 车道B（1016★）：检验开单返回体订单元素带 execDeptName（@JsonInclude(NON_NULL)，无值键不存在；
-    // 只对 LAB 落值）。已开医嘱列表不展示单行执行科室，故在成功提示里去重列出、保持返回顺序。
-    const execDepts = kind === 'lab'
-      ? [...new Set(created.map((o) => o.execDeptName).filter((n): n is string => typeof n === 'string' && n !== ''))]
-      : []
-    ElMessage.success(kind === 'rx' ? '处方已开立'
-      : `申请已提交${execDepts.length ? `；检验执行科室：${execDepts.join('、')}` : ''}`)
-    // 阻塞6：开单返回值带库存预警（stockWarnAvailable 非空即库存低于开量）
-    const warns = created.filter((o) => o.stockWarnAvailable !== null && o.stockWarnAvailable !== undefined)
-    // v51 车道F4：CDSS 审查警告随返回体下发，挂在**每一条**订单元素上（后端 List.copyOf 同一份），
-    // 故跨订单合并后按原文去重，保持后端给出的先后次序。
-    // 字段 @JsonInclude(NON_EMPTY)——无警告时字段不出现，cdssWarn 恒为空数组，下方分支一条不走。
-    const seenWarn = new Set<string>()
-    const cdssWarn: string[] = []
-    for (const o of created) {
-      const list = o.cdssWarnings
-      if (!Array.isArray(list)) continue
-      for (const w of list) {
-        const text = String(w)
-        if (!seenWarn.has(text)) {
-          seenWarn.add(text)
-          cdssWarn.push(text)
-        }
-      }
+    const body = { lines: JSON.parse(JSON.stringify(kind === 'rx' ? rxLines.value : labLines.value)) }
+    const response = await inWorkspace(context, () => client.post(`/outpatient/doctor/${context.registrationId}/orders`, body))
+    if (!response) return
+    const created = (response.data.data ?? []) as Record<string, unknown>[]
+    const departments = kind === 'lab' ? [...new Set(created.map(o => o.execDeptName).filter((name): name is string => typeof name === 'string' && name !== ''))] : []
+    ElMessage.success(kind === 'rx' ? '处方已开立' : `申请已提交${departments.length ? `；检验执行科室：${departments.join('、')}` : ''}`)
+    const warnings = created.filter(o => o.stockWarnAvailable !== null && o.stockWarnAvailable !== undefined)
+    const seen = new Set<string>(), cdssWarnings: string[] = []
+    for (const order of created) if (Array.isArray(order.cdssWarnings)) for (const item of order.cdssWarnings) {
+      const text = String(item)
+      if (!seen.has(text)) { seen.add(text); cdssWarnings.push(text) }
     }
-    if (kind === 'rx') rxLines.value = []
-    else labLines.value = []
-    await openPatient(current.value)
-    if (warns.length) {
-      stockWarnings.value = warns.map((o) => `${o.itemName}（余 ${o.stockWarnAvailable}）`)
+    if (kind === 'rx') rxLines.value = []; else labLines.value = []
+    const refreshed = await openPatient(context.visit)
+    if (!refreshed?.valid()) return
+    if (warnings.length) {
+      stockWarnings.value = warnings.map(o => `${o.itemName}（余 ${o.stockWarnAvailable}）`)
       tab.value = 'rx'
-      ElMessage({ type: 'warning', duration: 6000,
-        message: '部分药品库存不足，缴费后可能无法发药，请查看处方页提示' })
-    } else {
-      tab.value = 'orders'
-    }
-    // v51 车道F4：CDSS 审查提示。**整段放在既有库存预警分支之后、且不参与页签判断**——
-    // 既有行为一字不改：cdssWarn 为空时（无警告的全部情况）这里什么都不做，与 v50 完全一致。
-    // 不用 ElMessage：一闪而过的 toast 等于没提示。弹出可回看的对话框，关掉后横幅还在。
-    // openPatient() 里会清空这三个状态，故必须放在 openPatient 之后赋值。
-    if (cdssWarn.length) {
-      rxCdssWarnings.value = cdssWarn
-      cdssWarnBarClosed.value = false
-      cdssWarnDialog.value = true
-    }
-  } finally {
-    submitting.value = false
-  }
+      ElMessage({ type: 'warning', duration: 6000, message: '部分药品库存不足，缴费后可能无法发药，请查看处方页提示' })
+    } else tab.value = 'orders'
+    if (cdssWarnings.length) { rxCdssWarnings.value = cdssWarnings; cdssWarnBarClosed.value = false; cdssWarnDialog.value = true }
+  } finally { finish() }
 }
 
 async function cancelOrder(row: Record<string, unknown>) {
