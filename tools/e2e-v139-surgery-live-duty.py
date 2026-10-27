@@ -25,8 +25,12 @@ class Fixture:
                           ('cashier', 'CASHIER'), ('interface', 'INTERFACE'), ('pharmacist', 'PHARMACIST'),
                           ('disabled', 'TECHNICIAN'), ('mover', 'TECHNICIAN')]:
             self.users[who] = 'v139_' + who + '_' + self.suffix
-            self.tokens[who] = provision_user(bootstrap, self.users[who], role)
+            # The shared provisioner is for human accounts. Complete that flow
+            # before the admin assigns the existing machine-only duty.
+            self.tokens[who] = provision_user(bootstrap, self.users[who], 'TECHNICIAN' if role == 'INTERFACE' else role)
             self.identities[who] = self.api('GET', '/auth/me', who=who)
+            if role == 'INTERFACE':
+                self.set_roles(who, ['INTERFACE'])
         self.department = self.api('POST', '/system/depts', {'code': 'V139D' + self.suffix,
             'name': 'V139模拟手术科' + self.suffix, 'type': 'CLINICAL', 'sortNo': 9999})
         self.ward = self.api('POST', '/system/depts', {'code': 'V139W' + self.suffix,
