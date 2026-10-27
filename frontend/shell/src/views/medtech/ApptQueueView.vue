@@ -112,7 +112,7 @@ function clearAppointments() {
 }
 function isAppointmentBusy(row: Record<string, unknown>) { return appointmentPendingIds.has(row.id) }
 function appointmentSelectable(row: Record<string, unknown>) {
-  return appointmentsReady.value && appts.value.includes(row) && row.status === 'BOOKED' && !isAppointmentBusy(row)
+  return appointmentsReady.value && appts.value.includes(row) && row.status === 'BOOKED'
 }
 function onAppointmentSelection(rows: Record<string, unknown>[]) {
   if (!appointmentsReady.value || !rows.every(appointmentSelectable)) return
