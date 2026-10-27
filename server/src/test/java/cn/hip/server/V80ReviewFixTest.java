@@ -289,7 +289,11 @@ class V80ReviewFixTest {
     @Test
     void d8_historyDrawerFormatsDiagnosesWithThePrintHelper() {
         String ds = read("frontend/shell/src/views/outpatient/DoctorStationView.vue");
-        int a = ds.indexOf("<el-drawer v-model=\"historyVisible\"");
+        // v136 补前轮最终源码验收债：同一历史抽屉可新增 ready/key，属性顺序不改变诊断格式契约。
+        var historyDrawer = java.util.regex.Pattern.compile(
+                "<el-drawer\\b(?=[^>]*\\sv-model\\s*=\\s*\"historyVisible\")[^>]*>").matcher(ds);
+        assertTrue(historyDrawer.find(), "找不到精确绑定 historyVisible 的历史就诊抽屉");
+        int a = historyDrawer.start();
         int b = ds.indexOf("</el-drawer>", a);
         assertTrue(a > 0 && b > a, "找不到历史就诊抽屉");
         String drawer = ds.substring(a, b);

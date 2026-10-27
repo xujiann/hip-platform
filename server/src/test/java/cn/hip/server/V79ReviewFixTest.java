@@ -534,10 +534,18 @@ class V79ReviewFixTest {
         String sign = signEmrSource();
         assertTrue(sign.contains("untouchedDefaultTemplate("), "未改动的自动套用模板不得一键签名：\n" + sign);
         assertTrue(read("frontend/shell/src/utils/default-template.ts").contains("export function untouchedDefaultTemplate"));
-        // B3 记录项：签名按钮的 loading 要在先暂存之前就置上，往返期间不能再点一次
-        int busy = sign.indexOf("signing.value = true");
+        // v136 补前轮最终源码验收债：loading 已改为按就诊占用派生，仍须在确认/暂存前占用。
+        String ds = read("frontend/shell/src/views/outpatient/DoctorStationView.vue");
+        int busy = sign.indexOf("beginWorkspaceAction(context, 'sign')");
+        int confirm = sign.indexOf("ElMessageBox.confirm(");
         int save = sign.indexOf("saveEmr()");
-        assertTrue(busy >= 0 && save >= 0 && busy < save, "signing 须在暂存之前置真：\n" + sign);
+        assertTrue(busy >= 0 && confirm > busy && save > confirm,
+                "签名须在确认框与先暂存之前取得原就诊占用：\n" + sign);
+        assertTrue(ds.contains("const signing = computed(() => workspaceActionPending('sign'))")
+                        && ds.contains(":loading=\"signing\""),
+                "按钮 loading 须与签名的同一在途占用同源");
+        assertTrue(sign.matches("(?s).*finally\\s*\\{\\s*finish\\(\\)\\s*}.*"),
+                "签名成功、拒绝或取消均须在 finally 释放自己的原占用：\n" + sign);
     }
 
     /** B3-1 / A3-2e：三态键取值精确匹配小写 off|warn|block，与直比型读取端同口径；emr.version.gate 纳入 */
