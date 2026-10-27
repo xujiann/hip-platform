@@ -23,7 +23,7 @@ class V91BloodSurgeryAccessTest {
     Long admission(Long owner){String n="V91"+System.nanoTime();Long p=jdbc.queryForObject("insert into empi_patient(patient_no,name,sex) values (?,?,'U') returning id",Long.class,n,n);return jdbc.queryForObject("insert into inp_admission(admission_no,patient_id,dept_id,ward_id,bed_id,doctor_id,status,admit_at) select ?,?,1,ward_id,id,?,'IN_HOSPITAL',now() from inp_bed order by id limit 1 returning id",Long.class,n,p,owner);}
     Long surgery(Long adm){return jdbc.queryForObject("insert into inp_surgery(admission_id,procedure_name,status,scheduled_at) values (?,'V91手术','REQUESTED',now()) returning id",Long.class,adm);}
     Long blood(Long adm,String status){return jdbc.queryForObject("insert into blood_apply(admission_id,product,volume_ml,reason,status) values (?,'RBC',200,'V91',?) returning id",Long.class,adm,status);}
-    JsonNode call(String m,String path,Object body,String name,String role)throws Exception{var req=switch(m){case "POST"->post(path);case "PUT"->put(path);case "DELETE"->delete(path);default->get(path);};req.with(user(name).roles(role));if(body!=null)req.contentType("application/json").content(om.writeValueAsString(body));var r=mvc.perform(req).andReturn().getResponse();assertTrue(r.getStatus()==200||r.getStatus()==403,path+" HTTP "+r.getStatus());return om.readTree(r.getContentAsString(StandardCharsets.UTF_8));}
+    JsonNode call(String m,String path,Object body,String name,String role)throws Exception{grantMockSurgeryRole(name,role);var req=switch(m){case "POST"->post(path);case "PUT"->put(path);case "DELETE"->delete(path);default->get(path);};req.with(user(name).roles(role));if(body!=null)req.contentType("application/json").content(om.writeValueAsString(body));var r=mvc.perform(req).andReturn().getResponse();assertTrue(r.getStatus()==200||r.getStatus()==403,path+" HTTP "+r.getStatus());return om.readTree(r.getContentAsString(StandardCharsets.UTF_8));}
     int code(String m,String p,Object b,String n,String role)throws Exception{return call(m,p,b,n,role).path("code").asInt();}
     @Test void foreignDoctorCannotRequestCompleteCancelOrWriteExecutionRecords()throws Exception{
         String a=doctor(),b=doctor();Long adm=admission(uid(a)),s=surgery(adm);
@@ -92,4 +92,13 @@ class V91BloodSurgeryAccessTest {
         for(String role:List.of("TECHNICIAN","QUALITY","CASHIER"))assertEquals(0,jdbc.queryForObject("select count(*) from sys_role_menu rm join sys_role r on r.id=rm.role_id where r.code=? and rm.menu_id=45",Integer.class,role));
     }
 
+
+    // Each existing mocked request represents exactly this database duty.
+    // A missing employee stays missing for the original negative test.
+    void grantMockSurgeryRole(String name,String role) {
+        var ids=jdbc.queryForList("select id from sys_user where username=?",Long.class,name);
+        if(ids.isEmpty())return;
+        jdbc.update("delete from sys_user_role where user_id=?",ids.getFirst());
+        jdbc.update("insert into sys_user_role(user_id,role_id) select ?,id from sys_role where code=?",ids.getFirst(),role);
+    }
 }

@@ -337,6 +337,9 @@ async function saveTube() {
     ElMessage.success('已保存')
     tubeDialog.value = false
     await loadSummary()
+  } catch (error: any) {
+    if (error?.response?.status === 403 && error?.response?.data?.code === 1005) return
+    throw error
   } finally {
     saving.value = false
   }
@@ -378,6 +381,9 @@ async function saveTransfusion() {
     ElMessage.success('已保存')
     transfusionDialog.value = false
     await loadSummary()
+  } catch (error: any) {
+    if (error?.response?.status === 403 && error?.response?.data?.code === 1005) return
+    throw error
   } finally {
     saving.value = false
   }
@@ -417,6 +423,9 @@ async function saveEvent() {
     ElMessage.success('已保存')
     eventDialog.value = false
     await loadSummary()
+  } catch (error: any) {
+    if (error?.response?.status === 403 && error?.response?.data?.code === 1005) return
+    throw error
   } finally {
     saving.value = false
   }
@@ -429,9 +438,14 @@ async function removeRow(kind: 'tubes' | 'transfusions' | 'events', row: Row) {
   const ok = await ElMessageBox.confirm(`确认删除该${label}？`, '删除确认', { type: 'warning' })
     .catch(() => null)
   if (!ok) return
-  await client.delete(`/surgery/intraop/${kind}/${Number(row.id)}`)
-  ElMessage.success('已删除')
-  await loadSummary()
+  try {
+    await client.delete(`/surgery/intraop/${kind}/${Number(row.id)}`)
+    ElMessage.success('已删除')
+    await loadSummary()
+  } catch (error: any) {
+    if (error?.response?.status === 403 && error?.response?.data?.code === 1005) return
+    throw error
+  }
 }
 
 onMounted(reload)

@@ -342,6 +342,9 @@ async function save() {
     ElMessage.success('已提交')
     dialogVisible.value = false
     await load()
+  } catch (error: any) {
+    if (error?.response?.status === 403 && error?.response?.data?.code === 1005) return
+    throw error
   } finally { saveLoading.value = false }
 }
 
@@ -442,6 +445,9 @@ async function complete(row: Row) {
   try {
     await client.put(`/inpatient/surgeries/${row.id}/complete`, { opNote, anesNote })
     await load()
+  } catch (error: any) {
+    if (error?.response?.status === 403 && error?.response?.data?.code === 1005) return
+    throw error
   } finally { busyId.value = null }
 }
 

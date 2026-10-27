@@ -352,4 +352,17 @@ class V49SurgeryCancelledAtTest {
         assertFalse(mine.containsKey("cancelled_at"), "新列不得漏进既有列表端点的返回体");
         assertEquals(11, mine.size(), "既有列表端点仍是 11 个键，一个不多一个不少");
     }
+
+    // Match the original WithMockUser authorities with a real current employee.
+    @org.junit.jupiter.api.BeforeEach
+    void currentSurgeryEmployeeFixture() {
+        var auth=org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+        String name=auth.getName();
+        jdbc.update("insert into sys_user(username,password,real_name,enabled) values (?,'test-only',?,true) on conflict(username) do update set enabled=true",name,name);
+        jdbc.update("delete from sys_user_role where user_id=(select id from sys_user where username=?)",name);
+        for(var authority:auth.getAuthorities()) {
+            String role=authority.getAuthority().substring("ROLE_".length());
+            jdbc.update("insert into sys_user_role(user_id,role_id) select u.id,r.id from sys_user u cross join sys_role r where u.username=? and r.code=?",name,role);
+        }
+    }
 }

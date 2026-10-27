@@ -370,6 +370,9 @@ async function recordAnes() {
     })
     ElMessage.success('已记录')
     await loadAnes()
+  } catch (error: any) {
+    if (error?.response?.status === 403 && error?.response?.data?.code === 1005) return
+    throw error
   } finally { recordAnesLoading.value = false }
 }
 

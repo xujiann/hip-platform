@@ -562,4 +562,17 @@ class V46SurgeryBaseTest {
         return buckets.stream().filter(b -> roomNo.equals(b.get("roomNo"))).findFirst()
                 .orElseThrow(() -> new AssertionError("排程视图缺手术间桶：" + (roomNo.isEmpty() ? "未排手术间" : roomNo)));
     }
+
+    // Match the original WithMockUser authorities with a real current employee.
+    @org.junit.jupiter.api.BeforeEach
+    void currentSurgeryEmployeeFixture() {
+        var auth=org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+        String name=auth.getName();
+        jdbc.update("insert into sys_user(username,password,real_name,enabled) values (?,'test-only',?,true) on conflict(username) do update set enabled=true",name,name);
+        jdbc.update("delete from sys_user_role where user_id=(select id from sys_user where username=?)",name);
+        for(var authority:auth.getAuthorities()) {
+            String role=authority.getAuthority().substring("ROLE_".length());
+            jdbc.update("insert into sys_user_role(user_id,role_id) select u.id,r.id from sys_user u cross join sys_role r where u.username=? and r.code=?",name,role);
+        }
+    }
 }

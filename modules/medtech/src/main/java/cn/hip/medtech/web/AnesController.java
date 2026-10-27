@@ -26,7 +26,7 @@ public class AnesController {
     @org.springframework.transaction.annotation.Transactional
     public R<Void> record(@RequestBody AnesReq req) {
         if (!"INTRA".equals(req.phase()) && !"PACU".equals(req.phase())) return R.fail(4670, "阶段只能为 INTRA/PACU");
-        if(!access.lockSurgery(req.surgeryId(),false))return R.fail(4671,"手术记录不存在");
+        if(!access.lockAnesthesiaSurgery(req.surgeryId()))return R.fail(4671,"手术记录不存在");
         Integer surgery = jdbc.queryForObject("select count(*) from inp_surgery where id = ?",
                 Integer.class, req.surgeryId());
         if (surgery == null || surgery == 0) return R.fail(4671, "手术记录不存在");
