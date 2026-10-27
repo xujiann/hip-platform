@@ -139,7 +139,8 @@ function selectedTextOf(target: EventTarget | null): string {
  * <p>用法：把 `onCopy` / `onPaste` 绑在病历正文输入区的<b>外层容器</b>上
  * （copy/cut/paste 事件从内部 input/textarea 冒泡上来，一处绑定覆盖全部正文框）。
  */
-export function useEmrPasteGuard(patient: () => { patientId: number | null; patientName: string }) {
+export function useEmrPasteGuard(patient: () => { patientId: number | null; patientName: string },
+  captureSession?: () => () => boolean) {
   const mode = ref<'off' | 'warn' | 'block'>('warn')
   const scopeNote = ref('')
 
@@ -167,6 +168,7 @@ export function useEmrPasteGuard(patient: () => { patientId: number | null; pati
   }
 
   function onPaste(e: ClipboardEvent) {
+    const stillCurrent = captureSession?.() ?? (() => true)
     if (mode.value === 'off') return
     const pasted = e.clipboardData?.getData('text/plain') ?? ''
     if (!pasted.trim()) return
@@ -196,10 +198,13 @@ export function useEmrPasteGuard(patient: () => { patientId: number | null; pati
       '跨患者粘贴确认',
       { type: 'warning', confirmButtonText: '确认粘贴', cancelButtonText: '不粘贴' })
       .then(() => {
+        // Confirmation may outlive its patient workspace or input element.
+        if (!stillCurrent()) return
         if (!el) {
           ElMessage.warning('已确认，但当前输入框不支持自动写入，请重新粘贴一次')
           return
         }
+        if (!el.isConnected) return
         // 不绕过 Vue 直接改 value：写完派发原生 input 事件，让 v-model 跟上
         el.value = el.value.slice(0, start) + pasted + el.value.slice(end)
         el.dispatchEvent(new Event('input', { bubbles: true }))
