@@ -757,9 +757,10 @@ async function openHistory() {
   historyDenied.value = false
   try {
     const response = await inWorkspace(context, () => client.get(`/outpatient/doctor/patient/${context.patientId}/history`, { __silentCodes: [4036] }))
-    if (!response) return
+    if (!response || !context.valid()) return
     history.value = response.data.data
   } catch (error) {
+    if (!context.valid()) return
     if ((error as BizError).bizCode !== 4036) throw error
     history.value = []; historyDenied.value = true
   }
@@ -834,7 +835,7 @@ async function loadBasicRef(isNewEmr: boolean, context = captureWorkspace()) {
     const response = await inWorkspace(context, () => client.get('/outpatient/emr-ref', {
       params: { registrationId: context.registrationId, kind: 'BASIC' },
     }))
-    if (!response) return
+    if (!response || !context.valid()) return
     const p = (response.data.data as { prefill?: Record<string, unknown> }).prefill ?? {}
     basicBrought.value = [p.patientName, p.sexText, p.age == null ? '' : `${p.age} 岁`,
       p.patientNo ? `门诊号 ${p.patientNo}` : '', p.allergyHistory ? `过敏 ${p.allergyHistory}` : ''].filter(Boolean).join(' · ')
@@ -874,7 +875,7 @@ async function applyTemplateBody() {
   let content = template.content as string | null | undefined
   if (content === undefined) {
     const response = await inWorkspace(context, () => client.get(`/emr-templates/${template.id}`))
-    if (!response) return
+    if (!response || !context.valid()) return
     content = response.data.data?.content as string | null | undefined
   }
   const split = splitTemplateContent(content, insertTarget.value)
@@ -883,7 +884,7 @@ async function applyTemplateBody() {
   const result = await inWorkspace(context, () => applyTemplateToEmr(draft, split.parts, {
     confirmOverwrite: labels => ElMessageBox.confirm(`「${labels.join('、')}」已有内容，套用模板将覆盖它，是否继续？`, '套用模板正文', { type: 'warning' }).then(() => true, () => false),
   }))
-  if (!result || result.cancelled || emrSigned.value) return
+  if (!result || !context.valid() || result.cancelled || emrSigned.value) return
   Object.assign(emr, draft)
   ElMessage.success(`已套用模板「${template.name}」到：${result.applied.map(k => EMR_SECTIONS.find(x => x.key === k)?.label).join('、')}；点「暂存」后生效`)
   if (split.skipped.length) {
@@ -921,11 +922,11 @@ async function fetchDefaultTemplate(row: Record<string, unknown>, context = capt
     const response = await inWorkspace(context, () => client.get('/emr-templates/default', {
       params: { deptId: row.deptId, recordType: 'OUTP' }, __silentCodes: [4066, 4067],
     }))
-    if (!response) return null
+    if (!response || !context.valid()) return null
     const template = pickDefaultTemplate(response.data.data)
     if (template && template.content === undefined && template.id !== null) {
       const detail = await inWorkspace(context, () => client.get(`/emr-templates/${template.id}`, { __silentCodes: [4066] }))
-      if (!detail) return null
+      if (!detail || !context.valid()) return null
       template.content = detail.data.data?.content as string | null | undefined
     }
     return template
@@ -939,7 +940,7 @@ async function autoApplyDefaultTemplate(row: Record<string, unknown>, template: 
   if (!plan) return
   const draft = { ...emr }
   const result = await inWorkspace(context, () => applyTemplateToEmr(draft, plan.parts, { confirmOverwrite: () => Promise.resolve(true) }))
-  if (!result || result.cancelled || emrSigned.value) return
+  if (!result || !context.valid() || result.cancelled || emrSigned.value) return
   Object.assign(emr, draft)
   const notes: string[] = []
   if (plan.skipped.length) notes.push(`模板里的「${plan.skipped.map(x => x.label).join('、')}」不属于病历正文五段，未套用`)
@@ -970,7 +971,7 @@ async function loadStructFields() {
   if (!templateId) return
   try {
     const response = await inWorkspace(context, () => client.get(`/emr/templates/${templateId}/fields`))
-    if (!response || structTemplateId.value !== templateId) return
+    if (!response || !context.valid() || structTemplateId.value !== templateId) return
     structFields.value = (response.data.data ?? []) as EmrTemplateField[]
     if (!structFields.value.length) structHint.value = '该模板尚未配置结构化元素，本次按自由文本书写即可（元素定义须由管理员配置）'
   } catch {
@@ -1019,7 +1020,9 @@ async function openPriorRecords() {
   priorVisible.value = true
   try {
     const response = await inWorkspace(context, () => client.get('/emr-templates/prior-records', { params: { patientId: context.patientId } }))
-    if (response) priorRecords.value = response.data.data ?? []
+    if (response && context.valid()) priorRecords.value = response.data.data ?? []
+  } catch (error) {
+    if (context.valid()) throw error
   } finally { finish() }
 }
 
@@ -1028,7 +1031,7 @@ async function usePriorRecord(row: Record<string, unknown>) {
   const response = await inWorkspace(context, () => client.get('/emr-templates/prior-records/content', {
     params: { patientId: context.patientId, source: row.source, recordId: row.record_id },
   }))
-  if (!response) return
+  if (!response || !context.valid()) return
   const text = String(response.data.data?.content ?? '')
   if (!text.trim()) { ElMessage.warning('这份既往病历没有正文可取'); return }
   insertText(text)
@@ -1048,9 +1051,11 @@ async function saveAsTemplate() {
     const response = await inWorkspace(context, () => client.post('/emr-templates/from-record', {
       source: 'OUTP', recordId, patientId: context.patientId, name: name.trim(), scope: 'PERSONAL',
     }))
-    if (!response) return
+    if (!response || !context.valid()) return
     const out = response.data.data
     ElMessage.success(out?.truncated ? `已存为个人模板，但来源正文 ${out.sourceLength} 字超过模板上限 ${out.maxContent} 字，已截断保存前 ${out.contentLength} 字` : '已存为个人模板（仅本人与被授权人可用）')
+  } catch (error) {
+    if (context.valid()) throw error
   } finally { finish() }
 }
 
@@ -1159,7 +1164,7 @@ async function loadRxTemplates() {
 async function applyTemplate(id: number | undefined) {
   const context = captureWorkspace(); if (!context || !id) return
   const response = await inWorkspace(context, () => client.get(`/outpatient/rx-templates/${id}/lines`))
-  if (!response) return
+  if (!response || !context.valid()) return
   if (response.data.code !== 0) {
     ElMessage.error(response.data.message)
     await loadRxTemplates()
@@ -1241,12 +1246,13 @@ async function openPatient(row: Record<string, unknown> | null): Promise<Workspa
     try {
       response = await inWorkspace(context, () => client.get(`/outpatient/doctor/${context.registrationId}/workspace`, { __silentCodes: [4036] }))
     } catch (error) {
-      if ((error as BizError).bizCode !== 4036) throw error
+      if (!context.valid()) return null
+    if ((error as BizError).bizCode !== 4036) throw error
       current.value = null
       visitDenied.value = true
       return null
     }
-    if (!response) return null
+    if (!response || !context.valid()) return null
     const ws = response.data.data
     currentEmrId.value = typeof ws.emr?.id === 'number' ? ws.emr.id : null
     emrAuthorId.value = typeof ws.emr?.doctorId === 'number' ? ws.emr.doctorId : null
@@ -1269,7 +1275,7 @@ async function openPatient(row: Record<string, unknown> | null): Promise<Workspa
     if (!context.valid()) return null
     if (emrSigned.value) {
       const loaded = await inWorkspace(context, () => loadAmendments(context.registrationId))
-      if (!loaded) return null
+      if (!loaded || !context.valid()) return null
       amendments.value = loaded
     }
     const eligible = eligibleForDefaultTemplate({ hasEmr: !!ws.emr, signed: emrSigned.value, emr,
@@ -1306,7 +1312,7 @@ const skinTests = ref<Record<string, unknown>[]>([])
 async function loadSkinTests() {
   const context = captureWorkspace(); if (!context) return
   const response = await inWorkspace(context, () => client.get('/outpatient/nurse/skin-tests/for-doctor', { params: { registrationId: context.registrationId } }))
-  if (!response) return
+  if (!response || !context.valid()) return
   skinTests.value = response.data.data ?? []
   if (!skinTests.value.length) ElMessage.info('本次就诊暂无皮试记录')
 }
@@ -1324,11 +1330,13 @@ async function submitAmend() {
   const body = { amendText: amendForm.amendText, reason: amendForm.reason }
   try {
     const response = await inWorkspace(context, () => client.post(`/outpatient/doctor/${context.registrationId}/emr/amend`, body))
-    if (!response) return
+    if (!response || !context.valid()) return
     if (response.data.code !== 0) { ElMessage.error(response.data.message); return }
     ElMessage.success('补正已留痕'); amendForm.amendText = ''; amendForm.reason = ''
     const loaded = await inWorkspace(context, () => loadAmendments(context.registrationId))
-    if (loaded) amendments.value = loaded
+    if (loaded && context.valid()) amendments.value = loaded
+  } catch (error) {
+    if (context.valid()) throw error
   } finally { finish() }
 }
 
@@ -1337,10 +1345,12 @@ async function startVisit() {
   const finish = beginWorkspaceAction(context, 'start'); if (!finish) return
   try {
     const response = await inWorkspace(context, () => client.post(`/outpatient/doctor/${context.registrationId}/start`))
-    if (!response) return
+    if (!response || !context.valid()) return
     context.visit.status = response.data.data.status
     ElMessage.success('已接诊')
     await loadWorklist()
+  } catch (error) {
+    if (context.valid()) throw error
   } finally { finish() }
 }
 
@@ -1363,7 +1373,7 @@ async function saveEmr(): Promise<boolean> {
     templateId: usingStruct ? structTemplateId.value : undefined,
     fields: usingStruct ? JSON.parse(JSON.stringify(structValues.value)) : undefined }
     const response = await inWorkspace(context, () => client.put(`/outpatient/doctor/${context.registrationId}/emr`, body))
-    if (!response) return false
+    if (!response || !context.valid()) return false
     if (response.data.code !== 0) { ElMessage.error(response.data.message); return false }
     ElMessage.success('病历已暂存（未签名，仍可修改）')
     if (typeof response.data.data?.id === 'number') currentEmrId.value = response.data.data.id
@@ -1371,6 +1381,9 @@ async function saveEmr(): Promise<boolean> {
     autoTpl.value = null
     await loadCdssTips(context)
     return context.valid()
+  } catch (error) {
+    if (context.valid()) throw error
+    return false
   } finally { finish() }
 }
 
@@ -1424,12 +1437,13 @@ async function loadAssist(context = captureWorkspace()) {
   assistHistoryDenied.value = false
   try {
     const response = await inWorkspace(context, () => client.get('/outpatient/doctor/diagnosis-assist', { params: { patientId: context.patientId, keyword }, __silentCodes: [4036] }))
-    if (response) assist.value = response.data.data
+    if (response && context.valid()) assist.value = response.data.data
   } catch (error) {
+    if (!context.valid()) return
     if ((error as BizError).bizCode !== 4036) throw error
     assistHistoryDenied.value = true
     const response = await inWorkspace(context, () => client.get('/outpatient/doctor/diagnosis-assist', { params: { keyword } }))
-    if (response) assist.value = response.data.data
+    if (response && context.valid()) assist.value = response.data.data
   }
 }
 
@@ -1457,7 +1471,7 @@ async function loadSpecialDiseases(context = captureWorkspace()) {
   const response = await inWorkspace(context, () => client.get('/outpatient/doctor/special-disease', {
     params: { patientId: context.patientId, activeOnly: true },
   }))
-  if (response) specialDiseases.value = response.data.data ?? []
+  if (response && context.valid()) specialDiseases.value = response.data.data ?? []
 }
 
 /**
@@ -1471,10 +1485,12 @@ async function addSpecialDisease() {
     insuranceType: specialForm.insuranceType, startDate: specialForm.startDate, endDate: specialForm.endDate || null, remark: specialForm.remark }
   try {
     const response = await inWorkspace(context, () => client.post('/outpatient/doctor/special-disease', body))
-    if (!response) return
+    if (!response || !context.valid()) return
     if (response.data.code !== 0) { ElMessage.error(response.data.message); return }
     ElMessage.success('已登记（院内）'); specialForm.diseaseName = ''; specialForm.diseaseCode = ''; specialForm.remark = ''
     await loadSpecialDiseases(context)
+  } catch (error) {
+    if (context.valid()) throw error
   } finally { finish() }
 }
 
@@ -1483,7 +1499,9 @@ async function removeSpecialDisease(id: number) {
   const finish = beginWorkspaceAction(context, 'special'); if (!finish) return
   try {
     const response = await inWorkspace(context, () => client.delete(`/outpatient/doctor/special-disease/${id}`))
-    if (response) await loadSpecialDiseases(context)
+    if (response && context.valid()) await loadSpecialDiseases(context)
+  } catch (error) {
+    if (context.valid()) throw error
   } finally { finish() }
 }
 
@@ -1513,11 +1531,13 @@ async function signEmr() {
     if (presave && !(await saveEmr())) return
     if (!context.valid()) return
     const response = await inWorkspace(context, () => client.post(`/outpatient/doctor/${context.registrationId}/emr/sign`))
-    if (!response) return
+    if (!response || !context.valid()) return
     if (response.data.code !== 0) { ElMessage.error(response.data.message); return }
     ElMessage.success('病历已提交（已签名）')
     const refreshed = await openPatient(context.visit)
     if (refreshed?.valid()) await loadWorklist()
+  } catch (error) {
+    if (context.valid()) throw error
   } finally { finish() }
 }
 
@@ -1546,7 +1566,7 @@ async function loadCdssTips(context = captureWorkspace()) {
   if (!primary) return
   try {
     const response = await inWorkspace(context, () => client.get('/cdss/suggestions', { params: { icd: primary } }))
-    if (response && diagList.value[0]?.icdCode === primary) cdssTips.value = (response.data.data as { content: string }[]).map(s => s.content)
+    if (response && context.valid() && diagList.value[0]?.icdCode === primary) cdssTips.value = (response.data.data as { content: string }[]).map(s => s.content)
   } catch { /* Optional advice remains a silent fallback. */ }
 }
 
@@ -1625,7 +1645,7 @@ async function submitOrders(kind: 'rx' | 'lab') {
   try {
     const body = { lines: JSON.parse(JSON.stringify(kind === 'rx' ? rxLines.value : labLines.value)) }
     const response = await inWorkspace(context, () => client.post(`/outpatient/doctor/${context.registrationId}/orders`, body))
-    if (!response) return
+    if (!response || !context.valid()) return
     const created = (response.data.data ?? []) as Record<string, unknown>[]
     const departments = kind === 'lab' ? [...new Set(created.map(o => o.execDeptName).filter((name): name is string => typeof name === 'string' && name !== ''))] : []
     ElMessage.success(kind === 'rx' ? '处方已开立' : `申请已提交${departments.length ? `；检验执行科室：${departments.join('、')}` : ''}`)
@@ -1644,6 +1664,8 @@ async function submitOrders(kind: 'rx' | 'lab') {
       ElMessage({ type: 'warning', duration: 6000, message: '部分药品库存不足，缴费后可能无法发药，请查看处方页提示' })
     } else tab.value = 'orders'
     if (cdssWarnings.length) { rxCdssWarnings.value = cdssWarnings; cdssWarnBarClosed.value = false; cdssWarnDialog.value = true }
+  } catch (error) {
+    if (context.valid()) throw error
   } finally { finish() }
 }
 
