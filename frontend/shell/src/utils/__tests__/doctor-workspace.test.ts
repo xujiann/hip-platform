@@ -507,3 +507,25 @@ describe('real core write continuations remain bound to their originating worksp
     a.resolve([]); await old; const busy = h.v.submitting.value; b.resolve([]); await active; expect(busy).toBe(true)
   })
 })
+
+it('a transport-to-caller microtask handoff cannot reopen A after the real B selection', async () => {
+  const h = setup(); await h.open(h.a)
+  const d = h.hold('POST', '/outpatient/doctor/11/orders'); h.clearCalls()
+  const old = h.v.submitOrders('rx'); d.resolve([])
+  let newer!: Promise<unknown>
+  // Native promise jobs establish the precise handoff, without timers, helper
+  // names or a mocked core handler. In the candidate wrapper implementation its
+  // own validity check has finished but the awaiting caller has not resumed.
+  await new Promise<void>(selected => {
+    const schedule = (remaining: number) => queueMicrotask(() => {
+      if (remaining) schedule(remaining - 1)
+      else { newer = h.open(h.b); selected() }
+    })
+    schedule(2)
+  })
+  await Promise.all([old, newer])
+  expect(h.v.current.value.registrationId).toBe(22)
+  const opens = h.calls.filter(x => x.method === 'GET' && x.url.endsWith('/workspace')).map(x => x.url)
+  const selectedB = opens.indexOf(wsPath(22)); expect(selectedB).toBeGreaterThanOrEqual(0)
+  expect(opens.slice(selectedB)).toEqual([wsPath(22)])
+})
