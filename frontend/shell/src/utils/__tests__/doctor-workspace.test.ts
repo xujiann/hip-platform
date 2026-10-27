@@ -20,7 +20,7 @@ const parsed = ts.createSourceFile('DoctorStationView.ts', script, ts.ScriptTarg
 const actualScript = parsed.statements.filter(s => !ts.isImportDeclaration(s)).map(s => s.getText(parsed)).join('\n')
 const exposed = `
 globalThis.view = {
- current, emr, currentEmrId, emrAuthorId, autoTpl, visitDenied, diagList, icdOptions,
+ current, worklist, loadWorklist, emr, currentEmrId, emrAuthorId, autoTpl, visitDenied, diagList, icdOptions,
  specialDiseases, orders, emrSigned, emrSignerName, emrSignedAtText, amendments,
  amendForm, skinTests, basicBrought, prefilledNote, rxLines, labLines, stockWarnings,
  rxCdssWarnings, cdssWarnBarClosed, cdssWarnDialog, cdssTips, tab, structTemplateId,
@@ -528,4 +528,23 @@ it('a transport-to-caller microtask handoff cannot reopen A after the real B sel
   const opens = h.calls.filter(x => x.method === 'GET' && x.url.endsWith('/workspace')).map(x => x.url)
   const selectedB = opens.indexOf(wsPath(22)); expect(selectedB).toBeGreaterThanOrEqual(0)
   expect(opens.slice(selectedB)).toEqual([wsPath(22)])
+})
+
+it.each(['signEmr', 'submitOrders'])('%s preserves the current self-refresh unknown error as the same rejected object', async name => {
+  const h = setup(); await h.open(h.a)
+  const error = { bizCode: 5000, message: '本次刷新真实错误' }
+  h.route('GET', wsPath(11), () => Promise.reject(error))
+  await expect(h.v[name](...(name === 'submitOrders' ? ['rx'] : []))).rejects.toBe(error)
+})
+
+it.each(['startVisit', 'signEmr'])('%s write-triggered queue read cannot overwrite a newer B manual queue refresh', async name => {
+  const h = setup(); await h.open(h.a); const d = deferred(); let reads = 0
+  const latest = [{ registrationId: 22, patientId: 202, patientName: '模拟乙当前队列', status: 'VISITED' }]
+  h.route('GET', '/outpatient/doctor/worklist', () => ++reads === 1 ? d.promise : answer(latest))
+  const old = h.v[name]()
+  await untilCalled(h, 'GET', '/outpatient/doctor/worklist')
+  await h.open(h.b); await h.v.loadWorklist()
+  const before = state(h); h.clearCalls(); d.resolve([{ registrationId: 11, patientName: '甲过时队列', status: 'REGISTERED' }]); await old
+  expect(h.v.worklist.value).toEqual(latest)
+  expect(state(h)).toEqual(before); expect(h.calls).toEqual([])
 })
