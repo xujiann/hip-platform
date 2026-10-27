@@ -5,9 +5,13 @@ import cn.hip.platform.core.security.JwtService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -37,6 +41,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  * controller's temporary endpoint is restored after every test, including failed assertions. */
 @SpringBootTest
 @AutoConfigureMockMvc
+@Execution(ExecutionMode.SAME_THREAD)
 class V125LabAdviceSourceReadTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired org.springframework.test.web.servlet.MockMvc mvc;
@@ -48,17 +53,14 @@ class V125LabAdviceSourceReadTest {
     String originalAiUrl, tag, admin;
     Long dept, staffDept, patient, schedule, registration, order, bill;
     final List<Long> employees = new ArrayList<>();
-    final List<Received> received = new CopyOnWriteArrayList<>();
-    HttpServer sink;
-    volatile String responseBody;
+    static final List<Received> received = new CopyOnWriteArrayList<>();
+    static HttpServer sink;
+    static volatile String responseBody;
     record Received(String method, String path, String contentType, String body) {}
     record Outcome(int http, JsonNode body) { int code() { return body.get("code").asInt(); } }
 
-    @BeforeEach void fixture() throws Exception {
-        SecurityContextHolder.clearContext();
-        target=AopTestUtils.getUltimateTargetObject(controller);
-        originalAiUrl=(String)ReflectionTestUtils.getField(target,"aiUrl");
-        responseBody="{\"advice\":[\"受控解读\"],\"receiverMarker\":\"V125\",\"source\":\"must-be-overridden\"}";
+    // Keep one controlled listener for the class; database fixtures remain per-method.
+    @BeforeAll static void startReceiver() throws Exception {
         sink=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
         sink.createContext("/analyze/lab",exchange->{
             received.add(new Received(exchange.getRequestMethod(),exchange.getRequestURI().toString(),
@@ -71,6 +73,16 @@ class V125LabAdviceSourceReadTest {
             exchange.close();
         });
         sink.start();
+    }
+    @AfterAll static void stopReceiver() {
+        if(sink!=null){sink.stop(0);sink=null;}
+    }
+    @BeforeEach void fixture() throws Exception {
+        SecurityContextHolder.clearContext();
+        target=AopTestUtils.getUltimateTargetObject(controller);
+        originalAiUrl=(String)ReflectionTestUtils.getField(target,"aiUrl");
+        received.clear();
+        responseBody="{\"advice\":[\"受控解读\"],\"receiverMarker\":\"V125\",\"source\":\"must-be-overridden\"}";
         ReflectionTestUtils.setField(target,"aiUrl","http://127.0.0.1:"+sink.getAddress().getPort());
         tag="V125"+Long.toUnsignedString(System.nanoTime(),36);
         dept=jdbc.queryForObject("insert into sys_dept(code,name,type) values (?,?,'CLINICAL') returning id",Long.class,tag,tag);
@@ -151,7 +163,6 @@ class V125LabAdviceSourceReadTest {
     @AfterEach void cleanup() {
         SecurityContextHolder.clearContext();
         if(target!=null)ReflectionTestUtils.setField(target,"aiUrl",originalAiUrl);
-        if(sink!=null)sink.stop(0);
         if(registration==null)return;
         new TransactionTemplate(manager).executeWithoutResult(t->{
             jdbc.update("delete from lis_sample where order_id in(select id from outp_order where registration_id=?)",registration);
@@ -214,7 +225,6 @@ class V125LabAdviceSourceReadTest {
         assertEquals("AI 子服务不可用，请人工判读",data.at("/advice/0").asText());assertEquals("JsonParseException",data.get("error").asText());assertEquals(1,received.size());assertEquals(expectedPayload(),mapper.readTree(received.getFirst().body()));assertEquals(before,facts());
     }
     @Test void unavailableAiKeepsReadableFallbackWithoutWritingClinicalRows() throws Exception {
-        sink.stop(0);sink=null;
         // A released ephemeral port is not a controlled unavailable destination.
         ReflectionTestUtils.setField(target,"aiUrl","http://127.0.0.1:0");
         var before=facts();var response=request(order,admin);
