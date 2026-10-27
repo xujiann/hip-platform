@@ -3,18 +3,18 @@
     <el-card class="worklist">
       <template #header>
         接诊队列
-        <el-button link type="primary" style="float: right" @click="loadWorklist">刷新</el-button>
+        <el-button link type="primary" style="float: right" @click="loadWorklist()">刷新</el-button>
         <!-- v70 包 B（965★ 跨日期检索 / 2033★「我的患者」）。
              不勾「跨日期」时只发 date 一个参数——后端「零条件 = 旧行为」那条路径原样保留。 -->
         <div class="queue-filter no-print">
           <el-date-picker v-if="!rangeMode" v-model="today" type="date" size="small"
                           value-format="YYYY-MM-DD" :clearable="false" style="width: 132px"
-                          @change="loadWorklist" />
+                          @change="loadWorklist()" />
           <el-date-picker v-else v-model="dateRange" type="daterange" size="small" unlink-panels
                           value-format="YYYY-MM-DD" start-placeholder="起" end-placeholder="止"
-                          style="width: 212px" @change="loadWorklist" />
+                          style="width: 212px" @change="loadWorklist()" />
           <el-checkbox v-model="rangeMode" size="small" @change="onRangeModeChange">跨日期</el-checkbox>
-          <el-checkbox v-model="mineOnly" size="small" @change="loadWorklist">我的患者</el-checkbox>
+          <el-checkbox v-model="mineOnly" size="small" @change="loadWorklist()">我的患者</el-checkbox>
         </div>
       </template>
       <el-table :data="worklist" highlight-current-row height="calc(100vh - 220px)" @current-change="openPatient">
@@ -829,7 +829,7 @@ function insertText(text: string) {
  * 故以"已自动带出"摘要 + 一键插入呈现，而不是硬塞进某段临床叙述里。
  */
 async function loadBasicRef(isNewEmr: boolean, context = captureWorkspace()) {
-  if (!context) return
+  if (!context?.valid()) return
   basicBrought.value = ''; prefilledNote.value = ''
   try {
     const response = await inWorkspace(context, () => client.get('/outpatient/emr-ref', {
@@ -885,7 +885,7 @@ async function applyTemplateBody() {
     confirmOverwrite: labels => ElMessageBox.confirm(`「${labels.join('、')}」已有内容，套用模板将覆盖它，是否继续？`, '套用模板正文', { type: 'warning' }).then(() => true, () => false),
   }))
   if (!result || !context.valid() || result.cancelled || emrSigned.value) return
-  Object.assign(emr, draft)
+  for (const key of result.applied) emr[key] = draft[key]
   ElMessage.success(`已套用模板「${template.name}」到：${result.applied.map(k => EMR_SECTIONS.find(x => x.key === k)?.label).join('、')}；点「暂存」后生效`)
   if (split.skipped.length) {
     const labels = split.skipped.map(x => x.label)
@@ -1218,17 +1218,17 @@ function onRangeModeChange(on: boolean) {
   loadWorklist()
 }
 
-async function loadWorklist() {
+async function loadWorklist(context?: WorkspaceContext) {
+  if (!workspaceAlive || context && !context.valid()) return
   const params: Record<string, string | boolean> = {}
-  if (rangeMode.value && dateRange.value) {
-    params.from = dateRange.value[0]
-    params.to = dateRange.value[1]
-  } else {
-    params.date = today.value
-  }
+  if (rangeMode.value && dateRange.value) { params.from = dateRange.value[0]; params.to = dateRange.value[1] }
+  else params.date = today.value
   if (mineOnly.value) params.mine = true
-  const resp = await client.get('/outpatient/doctor/worklist', { params })
-  worklist.value = resp.data.data
+  try {
+    const response = await client.get('/outpatient/doctor/worklist', { params })
+    if (!workspaceAlive || context && !context.valid()) return
+    worklist.value = response.data.data
+  } catch (error) { if (workspaceAlive && (!context || context.valid())) throw error }
 }
 
 async function openPatient(row: Record<string, unknown> | null): Promise<WorkspaceContext | null> {
@@ -1348,7 +1348,7 @@ async function startVisit() {
     if (!response || !context.valid()) return
     context.visit.status = response.data.data.status
     ElMessage.success('已接诊')
-    await loadWorklist()
+    await loadWorklist(context)
   } catch (error) {
     if (context.valid()) throw error
   } finally { finish() }
@@ -1432,7 +1432,7 @@ async function openAssist() {
 }
 
 async function loadAssist(context = captureWorkspace()) {
-  if (!context) return
+  if (!context?.valid()) return
   const keyword = assistKeyword.value || undefined
   assistHistoryDenied.value = false
   try {
@@ -1466,7 +1466,7 @@ async function removeFavorite(id?: number) {
 }
 
 async function loadSpecialDiseases(context = captureWorkspace()) {
-  if (!context) return
+  if (!context?.valid()) return
   if (!context.patientId) { specialDiseases.value = []; return }
   const response = await inWorkspace(context, () => client.get('/outpatient/doctor/special-disease', {
     params: { patientId: context.patientId, activeOnly: true },
@@ -1519,6 +1519,7 @@ async function signEmr() {
   if (!emrHasContent()) { ElMessage.warning('病历内容为空，请先书写并暂存后再提交（签名）'); return }
   if (untouchedDefaultTemplate(autoTpl.value, emr)) { ElMessage.warning('自动套用的模板尚未修改，请书写后再提交'); return }
   const finish = beginWorkspaceAction(context, 'sign'); if (!finish) return
+  let refreshGeneration: number | null = null
   const presave = presaveBeforeSign({ hasEmr: currentEmrId.value != null, authorId: emrAuthorId.value, meId: auth.user?.id ?? null })
   try {
     try {
@@ -1534,10 +1535,12 @@ async function signEmr() {
     if (!response || !context.valid()) return
     if (response.data.code !== 0) { ElMessage.error(response.data.message); return }
     ElMessage.success('病历已提交（已签名）')
-    const refreshed = await openPatient(context.visit)
-    if (refreshed?.valid()) await loadWorklist()
+    const refresh = openPatient(context.visit)
+    refreshGeneration = workspaceGeneration
+    const refreshed = await refresh
+    if (refreshed?.valid()) await loadWorklist(refreshed!)
   } catch (error) {
-    if (context.valid()) throw error
+    if (context.valid() || refreshGeneration === workspaceGeneration) throw error
   } finally { finish() }
 }
 
@@ -1560,7 +1563,7 @@ function warnIfLeavingUnsigned(next: Record<string, unknown> | null) {
 
 // CDSS：按主诊断给出诊疗建议
 async function loadCdssTips(context = captureWorkspace()) {
-  if (!context) return
+  if (!context?.valid()) return
   cdssTips.value = []
   const primary = diagList.value[0]?.icdCode
   if (!primary) return
@@ -1642,6 +1645,7 @@ function prefillClinicalSummary(line: Record<string, unknown>) {
 async function submitOrders(kind: 'rx' | 'lab') {
   const context = captureWorkspace(); if (!context) return
   const finish = beginWorkspaceAction(context, 'orders'); if (!finish) return
+  let refreshGeneration: number | null = null
   try {
     const body = { lines: JSON.parse(JSON.stringify(kind === 'rx' ? rxLines.value : labLines.value)) }
     const response = await inWorkspace(context, () => client.post(`/outpatient/doctor/${context.registrationId}/orders`, body))
@@ -1656,7 +1660,9 @@ async function submitOrders(kind: 'rx' | 'lab') {
       if (!seen.has(text)) { seen.add(text); cdssWarnings.push(text) }
     }
     if (kind === 'rx') rxLines.value = []; else labLines.value = []
-    const refreshed = await openPatient(context.visit)
+    const refresh = openPatient(context.visit)
+    refreshGeneration = workspaceGeneration
+    const refreshed = await refresh
     if (!refreshed?.valid()) return
     if (warnings.length) {
       stockWarnings.value = warnings.map(o => `${o.itemName}（余 ${o.stockWarnAvailable}）`)
@@ -1665,7 +1671,7 @@ async function submitOrders(kind: 'rx' | 'lab') {
     } else tab.value = 'orders'
     if (cdssWarnings.length) { rxCdssWarnings.value = cdssWarnings; cdssWarnBarClosed.value = false; cdssWarnDialog.value = true }
   } catch (error) {
-    if (context.valid()) throw error
+    if (context.valid() || refreshGeneration === workspaceGeneration) throw error
   } finally { finish() }
 }
 
