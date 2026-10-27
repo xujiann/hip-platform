@@ -603,6 +603,8 @@ async function submitRegister() {
     if (!active) return
     emit('changed')
   } catch (error) {
+    const response = (error as { response?: { status?: number; data?: { code?: number } } })?.response
+    if (response?.status === 403 && response.data?.code === 1005) return
     if (![5201, 5202].includes((error as { bizCode?: number }).bizCode ?? 0)) throw error
     // 已退款源与已登记部位都须回读真实队列；不把失败改为成功，也不自动走手工实物救济。
     if (active) await refreshRegistrationQueues()
@@ -671,6 +673,8 @@ async function submitReceive() {
     await refreshRegistrationQueues()
     if (active) emit('changed')
   } catch (error) {
+    const response = (error as { response?: { status?: number; data?: { code?: number } } })?.response
+    if (response?.status === 403 && response.data?.code === 1005) return
     if (![5206, 5208].includes((error as { bizCode?: number }).bizCode ?? 0)) throw error
     if (active) await refreshRegistrationQueues()
   } finally {
@@ -716,6 +720,8 @@ async function submitReject() {
     await refreshRegistrationQueues()
     if (active) emit('changed')
   } catch (error) {
+    const response = (error as { response?: { status?: number; data?: { code?: number } } })?.response
+    if (response?.status === 403 && response.data?.code === 1005) return
     if (![5206, 5208].includes((error as { bizCode?: number }).bizCode ?? 0)) throw error
     if (active) await refreshRegistrationQueues()
   } finally {

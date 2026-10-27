@@ -721,6 +721,8 @@ async function refreshAfterWrite(target: ReturnType<typeof reportTarget>) {
 }
 
 async function refreshConflict(error: unknown, target: ReturnType<typeof reportTarget>) {
+  const response = (error as { response?: { status?: number; data?: { code?: number } } })?.response
+  if (response?.status === 403 && response.data?.code === 1005) return
   const code = (error as { bizCode?: number }).bizCode ?? 0
   if (![4553, 5260, 5261, 5262, 5263, 5264, 5265].includes(code)) throw error
   await refreshAfterWrite(target)
@@ -983,6 +985,8 @@ function openTech() {
 }
 async function refreshTechConflict(error: unknown, target: ReturnType<typeof reportTarget>) {
   if (!active) return
+  const response = (error as { response?: { status?: number; data?: { code?: number } } })?.response
+  if (response?.status === 403 && response.data?.code === 1005) return
   if (![5260, 5261, 5268, 5269, 5272, 5273].includes(Number((error as { bizCode?: number }).bizCode))) throw error
   await load()
   if (sameReport(target)) await Promise.all([loadReport(), loadTech(), loadSpecimenBlocks()])

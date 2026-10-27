@@ -377,6 +377,8 @@ function sameStainDraft(id: number, version: number): boolean { return active &&
 async function refreshProcessing() { if (active) await Promise.all([loadBlocks(), loadSlides(), loadBatches()]) }
 async function refreshConflict(error: unknown) {
   if (!active) return
+  const response = (error as { response?: { status?: number; data?: { code?: number } } })?.response
+  if (response?.status === 403 && response.data?.code === 1005) return
   if (![5240, 5241, 5244, 5245, 5272, 5274, 5275].includes(Number((error as { bizCode?: number }).bizCode))) throw error
   await refreshProcessing()
   if (active && slideDialog.value) await loadTechOptions({ ...currentBlock.value }, slideDraftVersion)

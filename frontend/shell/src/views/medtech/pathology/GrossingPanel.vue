@@ -476,6 +476,8 @@ function sameDraft(target: ReturnType<typeof draftTarget>) {
 
 async function refreshConflict(error: unknown, target: ReturnType<typeof draftTarget>) {
   if (!active) return
+  const response = (error as { response?: { status?: number; data?: { code?: number } } })?.response
+  if (response?.status === 403 && response.data?.code === 1005) return
   if (![5220, 5221, 5223, 5275, 5277].includes(Number((error as BizError).bizCode))) throw error
   await load()
   if (sameDraft(target)) await Promise.all([loadExistingGross(target.id), loadResampleOrders(target.id)])

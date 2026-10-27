@@ -208,6 +208,8 @@ function canWrite(row: Row): boolean {
 }
 async function refreshConflict(error: unknown) {
   if (!active) return
+  const response = (error as { response?: { status?: number; data?: { code?: number } } })?.response
+  if (response?.status === 403 && response.data?.code === 1005) return
   if (![5260, 5261, 5268, 5269, 5272, 5273].includes(Number((error as { bizCode?: number }).bizCode))) throw error
   await load()
 }
