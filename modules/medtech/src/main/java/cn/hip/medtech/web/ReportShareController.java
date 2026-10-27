@@ -121,7 +121,11 @@ public class ReportShareController {
         if (auth == null || !auth.isAuthenticated() || auth.getAuthorities().stream().noneMatch(a ->
                 Set.of("ROLE_ADMIN", "ROLE_TECHNICIAN", "ROLE_DOCTOR_OUTP").contains(a.getAuthority())))
             throw new AccessDeniedException("无报告分享权限");
-        var ids = jdbc.queryForList("select id from sys_user where username=? and enabled=true", Long.class, auth.getName());
+        var ids = jdbc.queryForList("""
+                select u.id from sys_user u where u.username=? and u.enabled=true
+                and exists (select 1 from sys_user_role ur join sys_role r on r.id=ur.role_id
+                            where ur.user_id=u.id and r.code in ('ADMIN','TECHNICIAN','DOCTOR_OUTP'))
+                """, Long.class, auth.getName());
         if (ids.isEmpty()) throw new AccessDeniedException("报告分享操作人不存在或已停用");
     }
 
