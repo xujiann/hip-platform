@@ -1,8 +1,11 @@
-import { it, expect, vi } from 'vitest'
+import { afterEach, it, expect, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
-import { reactive, ref } from 'vue'
+import * as Vue from 'vue'
+
+const fixtureScopes: ReturnType<typeof Vue.effectScope>[] = []
+afterEach(() => { for (const scope of fixtureScopes.splice(0)) scope.stop() })
 
 function deferred() {
   let resolve!: (value: unknown) => void
@@ -11,23 +14,28 @@ function deferred() {
   return { promise, resolve: (data: unknown) => resolve({ data: { data } }), reject }
 }
 
-function setup() {
+async function setup() {
+  const scope = Vue.effectScope(); fixtureScopes.push(scope)
   const component = readFileSync(new URL('../../views/medtech/ApptQueueView.vue', import.meta.url), 'utf8')
   const source = component.split('<script setup lang="ts">')[1].split('</script>')[0].replace(/^import .*$/gm, '')
+  let bootstrapping = true
   const write = deferred()
   const post = vi.fn(() => write.promise), put = vi.fn(() => write.promise)
   const get = vi.fn((path: string) => Promise.resolve({ data: { data: path === '/appointments/pending'
-    ? [] : [{ id: 31, status: 'DONE', period: 'AM', seq_no: 7 }] } }))
+    ? [] : bootstrapping ? selected : [{ id: 31, status: 'DONE', period: 'AM', seq_no: 7 }] } }))
   const box: Record<string, any> = {
-    ref, reactive, onMounted: () => {}, watch: () => {}, todayLocal: () => '2026-10-26',
+    ...Vue, onMounted: () => {}, onUnmounted: () => {}, todayLocal: () => '2026-10-26',
     client: { get, post, put },
     ElMessage: { success: vi.fn(), warning: vi.fn(), error: vi.fn() },
     ElMessageBox: { prompt: vi.fn() },
   }
   // Exercise the actual SFC handlers and loading/selection/reload behavior.
-  runInNewContext(ts.transpileModule(source + '\nglobalThis.view = { done, batchCancel, busyId, batchCancelLoading, selection, pending, appts };', {
+  scope.run(() => runInNewContext(ts.transpileModule(source + '\nglobalThis.view = { done, batchCancel, busyId, batchCancelLoading, selection, pending, appts, loadAppts };', {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
-  }).outputText, box)
+  }).outputText, box))
+  await box.view.loadAppts()
+  bootstrapping = false
+  get.mockClear()
   return { v: box.view, box, write, post, put, get }
 }
 
@@ -43,7 +51,7 @@ const otherErrors = () => [new Error('unexpected program failure'),
   Object.assign(new Error('missing forbidden envelope'), { response: { status: 403, data: null } })]
 
 it('done consumes only the already-toasted HTTP403/code1005, keeps the row and releases loading without reload', async () => {
-  const h = setup(); h.v.appts.value = [row]
+  const h = await setup(); h.v.appts.value = [row]
   const result = h.v.done(row)
   expect(h.put).toHaveBeenCalledExactlyOnceWith('/appointments/31/done')
   expect(h.v.busyId.value).toBe(31)
@@ -56,7 +64,7 @@ it('done consumes only the already-toasted HTTP403/code1005, keeps the row and r
 
 it('done propagates other forbidden, 401, network, business and unknown errors as the same object', async () => {
   for (const error of otherErrors()) {
-    const h = setup(); const result = h.v.done(row)
+    const h = await setup(); const result = h.v.done(row)
     expect(h.v.busyId.value).toBe(31)
     h.write.reject(error)
     await expect(result).rejects.toBe(error)
@@ -66,7 +74,7 @@ it('done propagates other forbidden, 401, network, business and unknown errors a
 })
 
 it('done retains the original successful completion and one appointment-list reload', async () => {
-  const h = setup(); const result = h.v.done(row)
+  const h = await setup(); const result = h.v.done(row)
   expect(h.v.busyId.value).toBe(31)
   h.write.resolve(null)
   await expect(result).resolves.toBeUndefined()
@@ -77,7 +85,7 @@ it('done retains the original successful completion and one appointment-list rel
 })
 
 it('batch cancel consumes only HTTP403/code1005, retains selection and releases loading without success or reload', async () => {
-  const h = setup(); h.v.selection.value = selected; h.v.appts.value = selected
+  const h = await setup(); h.v.selection.value = selected; h.v.appts.value = selected
   const result = h.v.batchCancel()
   expect(h.post).toHaveBeenCalledExactlyOnceWith('/appointments/batch-cancel', { ids: [31, 32] })
   expect(h.v.batchCancelLoading.value).toBe(true)
@@ -91,7 +99,7 @@ it('batch cancel consumes only HTTP403/code1005, retains selection and releases 
 
 it('batch cancel propagates every other error unchanged while releasing loading and retaining selection', async () => {
   for (const error of otherErrors()) {
-    const h = setup(); h.v.selection.value = selected; const result = h.v.batchCancel()
+    const h = await setup(); h.v.selection.value = selected; const result = h.v.batchCancel()
     expect(h.v.batchCancelLoading.value).toBe(true)
     h.write.reject(error)
     await expect(result).rejects.toBe(error)
@@ -101,7 +109,7 @@ it('batch cancel propagates every other error unchanged while releasing loading 
 })
 
 it('batch cancel keeps the exact cancelled count message, clears selection and reloads pending plus appointments', async () => {
-  const h = setup(); h.v.selection.value = selected
+  const h = await setup(); h.v.selection.value = selected
   const result = h.v.batchCancel(); expect(h.v.batchCancelLoading.value).toBe(true)
   h.write.resolve({ cancelled: 2 })
   await expect(result).resolves.toBeUndefined()

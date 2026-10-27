@@ -1,8 +1,11 @@
-import { it, expect, vi } from 'vitest'
+import { afterEach, it, expect, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
-import { reactive, ref } from 'vue'
+import * as Vue from 'vue'
+
+const fixtureScopes: ReturnType<typeof Vue.effectScope>[] = []
+afterEach(() => { for (const scope of fixtureScopes.splice(0)) scope.stop() })
 
 function deferred() {
   let resolve!: (value: unknown) => void
@@ -11,29 +14,34 @@ function deferred() {
   return { promise, resolve: (data: unknown) => resolve({ data: { data } }), reject }
 }
 
-function setup() {
+async function setup() {
+  const scope = Vue.effectScope(); fixtureScopes.push(scope)
   const component = readFileSync(new URL('../../views/medtech/ApptQueueView.vue', import.meta.url), 'utf8')
   const source = component.split('<script setup lang="ts">')[1].split('</script>')[0].replace(/^import .*$/gm, '')
+  let bootstrapping = true
   const write = deferred()
   const put = vi.fn(() => write.promise)
-  const get = vi.fn(() => Promise.resolve({ data: { data: [{ id: 13, status: 'BOOKED', period: 'PM', seq_no: 7 }] } }))
+  const get = vi.fn(() => Promise.resolve({ data: { data: bootstrapping ? [row] : [{ id: 13, status: 'BOOKED', period: 'PM', seq_no: 7 }] } }))
   const box: Record<string, any> = {
-    ref, reactive, onMounted: () => {}, watch: () => {}, todayLocal: () => '2026-10-26',
+    ...Vue, onMounted: () => {}, onUnmounted: () => {}, todayLocal: () => '2026-10-26',
     client: { get, put },
     ElMessage: { success: vi.fn(), warning: vi.fn(), error: vi.fn() },
     ElMessageBox: { prompt: vi.fn(() => Promise.resolve({ value: '2026-10-27， PM' })) },
   }
   // Exercise the real SFC handler, including its original parsing, finally and reload.
-  runInNewContext(ts.transpileModule(source + '\nglobalThis.view = { reschedule, busyId, queryDate, appts };', {
+  scope.run(() => runInNewContext(ts.transpileModule(source + '\nglobalThis.view = { reschedule, busyId, queryDate, appts, loadAppts };', {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
-  }).outputText, box)
+  }).outputText, box))
+  await box.view.loadAppts()
+  bootstrapping = false
+  get.mockClear()
   return { v: box.view, box, write, put, get }
 }
 
 const row = { id: 13, status: 'BOOKED', period: 'AM', seq_no: 2 }
 
 it('handles an already-toasted 4513 without rejecting again, false success or reload, and releases busy state', async () => {
-  const h = setup()
+  const h = await setup()
   h.v.appts.value = [row]
   const result = h.v.reschedule(row)
   await vi.waitFor(() => expect(h.put).toHaveBeenCalledOnce())
@@ -54,7 +62,7 @@ it('preserves unknown, network and 403 rejections unchanged while releasing busy
     Object.assign(new Error('network unavailable'), { code: 'ERR_NETWORK' }),
     Object.assign(new Error('forbidden'), { response: { status: 403 }, bizCode: 1005 })]
   for (const error of errors) {
-    const h = setup()
+    const h = await setup()
     const result = h.v.reschedule(row)
     await vi.waitFor(() => expect(h.put).toHaveBeenCalledOnce())
     expect(h.v.busyId.value).toBe(row.id)
@@ -67,7 +75,7 @@ it('preserves unknown, network and 403 rejections unchanged while releasing busy
 })
 
 it('retains the original seqNo success message and queue reload after a valid move', async () => {
-  const h = setup()
+  const h = await setup()
   const result = h.v.reschedule(row)
   await vi.waitFor(() => expect(h.put).toHaveBeenCalledOnce())
   expect(h.v.busyId.value).toBe(row.id)

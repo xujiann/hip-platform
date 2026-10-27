@@ -1,8 +1,11 @@
-import { it, expect, vi } from 'vitest'
+import { afterEach, it, expect, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
-import { reactive, ref } from 'vue'
+import * as Vue from 'vue'
+
+const fixtureScopes: ReturnType<typeof Vue.effectScope>[] = []
+afterEach(() => { for (const scope of fixtureScopes.splice(0)) scope.stop() })
 
 function deferred() {
   let resolve!: (value: unknown) => void
@@ -11,7 +14,8 @@ function deferred() {
   return { promise, resolve: (data: unknown) => resolve({ data: { data } }), reject }
 }
 
-function setup() {
+async function setup() {
+  const scope = Vue.effectScope(); fixtureScopes.push(scope)
   const component = readFileSync(new URL('../../views/medtech/ApptQueueView.vue', import.meta.url), 'utf8')
   const source = component.split('<script setup lang="ts">')[1].split('</script>')[0].replace(/^import .*$/gm, '')
   const write = deferred()
@@ -19,22 +23,24 @@ function setup() {
   const get = vi.fn((path: string) => Promise.resolve({ data: { data: path === '/appointments/pending'
     ? [] : [{ id: 31, status: 'BOOKED', period: 'AM', seq_no: 7 }] } }))
   const box: Record<string, any> = {
-    ref, reactive, onMounted: () => {}, watch: () => {}, todayLocal: () => '2026-10-26',
+    ...Vue, onMounted: () => {}, onUnmounted: () => {}, todayLocal: () => '2026-10-26',
     client: { get, post },
     ElMessage: { success: vi.fn(), warning: vi.fn(), error: vi.fn() },
     ElMessageBox: { prompt: vi.fn() },
   }
   // Exercise the real SFC book handler and its original finally/reload behavior.
-  runInNewContext(ts.transpileModule(source + '\nglobalThis.view = { book, bookBusy, pending, appts };', {
+  scope.run(() => runInNewContext(ts.transpileModule(source + '\nglobalThis.view = { book, bookBusy, pending, appts, loadAppts };', {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
-  }).outputText, box)
+  }).outputText, box))
+  await box.view.loadAppts()
+  get.mockClear()
   return { v: box.view, box, write, post, get }
 }
 
 const row = { order_id: 13, item_name: '模拟已收费申请', _date: '2026-10-27', _period: 'AM' }
 
 it('handles an already-toasted 4510 without rejecting again, false success or reload, and releases booking state', async () => {
-  const h = setup()
+  const h = await setup()
   h.v.pending.value = [row]
   const result = h.v.book(row)
   expect(h.post).toHaveBeenCalledExactlyOnceWith('/appointments', { orderId: 13, slotDate: '2026-10-27', period: 'AM' })
@@ -54,7 +60,7 @@ it('preserves unknown, network and 403 rejections unchanged while releasing book
     Object.assign(new Error('network unavailable'), { code: 'ERR_NETWORK' }),
     Object.assign(new Error('forbidden'), { response: { status: 403 }, bizCode: 1005 })]
   for (const error of errors) {
-    const h = setup()
+    const h = await setup()
     const result = h.v.book(row)
     expect(h.v.bookBusy.value).toBe(row.order_id)
     h.write.reject(error)
@@ -66,7 +72,7 @@ it('preserves unknown, network and 403 rejections unchanged while releasing book
 })
 
 it('retains the original seqNo success message and both pending/list reloads after a valid booking', async () => {
-  const h = setup()
+  const h = await setup()
   h.v.pending.value = [row]
   const result = h.v.book(row)
   expect(h.v.bookBusy.value).toBe(row.order_id)
