@@ -81,6 +81,7 @@ class V60IssueConcurrencyTest {
                 """, Long.class, patientId, scheduleId, deptId);
         jdbc.update("insert into sys_user(username, password, real_name, enabled) values (?, 'x', ?, true) on conflict (username) do nothing",
                 tag + "d", tag + "医生");
+        jdbc.update("insert into sys_user_role(user_id,role_id) select u.id,r.id from sys_user u cross join sys_role r where u.username=? and r.code='DOCTOR_OUTP' on conflict do nothing", tag + "d");
         doc = new UsernamePasswordAuthenticationToken(tag + "d", null, List.of(new SimpleGrantedAuthority("ROLE_DOCTOR_OUTP")));
     }
 
@@ -98,6 +99,10 @@ class V60IssueConcurrencyTest {
         if (regId != null) jdbc.update("delete from outp_registration where id = ?", regId);
         if (scheduleId != null) jdbc.update("delete from outp_schedule where id = ?", scheduleId);
         if (patientId != null) jdbc.update("delete from empi_patient where id = ?", patientId);
+        if (tag != null) {
+            jdbc.update("delete from sys_user_role where user_id in(select id from sys_user where username=?)", tag + "d");
+            jdbc.update("delete from sys_user where username=?", tag + "d");
+        }
         if (deptId != null) jdbc.update("delete from sys_dept where id = ?", deptId);
     }
 

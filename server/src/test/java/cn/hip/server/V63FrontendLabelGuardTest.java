@@ -675,6 +675,7 @@ class V63FrontendLabelGuardTest {
     private Authentication userAuth(String username, String role) {
         jdbc.update("insert into sys_user(username, password, real_name, enabled) "
                 + "values (?, 'x', ?, true) on conflict (username) do nothing", username, username + "用户");
+        jdbc.update("insert into sys_user_role(user_id,role_id) select u.id,r.id from sys_user u cross join sys_role r where u.username=? and r.code=? on conflict do nothing", username, role);
         return new UsernamePasswordAuthenticationToken(username, null,
                 List.of(new SimpleGrantedAuthority("ROLE_" + role)));
     }
