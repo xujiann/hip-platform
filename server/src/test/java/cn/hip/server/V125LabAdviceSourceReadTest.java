@@ -214,7 +214,10 @@ class V125LabAdviceSourceReadTest {
         assertEquals("AI 子服务不可用，请人工判读",data.at("/advice/0").asText());assertEquals("JsonParseException",data.get("error").asText());assertEquals(1,received.size());assertEquals(expectedPayload(),mapper.readTree(received.getFirst().body()));assertEquals(before,facts());
     }
     @Test void unavailableAiKeepsReadableFallbackWithoutWritingClinicalRows() throws Exception {
-        sink.stop(0);sink=null;var before=facts();var response=request(order,admin);
+        sink.stop(0);sink=null;
+        // A released ephemeral port is not a controlled unavailable destination.
+        ReflectionTestUtils.setField(target,"aiUrl","http://127.0.0.1:0");
+        var before=facts();var response=request(order,admin);
         assertEquals(200,response.http());assertEquals(0,response.code());var data=response.body().get("data");assertEquals(Set.of("source","advice","error"),keys(data));assertEquals("fallback",data.get("source").asText());assertEquals("ConnectException",data.get("error").asText());assertEquals("AI 子服务不可用，请人工判读",data.at("/advice/0").asText());assertTrue(received.isEmpty());assertEquals(before,facts());
     }
 }
