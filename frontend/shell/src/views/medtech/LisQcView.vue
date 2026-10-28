@@ -123,16 +123,17 @@ watch(qc, () => { ++qcDraftGeneration; qcResult.value = null }, { flush: 'sync' 
 
 function clearTat() { ++tatGeneration; tat.value = null }
 watch(tatRange, clearTat, { deep: true, flush: 'sync' })
-watch(tab, () => { clearTat(); clearQcPage() }, { flush: 'sync' })
-watch(() => auth.token, () => { clearTat(); clearQcPage() }, { flush: 'sync' })
+watch(tab, () => { clearTat(); clearQcPage(); clearMicroPage() }, { flush: 'sync' })
+watch(() => auth.token, () => { clearTat(); clearQcPage(); clearMicroPage() }, { flush: 'sync' })
 function onTatStorage(event: StorageEvent) {
-  if (event.storageArea === localStorage && (event.key === 'hip_token' || event.key === null)) { clearTat(); clearQcPage() }
+  if (event.storageArea === localStorage && (event.key === 'hip_token' || event.key === null)) { clearTat(); clearQcPage(); clearMicroPage() }
 }
 window.addEventListener('storage', onTatStorage)
 onUnmounted(() => {
   tatAlive = false
   clearTat()
   clearQcPage()
+  clearMicroPage()
   window.removeEventListener('storage', onTatStorage)
 })
 
@@ -140,8 +141,34 @@ const microDialog = ref(false)
 const microLoading = ref(false)
 const microCur = ref<Record<string, unknown> | null>(null)
 const microForm = reactive({ specimen: '', organism: '', gram: 'NEG', colonyCount: '', ast: [] as Record<string, string>[] })
+let microPageGeneration = 0
+let microReadGeneration = 0
+let microDialogGeneration = 0
+let microDraftGeneration = 0
+let microSaveGeneration = 0
+const microPendingBodies = new Set<string>()
+watch(microForm, () => { ++microDraftGeneration }, { deep: true, flush: 'sync' })
+watch(microDialog, () => { ++microDialogGeneration; microLoading.value = false }, { flush: 'sync' })
 
-async function loadMicro() { microSamples.value = (await client.get('/lis/micro/samples')).data.data }
+function clearMicroPage() {
+  ++microPageGeneration; ++microReadGeneration; ++microDialogGeneration
+  microDialog.value = false; microLoading.value = false; microCur.value = null; microSamples.value = []
+}
+function captureMicroPage() {
+  const generation = microPageGeneration, token = localStorage.getItem('hip_token'), authToken = auth.token
+  return () => tatAlive && tab.value === 'micro' && generation === microPageGeneration
+    && token === localStorage.getItem('hip_token') && authToken === auth.token
+}
+function microBody() {
+  return { specimen: microForm.specimen, organism: microForm.organism, gram: microForm.gram, colonyCount: microForm.colonyCount,
+    ast: microForm.ast.filter(a => a.antibiotic).map(a => ({ ...a })) }
+}
+
+async function loadMicro() {
+  const current = captureMicroPage(), generation = ++microReadGeneration
+  const data = (await client.get('/lis/micro/samples')).data.data
+  if (current() && generation === microReadGeneration) microSamples.value = data
+}
 async function loadQcLatest() {
   const current = captureQcPage()
   if (!current()) return
@@ -166,19 +193,31 @@ function onTab() {
 }
 
 function openMicro(row: Record<string, unknown>) {
+  ++microDialogGeneration
+  microLoading.value = false
   microCur.value = row
   Object.assign(microForm, { specimen: '', organism: '', gram: 'NEG', colonyCount: '', ast: [{ antibiotic: '', method: '', micValue: '', sir: 'S' }] })
   microDialog.value = true
 }
 async function submitMicro() {
   if (!microForm.organism.trim()) { ElMessage.warning('菌种名必填'); return }
+  const barcode = microCur.value!.barcode, body = microBody(), bodyKey = JSON.stringify(body), key = JSON.stringify([barcode, body])
+  if (microPendingBodies.has(key)) { ElMessage.warning('操作处理中，请勿重复提交'); return }
+  microPendingBodies.add(key)
+  const currentPage = captureMicroPage(), dialog = microDialogGeneration, draft = microDraftGeneration, generation = ++microSaveGeneration
+  const currentModal = () => currentPage() && microDialog.value && dialog === microDialogGeneration
+    && generation === microSaveGeneration && barcode === microCur.value?.barcode
   microLoading.value = true
   try {
-    await client.post(`/lis/micro/${microCur.value!.barcode}`, { ...microForm, ast: microForm.ast.filter(a => a.antibiotic) })
-    ElMessage.success('已保存微生物药敏')
-    microDialog.value = false
-    await loadMicro()
-  } finally { microLoading.value = false }
+    try { await client.post(`/lis/micro/${barcode}`, body) }
+    finally { microPendingBodies.delete(key) }
+    if (currentModal() && draft === microDraftGeneration && bodyKey === JSON.stringify(microBody())) {
+      ElMessage.success('已保存微生物药敏')
+      microDialog.value = false
+    }
+    // A known save may refresh current global samples without owning a new modal.
+    if (currentPage()) await loadMicro()
+  } finally { if (currentModal()) microLoading.value = false }
 }
 
 async function submitQc() {
