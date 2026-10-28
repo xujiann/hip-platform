@@ -88,9 +88,10 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import client from '../../api/client'
+import { useAuthStore } from '../../stores/auth'
 
 const tab = ref('micro')
 const microSamples = ref<Record<string, unknown>[]>([])
@@ -99,6 +100,23 @@ const qc = reactive({ itemCode: '', level: 'L1', lotNo: '', targetValue: undefin
 const qcResult = ref<{ inControl: boolean; zScore: number; rule: string } | null>(null)
 const tatRange = ref<[string, string] | null>(null)
 const tat = ref<Record<string, unknown> | null>(null)
+const auth = useAuthStore()
+let tatGeneration = 0
+let tatAlive = true
+
+function clearTat() { ++tatGeneration; tat.value = null }
+watch(tatRange, clearTat, { deep: true, flush: 'sync' })
+watch(tab, clearTat, { flush: 'sync' })
+watch(() => auth.token, clearTat, { flush: 'sync' })
+function onTatStorage(event: StorageEvent) {
+  if (event.storageArea === localStorage && (event.key === 'hip_token' || event.key === null)) clearTat()
+}
+window.addEventListener('storage', onTatStorage)
+onUnmounted(() => {
+  tatAlive = false
+  clearTat()
+  window.removeEventListener('storage', onTatStorage)
+})
 
 const microDialog = ref(false)
 const microLoading = ref(false)
@@ -109,7 +127,13 @@ async function loadMicro() { microSamples.value = (await client.get('/lis/micro/
 async function loadQcLatest() { qcLatest.value = (await client.get('/lis/qc/latest')).data.data }
 async function loadTat() {
   const params: Record<string, unknown> = { from: tatRange.value?.[0], to: tatRange.value?.[1] }
-  tat.value = (await client.get('/lis/tat', { params })).data.data
+  const token = localStorage.getItem('hip_token'), authToken = auth.token
+  const generation = ++tatGeneration
+  tat.value = null
+  const data = (await client.get('/lis/tat', { params })).data.data
+  if (tatAlive && tab.value === 'tat' && generation === tatGeneration
+    && token === localStorage.getItem('hip_token') && authToken === auth.token
+    && params.from === tatRange.value?.[0] && params.to === tatRange.value?.[1]) tat.value = data
 }
 function onTab() {
   if (tab.value === 'micro') loadMicro()
