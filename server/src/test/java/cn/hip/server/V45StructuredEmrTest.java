@@ -97,6 +97,14 @@ class V45StructuredEmrTest {
     private Authentication userAuth(String username) {
         jdbc.update("insert into sys_user(username, password, real_name, enabled) "
                 + "values (?, 'x', ?, true) on conflict (username) do nothing", username, username + "医生");
+        // v143: persist the ADMIN duty already supplied by this class's mock authentication.
+        // Field maintenance now checks the same actor's current database duty after a lock wait.
+        jdbc.update("""
+                insert into sys_user_role(user_id, role_id)
+                select u.id, r.id from sys_user u cross join sys_role r
+                where u.username = ? and r.code = 'ADMIN'
+                on conflict (user_id, role_id) do nothing
+                """, username);
         // Preserve this test's existing authority while using the real fixture actor for medical writes.
         var context = org.springframework.security.core.context.SecurityContextHolder.getContext();
         context.setAuthentication(new UsernamePasswordAuthenticationToken(username, null,
