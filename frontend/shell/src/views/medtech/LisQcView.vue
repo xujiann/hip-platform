@@ -103,18 +103,36 @@ const tat = ref<Record<string, unknown> | null>(null)
 const auth = useAuthStore()
 let tatGeneration = 0
 let tatAlive = true
+let qcDraftGeneration = 0
+let qcSaveGeneration = 0
+let qcPageGeneration = 0
+let qcReadGeneration = 0
+const qcPendingBodies = new Set<string>()
+
+function qcBody() {
+  return { itemCode: qc.itemCode, level: qc.level, lotNo: qc.lotNo,
+    targetValue: qc.targetValue, sd: qc.sd, measuredValue: qc.measuredValue }
+}
+function clearQcPage() { ++qcPageGeneration; ++qcReadGeneration; qcResult.value = null; qcLatest.value = [] }
+function captureQcPage() {
+  const generation = qcPageGeneration, token = localStorage.getItem('hip_token'), authToken = auth.token
+  return () => tatAlive && tab.value === 'qc' && generation === qcPageGeneration
+    && token === localStorage.getItem('hip_token') && authToken === auth.token
+}
+watch(qc, () => { ++qcDraftGeneration; qcResult.value = null }, { flush: 'sync' })
 
 function clearTat() { ++tatGeneration; tat.value = null }
 watch(tatRange, clearTat, { deep: true, flush: 'sync' })
-watch(tab, clearTat, { flush: 'sync' })
-watch(() => auth.token, clearTat, { flush: 'sync' })
+watch(tab, () => { clearTat(); clearQcPage() }, { flush: 'sync' })
+watch(() => auth.token, () => { clearTat(); clearQcPage() }, { flush: 'sync' })
 function onTatStorage(event: StorageEvent) {
-  if (event.storageArea === localStorage && (event.key === 'hip_token' || event.key === null)) clearTat()
+  if (event.storageArea === localStorage && (event.key === 'hip_token' || event.key === null)) { clearTat(); clearQcPage() }
 }
 window.addEventListener('storage', onTatStorage)
 onUnmounted(() => {
   tatAlive = false
   clearTat()
+  clearQcPage()
   window.removeEventListener('storage', onTatStorage)
 })
 
@@ -124,7 +142,13 @@ const microCur = ref<Record<string, unknown> | null>(null)
 const microForm = reactive({ specimen: '', organism: '', gram: 'NEG', colonyCount: '', ast: [] as Record<string, string>[] })
 
 async function loadMicro() { microSamples.value = (await client.get('/lis/micro/samples')).data.data }
-async function loadQcLatest() { qcLatest.value = (await client.get('/lis/qc/latest')).data.data }
+async function loadQcLatest() {
+  const current = captureQcPage()
+  if (!current()) return
+  const generation = ++qcReadGeneration
+  const data = (await client.get('/lis/qc/latest')).data.data
+  if (current() && generation === qcReadGeneration) qcLatest.value = data
+}
 async function loadTat() {
   const params: Record<string, unknown> = { from: tatRange.value?.[0], to: tatRange.value?.[1] }
   const token = localStorage.getItem('hip_token'), authToken = auth.token
@@ -159,8 +183,18 @@ async function submitMicro() {
 
 async function submitQc() {
   if (!qc.itemCode || !qc.lotNo || qc.targetValue == null || qc.sd == null || qc.measuredValue == null) { ElMessage.warning('请填齐项目/批号/靶值/SD/实测'); return }
-  qcResult.value = (await client.post('/lis/qc', qc)).data.data
-  await loadQcLatest()
+  const body = qcBody(), key = JSON.stringify(body)
+  if (qcPendingBodies.has(key)) { ElMessage.warning('操作处理中，请勿重复提交'); return }
+  qcPendingBodies.add(key)
+  const current = captureQcPage(), generation = ++qcSaveGeneration, draft = qcDraftGeneration
+  qcResult.value = null
+  let data: typeof qcResult.value
+  try { data = (await client.post('/lis/qc', body)).data.data }
+  finally { qcPendingBodies.delete(key) }
+  if (current() && generation === qcSaveGeneration && draft === qcDraftGeneration && key === JSON.stringify(qcBody())) qcResult.value = data
+  // Any known successful save may refresh the current global list, even if its
+  // original draft is no longer eligible to own the single-save judgment.
+  if (current()) await loadQcLatest()
 }
 
 onMounted(loadMicro)
