@@ -10,6 +10,7 @@ const scopes: ReturnType<typeof Vue.effectScope>[] = []
 afterEach(() => { for (const scope of scopes.splice(0)) scope.stop() })
 const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value))
 const reply = (data: unknown) => ({ data: { code: 0, data } })
+const settle = () => new Promise<void>(resolve => setTimeout(resolve, 0))
 function deferred() {
   let resolve!: (value: unknown) => void, reject!: (error: unknown) => void
   const promise = new Promise((yes, no) => { resolve = yes; reject = no })
@@ -157,7 +158,7 @@ describe('TAT compatible transport and neighboring tabs', () => {
     expect(h.get).toHaveBeenCalledOnce(); expect(h.post).not.toHaveBeenCalled()
   })
   it('keeps the default query on initial TAT entry', async () => {
-    const h = setup(); h.get.mockResolvedValueOnce(reply(result(0)) as any); h.v.onTab(); await Vue.nextTick()
+    const h = setup(); h.get.mockResolvedValueOnce(reply(result(0)) as any); h.v.onTab(); await settle()
     expect(h.get).toHaveBeenCalledWith('/lis/tat', { params: { from: undefined, to: undefined } }); expect(h.v.tat.value).toEqual(result(0))
   })
   it.each([
@@ -199,7 +200,7 @@ describe('TAT compatible transport and neighboring tabs', () => {
   })
   it.each([['micro', '/lis/micro/samples', 'microSamples'], ['qc', '/lis/qc/latest', 'qcLatest']])('original %s tab still reads its own list', async (tab, url, field) => {
     const h = setup(); const rows = [{ id: 8, original: true }]; h.v.tab.value = tab
-    h.get.mockResolvedValueOnce(reply(rows) as any); h.v.onTab(); await Vue.nextTick()
+    h.get.mockResolvedValueOnce(reply(rows) as any); h.v.onTab(); await settle()
     expect(h.get).toHaveBeenCalledOnce(); expect(h.get).toHaveBeenCalledWith(url); expect(h.v[field].value).toEqual(rows)
   })
   it('original IQC success keeps payload, result and latest refresh', async () => {
