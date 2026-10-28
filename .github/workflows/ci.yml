@@ -293,8 +293,10 @@ jobs:
           python3 tools/e2e-v138-report-share-live-duty.py
           python3 tools/e2e-v139-surgery-live-duty.py
           # v81 车道B：麻醉质控演示造数 + 六条 ★（1424/1425/1426/1428/1436/1450）自检，纯走 API、幂等。
-          # 置于全部 E2E 之后：它往过去 1–7 天落手术与不良事件，放前面会被按日窗计数的套件算进去
+          # 保持既有序列位置：它往过去 1–7 天落手术与不良事件，不得前移到原日窗计数套件之前
           python3 tools/demo-anes.py --quiet
+          # v143: preserve all original commands and append the private field-parent ACL suite.
+          python3 tools/e2e-v143-emr-field-access.py
 
       - name: 失败时输出服务端日志
         if: failure()
