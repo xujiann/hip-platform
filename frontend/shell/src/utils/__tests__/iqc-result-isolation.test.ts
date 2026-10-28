@@ -21,8 +21,8 @@ const B = { ...A, measuredValue: 11 }
 const bad = { inControl: false, zScore: 4, rule: '1-3s' }
 const good = { inControl: true, zScore: 1, rule: '' }
 const latest = (value: number) => [{ item_code: 'V141', level: 'L1', lot_no: 'LOT', measured_value: value,
-  z_score: value - 10, in_control: value < 13, rule_broken: value < 13 ? '' : '1-3s', measured_at: '2026-10-28T01:00:00Z' },
-{ item_code: 'OTHER', level: 'L2', lot_no: 'GLOBAL', measured_value: 2, z_score: 0, in_control: true, rule_broken: '', measured_at: '2026-10-27T00:00:00Z' }]
+  z_score: value - 10, in_control: value < 13, rule_broken: value < 13 ? null : '1-3s', measured_at: '2026-10-28T01:00:00Z' },
+{ item_code: 'OTHER', level: 'L2', lot_no: 'GLOBAL', measured_value: 2, z_score: 0, in_control: true, rule_broken: null, measured_at: '2026-10-27T00:00:00Z' }]
 type Wire = { config: any; body: any; resolved: boolean; resolve: (value: any) => void; reject: (error: any) => void }
 function setup() {
   const path = process.env.HIP_V141_FRONT_BASELINE_ROOT
