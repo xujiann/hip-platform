@@ -1,10 +1,12 @@
 package cn.hip.medtech.web;
 
+import cn.hip.medtech.service.EmrTemplateService;
 import cn.hip.platform.core.common.R;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDate;
@@ -40,6 +42,7 @@ import java.util.Map;
 public class EmrFieldController {
 
     private final JdbcTemplate jdbc;
+    private final EmrTemplateService templates;
 
     /** 1075★ 明文六型，一个不少一个不多（与 V139 的 CHECK 约束、两侧录入校验同源；单测直接断言本表） */
     public static final List<String> DATATYPES =
@@ -68,13 +71,7 @@ public class EmrFieldController {
     @GetMapping("/templates/{templateId}/fields")
     public R<List<Map<String, Object>>> fields(@PathVariable Long templateId,
                                                @RequestParam(required = false) Boolean includeDisabled) {
-        var rows = jdbc.queryForList("""
-                select id, template_id, field_code, label, datatype, required, sort_no,
-                       value_set, placeholder, unit, enabled, created_at
-                from emr_template_field
-                where template_id = ? and (cast(? as boolean) or enabled = true)
-                order by sort_no, id
-                """, templateId, Boolean.TRUE.equals(includeDisabled));
+        var rows = templates.visibleFieldRows(templateId, Boolean.TRUE.equals(includeDisabled));
         return R.ok(rows.stream().map(EmrFieldController::toDto).toList());
     }
 
@@ -107,10 +104,9 @@ public class EmrFieldController {
 
     /** 新增字段定义。datatype 非白名单返 4027；单选/多选未配候选值返 4026 */
     @PostMapping("/templates/{templateId}/fields")
+    @Transactional
     public R<Map<String, Object>> create(@PathVariable Long templateId, @RequestBody FieldReq req) {
-        Integer tpl = jdbc.queryForObject(
-                "select count(1) from emr_template where id = ?", Integer.class, templateId);
-        if (tpl == null || tpl == 0) {
+        if (!templates.lockFieldTemplate(templateId)) {
             return R.fail(4024, "病历模板不存在：" + templateId);
         }
         String err = validate(req, true);
@@ -145,9 +141,9 @@ public class EmrFieldController {
      * 要换编码就停用旧字段、新建一个。
      */
     @PutMapping("/fields/{id}")
+    @Transactional
     public R<Map<String, Object>> update(@PathVariable Long id, @RequestBody FieldReq req) {
-        var cur = jdbc.queryForList("select * from emr_template_field where id = ?", id);
-        if (cur.isEmpty()) {
+        if (!templates.lockFieldDefinition(id)) {
             return R.fail(4024, "模板字段定义不存在：" + id);
         }
         String err = validate(req, false);
@@ -175,7 +171,11 @@ public class EmrFieldController {
      * 停用后：录入侧不再渲染该元素（传它一律 4024），检索侧仍能查到历史值。
      */
     @DeleteMapping("/fields/{id}")
+    @Transactional
     public R<Void> disable(@PathVariable Long id) {
+        if (!templates.lockFieldDefinition(id)) {
+            return R.fail(4024, "模板字段定义不存在或已停用：" + id);
+        }
         int n = jdbc.update("update emr_template_field set enabled = false where id = ? and enabled = true", id);
         return n == 0 ? R.fail(4024, "模板字段定义不存在或已停用：" + id) : R.ok();
     }

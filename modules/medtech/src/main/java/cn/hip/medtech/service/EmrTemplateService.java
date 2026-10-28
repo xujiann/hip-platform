@@ -4,7 +4,10 @@ import cn.hip.platform.core.common.HipBizException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
@@ -271,6 +274,77 @@ public class EmrTemplateService {
                     .formatted(scopeName(t.scope()), editorName(t.scope())));
         }
         return t;
+    }
+
+    // Field definitions inherit the parent matrix; existing template-head entry points stay separate.
+    private static final Set<String> FIELD_DUTIES = Set.of("ADMIN", "DOCTOR_OUTP", "NURSE", "QUALITY");
+
+    /** Read current database duties after a wait rather than trusting the request's earlier role snapshot. */
+    private Actor fieldActor() {
+        var auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null || !auth.isAuthenticated() || auth.getAuthorities().stream()
+                .noneMatch(a -> FIELD_DUTIES.stream().anyMatch(r -> ("ROLE_" + r).equals(a.getAuthority())))) {
+            throw new AccessDeniedException("无模板字段操作岗位权限");
+        }
+        var rows = jdbc.queryForList("""
+                select u.id, u.dept_id, u.enabled, r.code from sys_user u
+                left join sys_user_role ur on ur.user_id = u.id left join sys_role r on r.id = ur.role_id
+                where u.username = ?
+                """, auth.getName());
+        if (rows.isEmpty() || !Boolean.TRUE.equals(rows.getFirst().get("enabled"))
+                || rows.stream().noneMatch(r -> r.get("code") != null && FIELD_DUTIES.contains(r.get("code")))) {
+            throw new AccessDeniedException("模板字段操作人不存在、已停用或岗位已变化");
+        }
+        var user = rows.getFirst();
+        return new Actor(((Number) user.get("id")).longValue(), (Long) user.get("dept_id"),
+                rows.stream().anyMatch(r -> "ADMIN".equals(r.get("code"))));
+    }
+
+    /** The field rows and parent visibility use one statement snapshot, including USER and DEPT grants. */
+    public List<Map<String, Object>> visibleFieldRows(Long templateId, boolean includeDisabled) {
+        Actor a = fieldActor();
+        StringBuilder sql = new StringBuilder("""
+                select f.id, f.template_id, f.field_code, f.label, f.datatype, f.required, f.sort_no,
+                       f.value_set, f.placeholder, f.unit, f.enabled, f.created_at
+                from emr_template_field f join emr_template t on t.id = f.template_id
+                where t.id = ? and (cast(? as boolean) or f.enabled = true)
+                """);
+        List<Object> args = new ArrayList<>(List.of(templateId, includeDisabled));
+        visibleWhere(a, sql, args);
+        sql.append(" order by f.sort_no, f.id");
+        var rows = jdbc.queryForList(sql.toString(), args.toArray());
+        // An empty visible template is valid; a missing/invisible one shares the existing 4066 boundary.
+        if (rows.isEmpty()) requireVisible(templateId, fieldActor());
+        return rows;
+    }
+
+    /** Parent-first locking also serializes the existing per-template duplicate-code check. */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public boolean lockFieldTemplate(Long templateId) {
+        fieldActor();
+        var rows = jdbc.queryForList("select id from emr_template where id = ? for update", templateId);
+        Actor a = fieldActor();
+        if (rows.isEmpty()) return false;
+        requireEditable(templateId, a);
+        return true;
+    }
+
+    /** Recheck both the original association and current actor after any field-row wait. */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public boolean lockFieldDefinition(Long fieldId) {
+        fieldActor();
+        var original = jdbc.queryForList("select template_id from emr_template_field where id = ?", fieldId);
+        if (original.isEmpty()) return false;
+        Long templateId = ((Number) original.getFirst().get("template_id")).longValue();
+        if (!lockFieldTemplate(templateId)) return false;
+        var locked = jdbc.queryForList("select template_id from emr_template_field where id = ? for update", fieldId);
+        Actor a = fieldActor();
+        if (locked.isEmpty()) return false;
+        if (!templateId.equals(((Number) locked.getFirst().get("template_id")).longValue())) {
+            throw new HipBizException(4066, "字段所属模板已变化，请刷新后重试");
+        }
+        requireEditable(templateId, a);
+        return true;
     }
 
     public static String scopeName(String scope) {
