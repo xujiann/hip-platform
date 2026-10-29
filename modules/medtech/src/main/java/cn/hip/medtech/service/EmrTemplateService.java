@@ -526,6 +526,39 @@ public class EmrTemplateService {
         }
     }
 
+    private static final Set<String> TEMPLATE_MAINTENANCE_DUTIES =
+            Set.of("ADMIN", "DOCTOR_OUTP", "NURSE", "QUALITY", "TECHNICIAN");
+
+    /** Current employee state, including role changes committed while a maintenance request waited. */
+    private Actor templateMaintenanceActor(Long userId) {
+        var rows = jdbc.queryForList("""
+                select u.id, u.dept_id, u.enabled, r.code from sys_user u
+                left join sys_user_role ur on ur.user_id = u.id left join sys_role r on r.id = ur.role_id
+                where u.id = ?
+                """, userId);
+        if (rows.isEmpty() || !Boolean.TRUE.equals(rows.getFirst().get("enabled"))
+                || rows.stream().noneMatch(r -> TEMPLATE_MAINTENANCE_DUTIES.contains(r.get("code")))) {
+            throw new AccessDeniedException("模板维护人不存在、已停用或岗位已变化");
+        }
+        return new Actor(userId, (Long) rows.getFirst().get("dept_id"),
+                rows.stream().anyMatch(r -> "ADMIN".equals(r.get("code"))));
+    }
+
+    private record TemplateMaintenance(Tpl template, Actor actor) {}
+
+    /**
+     * Low-frequency header maintenance shares one transaction lock before any template row lock.
+     * Default replacement may touch a second template; serializing these entry points avoids
+     * opposite template lock orders. Field writes retain T -> F and never acquire this lock.
+     * New-template creation and reads do not acquire it either.
+     */
+    private TemplateMaintenance lockTemplateMaintenance(Long userId, Long templateId) {
+        jdbc.queryForList("select pg_advisory_xact_lock(hashtext('hip.emr.template.maintenance'), 0)");
+        jdbc.queryForList("select id from emr_template where id = ? for update", templateId);
+        Actor actor = templateMaintenanceActor(userId);
+        return new TemplateMaintenance(requireEditable(templateId, actor), actor);
+    }
+
     /**
      * 改模板（<b>v42 起欠了三个版本的账，本版还清</b>）。
      *
@@ -534,8 +567,9 @@ public class EmrTemplateService {
      */
     @Transactional
     public void update(Long userId, Long id, TemplateReq req) {
-        Actor a = actorOf(userId);
-        Tpl t = requireEditable(id, a);
+        var maintenance = lockTemplateMaintenance(userId, id);
+        Actor a = maintenance.actor();
+        Tpl t = maintenance.template();
         String name = requireName(req == null ? null : req.name());
         String content = requireContent(req == null ? null : req.content());
         String scope = notBlank(req.scope()) ? normScope(req.scope()) : t.scope();
@@ -586,8 +620,7 @@ public class EmrTemplateService {
      */
     @Transactional
     public void setEnabled(Long userId, Long id, boolean enabled) {
-        Actor a = actorOf(userId);
-        requireEditable(id, a);
+        lockTemplateMaintenance(userId, id);
         try {
             jdbc.update("update emr_template set enabled = ? where id = ?", enabled, id);
         } catch (DuplicateKeyException e) {
@@ -621,8 +654,7 @@ public class EmrTemplateService {
     /** 授予。重复授予按幂等处理（on conflict do nothing）——"再授权一次"业务上就是无操作，不该报错。 */
     @Transactional
     public void grant(Long userId, Long templateId, String granteeType, Long granteeId) {
-        Actor a = actorOf(userId);
-        requireEditable(templateId, a);
+        Actor a = lockTemplateMaintenance(userId, templateId).actor();
         String type = granteeType == null ? "" : granteeType.trim().toUpperCase();
         if (!GRANTEE_TYPES.contains(type)) {
             throw new HipBizException(4065, "授权对象类型非法（应为 DEPT 科室 / USER 个人）：" + granteeType);
@@ -653,11 +685,12 @@ public class EmrTemplateService {
      */
     @Transactional
     public void revoke(Long userId, Long templateId, Long grantId) {
-        Actor a = actorOf(userId);
-        Tpl t = requireEditable(templateId, a);
+        lockTemplateMaintenance(userId, templateId);
         List<Map<String, Object>> rows = jdbc.queryForList(
-                "select grantee_type, grantee_id from emr_template_grant where id = ? and template_id = ?",
+                "select grantee_type, grantee_id from emr_template_grant where id = ? and template_id = ? for update",
                 grantId, templateId);
+        // An operational row holder can delay this grant lock independently of the parent lock.
+        Tpl t = requireEditable(templateId, templateMaintenanceActor(userId));
         if (rows.isEmpty()) {
             throw new HipBizException(4065, "授权记录不存在");
         }
@@ -716,8 +749,7 @@ public class EmrTemplateService {
      */
     @Transactional
     public void setDefault(Long userId, Long id, boolean replace) {
-        Actor a = actorOf(userId);
-        Tpl t = requireEditable(id, a);
+        Tpl t = lockTemplateMaintenance(userId, id).template();
         if (t.deptId() == null || !notBlank(t.recordType())) {
             throw new HipBizException(4067,
                     "科室默认模板必须同时绑定科室与病历类型（988 的取数口径就是 deptId + recordType），"
@@ -727,6 +759,13 @@ public class EmrTemplateService {
             throw new HipBizException(4067, "已停用的模板不能设为科室默认模板，请先启用");
         }
         if (replace) {
+            jdbc.queryForList("""
+                    select id from emr_template
+                    where dept_id = ? and record_type = ? and is_default and enabled and id <> ?
+                    order by id for update
+                    """, t.deptId(), t.recordType(), id);
+            // Recheck after every potentially blocking template lock, before changing either flag.
+            t = requireEditable(id, templateMaintenanceActor(userId));
             jdbc.update("""
                     update emr_template set is_default = false
                     where dept_id = ? and record_type = ? and is_default and enabled and id <> ?
@@ -748,8 +787,7 @@ public class EmrTemplateService {
 
     @Transactional
     public void unsetDefault(Long userId, Long id) {
-        Actor a = actorOf(userId);
-        requireEditable(id, a);
+        lockTemplateMaintenance(userId, id);
         jdbc.update("update emr_template set is_default = false where id = ?", id);
     }
 
