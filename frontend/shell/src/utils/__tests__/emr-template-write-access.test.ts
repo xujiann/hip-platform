@@ -140,7 +140,7 @@ describe('v144 original HEAD maintenance consumer compatibility', () => {
     expect(h.ElMessage.success).toHaveBeenCalledTimes(1); expect(h.ElMessage.error).not.toHaveBeenCalled()
     expect(h.requests.filter(w => w.config.method !== 'get')).toHaveLength(1)
     expect(h.requests.filter(w => w.config.url === '/emr-templates/visible')).toHaveLength(1)
-    expect(h.requests.filter(w => w.config.url === '/emr-templates/71/grants')).toHaveLength(action === 'grant' || action === 'revoke' ? 1 : 0)
+    expect(h.requests.filter(w => w.config.method === 'get' && w.config.url === '/emr-templates/71/grants')).toHaveLength(action === 'grant' || action === 'revoke' ? 1 : 0)
     expect(h.v.saving.value).toBe(false); expect(h.v.granting.value).toBe(false); expectTokenKept(h)
     if (action === 'save') { expect(h.v.dialogVisible.value).toBe(false); expect(h.v.filterScope.value).toBeNull(); expect(h.v.filterDeptId.value).toBeNull() }
     if (action === 'grant') expect(h.v.granteeId.value).toBeNull()
