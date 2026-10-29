@@ -103,6 +103,8 @@ public class InpEmrController {
     @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP')")
     public R<InpMedicalRecord> addRecord(@PathVariable Long admissionId,
                                          @RequestBody SaveRecordRequest req, Authentication auth) {
+        // Structured saves always lock A before T, including the original ADMIN fast path.
+        if (req.fields() != null) jdbc.queryForList("select id from inp_admission where id = ? for update", admissionId);
         if (admissionWriterDenied(admissionId, auth)) return R.fail(9130, "无权写入该住院病历（非主管医师）");
         // v47：**不传仍默认 PROGRESS（既有行为逐字不动）**，只有显式传了非白名单值才拒。
         // 挡在结构化渲染之前，避免类型非法时先报模板校验码（4024–4027）造成误导。
@@ -114,6 +116,15 @@ public class InpEmrController {
         String contentJson = null;
         // v45 车道 I：结构化录入。fields == null 时整段跳过，下面就是 v44 的原逻辑一字未改。
         if (req.fields() != null) {
+            var actor = cn.hip.outpatient.service.StructuredEmrTemplateAccess.lockUsable(jdbc, req.templateId(), currentUserService.idOf(auth));
+            if (actor != null && !actor.admin()) {
+                // A is already held: no reverse T -> A acquisition after the parent wait.
+                var admissions = jdbc.queryForList("select doctor_id from inp_admission where id = ?", admissionId);
+                if (admissions.isEmpty() || (admissions.getFirst().get("doctor_id") != null
+                        && !actor.id().equals(((Number) admissions.getFirst().get("doctor_id")).longValue()))) {
+                    return R.fail(9130, "无权写入该住院病历（非主管医师）");
+                }
+            }
             StructuredEmr.Rendered out;
             try {
                 out = StructuredEmr.validateAndRender(

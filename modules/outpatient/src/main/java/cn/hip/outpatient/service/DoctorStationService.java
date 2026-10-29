@@ -82,6 +82,23 @@ public class DoctorStationService {
             throw new BizException(4023, "仅病历书写医师本人可修改或补正");
     }
 
+    /** The original registration lock precedes the template lock. Re-evaluate the
+     * same clinical eligibility with live duties after a template wait, including
+     * an ADMIN becoming an ordinary doctor while this request was blocked.
+     */
+    private void guardStructuredTemplate(Long registrationId, Long templateId, Long actorId, OutpEmr emr) {
+        var actor = StructuredEmrTemplateAccess.lockUsable(jdbc, templateId, actorId);
+        if (actor == null || actor.admin()) return;
+        var reg = registrationRepository.findById(registrationId).orElse(null);
+        if (reg == null) return; // Keep the original missing-registration business path.
+        boolean allowed = BusinessDates.today().equals(reg.getVisitDate()) || reg.getDoctorId() == null
+                || actor.id().equals(reg.getDoctorId()) || actor.id().equals(emr.getDoctorId());
+        if (!allowed) throw new BizException(4036, "无权写入该次就诊（非当日就诊且非本人接诊）");
+        if (emr.getDoctorId() != null && !actor.id().equals(emr.getDoctorId())) {
+            throw new BizException(4023, "仅病历书写医师本人可修改或补正");
+        }
+    }
+
     /** 组号取数据库序列：跨实例、跨重启唯一 */
     private long nextGroupSeq() {
         // 空 query space（1.1.7 B-8）：未声明时 Hibernate 按"可能读任何表"处理，
@@ -166,6 +183,8 @@ public class DoctorStationService {
         // 此前「引用资料」整段插入可轻易超过现病史 2000 字，存盘时撞库列宽只报通用 4091、不说是哪一段；
         // 现按 OutpEmr 实体 @Column(length) 逐段核（列宽取自注解，同 checkOrderLineLengths），超长报 4000 并点名。
         checkEmrLengths(data);
+        // Do not dirty the managed record before rejecting an unusable parent.
+        if (fields != null) guardStructuredTemplate(registrationId, templateId, doctorId, emr);
         emr.setChiefComplaint(data.getChiefComplaint());
         emr.setPresentIllness(data.getPresentIllness());
         emr.setPastHistory(data.getPastHistory());
