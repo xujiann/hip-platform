@@ -34,7 +34,7 @@ function setup() {
   const localStorage = { getItem: (key: string) => storage.get(key) ?? null,
     setItem: (key: string, value: string) => storage.set(key, value), removeItem: (key: string) => storage.delete(key) }
   const ElMessage = Object.assign(vi.fn(), { error: vi.fn(), warning: vi.fn(), success: vi.fn(), info: vi.fn() })
-  const ElMessageBox = { confirm: vi.fn(() => Promise.resolve(true)) }, router = { push: vi.fn() }
+  const ElMessageBox = { confirm: vi.fn((_message: string, _title?: string, _options?: unknown) => Promise.resolve(true)) }, router = { push: vi.fn() }
   const clientBox: Record<string, any> = { axios, ElMessage, router, localStorage, Blob, exports: {} }
   const sharedSource = readFileSync(new URL('../../api/client.ts', import.meta.url), 'utf8')
   runInNewContext(ts.transpileModule(withoutImports(sharedSource, 'client.ts'), {
