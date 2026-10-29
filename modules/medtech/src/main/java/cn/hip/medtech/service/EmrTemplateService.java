@@ -537,7 +537,8 @@ public class EmrTemplateService {
                 where u.id = ?
                 """, userId);
         if (rows.isEmpty() || !Boolean.TRUE.equals(rows.getFirst().get("enabled"))
-                || rows.stream().noneMatch(r -> TEMPLATE_MAINTENANCE_DUTIES.contains(r.get("code")))) {
+                || rows.stream().noneMatch(r -> r.get("code") != null
+                        && TEMPLATE_MAINTENANCE_DUTIES.contains(r.get("code")))) {
             throw new AccessDeniedException("模板维护人不存在、已停用或岗位已变化");
         }
         return new Actor(userId, (Long) rows.getFirst().get("dept_id"),
