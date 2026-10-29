@@ -179,14 +179,23 @@ class Fixture:
         body.update(templateId=tid, fields=fields)
         return body
 
-    def save(self, kind, tid, fields, who='doctor', code=0, text='V145模拟结构化正文'):
+    def save(self, kind, tid, fields, who='doctor', code=0, text='V145模拟结构化正文', actor_hint=None):
         method, path = ('PUT', self.outp_path + '/emr') if kind == 'OUTP' else ('POST', self.inp_path + '/records')
-        return self.api(method, path, self.payload(kind, tid, fields, text), who, code)
+        body = self.payload(kind, tid, fields, text)
+        if actor_hint is not None:
+            if kind == 'OUTP':
+                body['emr']['doctorId'] = actor_hint  # Existing entity key; never an authority source.
+            else:
+                # Original SaveRecordRequest has neither key; Jackson ignores
+                # these attacker-controlled hints, without a new DTO contract.
+                body.update(doctorId=actor_hint, actorId=actor_hint)
+        return self.api(method, path, body, who, code)
 
-    def deny(self, kind, tid, who='doctor', code=4066, fields=None, request_tid=None):
+    def deny(self, kind, tid, who='doctor', code=4066, fields=None, request_tid=None, spoof_actor=False):
         before = self.snapshot(tid)
         values = {'f': '不得保存的缓存值'} if fields is None else fields
-        self.save(kind, tid if request_tid is None else request_tid, values, who, code, 'V145不得改写正文')
+        hint = self.identities[self.templates[tid]['owner']]['id'] if spoof_actor else None
+        self.save(kind, tid if request_tid is None else request_tid, values, who, code, 'V145不得改写正文', actor_hint=hint)
         assert self.snapshot(tid) == before, (kind, who, code, 'Known refusal changed an exposed business snapshot')
         self.refusals += 1
 
@@ -194,6 +203,8 @@ class Fixture:
         values = {'f': 'V145合法结构化值'} if fields is None else fields
         saved = self.save(kind, tid, values, who)
         assert saved['templateId'] == tid and saved.get('contentJson') is not None
+        expected_author = self.identities[who if kind == 'INP' else 'doctor']['id']
+        assert saved['doctorId'] == expected_author, 'Authority and authorship must come from the actual JWT clinical actor'
         if values:
             content = saved['presentIllness'] if kind == 'OUTP' else saved['content']
             assert values['f'] in content
@@ -233,7 +244,7 @@ def main():
         other_dept = f.template('跨科室', 'DEPT', 'other', f.departments['B'])
         for kind in ['OUTP', 'INP']:
             for who in ['doctor', 'admin']:
-                f.deny(kind, hidden, who)
+                f.deny(kind, hidden, who, spoof_actor=who == 'doctor')
                 f.deny(kind, hidden, who, fields={})
             f.deny(kind, other_dept)
             f.deny(kind, other_dept, fields={})
