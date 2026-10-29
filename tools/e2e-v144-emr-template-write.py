@@ -33,6 +33,7 @@ class Fixture:
         self.departments = {}
         for label in ['A', 'B']:
             self.departments[label] = self.api('POST', '/system/depts', {
+                'code': 'V144' + self.suffix + label,
                 'name': self.prefix + '科室' + label, 'type': 'CLINICAL', 'sortNo': 9999})['id']
         for who in ['doctor', 'peer', 'nurse']:
             self.set_actor(who, dept=self.departments['A'])
