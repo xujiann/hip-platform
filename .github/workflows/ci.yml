@@ -299,6 +299,8 @@ jobs:
           python3 tools/e2e-v143-emr-field-access.py
           # v144: retain original command order, then verify template maintenance permissions.
           python3 tools/e2e-v144-emr-template-write.py
+          # v145: append clinical structured-save parent use rights after the original sequence.
+          python3 tools/e2e-v145-structured-emr-parent-access.py
 
       - name: 失败时输出服务端日志
         if: failure()
