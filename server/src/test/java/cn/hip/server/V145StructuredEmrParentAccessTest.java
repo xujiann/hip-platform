@@ -6,6 +6,7 @@ import cn.hip.platform.core.config.BusinessDates;
 import cn.hip.platform.core.security.JwtService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.*;
@@ -23,6 +24,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
+import java.sql.Timestamp;
+import java.time.OffsetDateTime;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicReference;
@@ -46,6 +49,7 @@ class V145StructuredEmrParentAccessTest {
     @Autowired ObjectMapper mapper;
     @Autowired PlatformTransactionManager transactions;
     @Autowired MedTechController templates;
+    @Autowired EntityManager entityManager;
 
     record Staff(Long id, String name, String token) {}
     record Reply(int http, JsonNode body) { int code() { return body.path("code").asInt(); } }
@@ -180,8 +184,23 @@ class V145StructuredEmrParentAccessTest {
     JsonNode json(String value) { try { return mapper.readTree(value); } catch (Exception e) { throw new AssertionError(e); } }
     void accepted(String entry, Reply reply, Map<String, List<String>> before, boolean structured) {
         response(reply, 200, 0); var after = facts(); evidence("positive-" + entry, before, after, reply);
-        Set<String> allowed = entry.equals("OUTP") ? Set.of("outp_emr", "outp_diagnosis", "outp_diagnosis_favorite", "outp_diagnosis_version", "emr_version") : Set.of("inp_medical_record", "emr_version");
+        Set<String> allowed = entry.equals("OUTP") ? Set.of("outp_registration", "outp_emr", "outp_diagnosis", "outp_diagnosis_favorite", "outp_diagnosis_version", "emr_version") : Set.of("inp_admission", "inp_medical_record", "emr_version");
         for (String key : before.keySet()) if (!allowed.contains(key)) assertEquals(before.get(key), after.get(key), key);
+        String parentTable = entry.equals("OUTP") ? "outp_registration" : "inp_admission";
+        Long parentId = entry.equals("OUTP") ? registration : admission;
+        assertEquals(before.get(parentTable).size(), after.get(parentTable).size());
+        for (int index = 0; index < before.get(parentTable).size(); index++) {
+            JsonNode old = json(before.get(parentTable).get(index)), current = json(after.get(parentTable).get(index));
+            if (old.path("id").asLong() == parentId) {
+                var expected = (com.fasterxml.jackson.databind.node.ObjectNode) old.deepCopy();
+                expected.set("updated_at", current.get("updated_at"));
+                assertEquals(expected, current, "Original V47/V50 trigger may touch only this clinical object's updated_at");
+                var originalTime = OffsetDateTime.parse(old.path("updated_at").asText()).toInstant();
+                var currentTime = OffsetDateTime.parse(current.path("updated_at").asText()).toInstant();
+                assertFalse(currentTime.isBefore(originalTime));
+                assertFalse(currentTime.isAfter(jdbc.queryForObject("select clock_timestamp()", Timestamp.class).toInstant()));
+            } else assertEquals(old, current, "All other visits/admissions remain exact");
+        }
         if (entry.equals("OUTP")) {
             var r = jdbc.queryForMap("select * from outp_emr where id=?", outpRecord);
             assertEquals("新主诉", r.get("chief_complaint")); assertEquals(actor.id(), r.get("doctor_id"));
@@ -286,8 +305,8 @@ class V145StructuredEmrParentAccessTest {
         scope("PERSONAL", owner.id(), null); var before = facts(); denied("outp-signed", save("OUTP", Map.of("finding", "x")), 200, 4008, before);
     }
     @Test void outpStructuredRenderedLengthStillReturns4029WithoutPartialWrites() throws Exception {
-        var request = new LinkedHashMap<>((Map<String, Object>) body("OUTP", template, Map.of("finding", "x".repeat(1500))));
-        request.put("emr", Map.of("chiefComplaint", "主诉", "presentIllness", "x".repeat(1000)));
+        var request = new LinkedHashMap<>((Map<String, Object>) body("OUTP", template, Map.of("finding", "x".repeat(900))));
+        request.put("emr", Map.of("chiefComplaint", "主诉", "presentIllness", "x".repeat(1500)));
         var before = facts(); denied("outp-rendered-length", call("PUT", endpoint("OUTP"), request, actor.token()), 200, 4029, before);
     }
     @Test void inpRecordTypeValidationRemainsBeforeParentValidation() throws Exception {
@@ -336,6 +355,7 @@ class V145StructuredEmrParentAccessTest {
             if (change.equals("disabled")) result = call("PUT", path + "/enabled?enabled=false", null, admin.token());
             else result = call("PUT", path, Map.of("username", actor.name(), "realName", actor.name(), "deptId", change.equals("department") ? otherDept : dept, "roleCodes", change.equals("NO_ROLES") ? List.of() : List.of(change.equals("department") ? "DOCTOR_OUTP" : change)), admin.token());
             response(result, 200, 0);
+            entityManager.flush(); entityManager.clear();
         } catch (Exception e) { throw new RuntimeException(e); }
     }
     static Stream<Arguments> waits() { return ENTRIES.stream().flatMap(e -> Stream.of("scope", "disabled-template", "USER-revoke", "DEPT-revoke", "department", "NURSE", "CASHIER", "NO_ROLES", "disabled").map(c -> Arguments.of(e, c))); }
