@@ -162,8 +162,25 @@ public class EmrTemplateService {
      * 返回体键集不变（V45TemplateScopeTest §① 逐键钉死）。
      */
     public List<Map<String, Object>> legacyList(Actor a, Long deptId, String templateType) {
-        StringBuilder sql = new StringBuilder("select t.* from emr_template t where t.enabled ");
+        StringBuilder sql = new StringBuilder("""
+                with legacy_read_actor as (
+                    select requested.user_id,
+                           case when employee.id is null then requested.supplied_dept_id
+                                else employee.dept_id end as dept_id,
+                           case when employee.id is null then requested.supplied_admin
+                                else exists (select 1 from sys_user_role ur join sys_role r on r.id = ur.role_id
+                                             where ur.user_id = requested.user_id and r.code = 'ADMIN') end as is_admin
+                    from (values (cast(? as bigint), cast(? as bigint), cast(? as boolean)))
+                         requested(user_id, supplied_dept_id, supplied_admin)
+                    left join sys_user employee on employee.id = requested.user_id
+                )
+                select t.* from emr_template t cross join legacy_read_actor a where t.enabled
+                """);
         List<Object> args = new ArrayList<>();
+        // Existing employees use this statement's profile; absent trusted actors retain theirs.
+        args.add(a.userId());
+        args.add(a.deptId());
+        args.add(a.admin());
         if (deptId != null) {
             sql.append(" and (t.dept_id = ? or t.dept_id is null) ");
             args.add(deptId);
@@ -172,7 +189,7 @@ public class EmrTemplateService {
             sql.append(" and t.template_type = ? ");
             args.add(templateType);
         }
-        visibleWhere(a, sql, args);
+        sql.append(TEMPLATE_READ_VISIBILITY);
         sql.append(" order by t.id");
         return jdbc.queryForList(sql.toString(), args.toArray());
     }
