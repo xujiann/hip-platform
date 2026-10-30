@@ -17,6 +17,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DelegatingDataSource;
+import org.springframework.jdbc.datasource.TransactionAwareDataSourceProxy;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
@@ -361,7 +362,10 @@ class V146EmrTemplateReadSnapshotTest {
         @Bean @Primary JdbcTemplate v146BoundaryJdbcTemplate(DataSource actual) { return new JdbcTemplate(new BoundaryDataSource(actual)); }
     }
     static final class BoundaryDataSource extends DelegatingDataSource {
-        BoundaryDataSource(DataSource actual) { super(actual); }
+        // Keep JpaTransactionManager's original DataSource resource identity:
+        // a test decorator must not accidentally put maintenance JDBC on an
+        // independent connection outside the real @Transactional boundary.
+        BoundaryDataSource(DataSource actual) { super(new TransactionAwareDataSourceProxy(actual)); }
         @Override public Connection getConnection() throws SQLException { return connection(super.getConnection()); }
         @Override public Connection getConnection(String user, String password) throws SQLException { return connection(super.getConnection(user, password)); }
         Connection connection(Connection actual) {
