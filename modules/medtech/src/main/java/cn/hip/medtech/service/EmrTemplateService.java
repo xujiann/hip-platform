@@ -379,16 +379,20 @@ public class EmrTemplateService {
      */
     public List<Map<String, Object>> listVisible(Long userId, String templateType, String recordType,
                                                  String scope, String keyword, boolean includeDisabled) {
-        Actor a = actorOf(userId);
-        StringBuilder sql = new StringBuilder("""
+        StringBuilder sql = new StringBuilder(TEMPLATE_READ_ACTOR_SNAPSHOT + """
                 select t.*, u.real_name as owner_name, d.name as dept_name,
-                       (select count(*) from emr_template_grant g where g.template_id = t.id) as grant_count
-                from emr_template t
+                       (select count(*) from emr_template_grant g where g.template_id = t.id) as grant_count,
+                       case when a.user_id is null then false
+                            when t.scope = 'PERSONAL' then coalesce(t.owner_id = a.user_id, false)
+                            when t.scope = 'DEPT' then coalesce(t.owner_id = a.user_id, false) or a.is_admin
+                            else a.is_admin end as __visible_editable
+                from emr_template t cross join template_read_actor a
                 left join sys_user u on u.id = t.owner_id
                 left join sys_dept d on d.id = t.dept_id
                 where 1 = 1
                 """);
         List<Object> args = new ArrayList<>();
+        args.add(userId);
         if (!includeDisabled) {
             sql.append(" and t.enabled ");
         }
@@ -408,7 +412,7 @@ public class EmrTemplateService {
             sql.append(" and t.name like ? ");
             args.add("%" + keyword.trim() + "%");
         }
-        visibleWhere(a, sql, args);
+        sql.append(TEMPLATE_READ_VISIBILITY);
         // 排序：默认模板置顶（医生最常要的就是它），再按范围从大到小、名称
         sql.append("""
                  order by t.is_default desc,
@@ -421,7 +425,7 @@ public class EmrTemplateService {
         for (Map<String, Object> r : rows) {
             Tpl t = tplOf(r);
             // 前端据此决定按钮显隐；后端每条写路径仍会再校验一次，这里只是别摆死按钮
-            r.put("editable", canEdit(t, a));
+            r.put("editable", Boolean.TRUE.equals(r.remove("__visible_editable")));
             r.put("scopeName", scopeName(t.scope()));
         }
         return rows;
