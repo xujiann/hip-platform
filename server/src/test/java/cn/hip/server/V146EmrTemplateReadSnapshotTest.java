@@ -156,13 +156,20 @@ class V146EmrTemplateReadSnapshotTest {
         assertAll(() -> assertEquals(http, reply.http(), reply.body().toString()), () -> assertEquals(code, reply.code(), reply.body().toString()));
         if (code != 0) assertTrue(reply.body().path("data").isNull());
     }
+    JsonNode wire(Object value) {
+        // Compare the complete original map using the same JSON wire parsing as
+        // MockMvc replies: valueToTree(Long) and readTree(small integer) create
+        // different numeric node classes despite identical serialized JSON.
+        try { return mapper.readTree(mapper.writeValueAsBytes(value)); }
+        catch (Exception e) { throw new AssertionError(e); }
+    }
     JsonNode expected(String entry) {
         if (entry.equals("use")) {
             var row = new LinkedHashMap<>(jdbc.queryForMap("select * from emr_template where id=?", template));
             row.put("scopeName", EmrTemplateService.scopeName((String) row.get("scope")));
-            return mapper.valueToTree(row);
+            return wire(row);
         }
-        return mapper.valueToTree(jdbc.queryForList("""
+        return wire(jdbc.queryForList("""
                 select g.id,g.template_id,g.grantee_type,g.grantee_id,g.granted_at,
                        case g.grantee_type when 'DEPT' then d.name else u.real_name end as grantee_name,
                        b.real_name as granted_by_name
@@ -253,7 +260,7 @@ class V146EmrTemplateReadSnapshotTest {
         configure("GLOBAL", false); var before = facts(); var oldAudit = audit(); var wanted = expected(entry);
         for (Long user : Arrays.asList(null, 899999999999999L)) {
             Object value = entry.equals("use") ? templates.use(user, template) : templates.grants(user, template);
-            assertEquals(wanted, mapper.valueToTree(value));
+            assertEquals(wanted, wire(value));
         }
         assertEquals(before, facts()); assertEquals(oldAudit, audit());
     }
