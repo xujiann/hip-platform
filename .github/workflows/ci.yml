@@ -302,6 +302,8 @@ jobs:
           # v145: append clinical structured-save parent use rights after the original sequence.
           python3 tools/e2e-v145-structured-emr-parent-access.py
 
+          python3 tools/e2e-v146-emr-template-read-snapshot.py
+
       - name: 失败时输出服务端日志
         if: failure()
         run: |
