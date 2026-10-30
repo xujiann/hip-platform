@@ -2,6 +2,14 @@
 
 版本纪律：语义化版本；平台迁移段 V1–V999，实施段 V10000+；升级 = 停服→备份→换产物→自动前滚→回归抽查（多医院部署操作指南 §三）。
 
+## 1.8.69（2026-10-31）
+
+仅EmrTemplateService.visibleFieldRows变更：保留初始fieldActor准入，再以同一条SQL读取auth.username对应真实员工当前enabled、四岗、ADMIN/科室、父模板可见性与字段结果及空态。原父权限和字段本已同语句，本轮闭合此前独立员工画像及空rows后置再判权的快照缺口，不能冒称原父payload拆成两条查询。私有哨兵返回前移除，无读锁或生产测试钩子。
+
+原GET /api/emr/templates/{templateId}/fields、Controller.fields(Long,Boolean)和service签名保持。原raw12列与公开11camelCase键、原parseValueSet数组/trim/blank/历史坏JSON行为、includeDisabled和sort_no/id顺序不变。当前员工停用或失去原四岗沿403/1005，无真实员工不引入head可信Actor fallback；缺失或不可见父仍4066，合法无字段/子全停用仍code0[]。不添加父enabled/type/recordType门；原scope/owner/同科DEPT/ADMIN及USER/DEPT叠加授权矩阵保持，ADMIN没有他人PERSONAL后门。JWT入口前已停用仍沿原入口401政策。
+
+本地全量、独立包和原医生站浏览器验收通过，尚未推送。统计见规划顶节及README，范围见[v150复核](docs/验收/v150复核-结构化字段读取权限快照.md)。
+
 ## 1.8.68（2026-10-30）
 
 旧版模板列表legacyList在同一条SQL中读取真实用户当前DB科室、ADMIN权限、原可见矩阵与完整模板正文，避免先读旧身份后取得后来发布的新私密正文；真实用户已失去ADMIN时不再由旧context或supplied Actor的ADMIN兜底。仅该方法变更，controller/service签名、共享actorOf、两SQL常量及其余方法保持原字节。
