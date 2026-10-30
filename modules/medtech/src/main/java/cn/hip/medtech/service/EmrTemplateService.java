@@ -856,19 +856,21 @@ public class EmrTemplateService {
         if (deptId == null || !notBlank(recordType)) {
             throw new HipBizException(4067, "取科室默认模板必须同时给出科室与病历类型");
         }
-        Actor a = actorOf(userId);
-        List<Map<String, Object>> rows = jdbc.queryForList("""
-                select * from emr_template
-                where dept_id = ? and record_type = ? and is_default and enabled limit 1
-                """, deptId, recordType.trim().toUpperCase());
+        List<Map<String, Object>> rows = jdbc.queryForList(TEMPLATE_READ_ACTOR_SNAPSHOT + """
+                select t.*, exists (select 1 where true
+                """ + TEMPLATE_READ_VISIBILITY + """
+                ) as __default_visible
+                from emr_template t cross join template_read_actor a
+                where t.dept_id = ? and t.record_type = ? and t.is_default and t.enabled limit 1
+                """, userId, deptId, recordType.trim().toUpperCase());
         if (rows.isEmpty()) return null;
-        Tpl t = tplOf(rows.get(0));
-        // 默认模板也照可见性判一次：跨科取别人科的默认模板要么本就可见（GLOBAL/HOSPITAL），
-        // 要么得有授权，不能因为"它是默认的"就绕过 1073/1078
-        if (!canSee(t, a)) {
+        Map<String, Object> row = rows.getFirst();
+        // Keep missing-default null distinct from an existing invisible default.
+        // The internal same-snapshot flag never becomes a public template key.
+        if (!Boolean.TRUE.equals(row.remove("__default_visible"))) {
             throw new HipBizException(4066, "模板不存在或未授权使用");
         }
-        return rows.get(0);
+        return row;
     }
 
     // ==================================================================
