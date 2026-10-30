@@ -2,6 +2,16 @@
 
 版本纪律：语义化版本；平台迁移段 V1–V999，实施段 V10000+；升级 = 停服→备份→换产物→自动前滚→回归抽查（多医院部署操作指南 §三）。
 
+## 1.8.66（2026-10-30）
+
+默认模板读取在同一条SQL中取得原actor画像、启用默认候选行、原scope/owner/USER与DEPT授权及实际正文。不存在启用默认仍返回null，候选存在但不可见仍4066；内部__default_visible仅供服务判定，返回前移除，原完整行及日期类型保持，不新增scopeName或其他公开键。避免先读旧正文、后用另一时刻新授权放行的混合快照。
+
+权限矩阵沿原规则：GLOBAL/HOSPITAL、owner、DEPT的ADMIN/同科及叠加USER/DEPT grant（含PERSONAL），ADMIN没有他人PERSONAL后门。原五岗及JWT过滤、requested null/missing actor的可信内部边界保持，不增加员工enabled或读取岗位政策。候选条件仍是原dept_id、trim/uppercase后的recordType、is_default与enabled，不新增锁、advisory、迁移、菜单、配置或错误码。
+
+服务参数deptId=null或recordType null/blank仍4067；HTTP缺必填参数沿原4000，不能与服务边界混称。公开维护只能正常构建DEPT默认；其他scope历史组合由受控Java fixture验证原读取政策，不冒称公开可建。已开始且当时获权的语句可返回其合法快照，不承诺撤回已交付缓存或任意瞬时撤权。除defaultTemplate方法外，v146的use/grants和两个SQL常量、字段、维护、其他读取及临床代码原始字节保持。
+
+本地全量、独立包及实际医生站验收通过，尚未推送。统计见规划顶节及README，范围见[v147复核](docs/验收/v147复核-默认模板读取权限快照.md)。
+
 ## 1.8.65（2026-10-30）
 
 按id套用模板正文与读取授权名单各在一条SQL中取得当前actor科室及DB ADMIN画像、父scope/owner/USER与DEPT授权和实际返回数据，避免先校验可见性、后另取新正文或新授权集合的混合快照。正文enabled与scopeName从同一返回行判断；授权名单使用父LEFT JOIN，父不可见/缺失沿4066，可见无授权仍空列表，不把内部空行送入原公开DTO。
