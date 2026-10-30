@@ -2,6 +2,16 @@
 
 版本纪律：语义化版本；平台迁移段 V1–V999，实施段 V10000+；升级 = 停服→备份→换产物→自动前滚→回归抽查（多医院部署操作指南 §三）。
 
+## 1.8.68（2026-10-30）
+
+旧版模板列表legacyList在同一条SQL中读取真实用户当前DB科室、ADMIN权限、原可见矩阵与完整模板正文，避免先读旧身份后取得后来发布的新私密正文；真实用户已失去ADMIN时不再由旧context或supplied Actor的ADMIN兜底。仅该方法变更，controller/service签名、共享actorOf、两SQL常量及其余方法保持原字节。
+
+真实sys_user行存在时始终使用该行科室（含真实null）及当前DB ADMIN；不存在或null/missing uid时完整保留原可信内部Actor的userId/dept/admin，兼容原无DB WithMockUser ADMIN，不将内部调用冒称HTTP。公开员工接口只有创建、更新及启停，未发现物理删除入口；外部直SQL删人及任意瞬时撤权不属于本轮承诺。原员工enabled和五岗入口政策不额外收紧。
+
+仅select t.*返回原完整snake_case行及日期类型，不新增scopeName、editable、grant_count或私有CTE列。enabled-only、deptId筛选的本部门或null、原非blank type原样literal（不trim/uppercase）、order by id不改；无候选或隐藏仍code0空列表，坏Long仍原4000。GLOBAL/HOSPITAL、owner、DEPT同科/ADMIN及叠加USER/DEPT授权矩阵保留，ADMIN没有他人PERSONAL后门。
+
+本地全量、独立包及原RIS浏览器验收通过，尚未推送。统计见规划顶节及README，范围见[v149复核](docs/验收/v149复核-旧版模板读取权限快照.md)。
+
 ## 1.8.67（2026-10-30）
 
 可见模板列表在同一条SQL中取得requested用户、当前DB科室和ADMIN画像、原完整模板行、owner_name/dept_name/grant_count及原可见性和维护提示。避免先缓存旧身份、权限失去后再读到后来发布的新私密正文。内部__visible_editable返回前移除，仅填原公开editable；scopeName、原全行与日期类型保持，不新增公开键。
