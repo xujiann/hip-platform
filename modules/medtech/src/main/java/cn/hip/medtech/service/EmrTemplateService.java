@@ -466,17 +466,48 @@ public class EmrTemplateService {
     }
 
     /**
+     * These two HEAD reads retain actorOf(userId)'s identity/department/DB-admin
+     * semantics, including trusted null or missing ids. The actor, parent ACL,
+     * additive grants and returned data belong to one statement snapshot.
+     * Entry duties remain the existing JWT and controller policy; no read lock
+     * or new employee-enabled/duty policy is introduced here.
+     */
+    private static final String TEMPLATE_READ_ACTOR_SNAPSHOT = """
+            with template_read_actor as (
+                select requested.user_id, employee.dept_id,
+                       exists (select 1 from sys_user_role ur join sys_role r on r.id = ur.role_id
+                               where ur.user_id = requested.user_id and r.code = 'ADMIN') as is_admin
+                from (values (cast(? as bigint))) requested(user_id)
+                left join sys_user employee on employee.id = requested.user_id
+            )
+            """;
+
+    /** Same matrix as canSee/visibleWhere, including PERSONAL department grants. */
+    private static final String TEMPLATE_READ_VISIBILITY = """
+             and (t.scope in ('GLOBAL', 'HOSPITAL') or t.owner_id = a.user_id
+                  or (t.scope = 'DEPT' and (a.is_admin or t.dept_id = a.dept_id))
+                  or exists (select 1 from emr_template_grant visibility_grant
+                             where visibility_grant.template_id = t.id
+                               and ((visibility_grant.grantee_type = 'USER' and visibility_grant.grantee_id = a.user_id)
+                                    or (visibility_grant.grantee_type = 'DEPT' and visibility_grant.grantee_id = a.dept_id))))
+            """;
+
+    /**
      * 套用模板：按 id 取正文。<b>只读</b>——真正写病历仍走既有病历保存端点。
      * 不可见返 4066（与列表口径同构）；已停用返 4066——停用了还能套用，"停用"就等于没做。
      */
     public Map<String, Object> use(Long userId, Long id) {
-        Actor a = actorOf(userId);
-        Tpl t = requireVisible(id, a);
-        if (!t.enabled()) {
+        var rows = jdbc.queryForList(TEMPLATE_READ_ACTOR_SNAPSHOT + """
+                select t.* from emr_template t cross join template_read_actor a where t.id = ?
+                """ + TEMPLATE_READ_VISIBILITY, userId, id);
+        if (rows.isEmpty()) {
+            throw new HipBizException(4066, "模板不存在或未授权使用");
+        }
+        Map<String, Object> row = rows.getFirst();
+        if (!Boolean.TRUE.equals(row.get("enabled"))) {
             throw new HipBizException(4066, "该模板已停用，不可套用");
         }
-        Map<String, Object> row = jdbc.queryForMap("select * from emr_template where id = ?", id);
-        row.put("scopeName", scopeName(t.scope()));
+        row.put("scopeName", scopeName((String) row.get("scope")));
         return row;
     }
 
@@ -638,18 +669,23 @@ public class EmrTemplateService {
     // ==================================================================
 
     public List<Map<String, Object>> grants(Long userId, Long templateId) {
-        Actor a = actorOf(userId);
-        requireVisible(templateId, a);
-        return jdbc.queryForList("""
+        var rows = jdbc.queryForList(TEMPLATE_READ_ACTOR_SNAPSHOT + """
                 select g.id, g.template_id, g.grantee_type, g.grantee_id, g.granted_at,
                        case g.grantee_type when 'DEPT' then d.name else u.real_name end as grantee_name,
                        b.real_name as granted_by_name
-                from emr_template_grant g
+                from emr_template t cross join template_read_actor a
+                left join emr_template_grant g on g.template_id = t.id
                 left join sys_dept d on g.grantee_type = 'DEPT' and d.id = g.grantee_id
                 left join sys_user u on g.grantee_type = 'USER' and u.id = g.grantee_id
                 left join sys_user b on b.id = g.granted_by
-                where g.template_id = ? order by g.grantee_type, g.id
-                """, templateId);
+                where t.id = ?
+                """ + TEMPLATE_READ_VISIBILITY + " order by g.grantee_type, g.id", userId, templateId);
+        if (rows.isEmpty()) {
+            throw new HipBizException(4066, "模板不存在或未授权使用");
+        }
+        // A visible parent with no grants has one LEFT JOIN row with null g.id.
+        // Its existing seven columns are not a public grant and expose no new key.
+        return rows.getFirst().get("id") == null ? List.of() : rows;
     }
 
     /** 授予。重复授予按幂等处理（on conflict do nothing）——"再授权一次"业务上就是无操作，不该报错。 */
