@@ -2,6 +2,16 @@
 
 版本纪律：语义化版本；平台迁移段 V1–V999，实施段 V10000+；升级 = 停服→备份→换产物→自动前滚→回归抽查（多医院部署操作指南 §三）。
 
+## 1.8.67（2026-10-30）
+
+可见模板列表在同一条SQL中取得requested用户、当前DB科室和ADMIN画像、原完整模板行、owner_name/dept_name/grant_count及原可见性和维护提示。避免先缓存旧身份、权限失去后再读到后来发布的新私密正文。内部__visible_editable返回前移除，仅填原公开editable；scopeName、原全行与日期类型保持，不新增公开键。
+
+原可见矩阵保持GLOBAL/HOSPITAL、owner、DEPT管理员/同科及叠加USER/DEPT授权（含PERSONAL），ADMIN没有他人PERSONAL后门。原editable为PERSONAL仅本人、DEPT本人或ADMIN、全局/全院仅ADMIN，null userId始终不可维护；它仅是界面提示，写端仍重新判权，错误提示不冒称已成功越权写入。原五岗JWT、可信null/missing actor及员工enabled的原读取政策不额外收紧。
+
+includeDisabled默认false；type/recordType/scope的trim和uppercase、keyword trim后LIKE及原空白/非法过滤行为保持；排序仍默认优先、作用范围等级、name、id。隐藏或无候选仍成功列表过滤，不新增逐行4066。授权/父scope/grant_count本已同payload语句，单纯grant/scope变化不是本轮所称split-parent风险；已开始且当时获权的语句可以返回合法旧快照，已交付缓存不追撤。
+
+本地全量、独立包及原维护页浏览器验收通过，尚未推送。统计见规划顶节及README，范围见[v148复核](docs/验收/v148复核-可见模板读取权限快照.md)。
+
 ## 1.8.66（2026-10-30）
 
 默认模板读取在同一条SQL中取得原actor画像、启用默认候选行、原scope/owner/USER与DEPT授权及实际正文。不存在启用默认仍返回null，候选存在但不可见仍4066；内部__default_visible仅供服务判定，返回前移除，原完整行及日期类型保持，不新增scopeName或其他公开键。避免先读旧正文、后用另一时刻新授权放行的混合快照。
