@@ -28,6 +28,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import javax.sql.DataSource;
 import java.lang.reflect.*;
 import java.net.URLEncoder;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.sql.*;
@@ -116,6 +117,16 @@ class V147EmrDefaultReadSnapshotTest {
         SecurityContextHolder.clearContext();
         try {
             MockHttpServletRequestBuilder request = switch (verb) { case "PUT" -> put(path); case "POST" -> post(path); case "DELETE" -> delete(path); default -> get(path); };
+            // MockMvc's String URI builder re-encodes an already URLEncoder'd
+            // plus as a literal plus. Supply decoded servlet query values, as a
+            // real HTTP form-style query parser does, without changing inputs.
+            if (verb.equals("GET") && path.startsWith(PATH + "?")) {
+                request = get(PATH);
+                for (String part : path.substring(PATH.length() + 1).split("&")) {
+                    String[] pair = part.split("=", 2);
+                    request.queryParam(URLDecoder.decode(pair[0], StandardCharsets.UTF_8), URLDecoder.decode(pair.length == 2 ? pair[1] : "", StandardCharsets.UTF_8));
+                }
+            }
             if (payload != null) request.contentType("application/json").content(mapper.writeValueAsString(payload));
             if (token != null) request.header("Authorization", "Bearer " + token);
             var response = mvc.perform(request).andReturn().getResponse();
