@@ -28,6 +28,7 @@ class Fixture:
         self.prefix = 'V150模拟' + self.suffix
         self.tokens, self.identities, self.names, self.templates = {'admin': login()}, {}, {}, {}
         self.unknown_writes, self.refusals, self.reads = [], 0, 0
+        self.sequence = 0
         self.identities['admin'] = self.api('GET', '/auth/me')
         for who, role in [('doctor', 'DOCTOR_OUTP'), ('peer', 'DOCTOR_OUTP'), ('other', 'DOCTOR_OUTP'),
                           ('nurse', 'NURSE'), ('quality', 'QUALITY'), ('tech', 'TECHNICIAN'),
