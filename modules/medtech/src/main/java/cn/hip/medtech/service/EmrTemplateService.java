@@ -319,20 +319,44 @@ public class EmrTemplateService {
 
     /** The field rows and parent visibility use one statement snapshot, including USER and DEPT grants. */
     public List<Map<String, Object>> visibleFieldRows(Long templateId, boolean includeDisabled) {
-        Actor a = fieldActor();
-        StringBuilder sql = new StringBuilder("""
-                select f.id, f.template_id, f.field_code, f.label, f.datatype, f.required, f.sort_no,
+        fieldActor();
+        var auth = SecurityContextHolder.getContext().getAuthentication();
+        String sql = """
+                with field_read_actor as (
+                    select u.id as user_id, u.dept_id,
+                           coalesce(u.enabled, false) and exists (
+                               select 1 from sys_user_role ur join sys_role r on r.id = ur.role_id
+                               where ur.user_id = u.id and r.code in ('ADMIN', 'DOCTOR_OUTP', 'NURSE', 'QUALITY')
+                           ) as actor_allowed,
+                           exists (select 1 from sys_user_role ur join sys_role r on r.id = ur.role_id
+                                   where ur.user_id = u.id and r.code = 'ADMIN') as is_admin
+                    from (values (cast(? as text))) requested(username)
+                    left join sys_user u on u.username = requested.username
+                ), field_read_parent as (
+                    select t.id from emr_template t cross join field_read_actor a where t.id = ?
+                """ + TEMPLATE_READ_VISIBILITY + """
+                )
+                select a.actor_allowed as __field_actor_allowed, p.id as __field_visible_parent_id,
+                       f.id, f.template_id, f.field_code, f.label, f.datatype, f.required, f.sort_no,
                        f.value_set, f.placeholder, f.unit, f.enabled, f.created_at
-                from emr_template_field f join emr_template t on t.id = f.template_id
-                where t.id = ? and (cast(? as boolean) or f.enabled = true)
-                """);
-        List<Object> args = new ArrayList<>(List.of(templateId, includeDisabled));
-        visibleWhere(a, sql, args);
-        sql.append(" order by f.sort_no, f.id");
-        var rows = jdbc.queryForList(sql.toString(), args.toArray());
-        // An empty visible template is valid; a missing/invisible one shares the existing 4066 boundary.
-        if (rows.isEmpty()) requireVisible(templateId, fieldActor());
-        return rows;
+                from field_read_actor a left join field_read_parent p on true
+                left join emr_template_field f on f.template_id = p.id and (cast(? as boolean) or f.enabled = true)
+                order by f.sort_no, f.id
+                """;
+        var rows = jdbc.queryForList(sql, auth.getName(), templateId, includeDisabled);
+        if (!Boolean.TRUE.equals(rows.getFirst().get("__field_actor_allowed"))) {
+            throw new AccessDeniedException("模板字段操作人不存在、已停用或岗位已变化");
+        }
+        if (rows.getFirst().get("__field_visible_parent_id") == null) {
+            throw new HipBizException(4066, "模板不存在或未授权使用");
+        }
+        var fields = new ArrayList<Map<String, Object>>();
+        for (var row : rows) {
+            row.remove("__field_actor_allowed");
+            row.remove("__field_visible_parent_id");
+            if (row.get("id") != null) fields.add(row);
+        }
+        return fields;
     }
 
     /** Parent-first locking also serializes the existing per-template duplicate-code check. */
