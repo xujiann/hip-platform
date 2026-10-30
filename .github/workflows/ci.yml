@@ -303,6 +303,7 @@ jobs:
           python3 tools/e2e-v145-structured-emr-parent-access.py
 
           python3 tools/e2e-v146-emr-template-read-snapshot.py
+          python3 tools/e2e-v147-emr-default-read-snapshot.py
 
       - name: 失败时输出服务端日志
         if: failure()
