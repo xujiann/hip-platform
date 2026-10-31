@@ -796,6 +796,7 @@ const structTemplateId = ref<number | null>(null)
 const structFields = ref<EmrTemplateField[]>([])
 const structValues = ref<Record<string, unknown>>({})
 const structHint = ref('')
+let structFieldReadVersion = 0
 
 /**
  * 1082★ 跨患者复制粘贴管控。**只在前端**：block 档也只是拒绝这一次粘贴动作，
@@ -966,16 +967,17 @@ async function undoAutoTemplate() {
 /** 取模板的结构化字段定义（车道 I：GET /api/emr/templates/{id}/fields，只回启用中的） */
 async function loadStructFields() {
   const context = captureWorkspace(); if (!context) return
+  const readVersion = ++structFieldReadVersion
   const templateId = structTemplateId.value
   structFields.value = []; structValues.value = {}; structHint.value = ''
   if (!templateId) return
   try {
     const response = await inWorkspace(context, () => client.get(`/emr/templates/${templateId}/fields`))
-    if (!response || !context.valid() || structTemplateId.value !== templateId) return
+    if (!response || !context.valid() || readVersion !== structFieldReadVersion || structTemplateId.value !== templateId) return
     structFields.value = (response.data.data ?? []) as EmrTemplateField[]
     if (!structFields.value.length) structHint.value = '该模板尚未配置结构化元素，本次按自由文本书写即可（元素定义须由管理员配置）'
   } catch {
-    if (context.valid() && structTemplateId.value === templateId) structHint.value = '结构化元素定义暂不可读，本次仍可按自由文本书写病历'
+    if (context.valid() && readVersion === structFieldReadVersion && structTemplateId.value === templateId) structHint.value = '结构化元素定义暂不可读，本次仍可按自由文本书写病历'
   }
 }
 
