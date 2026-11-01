@@ -231,7 +231,10 @@ class Fixture:
                 'records': self.api('GET', f"/inpatient/admissions/{case['admission']}/records")}
             if 'registration' in case:
                 clinical[case_key]['outp'] = self.api('GET', f"/outpatient/doctor/{case['registration']['id']}/workspace")
-        return {'clinical': clinical, 'template': self.api('GET', '/emr-templates/' + str(self.template)),
+        heads = self.api('GET', '/emr-templates/visible?type=EMR&includeDisabled=true&keyword=' + q(self.prefix))
+        own_head = [row for row in heads if row['id'] == self.template]
+        assert len(own_head) == 1, 'Read the exact owner-visible metadata, including a disabled parent'
+        return {'clinical': clinical, 'template': own_head[0],
             'fields': self.api('GET', f'/emr/templates/{self.template}/fields?includeDisabled=true'),
             'grants': self.api('GET', f'/emr-templates/{self.template}/grants')}
 
@@ -313,6 +316,7 @@ def main():
     f.api('PUT', '/emr-templates/' + str(f.template), private)
     f.api('PUT', f'/emr-templates/{f.template}/disable')
     before = f.snapshot()
+    f.api('GET', '/emr-templates/' + str(f.template), expected_code=4066)
     f.api('GET', '/emr-templates/' + str(f.template), who='nurse', expected_code=4066)
     f.hits(f.ids(all_cases, ['INP']), 'nurse')
     f.hits(f.ids(['own', 'today']), 'doctor')
