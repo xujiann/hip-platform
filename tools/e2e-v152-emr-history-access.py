@@ -71,7 +71,8 @@ class Fixture:
         # A true OUTP-author-only relation: author wrote the past foreign visit
         # while ADMIN, then loses ADMIN. There is no today/own-registration
         # shortcut. INP authorship alone is independently NOT a patient grant.
-        self.add_record('past', self.prefix + '仅住院书写人', who='recordauthor')
+        inp_authored = self.add_record('past', self.prefix + '仅住院书写人', who='recordauthor')
+        assert inp_authored['doctorId'] == self.identities['recordauthor']['id']
         self.set_roles('author', ['DOCTOR_OUTP'])
         self.set_roles('recordauthor', ['DOCTOR_OUTP'])
         self.register(self.cases['own']['patient'], self.past, 'mixed')
@@ -128,7 +129,10 @@ class Fixture:
     def register(self, pid, date, doctor):
         schedule = self.api('POST', '/outpatient/schedules', {'deptId': self.dept, 'doctorId': self.identities[doctor]['id'],
             'scheduleDate': date.isoformat(), 'fee': 0, 'capacity': 5})
-        return self.api('POST', '/outpatient/registrations', {'patientId': pid, 'scheduleId': schedule['id']})
+        registered = self.api('POST', '/outpatient/registrations', {'patientId': pid, 'scheduleId': schedule['id']})
+        assert registered['visitDate'] == date.isoformat()
+        assert registered['doctorName'] == self.identities[doctor]['realName']
+        return registered
 
     def add_record(self, key, body, who='admin'):
         return self.api('POST', '/inpatient/admissions/' + str(self.cases[key]['admission']) + '/records',
