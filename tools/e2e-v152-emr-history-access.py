@@ -157,9 +157,9 @@ class Fixture:
         self.reads += 1
         return row
 
-    def copy_body(self, key, source, **changes):
+    def copy_body(self, key, source_kind, **changes):
         self.sequence += 1
-        body = {'source': source, 'recordId': self.sources[(key, source)]['id'], 'patientId': self.cases[key]['patient'],
+        body = {'source': source_kind, 'recordId': self.sources[(key, source_kind)]['id'], 'patientId': self.cases[key]['patient'],
                 'name': self.prefix + '模板' + str(self.sequence), 'scope': 'PERSONAL', 'deptId': None, 'recordType': None}
         body.update(changes)
         assert len(body) == 7
