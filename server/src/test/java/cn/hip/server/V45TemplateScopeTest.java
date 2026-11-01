@@ -69,7 +69,7 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @SpringBootTest
 @Transactional
-@WithMockUser(roles = {"ADMIN", "DOCTOR_OUTP", "QUALITY"})
+@WithMockUser(username = "admin", roles = {"ADMIN", "DOCTOR_OUTP", "QUALITY"})
 class V45TemplateScopeTest {
 
     @Autowired MedTechController medTech;
