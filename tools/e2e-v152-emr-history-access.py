@@ -234,19 +234,24 @@ def main():
         for source in ['OUTP', 'INP']: f.refuse('past', source, who)
     f.listing('null', 'doctor', 4036); f.refuse('null', 'INP', 'doctor')
     for key in ['past', 'own', 'today', 'null', 'empty']:
-        rows = f.listing(key, 'nurse'); assert all(r['source'] == 'INP' for r in rows)
+        rows = f.listing(key, 'nurse')
+        if key == 'empty': assert rows == []
+        else:
+            assert {r['source'] for r in rows} == {'INP'}
+            assert any(r['record_id'] == f.sources[(key, 'INP')]['id'] for r in rows)
     f.body('past', 'INP', 'nurse'); f.known_copy('past', 'INP', 'nurse')
     f.refuse('past', 'OUTP', 'nurse')
     f.listing('past', 'tech', 1005)
     for source in ['OUTP', 'INP']: f.refuse('past', source, 'tech', 1005)
     # Role unions use the same real JWT after committed public role changes.
-    f.listing('past', 'mixed'); f.refuse('past', 'OUTP', 'mixed')
+    assert {r['source'] for r in f.listing('past', 'mixed')} == {'INP'}
+    f.refuse('past', 'OUTP', 'mixed')
     assert {r['source'] for r in f.listing('own', 'mixed')} == {'OUTP', 'INP'}
     f.set_roles('mixed', ['DOCTOR_OUTP', 'TECHNICIAN'])
     f.listing('past', 'mixed', 4036); f.refuse('past', 'INP', 'mixed')
     f.body('own', 'OUTP', 'mixed')
     f.set_roles('mixed', ['NURSE', 'TECHNICIAN'])
-    assert all(r['source'] == 'INP' for r in f.listing('past', 'mixed'))
+    assert {r['source'] for r in f.listing('past', 'mixed')} == {'INP'}
     f.refuse('past', 'OUTP', 'mixed')
     f.set_roles('mixed', ['QUALITY', 'TECHNICIAN'])
     assert {r['source'] for r in f.listing('past', 'mixed')} == {'OUTP', 'INP'}
