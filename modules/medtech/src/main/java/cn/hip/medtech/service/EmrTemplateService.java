@@ -1,6 +1,7 @@
 package cn.hip.medtech.service;
 
 import cn.hip.platform.core.common.HipBizException;
+import cn.hip.platform.core.config.BusinessDates;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -970,6 +971,69 @@ public class EmrTemplateService {
         return out;
     }
 
+    /** Real employee, role union and patient relationship share the payload's MVCC snapshot. */
+    private static final String HISTORY_READ_SNAPSHOT = """
+            with history_read_actor as (
+                select u.id as user_id, requested.patient_id, requested.business_today,
+                       coalesce(u.enabled, false) and exists (
+                           select 1 from sys_user_role ur join sys_role r on r.id = ur.role_id
+                           where ur.user_id = u.id and r.code in ('ADMIN', 'DOCTOR_OUTP', 'NURSE', 'QUALITY')
+                       ) as actor_allowed,
+                       exists (select 1 from sys_user_role ur join sys_role r on r.id = ur.role_id
+                               where ur.user_id = u.id and r.code in ('ADMIN', 'QUALITY')) as all_patients,
+                       exists (select 1 from sys_user_role ur join sys_role r on r.id = ur.role_id
+                               where ur.user_id = u.id and r.code = 'DOCTOR_OUTP') as is_doctor,
+                       exists (select 1 from sys_user_role ur join sys_role r on r.id = ur.role_id
+                               where ur.user_id = u.id and r.code = 'NURSE') as is_nurse
+                from (values (cast(? as text), cast(? as bigint), cast(? as date)))
+                     requested(username, patient_id, business_today)
+                left join sys_user u on u.username = requested.username
+            ), history_read_scope as (
+                select a.actor_allowed, p.all_history as outp_allowed,
+                       (p.all_history or a.is_nurse) as inp_allowed
+                from history_read_actor a cross join lateral (
+                    select (a.all_patients or (a.is_doctor and (
+                        exists (select 1 from outp_registration relation
+                                where relation.patient_id = a.patient_id and relation.status <> 'CANCELLED'
+                                  and (relation.visit_date = a.business_today or relation.doctor_id = a.user_id
+                                       or exists (select 1 from outp_emr written
+                                                  where written.registration_id = relation.id and written.doctor_id = a.user_id)))
+                        or exists (select 1 from inp_admission relation
+                                   where relation.patient_id = a.patient_id and relation.doctor_id = a.user_id)
+                    ))) as all_history
+                ) p
+            )
+            """;
+
+    private String historyReadUsername() {
+        var auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null || !auth.isAuthenticated() || auth.getAuthorities().stream()
+                .noneMatch(a -> Set.of("ROLE_ADMIN", "ROLE_DOCTOR_OUTP", "ROLE_NURSE", "ROLE_QUALITY")
+                        .contains(a.getAuthority()))) {
+            throw new AccessDeniedException("无历史病历读取岗位权限");
+        }
+        return auth.getName();
+    }
+
+    /** Status sentinels also cover empty lists and denied/missing single records. */
+    private void requireHistoryRead(Map<String, Object> row, String source) {
+        if (!Boolean.TRUE.equals(row.get("__history_actor_allowed"))) {
+            throw new AccessDeniedException("历史病历读取人不存在、已停用或岗位已变化");
+        }
+        boolean outp = Boolean.TRUE.equals(row.get("__history_outp_allowed"));
+        boolean inp = Boolean.TRUE.equals(row.get("__history_inp_allowed"));
+        if (!(source == null ? outp || inp : "INP".equals(source) ? inp : outp)) {
+            throw new HipBizException(4036, "无权查阅该患者的既往病历");
+        }
+    }
+
+    private void removeHistoryFlags(Map<String, Object> row) {
+        row.remove("__history_actor_allowed");
+        row.remove("__history_outp_allowed");
+        row.remove("__history_inp_allowed");
+        row.remove("__history_row_id");
+    }
+
     /**
      * 该患者的既往病历列表（1079★ 「按既往病历建新病历」的选择清单）。
      *
@@ -981,7 +1045,11 @@ public class EmrTemplateService {
             throw new HipBizException(4068, "未指定患者，取不到既往病历");
         }
         int n = limit == null || limit <= 0 || limit > 200 ? 50 : limit;
-        return jdbc.queryForList("""
+        var rows = jdbc.queryForList(HISTORY_READ_SNAPSHOT + """
+                select s.actor_allowed as __history_actor_allowed,
+                       s.outp_allowed as __history_outp_allowed, s.inp_allowed as __history_inp_allowed,
+                       entries.record_id as __history_row_id, entries.*
+                from history_read_scope s left join lateral (
                 select 'INP' as source, r.id as record_id, r.record_type, r.title,
                        r.created_at, a.admission_no as visit_no, d.name as dept_name,
                        u.real_name as doctor_name, length(r.content) as content_length
@@ -989,7 +1057,7 @@ public class EmrTemplateService {
                 join inp_admission a on a.id = r.admission_id
                 left join sys_dept d on d.id = a.dept_id
                 left join sys_user u on u.id = r.doctor_id
-                where a.patient_id = ?
+                where a.patient_id = ? and s.actor_allowed and s.inp_allowed
                 union all
                 select 'OUTP', e.id, 'OUTP', '门诊病历',
                        e.updated_at, cast(g.reg_no as varchar), d2.name,
@@ -1001,10 +1069,19 @@ public class EmrTemplateService {
                 join outp_registration g on g.id = e.registration_id
                 left join sys_dept d2 on d2.id = g.dept_id
                 left join sys_user u2 on u2.id = e.doctor_id
-                where g.patient_id = ?
+                where g.patient_id = ? and s.actor_allowed and s.outp_allowed
                 order by created_at desc
                 limit ?
-                """, patientId, patientId, n);
+                ) entries on true
+                """, historyReadUsername(), patientId, BusinessDates.today(), patientId, patientId, n);
+        requireHistoryRead(rows.getFirst(), null);
+        var result = new ArrayList<Map<String, Object>>();
+        for (var row : rows) {
+            boolean present = row.get("__history_row_id") != null;
+            removeHistoryFlags(row);
+            if (present) result.add(row);
+        }
+        return result;
     }
 
     /**
@@ -1050,6 +1127,9 @@ public class EmrTemplateService {
             throw new HipBizException(4068, "既往病历不存在或非本患者（source 应为 INP 住院 / OUTP 门诊）");
         }
         List<Object> args = new ArrayList<>();
+        args.add(historyReadUsername());
+        args.add(patientId);
+        args.add(BusinessDates.today());
         args.add(recordId);
         String ownerClause = "";
         if (patientId != null) {
@@ -1081,11 +1161,20 @@ public class EmrTemplateService {
                   join outp_registration g on g.id = e.registration_id
                   where e.id = ?
                   """ + ownerClause;
+        String permission = "INP".equals(s) ? "s.inp_allowed" : "s.outp_allowed";
+        sql = HISTORY_READ_SNAPSHOT + """
+                select s.actor_allowed as __history_actor_allowed,
+                       s.outp_allowed as __history_outp_allowed, s.inp_allowed as __history_inp_allowed,
+                       selected.id as __history_row_id, selected.*
+                from history_read_scope s left join lateral (
+                """ + sql + " and s.actor_allowed and " + permission + " ) selected on true";
         List<Map<String, Object>> rows = jdbc.queryForList(sql, args.toArray());
-        if (rows.isEmpty()) {
+        Map<String, Object> r = rows.getFirst();
+        requireHistoryRead(r, s);
+        if (r.get("__history_row_id") == null) {
             throw new HipBizException(4068, "既往病历不存在或非本患者");
         }
-        Map<String, Object> r = rows.get(0);
+        removeHistoryFlags(r);
         return new PriorRecord(s, num(r.get("id")), (String) r.get("record_type"),
                 (String) r.get("title"), (String) r.get("content"), r.get("created_at"));
     }

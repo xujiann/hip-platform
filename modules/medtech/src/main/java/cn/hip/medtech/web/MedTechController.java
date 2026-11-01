@@ -625,6 +625,9 @@ public class MedTechController {
     /** 本组端点的权限门槛（角色只是门槛，可见/可维护按四级作用范围逐条判，见 EmrTemplateService） */
     private static final String EMR_TPL_ROLES =
             "hasAnyRole('ADMIN','DOCTOR_OUTP','QUALITY','NURSE','TECHNICIAN')";
+    /** Clinical history duties are distinct from template catalogue duties. */
+    private static final String EMR_HISTORY_ROLES =
+            "hasAnyRole('ADMIN','DOCTOR_OUTP','QUALITY','NURSE')";
 
     /**
      * <b>冻结契约</b>：分量集合自 v17 起未变，v38 加 templateType 后再未动。
@@ -852,7 +855,7 @@ public class MedTechController {
      * 超长时截断并显式回 {@code truncated=true}，<b>不做无声截断</b>。
      */
     @PostMapping("/api/emr-templates/from-record")
-    @PreAuthorize(EMR_TPL_ROLES)
+    @PreAuthorize(EMR_HISTORY_ROLES)
     public R<Map<String, Object>> saveRecordAsTemplate(@RequestBody EmrTemplateService.FromRecordReq req,
                                                        Authentication auth) {
         return R.ok(emrTemplateService.saveAsTemplate(currentUserService.idOf(auth), req));
@@ -866,7 +869,7 @@ public class MedTechController {
      * （零核心写路径改动是 v45 的硬约束）。
      */
     @GetMapping("/api/emr-templates/prior-records")
-    @PreAuthorize(EMR_TPL_ROLES)
+    @PreAuthorize(EMR_HISTORY_ROLES)
     public R<List<Map<String, Object>>> priorRecords(@RequestParam Long patientId,
                                                      @RequestParam(required = false) Integer limit) {
         return R.ok(emrTemplateService.priorRecords(patientId, limit));
@@ -874,7 +877,7 @@ public class MedTechController {
 
     /** 取一份既往病历的正文。{@code patientId} 是归属校验参数不是过滤条件：不属于该患者一律 4068。 */
     @GetMapping("/api/emr-templates/prior-records/content")
-    @PreAuthorize(EMR_TPL_ROLES)
+    @PreAuthorize(EMR_HISTORY_ROLES)
     public R<Map<String, Object>> priorRecordContent(@RequestParam Long patientId,
                                                      @RequestParam String source,
                                                      @RequestParam Long recordId) {
