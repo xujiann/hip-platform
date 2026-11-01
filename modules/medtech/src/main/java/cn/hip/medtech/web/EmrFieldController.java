@@ -1,6 +1,9 @@
 package cn.hip.medtech.web;
 
 import cn.hip.medtech.service.EmrTemplateService;
+import cn.hip.platform.core.config.BusinessDates;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.context.SecurityContextHolder;
 import cn.hip.platform.core.common.R;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -275,7 +278,7 @@ public class EmrFieldController {
      * {@value #SEARCH_LIMIT} 条 + {@code truncated} 标记，<b>不做翻页</b>：命中超限说明条件太宽
      * （多半是只填了 fieldCode 没填 value），应收窄条件而不是翻页。
      *
-     * <p>门诊与住院各查一趟（两张表列名不同，硬 union 要凑列型，得不偿失），Java 侧按时间倒序归并。
+     * <p>门诊与住院在同一 SQL 快照按来源过滤及限量，Java 侧仍按时间倒序稳定归并。
      *
      * @param fieldCode 结构化元素编码，必填
      * @param value     元素值包含匹配（不区分大小写）；不填则返回"填过这个元素"的全部病历
@@ -306,13 +309,7 @@ public class EmrFieldController {
             return R.fail(4028, "病历类型非法（OUTP 门诊 / INP 住院，不填则两者都查）");
         }
 
-        var rows = new java.util.ArrayList<Map<String, Object>>();
-        if (!"INP".equals(type)) {
-            rows.addAll(query(OUTP_SQL, "e.updated_at", code, v, from, to));
-        }
-        if (!"OUTP".equals(type)) {
-            rows.addAll(query(INP_SQL, "r.created_at", code, v, from, to));
-        }
+        var rows = new java.util.ArrayList<>(query(code, v, from, to, type));
         rows.sort(java.util.Comparator.comparing(
                 (Map<String, Object> m) -> instantOf(m.get("recordedAt")),
                 java.util.Comparator.nullsLast(java.util.Comparator.reverseOrder())));
@@ -333,11 +330,74 @@ public class EmrFieldController {
      * {@code cast(? as text)} 不能省：{@code ->>} 同时有 {@code json->>int} 与 {@code json->>text}
      * 两个重载，参数不带类型时 PostgreSQL 会报 "operator is not unique"。
      */
+    private static final String FIELD_SEARCH_ACTOR_SQL = """
+            with field_search_request as (
+                select cast(? as text) as username, cast(? as date) as business_today
+            ), field_search_actor as (
+                select u.id as user_id, requested.business_today,
+                       coalesce(u.enabled, false) and exists (
+                           select 1 from sys_user_role ur join sys_role role on role.id = ur.role_id
+                           where ur.user_id = u.id and role.code in ('ADMIN','DOCTOR_OUTP','NURSE','QUALITY')
+                       ) as actor_allowed,
+                       exists (select 1 from sys_user_role ur join sys_role role on role.id = ur.role_id
+                               where ur.user_id = u.id and role.code in ('ADMIN','QUALITY')) as all_patients,
+                       exists (select 1 from sys_user_role ur join sys_role role on role.id = ur.role_id
+                               where ur.user_id = u.id and role.code = 'DOCTOR_OUTP') as is_doctor,
+                       exists (select 1 from sys_user_role ur join sys_role role on role.id = ur.role_id
+                               where ur.user_id = u.id and role.code = 'NURSE') as is_nurse
+                from field_search_request requested left join sys_user u on u.username = requested.username
+            )
+            select field_search_actor.actor_allowed as __field_search_actor_allowed, hit.*
+            from field_search_actor left join lateral (
+            """;
+
+    private static final String FIELD_SEARCH_PATIENT_RELATION = """
+            exists (select 1 from outp_registration relation
+                    where relation.patient_id = p.id and relation.status <> 'CANCELLED'
+                      and (relation.visit_date = field_search_actor.business_today
+                           or relation.doctor_id = field_search_actor.user_id
+                           or exists (select 1 from outp_emr written
+                                      where written.registration_id = relation.id
+                                        and written.doctor_id = field_search_actor.user_id)))
+            or exists (select 1 from inp_admission relation
+                       where relation.patient_id = p.id and relation.doctor_id = field_search_actor.user_id)
+            """;
+
+    private String fieldSearchUsername() {
+        var auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null || !auth.isAuthenticated() || auth.getAuthorities().stream().noneMatch(
+                role -> java.util.Set.of("ROLE_ADMIN","ROLE_DOCTOR_OUTP","ROLE_NURSE","ROLE_QUALITY")
+                        .contains(role.getAuthority()))) {
+            throw new AccessDeniedException("无结构化病历检索岗位权限");
+        }
+        return auth.getName();
+    }
+
+    /** Employee, row eligibility and both payload sources share this one statement. */
+    private List<Map<String, Object>> query(String code, String value, LocalDate from, LocalDate to, String type) {
+        var args = new java.util.ArrayList<Object>();
+        args.add(fieldSearchUsername());
+        args.add(BusinessDates.today());
+        var branches = new java.util.ArrayList<String>();
+        if (!"INP".equals(type)) branches.add(searchBranch(OUTP_SQL, "e.updated_at", code, value, from, to, false, args));
+        if (!"OUTP".equals(type)) branches.add(searchBranch(INP_SQL, "r.created_at", code, value, from, to, true, args));
+        var rows = jdbc.queryForList(FIELD_SEARCH_ACTOR_SQL + String.join(" union all ", branches)
+                + ") hit on true order by hit.__field_search_source_order, hit.recorded_at desc", args.toArray());
+        if (rows.isEmpty() || !Boolean.TRUE.equals(rows.getFirst().get("__field_search_actor_allowed"))) {
+            throw new AccessDeniedException("结构化病历检索人不存在、已停用或岗位已变化");
+        }
+        return rows.stream().filter(row -> row.get("emr_id") != null).map(row -> {
+            if ("OUTP".equals(row.get("emr_type"))) row.put("visit_no", row.get("__field_search_outp_visit_no"));
+            return toHit(row);
+        }).toList();
+    }
+
     private static final String OUTP_SQL = """
             select 'OUTP' as emr_type, e.id as emr_id, e.registration_id as visit_id,
+                   0 as __field_search_source_order, r.reg_no as __field_search_outp_visit_no,
                    e.template_id, t.name as template_name, e.updated_at as recorded_at,
                    p.id as patient_id, p.name as patient_name,
-                   r.reg_no as visit_no, r.visit_date, d.name as dept_name,
+                   cast(null as varchar) as visit_no, r.visit_date, d.name as dept_name,
                    e.chief_complaint as title,
                    (e.content_json::json) ->> cast(? as text) as field_value
             from outp_emr e
@@ -345,12 +405,14 @@ public class EmrFieldController {
             join empi_patient p on p.id = r.patient_id
             left join sys_dept d on d.id = r.dept_id
             left join emr_template t on t.id = e.template_id
+            cross join field_search_actor
             where e.content_json is not null
               and (e.content_json::json) ->> cast(? as text) is not null
             """;
 
     private static final String INP_SQL = """
             select 'INP' as emr_type, r.id as emr_id, r.admission_id as visit_id,
+                   1 as __field_search_source_order, cast(null as integer) as __field_search_outp_visit_no,
                    r.template_id, t.name as template_name, r.created_at as recorded_at,
                    p.id as patient_id, p.name as patient_name,
                    a.admission_no as visit_no, a.admit_at as visit_date, d.name as dept_name,
@@ -361,14 +423,17 @@ public class EmrFieldController {
             join empi_patient p on p.id = a.patient_id
             left join sys_dept d on d.id = a.dept_id
             left join emr_template t on t.id = r.template_id
+            cross join field_search_actor
             where r.content_json is not null
               and (r.content_json::json) ->> cast(? as text) is not null
             """;
 
-    private List<Map<String, Object>> query(String base, String timeCol, String code, String value,
-                                            LocalDate from, LocalDate to) {
+    private String searchBranch(String base, String timeCol, String code, String value,
+                                LocalDate from, LocalDate to, boolean inp, List<Object> args) {
         var sql = new StringBuilder(base);
-        var args = new java.util.ArrayList<Object>();
+        sql.append(" and field_search_actor.actor_allowed and (field_search_actor.all_patients");
+        if (inp) sql.append(" or field_search_actor.is_nurse");
+        sql.append(" or (field_search_actor.is_doctor and (").append(FIELD_SEARCH_PATIENT_RELATION).append(")))");
         args.add(code);     // select 里的 ->>
         args.add(code);     // where 里的 is not null
         String jsonCol = base.startsWith("select 'OUTP'") ? "e.content_json" : "r.content_json";
@@ -387,8 +452,7 @@ public class EmrFieldController {
         }
         sql.append(" order by ").append(timeCol).append(" desc limit ?");
         args.add(SEARCH_LIMIT + 1);
-        return jdbc.queryForList(sql.toString(), args.toArray()).stream()
-                .map(EmrFieldController::toHit).toList();
+        return "(" + sql + ")";
     }
 
     /** 检索命中行（前端契约：门诊住院同形，靠 emrType 区分） */
