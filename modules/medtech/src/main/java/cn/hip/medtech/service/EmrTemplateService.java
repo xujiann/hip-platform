@@ -666,6 +666,20 @@ public class EmrTemplateService {
         String templateType = notBlank(req.templateType()) ? normType(req.templateType()) : t.templateType();
         String recordType = normRecordType(req.recordType());
 
+        if (!scope.equals(t.scope()) || !java.util.Objects.equals(deptId, t.deptId())) {
+            // Scope cleanup can wait on an independently held grant row after G -> T.
+            // Take that wait before any header/default write, then use current duties
+            // and department; unchanged scope/dept updates keep their original path.
+            jdbc.queryForList(
+                    "select id from emr_template_grant where template_id = ? order by id for update", id);
+            a = templateMaintenanceActor(userId);
+            t = requireEditable(id, a);
+            if (!scope.equals(t.scope())) {
+                requireScopeGrantable(scope, a);
+            }
+            deptId = resolveDeptId(scope, req.deptId() != null ? req.deptId() : t.deptId(), a);
+        }
+
         // 默认模板一旦改了科室或病历类型，原来占的默认位就不再成立——先让位再改，
         // 否则 (dept_id, record_type) 会带着 is_default 漂到另一个格子上，把别人的默认位挤掉
         if (t.isDefault() && (!java.util.Objects.equals(deptId, t.deptId())
