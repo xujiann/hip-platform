@@ -309,6 +309,7 @@ jobs:
           python3 tools/e2e-v150-emr-field-read-snapshot.py
           python3 tools/e2e-v152-emr-history-access.py
           python3 tools/e2e-v153-emr-field-search-access.py
+          python3 tools/e2e-v155-template-update-grant-wait.py
 
       - name: 失败时输出服务端日志
         if: failure()
