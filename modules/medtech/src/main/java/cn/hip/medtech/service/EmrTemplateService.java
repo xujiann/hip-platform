@@ -948,14 +948,17 @@ public class EmrTemplateService {
      */
     @Transactional
     public Map<String, Object> saveAsTemplate(Long userId, FromRecordReq req) {
-        Actor a = actorOf(userId);
-        if (a.userId() == null) {
+        if (userId == null) {
             throw new HipBizException(4066, "无法识别当前登录用户，不能建模板");
         }
         if (req == null || req.patientId() == null) {
             throw new HipBizException(4068, "存为模板必须指明来源病历所属患者（归属校验参数，不是过滤条件）");
         }
         PriorRecord src = loadRecord(req.source(), req.recordId(), req.patientId());
+        Actor a = src.actor();
+        if (!userId.equals(a.userId())) {
+            throw new AccessDeniedException("病历来源读取人与模板建立人不一致");
+        }
         String name = requireName(notBlank(req.name()) ? req.name() : src.title());
         String scope = normScope(notBlank(req.scope()) ? req.scope() : "PERSONAL");
         requireScopeGrantable(scope, a);
@@ -985,10 +988,12 @@ public class EmrTemplateService {
         return out;
     }
 
-    /** Real employee, role union and patient relationship share the payload's MVCC snapshot. */
+    /** The source payload, clinical access and target template scope share the current employee snapshot. */
     private static final String HISTORY_READ_SNAPSHOT = """
             with history_read_actor as (
-                select u.id as user_id, requested.patient_id, requested.business_today,
+                select u.id as user_id, u.dept_id, requested.patient_id, requested.business_today,
+                       exists (select 1 from sys_user_role ur join sys_role r on r.id = ur.role_id
+                               where ur.user_id = u.id and r.code = 'ADMIN') as is_admin,
                        coalesce(u.enabled, false) and exists (
                            select 1 from sys_user_role ur join sys_role r on r.id = ur.role_id
                            where ur.user_id = u.id and r.code in ('ADMIN', 'DOCTOR_OUTP', 'NURSE', 'QUALITY')
@@ -1003,8 +1008,8 @@ public class EmrTemplateService {
                      requested(username, patient_id, business_today)
                 left join sys_user u on u.username = requested.username
             ), history_read_scope as (
-                select a.actor_allowed, p.all_history as outp_allowed,
-                       (p.all_history or a.is_nurse) as inp_allowed
+                select a.user_id, a.dept_id, a.is_admin, a.actor_allowed,
+                       p.all_history as outp_allowed, (p.all_history or a.is_nurse) as inp_allowed
                 from history_read_actor a cross join lateral (
                     select (a.all_patients or (a.is_doctor and (
                         exists (select 1 from outp_registration relation
@@ -1125,7 +1130,7 @@ public class EmrTemplateService {
      * <p>刻意<b>不</b>叫 {@code Record}——那会在本类里遮住 {@link java.lang.Record}，读代码的人得停下来想一秒。
      */
     private record PriorRecord(String source, Long id, String recordType, String title,
-                               String content, Object createdAt) {}
+                               String content, Object createdAt, Actor actor) {}
 
     /**
      * 取一份既往病历（住院/门诊统一形状）。
@@ -1179,7 +1184,8 @@ public class EmrTemplateService {
         sql = HISTORY_READ_SNAPSHOT + """
                 select s.actor_allowed as __history_actor_allowed,
                        s.outp_allowed as __history_outp_allowed, s.inp_allowed as __history_inp_allowed,
-                       selected.id as __history_row_id, selected.*
+                       s.user_id as __history_user_id, s.dept_id as __history_dept_id,
+                       s.is_admin as __history_is_admin, selected.id as __history_row_id, selected.*
                 from history_read_scope s left join lateral (
                 """ + sql + " and s.actor_allowed and " + permission + " ) selected on true";
         List<Map<String, Object>> rows = jdbc.queryForList(sql, args.toArray());
@@ -1189,8 +1195,10 @@ public class EmrTemplateService {
             throw new HipBizException(4068, "既往病历不存在或非本患者");
         }
         removeHistoryFlags(r);
+        Actor actor = new Actor((Long) r.get("__history_user_id"), (Long) r.get("__history_dept_id"),
+                Boolean.TRUE.equals(r.get("__history_is_admin")));
         return new PriorRecord(s, num(r.get("id")), (String) r.get("record_type"),
-                (String) r.get("title"), (String) r.get("content"), r.get("created_at"));
+                (String) r.get("title"), (String) r.get("content"), r.get("created_at"), actor);
     }
 
     // ==================================================================
