@@ -20,6 +20,8 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Propagation;
@@ -625,7 +627,7 @@ class V45TemplateScopeTest {
         Long deptA = newDept();
         TestUser doc = newUser(deptA, "DOCTOR_OUTP");
         Long patientId = newPatient("V45既往");
-        Long admissionId = admit(patientId);
+        Long admissionId = admit(patientId, doc.id());
         Long recordId = jdbc.queryForObject("""
                 insert into inp_medical_record(admission_id, record_type, title, content)
                 values (?, 'ADMISSION', 'V45入院记录', ?) returning id
@@ -640,8 +642,8 @@ class V45TemplateScopeTest {
         assertEquals("主诉：发热三天\n查体：T 38.6℃", content.get("content"));
         assertEquals("ADMISSION", content.get("recordType"));
 
-        var saved = medTech.saveRecordAsTemplate(new FromRecordReq(
-                "INP", recordId, patientId, "V45由病历生成的模板", "PERSONAL", null, null), doc.auth()).getData();
+        var saved = copyAsDoctor(doc, new FromRecordReq(
+                "INP", recordId, patientId, "V45由病历生成的模板", "PERSONAL", null, null));
         Long tplId = ((Number) saved.get("id")).longValue();
         assertEquals(Boolean.FALSE, saved.get("truncated"));
         assertEquals("主诉：发热三天\n查体：T 38.6℃", jdbc.queryForObject(
@@ -676,8 +678,8 @@ class V45TemplateScopeTest {
         assertTrue(body.contains("处理意见：多饮水"), body);
         assertFalse(body.contains("既往史："), "空段不拼进去（concat_ws 跳过 null）：" + body);
 
-        var saved = medTech.saveRecordAsTemplate(new FromRecordReq(
-                "OUTP", emrId, patientId, "V45门诊存为模板", "PERSONAL", null, null), doc.auth()).getData();
+        var saved = copyAsDoctor(doc, new FromRecordReq(
+                "OUTP", emrId, patientId, "V45门诊存为模板", "PERSONAL", null, null));
         assertEquals("OUTP", saved.get("recordType"));
     }
 
@@ -707,12 +709,13 @@ class V45TemplateScopeTest {
         TestUser doc = newUser(deptA, "DOCTOR_OUTP");
         Long p1 = newPatient("V45丙");
         Long p2 = newPatient("V45丁");
+        newRegistration(p2, deptA);
         Long recordId = jdbc.queryForObject("""
                 insert into inp_medical_record(admission_id, record_type, title, content)
                 values (?, 'PROGRESS', 'V45病程', '丙患者的病程记录') returning id
                 """, Long.class, admit(p1));
-        assertBiz(4068, () -> medTech.saveRecordAsTemplate(
-                new FromRecordReq("INP", recordId, p2, "V45偷来的模板", "PERSONAL", null, null), doc.auth()));
+        assertBiz(4068, () -> copyAsDoctor(doc,
+                new FromRecordReq("INP", recordId, p2, "V45偷来的模板", "PERSONAL", null, null)));
     }
 
     /**
@@ -730,10 +733,10 @@ class V45TemplateScopeTest {
         Long recordId = jdbc.queryForObject("""
                 insert into inp_medical_record(admission_id, record_type, title, content)
                 values (?, 'PREOP', 'V45超长病历', ?) returning id
-                """, Long.class, admit(patientId), longText);
+                """, Long.class, admit(patientId, doc.id()), longText);
 
-        var saved = medTech.saveRecordAsTemplate(new FromRecordReq(
-                "INP", recordId, patientId, "V45超长模板", "PERSONAL", null, null), doc.auth()).getData();
+        var saved = copyAsDoctor(doc, new FromRecordReq(
+                "INP", recordId, patientId, "V45超长模板", "PERSONAL", null, null));
         assertEquals(Boolean.TRUE, saved.get("truncated"), "截断必须显式告知调用方");
         assertEquals(4000, saved.get("contentLength"));
         assertEquals(longText.length(), saved.get("sourceLength"));
@@ -810,9 +813,27 @@ class V45TemplateScopeTest {
         return patientService.register(p).getId();
     }
 
+    private Map<String, Object> copyAsDoctor(TestUser doctor, FromRecordReq req) {
+        var previous = SecurityContextHolder.getContext();
+        var context = SecurityContextHolder.createEmptyContext();
+        var auth = new UsernamePasswordAuthenticationToken(doctor.auth().getName(), null,
+                List.of(new SimpleGrantedAuthority("ROLE_DOCTOR_OUTP")));
+        context.setAuthentication(auth);
+        SecurityContextHolder.setContext(context);
+        try {
+            return medTech.saveRecordAsTemplate(req, auth).getData();
+        } finally {
+            SecurityContextHolder.setContext(previous);
+        }
+    }
+
     private Long admit(Long patientId) {
+        return admit(patientId, null);
+    }
+
+    private Long admit(Long patientId, Long doctorId) {
         Long bedId = jdbc.queryForObject("select id from inp_bed where status = 'FREE' limit 1", Long.class);
-        return inpatientService.admit(patientId, 1L, bedId, null, "J18.9", "肺炎",
+        return inpatientService.admit(patientId, 1L, bedId, doctorId, "J18.9", "肺炎",
                 new BigDecimal("500"), "CASH", null).getId();
     }
 
