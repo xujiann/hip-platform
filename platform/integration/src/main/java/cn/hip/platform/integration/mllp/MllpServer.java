@@ -62,7 +62,7 @@ public class MllpServer {
     @Value("${hip.integration.mllp-bind:0.0.0.0}")
     private String bindAddress;
 
-    /** 允许来源（逗号分隔，支持精确 IP 与 CIDR 如 192.168.10.0/24）；回环地址恒放行 */
+    /** 允许来源（逗号分隔，支持字面 IPv4 与 CIDR 如 192.168.10.0/24）；回环地址恒放行 */
     @Value("${hip.integration.mllp-allow:}")
     private String allowList;
 
@@ -250,25 +250,43 @@ public class MllpServer {
             String s = item.trim();
             if (s.isEmpty()) continue;
             try {
-                int bits = 32;
-                if (s.contains("/")) {
-                    String[] parts = s.split("/");
-                    s = parts[0];
-                    bits = Integer.parseInt(parts[1]);
+                String[] parts = s.split("/", -1);
+                if (parts.length > 2 || (parts.length == 2 && !parts[1].matches("[0-9]+"))) {
+                    throw new IllegalArgumentException("CIDR 前缀须为十进制整数");
                 }
+                int bits = parts.length == 2 ? Integer.parseInt(parts[1]) : 32;
                 if (bits < 0 || bits > 32) {
                     // Java 移位按 mod 64：/33 会让 mask 归零 = 放行全网，且启动日志仍显示"白名单 1 条"——
                     // 安全机制以"看似生效"的方式失效（1.1.6 B-5），必须显式拒绝
                     throw new IllegalArgumentException("CIDR 前缀须在 0–32 之间：" + item);
                 }
                 long mask = bits == 0 ? 0 : (0xFFFFFFFFL << (32 - bits)) & 0xFFFFFFFFL;
-                long net = ipToLong(InetAddress.getByName(s).getAddress()) & mask;
+                long net = parseIpv4Literal(parts[0]) & mask;
                 out.add(new long[]{net, mask});
-            } catch (Exception e) {
+            } catch (IllegalArgumentException e) {
                 throw new IllegalArgumentException("hip.integration.mllp-allow 配置非法：" + item, e);
             }
         }
         return out;
+    }
+
+    private static long parseIpv4Literal(String address) {
+        String[] octets = address.split("\\.", -1);
+        if (octets.length != 4) {
+            throw new IllegalArgumentException("地址须为四段十进制 IPv4");
+        }
+        byte[] bytes = new byte[4];
+        for (int i = 0; i < bytes.length; i++) {
+            if (!octets[i].matches("[0-9]{1,3}")) {
+                throw new IllegalArgumentException("IPv4 每段须为一至三位十进制数字");
+            }
+            int value = Integer.parseInt(octets[i]);
+            if (value > 255) {
+                throw new IllegalArgumentException("IPv4 每段须在 0–255 之间");
+            }
+            bytes[i] = (byte) value;
+        }
+        return ipToLong(bytes);
     }
 
     private static long ipToLong(byte[] a) {
