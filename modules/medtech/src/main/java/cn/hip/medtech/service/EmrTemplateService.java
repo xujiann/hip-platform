@@ -165,20 +165,24 @@ public class EmrTemplateService {
     public List<Map<String, Object>> legacyList(Actor a, Long deptId, String templateType) {
         StringBuilder sql = new StringBuilder("""
                 with legacy_read_actor as (
-                    select requested.user_id,
-                           case when employee.id is null then requested.supplied_dept_id
-                                else employee.dept_id end as dept_id,
-                           case when employee.id is null then requested.supplied_admin
-                                else exists (select 1 from sys_user_role ur join sys_role r on r.id = ur.role_id
-                                             where ur.user_id = requested.user_id and r.code = 'ADMIN') end as is_admin
+                    select requested.user_id, employee.dept_id,
+                           coalesce(employee.enabled, false) and exists (
+                               select 1 from sys_user_role ur join sys_role r on r.id = ur.role_id
+                               where ur.user_id = requested.user_id
+                                 and r.code in ('ADMIN', 'DOCTOR_OUTP', 'NURSE', 'QUALITY', 'TECHNICIAN')
+                           ) as actor_allowed,
+                           exists (select 1 from sys_user_role ur join sys_role r on r.id = ur.role_id
+                                   where ur.user_id = requested.user_id and r.code = 'ADMIN') as is_admin
                     from (values (cast(? as bigint), cast(? as bigint), cast(? as boolean)))
                          requested(user_id, supplied_dept_id, supplied_admin)
                     left join sys_user employee on employee.id = requested.user_id
                 )
-                select t.* from emr_template t cross join legacy_read_actor a where t.enabled
+                select a.actor_allowed as __template_read_actor_allowed, t.*
+                from legacy_read_actor a left join lateral (
+                    select t.* from emr_template t where a.actor_allowed and t.enabled
                 """);
         List<Object> args = new ArrayList<>();
-        // Existing employees use this statement's profile; absent trusted actors retain theirs.
+        // The frozen Actor argument cannot supply missing employee privileges.
         args.add(a.userId());
         args.add(a.deptId());
         args.add(a.admin());
@@ -191,8 +195,10 @@ public class EmrTemplateService {
             args.add(templateType);
         }
         sql.append(TEMPLATE_READ_VISIBILITY);
-        sql.append(" order by t.id");
-        return jdbc.queryForList(sql.toString(), args.toArray());
+        sql.append(" ) t on true order by t.id");
+        var rows = jdbc.queryForList(sql.toString(), args.toArray());
+        requireTemplateReadActor(rows);
+        return rows.getFirst().get("id") == null ? List.of() : rows;
     }
 
     /** 前端建模板对话框要据此决定"哪些作用范围可选、科室默认填谁"，避免摆一排点了就报错的死选项 */
@@ -422,16 +428,18 @@ public class EmrTemplateService {
     public List<Map<String, Object>> listVisible(Long userId, String templateType, String recordType,
                                                  String scope, String keyword, boolean includeDisabled) {
         StringBuilder sql = new StringBuilder(TEMPLATE_READ_ACTOR_SNAPSHOT + """
-                select t.*, u.real_name as owner_name, d.name as dept_name,
-                       (select count(*) from emr_template_grant g where g.template_id = t.id) as grant_count,
-                       case when a.user_id is null then false
-                            when t.scope = 'PERSONAL' then coalesce(t.owner_id = a.user_id, false)
-                            when t.scope = 'DEPT' then coalesce(t.owner_id = a.user_id, false) or a.is_admin
-                            else a.is_admin end as __visible_editable
-                from emr_template t cross join template_read_actor a
-                left join sys_user u on u.id = t.owner_id
-                left join sys_dept d on d.id = t.dept_id
-                where 1 = 1
+                select a.actor_allowed as __template_read_actor_allowed, t.*
+                from template_read_actor a left join lateral (
+                    select t.*, u.real_name as owner_name, d.name as dept_name,
+                           (select count(*) from emr_template_grant g where g.template_id = t.id) as grant_count,
+                           case when a.user_id is null then false
+                                when t.scope = 'PERSONAL' then coalesce(t.owner_id = a.user_id, false)
+                                when t.scope = 'DEPT' then coalesce(t.owner_id = a.user_id, false) or a.is_admin
+                                else a.is_admin end as __visible_editable
+                    from emr_template t
+                    left join sys_user u on u.id = t.owner_id
+                    left join sys_dept d on d.id = t.dept_id
+                    where a.actor_allowed
                 """);
         List<Object> args = new ArrayList<>();
         args.add(userId);
@@ -455,18 +463,18 @@ public class EmrTemplateService {
             args.add("%" + keyword.trim() + "%");
         }
         sql.append(TEMPLATE_READ_VISIBILITY);
-        // 排序：默认模板置顶（医生最常要的就是它），再按范围从大到小、名称
         sql.append("""
-                 order by t.is_default desc,
-                          case t.scope when 'GLOBAL' then 0 when 'HOSPITAL' then 1
-                                       when 'DEPT' then 2 else 3 end,
-                          t.name, t.id
+                ) t on true
+                order by t.is_default desc,
+                         case t.scope when 'GLOBAL' then 0 when 'HOSPITAL' then 1
+                                      when 'DEPT' then 2 else 3 end,
+                         t.name, t.id
                 """);
-
         List<Map<String, Object>> rows = jdbc.queryForList(sql.toString(), args.toArray());
+        requireTemplateReadActor(rows);
+        if (rows.getFirst().get("id") == null) return List.of();
         for (Map<String, Object> r : rows) {
             Tpl t = tplOf(r);
-            // 前端据此决定按钮显隐；后端每条写路径仍会再校验一次，这里只是别摆死按钮
             r.put("editable", Boolean.TRUE.equals(r.remove("__visible_editable")));
             r.put("scopeName", scopeName(t.scope()));
         }
@@ -511,22 +519,29 @@ public class EmrTemplateService {
         return o == null ? null : ((Number) o).longValue();
     }
 
-    /**
-     * These two HEAD reads retain actorOf(userId)'s identity/department/DB-admin
-     * semantics, including trusted null or missing ids. The actor, parent ACL,
-     * additive grants and returned data belong to one statement snapshot.
-     * Entry duties remain the existing JWT and controller policy; no read lock
-     * or new employee-enabled/duty policy is introduced here.
-     */
+    /** Current employee eligibility, parent ACL and payload share one statement snapshot. */
     private static final String TEMPLATE_READ_ACTOR_SNAPSHOT = """
             with template_read_actor as (
                 select requested.user_id, employee.dept_id,
+                       coalesce(employee.enabled, false) and exists (
+                           select 1 from sys_user_role ur join sys_role r on r.id = ur.role_id
+                           where ur.user_id = requested.user_id
+                             and r.code in ('ADMIN', 'DOCTOR_OUTP', 'NURSE', 'QUALITY', 'TECHNICIAN')
+                       ) as actor_allowed,
                        exists (select 1 from sys_user_role ur join sys_role r on r.id = ur.role_id
                                where ur.user_id = requested.user_id and r.code = 'ADMIN') as is_admin
                 from (values (cast(? as bigint))) requested(user_id)
                 left join sys_user employee on employee.id = requested.user_id
             )
             """;
+
+    /** The outer actor row survives empty payloads; its marker is never returned to callers. */
+    private void requireTemplateReadActor(List<Map<String, Object>> rows) {
+        if (rows.isEmpty() || !Boolean.TRUE.equals(rows.getFirst().get("__template_read_actor_allowed"))) {
+            throw new AccessDeniedException("模板读取人不存在、已停用或岗位已变化");
+        }
+        rows.forEach(row -> row.remove("__template_read_actor_allowed"));
+    }
 
     /** Same matrix as canSee/visibleWhere, including PERSONAL department grants. */
     private static final String TEMPLATE_READ_VISIBILITY = """
@@ -544,9 +559,12 @@ public class EmrTemplateService {
      */
     public Map<String, Object> use(Long userId, Long id) {
         var rows = jdbc.queryForList(TEMPLATE_READ_ACTOR_SNAPSHOT + """
-                select t.* from emr_template t cross join template_read_actor a where t.id = ?
-                """ + TEMPLATE_READ_VISIBILITY, userId, id);
-        if (rows.isEmpty()) {
+                select a.actor_allowed as __template_read_actor_allowed, t.*
+                from template_read_actor a left join lateral (
+                    select t.* from emr_template t where a.actor_allowed and t.id = ?
+                """ + TEMPLATE_READ_VISIBILITY + " ) t on true", userId, id);
+        requireTemplateReadActor(rows);
+        if (rows.getFirst().get("id") == null) {
             throw new HipBizException(4066, "模板不存在或未授权使用");
         }
         Map<String, Object> row = rows.getFirst();
@@ -730,21 +748,28 @@ public class EmrTemplateService {
 
     public List<Map<String, Object>> grants(Long userId, Long templateId) {
         var rows = jdbc.queryForList(TEMPLATE_READ_ACTOR_SNAPSHOT + """
-                select g.id, g.template_id, g.grantee_type, g.grantee_id, g.granted_at,
-                       case g.grantee_type when 'DEPT' then d.name else u.real_name end as grantee_name,
-                       b.real_name as granted_by_name
-                from emr_template t cross join template_read_actor a
-                left join emr_template_grant g on g.template_id = t.id
-                left join sys_dept d on g.grantee_type = 'DEPT' and d.id = g.grantee_id
-                left join sys_user u on g.grantee_type = 'USER' and u.id = g.grantee_id
-                left join sys_user b on b.id = g.granted_by
-                where t.id = ?
-                """ + TEMPLATE_READ_VISIBILITY + " order by g.grantee_type, g.id", userId, templateId);
-        if (rows.isEmpty()) {
+                select a.actor_allowed as __template_read_actor_allowed, payload.*
+                from template_read_actor a left join lateral (
+                    select t.id as __template_read_parent_id,
+                           g.id, g.template_id, g.grantee_type, g.grantee_id, g.granted_at,
+                           case g.grantee_type when 'DEPT' then d.name else u.real_name end as grantee_name,
+                           b.real_name as granted_by_name
+                    from emr_template t
+                    left join emr_template_grant g on g.template_id = t.id
+                    left join sys_dept d on g.grantee_type = 'DEPT' and d.id = g.grantee_id
+                    left join sys_user u on g.grantee_type = 'USER' and u.id = g.grantee_id
+                    left join sys_user b on b.id = g.granted_by
+                    where a.actor_allowed and t.id = ?
+                """ + TEMPLATE_READ_VISIBILITY + """
+                ) payload on true order by payload.grantee_type, payload.id
+                """, userId, templateId);
+        requireTemplateReadActor(rows);
+        boolean visibleParent = rows.getFirst().get("__template_read_parent_id") != null;
+        rows.forEach(row -> row.remove("__template_read_parent_id"));
+        if (!visibleParent) {
             throw new HipBizException(4066, "模板不存在或未授权使用");
         }
-        // A visible parent with no grants has one LEFT JOIN row with null g.id.
-        // Its existing seven columns are not a public grant and expose no new key.
+        // A visible parent without grants remains an empty public list.
         return rows.getFirst().get("id") == null ? List.of() : rows;
     }
 
@@ -917,17 +942,21 @@ public class EmrTemplateService {
             throw new HipBizException(4067, "取科室默认模板必须同时给出科室与病历类型");
         }
         List<Map<String, Object>> rows = jdbc.queryForList(TEMPLATE_READ_ACTOR_SNAPSHOT + """
-                select t.*, exists (select 1 where true
+                select a.actor_allowed as __template_read_actor_allowed, payload.*
+                from template_read_actor a left join lateral (
+                    select t.*, exists (select 1 where true
                 """ + TEMPLATE_READ_VISIBILITY + """
-                ) as __default_visible
-                from emr_template t cross join template_read_actor a
-                where t.dept_id = ? and t.record_type = ? and t.is_default and t.enabled limit 1
+                    ) as __default_visible
+                    from emr_template t
+                    where a.actor_allowed and t.dept_id = ? and t.record_type = ?
+                      and t.is_default and t.enabled limit 1
+                ) payload on true
                 """, userId, deptId, recordType.trim().toUpperCase());
-        if (rows.isEmpty()) return null;
+        requireTemplateReadActor(rows);
         Map<String, Object> row = rows.getFirst();
-        // Keep missing-default null distinct from an existing invisible default.
-        // The internal same-snapshot flag never becomes a public template key.
-        if (!Boolean.TRUE.equals(row.remove("__default_visible"))) {
+        boolean visible = Boolean.TRUE.equals(row.remove("__default_visible"));
+        if (row.get("id") == null) return null;
+        if (!visible) {
             throw new HipBizException(4066, "模板不存在或未授权使用");
         }
         return row;
