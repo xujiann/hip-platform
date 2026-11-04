@@ -607,7 +607,7 @@ public class EmrTemplateService {
             Set.of("ADMIN", "DOCTOR_OUTP", "NURSE", "QUALITY", "TECHNICIAN");
 
     /** Current employee state, including role changes committed while a maintenance request waited. */
-    private Actor templateMaintenanceActor(Long userId) {
+    public Actor templateMaintenanceActor(Long userId) {
         var rows = jdbc.queryForList("""
                 select u.id, u.dept_id, u.enabled, r.code from sys_user u
                 left join sys_user_role ur on ur.user_id = u.id left join sys_role r on r.id = ur.role_id

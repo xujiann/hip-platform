@@ -661,7 +661,7 @@ public class MedTechController {
                 .getContext().getAuthentication();
         Long uid = ctxAuth == null ? null : currentUserService.idOf(ctxAuth);
         emrTemplateService.requireLegacyCreateAllowed(
-                emrTemplateService.actorOf(uid, hasAdminAuthority(ctxAuth)), req.deptId());
+                emrTemplateService.templateMaintenanceActor(uid), req.deptId());
         String scope = req.deptId() == null ? "HOSPITAL" : "DEPT";
         Long id = jdbc.queryForObject("""
                 insert into emr_template(dept_id, name, content, template_type, scope, owner_id, created_by)
