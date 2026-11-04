@@ -313,6 +313,7 @@ jobs:
           python3 tools/e2e-v158-emr-legacy-create.py
           python3 tools/e2e-v159-emr-scoped-create.py
           python3 tools/e2e-v160-emr-legacy-atomicity.py
+          python3 tools/e2e-v161-emr-template-read-actor.py
 
       - name: 失败时输出服务端日志
         if: failure()
