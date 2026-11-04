@@ -655,6 +655,7 @@ public class MedTechController {
      */
     @PostMapping("/api/emr-templates")
     @PreAuthorize(EMR_TPL_ROLES)
+    @Transactional
     public R<Void> createTemplate(@RequestBody EmrTemplateReq req) {
         // 签名被单测按 1 参写死，当前用户只能从 SecurityContext 里取（不能加 Authentication 形参）
         var ctxAuth = org.springframework.security.core.context.SecurityContextHolder
