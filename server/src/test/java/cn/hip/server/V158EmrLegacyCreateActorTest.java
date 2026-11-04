@@ -173,7 +173,7 @@ class V158EmrLegacyCreateActorTest {
         assertAll(
                 () -> assertEquals(scenario.status(), result.status(), result.body().toString()),
                 () -> assertEquals(scenario.code(), result.code(), result.body().toString()),
-                () -> assertAudit(staffPath + (scenario.disabled() ? "/enabled" : ""), scenario.status()),
+                () -> assertAudit(staffPath + (scenario.disabled() ? "/enabled?enabled=false" : ""), scenario.status()),
                 () -> assertTrue(result.body().path("data").isNull()),
                 () -> {
                     if (scenario.code() == 0) assertCreated(destination, prefix, prefix + "正文", "CONSENT", before);
