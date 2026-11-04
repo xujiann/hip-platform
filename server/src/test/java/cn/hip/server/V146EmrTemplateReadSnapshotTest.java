@@ -256,11 +256,11 @@ class V146EmrTemplateReadSnapshotTest {
         var before = facts(); var oldAudit = audit(); frozenRead("entry-" + entry + "-" + who, entry, call("GET", endpoint(entry), null, token), http, code, null, before, oldAudit, null);
     }
     @ParameterizedTest @ValueSource(strings = {"use", "grants"})
-    void trustedNullOrMissingActorKeepsOriginalGlobalReadSemantics(String entry) {
-        configure("GLOBAL", false); var before = facts(); var oldAudit = audit(); var wanted = expected(entry);
+    void nullOrMissingEmployeeCannotUseAnInternalGlobalReadBypass(String entry) {
+        configure("GLOBAL", false); var before = facts(); var oldAudit = audit();
         for (Long user : Arrays.asList(null, 899999999999999L)) {
-            Object value = entry.equals("use") ? templates.use(user, template) : templates.grants(user, template);
-            assertEquals(wanted, wire(value));
+            assertThrows(org.springframework.security.access.AccessDeniedException.class,
+                    () -> { if (entry.equals("use")) templates.use(user, template); else templates.grants(user, template); });
         }
         assertEquals(before, facts()); assertEquals(oldAudit, audit());
     }
@@ -343,7 +343,8 @@ class V146EmrTemplateReadSnapshotTest {
         boolean payload(String sql, Map<Integer, Object> params) {
             String n = sql.replaceAll("\\s+", " ").trim().toLowerCase(Locale.ROOT);
             boolean shape = entry.equals("use") ? n.contains("select * from emr_template where id = ?") || n.contains("select t.* from emr_template t")
-                    : n.contains("select g.id") && n.contains("g.grantee_type") && n.contains("granted_by_name");
+                    : (n.contains("select g.id") || n.contains("select t.id as __template_read_parent_id, g.id"))
+                        && n.contains("g.grantee_type") && n.contains("granted_by_name");
             return shape && params.values().stream().anyMatch(v -> v instanceof Number number && number.longValue() == target);
         }
         void observe(String sql, Map<Integer, Object> params, Position at, int fetchSize) {

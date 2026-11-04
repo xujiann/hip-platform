@@ -191,7 +191,9 @@ class V147EmrDefaultReadSnapshotTest {
     }
     void internal(String label, Long uid, Long requestedDept, String requestedType, int wantedCode, JsonNode wanted) {
         var before = facts(); var oldAudit = audit(); int actualCode = 0; Object value = null;
-        try { value = service.defaultTemplate(uid, requestedDept, requestedType); } catch (HipBizException e) { actualCode = e.code; }
+        try { value = service.defaultTemplate(uid, requestedDept, requestedType); }
+        catch (HipBizException e) { actualCode = e.code; }
+        catch (org.springframework.security.access.AccessDeniedException e) { actualCode = 1005; }
         var invocation = new LinkedHashMap<String, Object>(); invocation.put("userId", uid); invocation.put("deptId", requestedDept); invocation.put("recordType", requestedType);
         invocation.put("actualCode", actualCode); invocation.put("actualValue", wire(value)); internalInvocations.add(invocation);
         var after = facts(); evidence(label, before, after, oldAudit, null, null);
@@ -237,8 +239,8 @@ class V147EmrDefaultReadSnapshotTest {
         var before = facts(); var audits = audit(); frozen("entry-" + who, call("GET", endpoint(), null, token), http, code, null, before, audits, null);
     }
     static Stream<Arguments> trusted() { return Stream.of("GLOBAL", "HOSPITAL", "DEPT").flatMap(scope -> Stream.of(true, false).map(missing -> Arguments.of(scope, missing))); }
-    @ParameterizedTest @MethodSource("trusted") void trustedNullAndMissingActorSemanticsAreNotTightened(String scope, boolean missing) {
-        configure(scope, false); internal("trusted-" + scope + "-" + missing, missing ? 899999999999999L : null, dept, recordType, scope.equals("DEPT") ? 4066 : 0, expectedCandidate());
+    @ParameterizedTest @MethodSource("trusted") void nullAndMissingEmployeesAreDeniedForEveryHistoricalDefaultScope(String scope, boolean missing) {
+        configure(scope, false); internal("denied-missing-employee-" + scope + "-" + missing, missing ? 899999999999999L : null, dept, recordType, 1005, null);
     }
     @ParameterizedTest @ValueSource(strings = {"RIS", "CONSENT", "OTHER"}) void defaultReadingDoesNotAddATemplateTypeFilter(String type) throws Exception {
         grant("USER", actor.id()); jdbc.update("update emr_template set template_type=? where id=?", type, template); var before = facts(); var audits = audit(); frozen("template-type-" + type, read(), 200, 0, expectedCandidate(), before, audits, null);
