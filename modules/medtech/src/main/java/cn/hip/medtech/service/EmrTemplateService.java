@@ -570,10 +570,10 @@ public class EmrTemplateService {
      */
     @Transactional
     public Long create(Long userId, TemplateReq req) {
-        Actor a = actorOf(userId);
-        if (a.userId() == null) {
+        if (userId == null) {
             throw new HipBizException(4066, "无法识别当前登录用户，不能建模板");
         }
+        Actor a = templateMaintenanceActor(userId);
         String name = requireName(req == null ? null : req.name());
         String content = requireContent(req == null ? null : req.content());
         String scope = normScope(req.scope());
