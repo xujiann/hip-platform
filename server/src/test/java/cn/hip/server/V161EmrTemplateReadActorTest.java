@@ -295,6 +295,7 @@ class V161EmrTemplateReadActorTest {
             return;
         }
         Set<String> expectedKeys = new HashSet<>(HEADER_KEYS);
+        if (entry == Entry.USE) expectedKeys.add("scopeName");
         if (entry == Entry.VISIBLE) expectedKeys.addAll(Set.of("owner_name", "dept_name", "grant_count", "editable", "scopeName"));
         if (entry == Entry.VISIBLE || entry == Entry.LEGACY) {
             assertTrue(data.isArray());
