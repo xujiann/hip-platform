@@ -141,15 +141,16 @@
         建模板时自动授予的那一条（科室模板→所属科室 / 个人模板→创建人）不可撤销：撤掉之后模板对自己都不可见。
       </p>
       <div class="filters">
-        <el-select v-model="grantType" size="small" style="width: 110px" @change="loadCandidates">
+        <el-select v-model="grantType" size="small" style="width: 110px" :disabled="granting">
           <el-option label="授权科室" value="DEPT" />
           <el-option label="授权个人" value="USER" />
         </el-select>
         <el-select v-model="granteeId" filterable clearable size="small" style="width: 220px"
+                   :disabled="candidatesLoading || granting || !grantRow?.editable" :loading="candidatesLoading"
                    :placeholder="grantType === 'DEPT' ? '选择科室' : '选择人员'">
           <el-option v-for="c in candidates" :key="c.id" :label="candidateLabel(c)" :value="c.id" />
         </el-select>
-        <el-button type="primary" size="small" :disabled="!granteeId" :loading="granting" @click="addGrant">
+        <el-button type="primary" size="small" :disabled="!canGrant" :loading="granting" @click="addGrant">
           授予
         </el-button>
       </div>
@@ -161,7 +162,7 @@
         <el-table-column prop="granted_by_name" label="授予人" width="110" />
         <el-table-column label="操作" width="90">
           <template #default="{ row }">
-            <el-button link type="danger" size="small" :disabled="!grantRow?.editable"
+            <el-button link type="danger" size="small" :disabled="!grantRow?.editable || granting"
                        @click="revokeGrant(row)">撤销</el-button>
           </template>
         </el-table-column>
@@ -178,7 +179,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import client from '../../api/client'
 import type { BizError } from '../../api/client'
@@ -270,6 +271,42 @@ const grantType = ref('DEPT')
 const granteeId = ref<number | null>(null)
 const candidates = ref<Candidate[]>([])
 const granting = ref(false)
+const candidatesLoading = ref(false)
+const loadedCandidateType = ref<string | null>(null)
+let grantSession = 0
+let candidateRequest = 0
+let grantListRequest = 0
+let grantMutation = 0
+type GrantContext = { session: number; templateId: number }
+
+function grantContext(): GrantContext | null {
+  return grantVisible.value && grantRow.value
+    ? { session: grantSession, templateId: grantRow.value.id } : null
+}
+function ownsGrantContext(context: GrantContext) {
+  return grantVisible.value && grantSession === context.session && grantRow.value?.id === context.templateId
+}
+function resetGrantContext() {
+  ++grantSession
+  ++candidateRequest
+  ++grantListRequest
+  ++grantMutation
+  grantRow.value = null
+  grantRows.value = []
+  candidates.value = []
+  granteeId.value = null
+  loadedCandidateType.value = null
+  candidatesLoading.value = false
+  granting.value = false
+}
+const canGrant = computed(() => grantVisible.value && !!grantRow.value?.editable
+  && !granting.value && !candidatesLoading.value && loadedCandidateType.value === grantType.value
+  && granteeId.value != null && candidates.value.some(candidate => candidate.id === granteeId.value))
+
+// Invalidate at the model update, before a closing animation can finish or a new dialog opens.
+watch(grantVisible, visible => { if (!visible) resetGrantContext() }, { flush: 'sync' })
+watch(grantType, () => { void loadCandidates() }, { flush: 'sync' })
+onBeforeUnmount(resetGrantContext)
 
 function blank(): Form {
   return { id: null, name: '', templateType: 'EMR', scope: 'PERSONAL', deptId: null, recordType: null, content: '' }
@@ -424,41 +461,82 @@ async function unsetDefault(row: Tpl) {
 }
 
 async function openGrants(row: Tpl) {
-  grantRow.value = row
-  granteeId.value = null
+  resetGrantContext()
   grantType.value = 'DEPT'
+  grantRow.value = row
   grantVisible.value = true
-  await Promise.all([loadGrants(), loadCandidates()])
+  await Promise.all([loadGrants(grantContext()!), loadCandidates()])
 }
 
-async function loadGrants() {
-  if (!grantRow.value) return
-  grantRows.value = (await client.get(`/emr-templates/${grantRow.value.id}/grants`)).data.data
+async function loadGrants(context: GrantContext) {
+  const request = ++grantListRequest
+  try {
+    const result = (await client.get(`/emr-templates/${context.templateId}/grants`)).data.data
+    if (ownsGrantContext(context) && request === grantListRequest) grantRows.value = result
+  } catch { /* The API client reports failures; an old request must not alter the dialog. */ }
 }
 
 async function loadCandidates() {
+  const context = grantContext()
+  const request = ++candidateRequest
+  const type = grantType.value
   granteeId.value = null
-  candidates.value = (await client.get('/emr-templates/grantee-candidates',
-    { params: { granteeType: grantType.value } })).data.data
+  candidates.value = []
+  loadedCandidateType.value = null
+  if (!context) return
+  candidatesLoading.value = true
+  const current = () => ownsGrantContext(context) && request === candidateRequest && type === grantType.value
+  try {
+    const result = (await client.get('/emr-templates/grantee-candidates',
+      { params: { granteeType: type } })).data.data
+    if (!current()) return
+    candidates.value = result
+    loadedCandidateType.value = type
+  } catch { /* The API client reports failures; leave the choice unavailable. */ }
+  finally { if (current()) candidatesLoading.value = false }
+}
+
+async function refreshGrantTemplates(context: GrantContext) {
+  const params: Record<string, unknown> = { includeDisabled: includeDisabled.value }
+  if (filterType.value) params.type = filterType.value
+  if (filterScope.value) params.scope = filterScope.value
+  if (keyword.value.trim()) params.keyword = keyword.value.trim()
+  const filters = [filterType.value, filterScope.value, filterDeptId.value, keyword.value, includeDisabled.value]
+  const result = (await client.get('/emr-templates/visible', { params })).data.data
+  if (ownsGrantContext(context) && filters.every((value, index) => value ===
+    [filterType.value, filterScope.value, filterDeptId.value, keyword.value, includeDisabled.value][index])) all.value = result
 }
 
 async function addGrant() {
-  if (!grantRow.value || !granteeId.value) return
+  const context = grantContext()
+  if (!context || !canGrant.value) return
+  const body = { granteeType: grantType.value, granteeId: granteeId.value }
+  const mutation = ++grantMutation
+  const current = () => ownsGrantContext(context) && mutation === grantMutation
   granting.value = true
   try {
-    await client.post(`/emr-templates/${grantRow.value.id}/grants`,
-      { granteeType: grantType.value, granteeId: granteeId.value })
+    await client.post(`/emr-templates/${context.templateId}/grants`, body)
+    if (!current()) return
     ElMessage.success('已授权')
     granteeId.value = null
-    await Promise.all([loadGrants(), load()])
-  } finally { granting.value = false }
+    await Promise.all([loadGrants(context), refreshGrantTemplates(context)])
+  } catch { /* The API client already reports the failure. */ }
+  finally { if (current()) granting.value = false }
 }
 
 async function revokeGrant(row: Grant) {
-  if (!grantRow.value) return
-  await client.delete(`/emr-templates/${grantRow.value.id}/grants/${row.id}`)
-  ElMessage.success('已撤销授权')
-  await Promise.all([loadGrants(), load()])
+  const context = grantContext()
+  if (!context || !grantRow.value?.editable || granting.value || !grantRows.value.some(grant => grant.id === row.id)) return
+  const mutation = ++grantMutation
+  const current = () => ownsGrantContext(context) && mutation === grantMutation
+  granting.value = true
+  try {
+    await client.delete(`/emr-templates/${context.templateId}/grants/${row.id}`)
+    if (!current()) return
+    ElMessage.success('已撤销授权')
+    await Promise.all([loadGrants(context), refreshGrantTemplates(context)])
+  } catch { /* The API client already reports the failure. */ }
+  finally { if (current()) granting.value = false }
 }
 
 onMounted(async () => {
