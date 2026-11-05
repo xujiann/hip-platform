@@ -88,8 +88,8 @@
     <el-empty v-if="!rows.length" description="当前筛选下没有可见模板" :image-size="60" />
 
     <!-- 新增 / 编辑 -->
-    <el-dialog v-model="dialogVisible" :title="dialogTitle" width="680px">
-      <el-form :model="form" label-width="94px" size="small">
+    <el-dialog v-model="dialogVisible" :title="dialogTitle" :before-close="dismissTemplateDialog" width="680px">
+      <el-form :model="form" :disabled="savingCurrentDialog" label-width="94px" size="small">
         <el-form-item label="模板名称" required>
           <el-input v-model="form.name" maxlength="64" show-word-limit placeholder="如：入院记录·呼吸内科" />
         </el-form-item>
@@ -130,7 +130,7 @@
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="save">保存</el-button>
+        <el-button type="primary" :disabled="saving" :loading="savingCurrentDialog" @click="save">保存</el-button>
       </template>
     </el-dialog>
 
@@ -258,10 +258,20 @@ const dialogVisible = ref(false)
 const dialogTitle = ref('新增模板')
 const origScope = ref<string>('PERSONAL')   // 编辑前的范围/科室，用来提示"改范围清授权"
 const origDeptId = ref<number | null>(null)
-const saving = ref(false)
+const dialogSession = ref(0)
+const savingSession = ref<number | null>(null)
+const saving = computed(() => savingSession.value !== null)
+const savingCurrentDialog = computed(() => savingSession.value === dialogSession.value)
+let templateListRequest = 0
 const previewVisible = ref(false)
 const previewRow = ref<Tpl | null>(null)
 const form = reactive<Form>(blank())
+
+watch(dialogVisible, visible => { if (!visible) ++dialogSession.value }, { flush: 'sync' })
+onBeforeUnmount(() => {
+  ++dialogSession.value
+  ++templateListRequest
+})
 
 // 授权对话框
 const grantVisible = ref(false)
@@ -338,11 +348,29 @@ function candidateLabel(c: Candidate) {
 }
 
 async function load() {
+  await loadTemplateList()
+}
+
+async function loadTemplateList(ownsResponse?: () => boolean) {
+  const request = ++templateListRequest
   const params: Record<string, unknown> = { includeDisabled: includeDisabled.value }
   if (filterType.value) params.type = filterType.value
   if (filterScope.value) params.scope = filterScope.value
   if (keyword.value.trim()) params.keyword = keyword.value.trim()
-  all.value = (await client.get('/emr-templates/visible', { params })).data.data
+  const result = (await client.get('/emr-templates/visible', { params })).data.data
+  if (request === templateListRequest && (!ownsResponse || ownsResponse())) all.value = result
+}
+
+function openTemplateDialog(title: string) {
+  ++dialogSession.value
+  dialogTitle.value = title
+  dialogVisible.value = true
+}
+
+function dismissTemplateDialog(done: () => void) {
+  // Element Plus 的关闭按钮、遮罩和 Esc 在离场后才更新 v-model。
+  dialogVisible.value = false
+  done()
 }
 
 function openAdd() {
@@ -351,8 +379,7 @@ function openAdd() {
   // 默认落在自己能建的最小范围：有科室就是科室模板，否则个人
   form.scope = actor.value.deptId ? 'DEPT' : 'PERSONAL'
   form.deptId = actor.value.deptId
-  dialogTitle.value = '新增模板'
-  dialogVisible.value = true
+  openTemplateDialog('新增模板')
 }
 
 function openEdit(row: Tpl) {
@@ -367,8 +394,7 @@ function openEdit(row: Tpl) {
   })
   origScope.value = row.scope ?? 'PERSONAL'
   origDeptId.value = row.dept_id ?? null
-  dialogTitle.value = `编辑 #${row.id}《${row.name}》`
-  dialogVisible.value = true
+  openTemplateDialog(`编辑 #${row.id}《${row.name}》`)
 }
 
 /** 复制为新模板：协定口径不变——想保留旧版可追溯时用它，而不是就地改写 */
@@ -382,8 +408,7 @@ function openCopy(row: Tpl) {
     recordType: row.record_type ?? null,
     content: row.content ?? '',
   })
-  dialogTitle.value = `复制自 #${row.id}《${row.name}》`
-  dialogVisible.value = true
+  openTemplateDialog(`复制自 #${row.id}《${row.name}》`)
 }
 
 function preview(row: Tpl) {
@@ -392,8 +417,11 @@ function preview(row: Tpl) {
 }
 
 async function save() {
+  if (!dialogVisible.value || saving.value) return
   if (!form.name.trim()) { ElMessage.warning('模板名称必填'); return }
   if (!form.content.trim()) { ElMessage.warning('模板正文必填'); return }
+  const session = dialogSession.value
+  const id = form.id
   const body = {
     name: form.name.trim(),
     content: form.content,
@@ -402,23 +430,25 @@ async function save() {
     deptId: form.scope === 'DEPT' ? form.deptId : null,
     recordType: form.recordType || null,
   }
-  saving.value = true
+  // 所属科室留空时，后端保留原科室。
+  const scopeChanged = !!id && (body.scope !== origScope.value
+    || (body.scope === 'DEPT' && body.deptId != null && body.deptId !== origDeptId.value))
+  savingSession.value = session
   try {
-    if (form.id) await client.put(`/emr-templates/${form.id}`, body)
+    if (id) await client.put(`/emr-templates/${id}`, body)
     else await client.post('/emr-templates/scoped', body)
-    // 所属科室留空 = 后端保留原科室（EmrTemplateService.update），不算改范围（1073/1078 复核反驳者二 R3）
-    const scopeChanged = !!form.id && (form.scope !== origScope.value
-      || (form.scope === 'DEPT' && form.deptId != null && form.deptId !== origDeptId.value))
-    ElMessage.success(form.id
-      ? (scopeChanged ? '模板已更新；作用范围已变，原有授权已清空并按新范围重新自动授权' : '模板已更新')
-      : '模板已保存（已自动授权给所属科室/创建人）')
-    dialogVisible.value = false
-    // 把筛选切到刚保存的这一条上，否则"保存成功但列表里找不到"会让维护人重复建模板
-    filterType.value = form.templateType
-    filterScope.value = null
-    filterDeptId.value = null
-    await load()
-  } finally { saving.value = false }
+  } finally { savingSession.value = null }
+  if (!dialogVisible.value || dialogSession.value !== session) return
+
+  ElMessage.success(id
+    ? (scopeChanged ? '模板已更新；作用范围已变，原有授权已清空并按新范围重新自动授权' : '模板已更新')
+    : '模板已保存（已自动授权给所属科室/创建人）')
+  dialogVisible.value = false
+  const closedSession = dialogSession.value
+  filterType.value = body.templateType
+  filterScope.value = null
+  filterDeptId.value = null
+  await loadTemplateList(() => dialogSession.value === closedSession)
 }
 
 async function toggleEnabled(row: Tpl, enabled: boolean) {
@@ -495,14 +525,9 @@ async function loadCandidates() {
 }
 
 async function refreshGrantTemplates(context: GrantContext) {
-  const params: Record<string, unknown> = { includeDisabled: includeDisabled.value }
-  if (filterType.value) params.type = filterType.value
-  if (filterScope.value) params.scope = filterScope.value
-  if (keyword.value.trim()) params.keyword = keyword.value.trim()
   const filters = [filterType.value, filterScope.value, filterDeptId.value, keyword.value, includeDisabled.value]
-  const result = (await client.get('/emr-templates/visible', { params })).data.data
-  if (ownsGrantContext(context) && filters.every((value, index) => value ===
-    [filterType.value, filterScope.value, filterDeptId.value, keyword.value, includeDisabled.value][index])) all.value = result
+  await loadTemplateList(() => ownsGrantContext(context) && filters.every((value, index) => value ===
+    [filterType.value, filterScope.value, filterDeptId.value, keyword.value, includeDisabled.value][index]))
 }
 
 async function addGrant() {
