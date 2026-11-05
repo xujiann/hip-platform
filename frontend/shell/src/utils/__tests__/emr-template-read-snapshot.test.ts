@@ -88,7 +88,7 @@ async function setup(kind: Kind) {
     client, ElMessage, ElMessageBox, useRouter: () => router, useRoute: () => ({ query: {} }),
     useAuthStore: () => ({ user: { id: 3, roles: ['DOCTOR_OUTP'], menus: [] } }),
     useEmrPasteGuard: () => ({ mode: Vue.ref('warn'), loadPolicy: vi.fn(), onCopy: vi.fn(), onPaste: vi.fn() }),
-    onMounted: vi.fn(), onUnmounted: vi.fn(), window: { open: vi.fn() }, console }
+    onMounted: vi.fn(), onUnmounted: vi.fn(), onBeforeUnmount: vi.fn(), window: { open: vi.fn() }, console }
   const scope = Vue.effectScope(); scopes.push(scope)
   scope.run(() => runInNewContext(ts.transpileModule(withoutImports(original, kind + '.ts')
     + '\nglobalThis.view = { ' + exposed + ' };', {
@@ -137,12 +137,21 @@ function assertOnlyReads(h: Harness) {
   expect(h.requests.filter(w => w.config.url === h.target)).toHaveLength(1)
 }
 const accepted = (h: Harness) => h.kind === 'GRANTS' ? [copy(grant)] : { ...copy(row), content: 'V146新合法正文' }
+function readStateAfterBegin(h: Harness, before: ReturnType<typeof state>) {
+  if (h.kind !== 'GRANTS') return before
+  // Opening grants starts a new dialog session. Only the prior session's grant
+  // rows are cleared; the unsaved maintenance draft and other state must survive.
+  const current = state(h)
+  expect(current).toEqual({ ...before, grantRows: [] })
+  return current
+}
 
 describe('v146 real original template-read consumer compatibility', () => {
   for (const kind of ['OUTP', 'ER', 'GRANTS'] as const) {
     for (const failure of failures) {
       it(`${kind} ${failure.name}: one original read preserves draft/session without false application or retry`, async () => {
-        const h = await setup(kind), before = state(h), request = await h.begin()
+        const h = await setup(kind), previous = state(h), request = await h.begin()
+        const before = readStateAfterBegin(h, previous)
         expect(request.wire.config).toMatchObject({ method: 'get', url: h.target })
         expect(request.wire.config.headers.Authorization).toBe('Bearer v146-original-token')
         request.wire.reply(null, failure.code, failure.status)
@@ -155,7 +164,8 @@ describe('v146 real original template-read consumer compatibility', () => {
       })
     }
     it(`${kind}: a new explicit read after known4066 succeeds with the original path and retained draft`, async () => {
-      const h = await setup(kind), before = state(h), first = await h.begin()
+      const h = await setup(kind), previous = state(h), first = await h.begin()
+      const before = readStateAfterBegin(h, previous)
       first.wire.reply(null, 4066); expect((await first.result).ok).toBe(false); expect(state(h)).toEqual(before)
       h.clear(); const restored = await h.begin(); restored.wire.reply(accepted(h))
       expect((await restored.result).ok).toBe(true); assertOnlyReads(h); tokenKept(h)
@@ -184,7 +194,8 @@ describe('v146 real original template-read consumer compatibility', () => {
     expect(h.ElMessage.error).not.toHaveBeenCalled(); assertOnlyReads(h); tokenKept(h)
   })
   it('original HTTP401 expires login while preserving the unsaved maintenance form', async () => {
-    const h = await setup('GRANTS'), before = state(h), request = await h.begin(); request.wire.reply(null, 1000, 401)
+    const h = await setup('GRANTS'), previous = state(h), request = await h.begin()
+    const before = readStateAfterBegin(h, previous); request.wire.reply(null, 1000, 401)
     expect((await request.result).ok).toBe(false); expect(state(h)).toEqual(before)
     expect(h.storage.has('hip_token')).toBe(false); expect(h.router.push).toHaveBeenCalledWith('/login')
     expect(h.ElMessage.warning).toHaveBeenCalledWith('登录已过期，请重新登录')

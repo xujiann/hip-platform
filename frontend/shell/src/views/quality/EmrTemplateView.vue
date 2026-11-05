@@ -470,10 +470,8 @@ async function openGrants(row: Tpl) {
 
 async function loadGrants(context: GrantContext) {
   const request = ++grantListRequest
-  try {
-    const result = (await client.get(`/emr-templates/${context.templateId}/grants`)).data.data
-    if (ownsGrantContext(context) && request === grantListRequest) grantRows.value = result
-  } catch { /* The API client reports failures; an old request must not alter the dialog. */ }
+  const result = (await client.get(`/emr-templates/${context.templateId}/grants`)).data.data
+  if (ownsGrantContext(context) && request === grantListRequest) grantRows.value = result
 }
 
 async function loadCandidates() {
@@ -520,8 +518,7 @@ async function addGrant() {
     ElMessage.success('已授权')
     granteeId.value = null
     await Promise.all([loadGrants(context), refreshGrantTemplates(context)])
-  } catch { /* The API client already reports the failure. */ }
-  finally { if (current()) granting.value = false }
+  } finally { if (current()) granting.value = false }
 }
 
 async function revokeGrant(row: Grant) {
@@ -535,8 +532,7 @@ async function revokeGrant(row: Grant) {
     if (!current()) return
     ElMessage.success('已撤销授权')
     await Promise.all([loadGrants(context), refreshGrantTemplates(context)])
-  } catch { /* The API client already reports the failure. */ }
-  finally { if (current()) granting.value = false }
+  } finally { if (current()) granting.value = false }
 }
 
 onMounted(async () => {

@@ -29,7 +29,7 @@ const grant = { id: 711, template_id: 71, grantee_type: 'USER', grantee_id: 8,
 const actions = ['save', 'disable', 'enable', 'grant', 'revoke', 'default', 'replace', 'unset'] as const
 type Action = typeof actions[number]
 
-function setup() {
+async function setup() {
   const storage = new Map([['hip_token', 'v144-compatible-token']])
   const localStorage = { getItem: (key: string) => storage.get(key) ?? null,
     setItem: (key: string, value: string) => storage.set(key, value), removeItem: (key: string) => storage.delete(key) }
@@ -55,14 +55,16 @@ function setup() {
     if (config.method !== 'get') return
     if (config.url === '/emr-templates/visible') wire.reply(copy(listReply))
     else if (config.url === '/emr-templates/71/grants') wire.reply(copy(grantReply))
+    else if (config.url === '/emr-templates/grantee-candidates') wire.reply(config.params.granteeType === 'USER'
+      ? [{ id: 9, name: '模拟当前可授权人员', dept_name: '模拟科室' }] : [{ id: 7, name: '模拟科室' }])
     else throw new Error('Unconfigured actual GET ' + config.url)
   })
-  const box: Record<string, any> = { ...Vue, client, ElMessage, ElMessageBox, onMounted: vi.fn(), console }
+  const box: Record<string, any> = { ...Vue, client, ElMessage, ElMessageBox, onMounted: vi.fn(), onBeforeUnmount: vi.fn(), console }
   const component = readFileSync(new URL('../../views/quality/EmrTemplateView.vue', import.meta.url), 'utf8')
   const source = component.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)![1]
   const exposed = '\nglobalThis.view = { all, actor, form, dialogVisible, dialogTitle, saving, origScope, origDeptId, '
     + 'filterType, filterScope, filterDeptId, keyword, includeDisabled, grantVisible, grantRow, grantRows, '
-    + 'grantType, granteeId, granting, openEdit, save, toggleEnabled, setDefault, unsetDefault, addGrant, revokeGrant };'
+    + 'grantType, granteeId, granting, candidates, openGrants, openEdit, save, toggleEnabled, setDefault, unsetDefault, addGrant, revokeGrant };'
   const scope = Vue.effectScope(); scopes.push(scope)
   scope.run(() => runInNewContext(ts.transpileModule(withoutImports(source, 'EmrTemplateView.ts') + exposed, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
@@ -71,9 +73,15 @@ function setup() {
   v.all.value = [copy(row)]
   v.actor.value = { userId: 3, deptId: 7, deptName: '模拟科室', admin: false, grantableScopes: ['DEPT', 'PERSONAL'] }
   v.openEdit(copy(row)); v.form.name = '医生未保存的模板名'; v.form.content = '医生未保存的模板正文'
-  v.grantVisible.value = true; v.grantRow.value = copy(row); v.grantRows.value = [copy(grant)]
-  v.granteeId.value = 9; v.grantType.value = 'USER'
+  // Enter a real dialog session and obtain the chosen id from the actual current
+  // USER candidate response. A bare numeric ref no longer establishes provenance.
+  await v.openGrants(copy(row)); v.grantType.value = 'USER'; await settle()
+  expect(v.candidates.value).toEqual([{ id: 9, name: '模拟当前可授权人员', dept_name: '模拟科室' }])
+  expect(requests.filter(wire => !wire.done)).toEqual([])
+  v.granteeId.value = 9
   v.filterScope.value = 'DEPT'; v.filterDeptId.value = 7; v.keyword.value = '当前筛选'
+  requests.length = 0
+  for (const value of Object.values(ElMessage)) if (typeof value === 'function' && 'mockClear' in value) value.mockClear()
   pendingChecks.push(() => expect(requests.filter(wire => !wire.done)).toEqual([]))
   const invoke = (action: Action) => {
     if (action === 'save') return v.save()
@@ -93,7 +101,7 @@ function setup() {
       return { wire: wire!, result }
     } }
 }
-type Harness = ReturnType<typeof setup>
+type Harness = Awaited<ReturnType<typeof setup>>
 const state = (h: Harness) => copy({ all: h.v.all.value, actor: h.v.actor.value, form: h.v.form,
   dialog: h.v.dialogVisible.value, title: h.v.dialogTitle.value, grantVisible: h.v.grantVisible.value,
   grantRow: h.v.grantRow.value, grantRows: h.v.grantRows.value, granteeId: h.v.granteeId.value,
@@ -115,7 +123,7 @@ describe('v144 original HEAD maintenance consumer compatibility', () => {
   for (const refusal of [{ name: 'current ACL 4066', code: 4066, status: 200 },
     { name: 'current duty HTTP403', code: 1005, status: 403 }, { name: 'transport HTTP503', code: 5000, status: 503 }]) {
     it.each(actions)(`%s: ${refusal.name} retains drafts, rows and token, without false success, refresh or retry`, async action => {
-      const h = setup(), before = state(h), request = await h.begin(action)
+      const h = await setup(), before = state(h), request = await h.begin(action)
       expect(request.wire.config).toMatchObject(requestContract[action])
       expect(request.wire.config.headers.Authorization).toBe('Bearer v144-compatible-token')
       if (action === 'save') expect(h.v.saving.value).toBe(true)
@@ -131,7 +139,7 @@ describe('v144 original HEAD maintenance consumer compatibility', () => {
     })
   }
   it.each(actions)('%s: authorized success keeps the original verb/path/body and performs its legitimate refresh', async action => {
-    const h = setup(), request = await h.begin(action)
+    const h = await setup(), request = await h.begin(action)
     expect(request.wire.config).toMatchObject(requestContract[action])
     if (action === 'save') expect(JSON.parse(request.wire.config.data)).toEqual({ name: '医生未保存的模板名',
       content: '医生未保存的模板正文', templateType: 'EMR', scope: 'DEPT', deptId: 7, recordType: 'OUTP' })
@@ -146,7 +154,7 @@ describe('v144 original HEAD maintenance consumer compatibility', () => {
     if (action === 'grant') expect(h.v.granteeId.value).toBeNull()
   })
   it('only original 4067 offers explicit replacement, with replace=true as the sole second mutation', async () => {
-    const h = setup(), first = await h.begin('default')
+    const h = await setup(), first = await h.begin('default')
     first.wire.reply(null, 4067); await settle()
     expect(h.ElMessage.error).not.toHaveBeenCalled(); expect(h.ElMessageBox.confirm).toHaveBeenCalledTimes(1)
     expect(h.ElMessageBox.confirm.mock.calls[0][0]).toContain('接管默认位')
@@ -156,13 +164,13 @@ describe('v144 original HEAD maintenance consumer compatibility', () => {
     expect(h.ElMessage.success).toHaveBeenCalledWith('已替换为默认模板'); expectTokenKept(h)
   })
   it('canceling the original 4067 replacement leaves every row and draft unchanged, with no second write', async () => {
-    const h = setup(); h.ElMessageBox.confirm.mockRejectedValueOnce('cancel')
+    const h = await setup(); h.ElMessageBox.confirm.mockRejectedValueOnce('cancel')
     const before = state(h), first = await h.begin('default'); first.wire.reply(null, 4067)
     expect((await first.result).ok).toBe(true); expect(state(h)).toEqual(before)
     expect(h.requests).toHaveLength(1); expect(h.ElMessage.success).not.toHaveBeenCalled(); expectTokenKept(h)
   })
   it('a replacement losing ACL returns one real error and never recursively confirms or claims success', async () => {
-    const h = setup(), before = state(h), first = await h.begin('default')
+    const h = await setup(), before = state(h), first = await h.begin('default')
     first.wire.reply(null, 4067); await settle()
     h.requests.find(w => !w.done)!.reply(null, 4066)
     const result = await first.result
@@ -171,7 +179,7 @@ describe('v144 original HEAD maintenance consumer compatibility', () => {
     expect(h.ElMessage.success).not.toHaveBeenCalled(); expect(h.requests).toHaveLength(2); expectTokenKept(h)
   })
   it('an actual HTTP401 keeps the original expiry/logout behavior and preserves the unsaved form', async () => {
-    const h = setup(), before = state(h), request = await h.begin('save'); request.wire.reply(null, 1000, 401)
+    const h = await setup(), before = state(h), request = await h.begin('save'); request.wire.reply(null, 1000, 401)
     expect((await request.result).ok).toBe(false); expect(state(h)).toEqual(before)
     expect(h.storage.has('hip_token')).toBe(false); expect(h.router.push).toHaveBeenCalledWith('/login')
     expect(h.ElMessage.warning).toHaveBeenCalledWith('登录已过期，请重新登录'); expect(h.ElMessage.success).not.toHaveBeenCalled()
