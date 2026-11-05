@@ -23,7 +23,7 @@ const A = { id: 71, name: '模拟模板甲', content: '甲正文', template_type
 const B = { ...A, id: 72, name: '模拟模板乙', content: '乙正文', grant_count: 2 }
 const grant = (template: number, id = 801) => ({ id, template_id: template, grantee_type: 'USER', grantee_id: 23,
   grantee_name: template === A.id ? '甲模板原有人员' : '乙模板原有人员', granted_by_name: '模拟创建人' })
-const jobs: Array<ReturnType<typeof mount>> = []
+const jobs: Array<() => Promise<void>> = []
 
 function mount() {
   let unmounted = false
@@ -146,10 +146,10 @@ function mount() {
       app.unmount(); unmounted = true
     },
   }
-  jobs.push(h); return h
+  jobs.push(() => h.drain()); return h
 }
 
-afterEach(async () => { for (const h of jobs.splice(0)) await h.drain() })
+afterEach(async () => { for (const drain of jobs.splice(0)) await drain() })
 
 const candidates = (kind: Kind) => kind === 'USER' ? USERS : DEPTS
 const labels = (kind: Kind) => candidates(kind).map(row => ({ id: row.id, label: 'dept_name' in row ? `${row.name}（${row.dept_name}）` : row.name }))
