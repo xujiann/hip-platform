@@ -88,7 +88,7 @@
     <el-empty v-if="!rows.length" description="当前筛选下没有可见模板" :image-size="60" />
 
     <!-- 新增 / 编辑 -->
-    <el-dialog v-model="dialogVisible" :title="dialogTitle" :before-close="dismissTemplateDialog" width="680px">
+    <el-dialog :model-value="dialogVisible" :title="dialogTitle" :before-close="dismissTemplateDialog" width="680px">
       <el-form :model="form" :disabled="savingCurrentDialog" label-width="94px" size="small">
         <el-form-item label="模板名称" required>
           <el-input v-model="form.name" maxlength="64" show-word-limit placeholder="如：入院记录·呼吸内科" />
@@ -368,7 +368,7 @@ function openTemplateDialog(title: string) {
 }
 
 function dismissTemplateDialog(done: () => void) {
-  // Element Plus 的关闭按钮、遮罩和 Esc 在离场后才更新 v-model。
+  // 由父组件同步关闭，避免旧离场动画的 modelValue 回写关闭新会话。
   dialogVisible.value = false
   done()
 }

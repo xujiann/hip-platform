@@ -49,7 +49,7 @@ async function mount() {
   const response = (data: unknown) => ({ data: { data } })
   let holdLists = false
   let holdClose = false
-  let finishNativeClose: (() => void) | undefined
+  let finishDialogClose: (() => void) | undefined
   function pending(ledger: Wire[], method: Wire['method'], url: string, details: { body?: unknown; params?: unknown }) {
     return new Promise((resolve, reject) => {
       const request: Wire = {
@@ -103,19 +103,29 @@ async function mount() {
   }
   app.component('ElDialog', Vue.defineComponent({
     props: ['modelValue', 'title', 'beforeClose'], emits: ['update:modelValue', 'close', 'closed'],
-    setup: (props, { slots, emit }) => () => props.modelValue ? Vue.h('section', { title: props.title }, [
-      Vue.h('button', { onClick() {
-        const done = () => {
-          emit('close')
-          const afterLeave = () => { emit('closed'); emit('update:modelValue', false) }
-          if (holdClose) finishNativeClose = afterLeave
-          else afterLeave()
-        }
-        if (typeof props.beforeClose === 'function') props.beforeClose(done)
-        else done()
-      } }, '对话框关闭'),
-      slots.default?.(), slots.footer?.(),
-    ]) : null,
+    setup(props, { slots, emit }) {
+      let leaveStarted = false
+      function beginLeave() {
+        if (leaveStarted) return
+        leaveStarted = true
+        emit('close')
+        const afterLeave = () => { emit('closed'); emit('update:modelValue', false) }
+        if (holdClose) finishDialogClose = afterLeave
+        else afterLeave()
+      }
+      // Element Plus also echoes false after leaving when a parent changed the prop.
+      Vue.watch(() => props.modelValue, visible => {
+        if (visible) leaveStarted = false
+        else beginLeave()
+      })
+      return () => props.modelValue ? Vue.h('section', { title: props.title }, [
+        Vue.h('button', { onClick() {
+          if (typeof props.beforeClose === 'function') props.beforeClose(beginLeave)
+          else beginLeave()
+        } }, '对话框关闭'),
+        slots.default?.(), slots.footer?.(),
+      ]) : null
+    },
   }))
   app.component('ElForm', Vue.defineComponent({
     props: ['disabled'],
@@ -210,8 +220,11 @@ async function mount() {
     holdLists() { holdLists = true },
     holdClose() { holdClose = true },
     async finishClose() {
-      expect(finishNativeClose, 'Native dialog began its close transition').toBeDefined()
-      finishNativeClose?.()
+      expect(finishDialogClose, 'Dialog began its close transition').toBeDefined()
+      holdClose = false
+      const finish = finishDialogClose
+      finishDialogClose = undefined
+      finish?.()
       await settled()
     },
     async resolve(request: Wire, data: unknown = null) {
@@ -306,6 +319,26 @@ describe('ordinary EMR template save dialog sessions', () => {
     expect(h.lists).toHaveLength(1)
     await h.finishClose()
     expect(h.dialog()).toBeUndefined()
+  })
+
+  it('retains the reopened editor when the earlier footer close echoes false', async () => {
+    const h = await mount()
+    await h.click(h.button('编辑', a.id))
+    await h.click(h.button('保存'))
+    h.holdClose()
+    await h.click(h.button('取消'))
+    await h.click(h.button('编辑', a.id))
+    await h.choose(h.field('模板名称'), '关闭动画结束前重开的草稿')
+
+    await h.finishClose()
+
+    expect(h.dialog()?.props.title).toBe('编辑 #71《模拟模板甲》')
+    expect(h.field('模板名称').props.value).toBe('关闭动画结束前重开的草稿')
+    expect(h.writes[0].pending).toBe(true)
+    await h.resolve(h.writes[0])
+    expect(h.field('模板名称').props.value).toBe('关闭动画结束前重开的草稿')
+    expect(h.messages.success).not.toHaveBeenCalled()
+    expect(h.lists).toHaveLength(1)
   })
 
   it('a delayed save refresh does not replace rows from a later filter request', async () => {
