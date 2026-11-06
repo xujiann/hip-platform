@@ -606,6 +606,14 @@ public class EmrTemplateService {
                 values (?, ?, ?, ?, ?, ?, ?, true, ?) returning id
                 """, Long.class, deptId, name, content, templateType, scope, a.userId(), recordType, a.userId());
         autoGrant(id, scope, deptId, a);
+
+        // 外键检查可能等待其他事务。写入结束后用新快照复核，异常会回滚模板和自动授权。
+        Actor current = templateMaintenanceActor(userId);
+        requireScopeGrantable(scope, current);
+        Long currentDeptId = resolveDeptId(scope, req.deptId(), current);
+        if (!java.util.Objects.equals(deptId, currentDeptId)) {
+            throw new HipBizException(4066, "当前所属科室已变化，请重新确认模板的所属科室");
+        }
         return id;
     }
 

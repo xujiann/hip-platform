@@ -198,7 +198,8 @@ class V159EmrScopedCreateActorTest {
         Long destination = scenario.scope().equals("DEPT")
                 ? requestedDepartment == null ? currentDepartment : requestedDepartment
                 : null;
-        assertEquals(List.of("BEFORE", "AFTER"), gap.positions);
+        assertEquals(scenario.code() == 0 ? List.of("BEFORE", "AFTER", "BEFORE", "AFTER")
+                : List.of("BEFORE", "AFTER"), gap.positions);
         assertEquals(clinical, clinicalRows());
         System.out.println("V159 " + scenario.label() + " actual=" + result.status() + "/" + result.code());
         assertAll(
@@ -374,6 +375,13 @@ class V159EmrScopedCreateActorTest {
                     && normalized.endsWith("where u.id = ?");
             if (!old && !current) return;
             positions.add(after ? "AFTER" : "BEFORE");
+            if (!after && positions.size() == 3) {
+                // Creation rereads the actor after the insert and auto-grant. Only the initial read is gated.
+                assertEquals(List.of("BEFORE", "AFTER", "BEFORE"), positions);
+                assertTrue(current);
+                assertEquals(parameters, List.of(arguments));
+                return;
+            }
             if (!after) {
                 assertEquals(List.of("BEFORE"), positions);
                 oldProfile = old;
