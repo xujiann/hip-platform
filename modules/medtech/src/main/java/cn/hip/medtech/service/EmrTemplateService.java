@@ -992,10 +992,7 @@ public class EmrTemplateService {
             throw new HipBizException(4068, "存为模板必须指明来源病历所属患者（归属校验参数，不是过滤条件）");
         }
         PriorRecord src = loadRecord(req.source(), req.recordId(), req.patientId());
-        Actor a = src.actor();
-        if (!userId.equals(a.userId())) {
-            throw new AccessDeniedException("病历来源读取人与模板建立人不一致");
-        }
+        Actor a = requireCopyActor(userId, src.actor());
         String name = requireName(notBlank(req.name()) ? req.name() : src.title());
         String scope = normScope(notBlank(req.scope()) ? req.scope() : "PERSONAL");
         requireScopeGrantable(scope, a);
@@ -1014,6 +1011,14 @@ public class EmrTemplateService {
                 """, Long.class, deptId, name, content, scope, a.userId(), recordType, a.userId());
         autoGrant(id, scope, deptId, a);
 
+        // 外键检查可能等待其他事务。复核原来源和目标范围，正文沿用首次授权读取的快照。
+        var currentSource = readHistoryRecordRow(src.source(), src.id(), req.patientId(), false);
+        Actor current = requireCopyActor(userId, historyActor(currentSource));
+        requireScopeGrantable(scope, current);
+        if (!java.util.Objects.equals(deptId, resolveDeptId(scope, req.deptId(), current))) {
+            throw new HipBizException(4066, "当前所属科室已变化，请重新确认模板的所属科室");
+        }
+
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("id", id);
         out.put("scope", scope);
@@ -1025,7 +1030,14 @@ public class EmrTemplateService {
         return out;
     }
 
-    /** The source payload, clinical access and target template scope share the current employee snapshot. */
+    private Actor requireCopyActor(Long userId, Actor actor) {
+        if (!userId.equals(actor.userId())) {
+            throw new AccessDeniedException("病历来源读取人与模板建立人不一致");
+        }
+        return actor;
+    }
+
+    /** The source selection, clinical access and target template scope share the current employee snapshot. */
     private static final String HISTORY_READ_SNAPSHOT = """
             with history_read_actor as (
                 select u.id as user_id, u.dept_id, requested.patient_id, requested.business_today,
@@ -1172,70 +1184,75 @@ public class EmrTemplateService {
     /**
      * 取一份既往病历（住院/门诊统一形状）。
      *
-     * <p>{@code patientId} 为 null 时不做归属校验；<b>本类所有对外路径都传了它</b>
-     * （{@link #priorRecordContent} 与 {@link #saveAsTemplate} 都必传，缺了直接 4068）。
-     * 归属条件<b>用拼 SQL 而不是 {@code (? is null or ...)}</b>：未定型的 null 参数
-     * 会让 Postgres 当场报"无法确定参数类型"，这是本仓踩过的老坑。
+     * <p>{@link #priorRecordContent} 与 {@link #saveAsTemplate} 都要求 {@code patientId}，
+     * 缺了直接 4068。读取和写入末次复核均用它限制病历归属。
      */
     private PriorRecord loadRecord(String source, Long recordId, Long patientId) {
         String s = source == null ? "" : source.trim().toUpperCase();
         if (recordId == null || !(s.equals("INP") || s.equals("OUTP"))) {
             throw new HipBizException(4068, "既往病历不存在或非本患者（source 应为 INP 住院 / OUTP 门诊）");
         }
-        List<Object> args = new ArrayList<>();
-        args.add(historyReadUsername());
-        args.add(patientId);
-        args.add(BusinessDates.today());
-        args.add(recordId);
-        String ownerClause = "";
-        if (patientId != null) {
-            ownerClause = "INP".equals(s) ? " and a.patient_id = ? " : " and g.patient_id = ? ";
-            args.add(patientId);
+        Map<String, Object> row = readHistoryRecordRow(s, recordId, patientId, true);
+        return new PriorRecord(s, num(row.get("id")), (String) row.get("record_type"),
+                (String) row.get("title"), (String) row.get("content"), row.get("created_at"), historyActor(row));
+    }
+
+    private Map<String, Object> readHistoryRecordRow(String source, Long recordId, Long patientId,
+                                                      boolean includeContent) {
+        boolean inpatient = "INP".equals(source);
+        String payloadColumns = "";
+        if (includeContent) {
+            payloadColumns = inpatient
+                    ? ", r.record_type, r.title, r.content, r.created_at"
+                    : """
+                      , 'OUTP' as record_type, '门诊病历' as title,
+                        concat_ws(chr(10),
+                            case when coalesce(e.chief_complaint, '') = '' then null
+                                 else '主诉：' || e.chief_complaint end,
+                            case when coalesce(e.present_illness, '') = '' then null
+                                 else '现病史：' || e.present_illness end,
+                            case when coalesce(e.past_history, '') = '' then null
+                                 else '既往史：' || e.past_history end,
+                            case when coalesce(e.physical_exam, '') = '' then null
+                                 else '体格检查：' || e.physical_exam end,
+                            case when coalesce(e.advice, '') = '' then null
+                                 else '处理意见：' || e.advice end) as content,
+                        e.updated_at as created_at
+                      """;
         }
-        String sql = "INP".equals(s)
-                ? """
-                  select r.id, r.record_type, r.title, r.content, r.created_at
+        String recordQuery = inpatient
+                ? "select r.id" + payloadColumns + """
+
                   from inp_medical_record r
                   join inp_admission a on a.id = r.admission_id
-                  where r.id = ?
-                  """ + ownerClause
-                : """
-                  select e.id, 'OUTP' as record_type, '门诊病历' as title,
-                         concat_ws(chr(10),
-                             case when coalesce(e.chief_complaint, '') = '' then null
-                                  else '主诉：' || e.chief_complaint end,
-                             case when coalesce(e.present_illness, '') = '' then null
-                                  else '现病史：' || e.present_illness end,
-                             case when coalesce(e.past_history, '') = '' then null
-                                  else '既往史：' || e.past_history end,
-                             case when coalesce(e.physical_exam, '') = '' then null
-                                  else '体格检查：' || e.physical_exam end,
-                             case when coalesce(e.advice, '') = '' then null
-                                  else '处理意见：' || e.advice end) as content,
-                         e.updated_at as created_at
+                  where r.id = ? and a.patient_id = ?
+                  """
+                : "select e.id" + payloadColumns + """
+
                   from outp_emr e
                   join outp_registration g on g.id = e.registration_id
-                  where e.id = ?
-                  """ + ownerClause;
-        String permission = "INP".equals(s) ? "s.inp_allowed" : "s.outp_allowed";
-        sql = HISTORY_READ_SNAPSHOT + """
+                  where e.id = ? and g.patient_id = ?
+                  """;
+        String permission = inpatient ? "s.inp_allowed" : "s.outp_allowed";
+        String sql = HISTORY_READ_SNAPSHOT + """
                 select s.actor_allowed as __history_actor_allowed,
                        s.outp_allowed as __history_outp_allowed, s.inp_allowed as __history_inp_allowed,
                        s.user_id as __history_user_id, s.dept_id as __history_dept_id,
                        s.is_admin as __history_is_admin, selected.id as __history_row_id, selected.*
                 from history_read_scope s left join lateral (
-                """ + sql + " and s.actor_allowed and " + permission + " ) selected on true";
-        List<Map<String, Object>> rows = jdbc.queryForList(sql, args.toArray());
-        Map<String, Object> r = rows.getFirst();
-        requireHistoryRead(r, s);
-        if (r.get("__history_row_id") == null) {
+                """ + recordQuery + " and s.actor_allowed and " + permission + " ) selected on true";
+        Map<String, Object> row = jdbc.queryForList(sql, historyReadUsername(), patientId,
+                BusinessDates.today(), recordId, patientId).getFirst();
+        requireHistoryRead(row, source);
+        if (row.get("__history_row_id") == null) {
             throw new HipBizException(4068, "既往病历不存在或非本患者");
         }
-        removeHistoryFlags(r);
-        Actor actor = new Actor((Long) r.get("__history_user_id"), (Long) r.get("__history_dept_id"),
-                Boolean.TRUE.equals(r.get("__history_is_admin")));
-        return new PriorRecord(s, num(r.get("id")), (String) r.get("record_type"),
-                (String) r.get("title"), (String) r.get("content"), r.get("created_at"), actor);
+        return row;
+    }
+
+    private Actor historyActor(Map<String, Object> row) {
+        return new Actor((Long) row.get("__history_user_id"), (Long) row.get("__history_dept_id"),
+                Boolean.TRUE.equals(row.get("__history_is_admin")));
     }
 
     // ==================================================================

@@ -40,8 +40,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 /** Real JWT through original controller paths. No outer test transaction.
  * A test-only JDBC boundary pauses the actual payload statement, never its
  * result. Public role/attending changes commit before a public owner publishes
- * NEW clinical text. BEFORE and AFTER statement snapshots are distinct cases.
- * No PostgreSQL lock-wait or arbitrary-time revocation guarantee is claimed. */
+ * NEW clinical text. AFTER preserves the original read, while copies recheck
+ * eligibility before commit. No PostgreSQL lock-wait is simulated here. */
 @SpringBootTest @AutoConfigureMockMvc
 @Import(V152EmrHistoryAccessTest.JdbcConfiguration.class)
 class V152EmrHistoryAccessTest {
@@ -150,13 +150,22 @@ class V152EmrHistoryAccessTest {
     static Stream<Arguments> beforeWindows(){return Stream.of("attendingLoss","adminLoss","nurseOnly","dutyLoss","disabled","attendingGain").flatMap(kind->ROUTES.stream().map(route->Arguments.of(kind,route)));}
     @ParameterizedTest @MethodSource("beforeWindows") void currentIdentityPatientQualificationAndNewPayloadShareOneStatement(String kind,String entry)throws Exception{route=entry;if(kind.equals("adminLoss"))roles(actor,"ADMIN");else if(!kind.equals("attendingGain"))relation("ownedInp");window("before-"+kind+"-"+entry,kind,false,false);}
     static Stream<Arguments> afterWindows(){return Stream.of("attendingLoss","nurseOnly","disabled").flatMap(kind->ROUTES.stream().map(route->Arguments.of(kind,route)));}
-    @ParameterizedTest @MethodSource("afterWindows") void anAlreadyExecutedAuthorizedSnapshotMayReturnOrCopyItsCompleteOldBody(String kind,String entry)throws Exception{route=entry;relation("ownedInp");window("after-"+kind+"-"+entry,kind,true,false);}
+    @ParameterizedTest @MethodSource("afterWindows") void aLaterChangeCanDenyACopyWhileTheOriginalReadKeepsItsSnapshot(String kind,String entry)throws Exception{route=entry;relation("ownedInp");window("after-"+kind+"-"+entry,kind,true,false);}
     @ParameterizedTest @ValueSource(strings={"list","contentOUTP","contentINP","copyOUTP","copyINP"}) void rolledBackPublicRelationshipAndPublicationNeverChangeReadEligibility(String entry)throws Exception{route=entry;relation("ownedInp");window("rollback-"+entry,"attendingLoss",false,true);}
     @Test void anAlreadyExecutedLegalEmptyArrayIsNotReclassifiedByLaterRevocation()throws Exception{roles(actor,"ADMIN");jdbc.update("delete from outp_emr where id=?",emr);jdbc.update("delete from inp_medical_record where id=?",record);window("empty-after-role-loss","emptyRoleLoss",true,false);}
     void window(String label,String kind,boolean after,boolean rollback)throws Exception{
         Wanted wanted=expected();var auditBefore=audit();var gap=new Gap(after);var pool=Executors.newSingleThreadExecutor();
         Future<Reply> pending=pool.submit(()->{Gap.TRACE.set(gap);try{return read();}finally{Gap.TRACE.remove();SecurityContextHolder.clearContext();}});
-        try{gap.await();if(rollback){var tx=new TransactionTemplate(transactions);tx.setTimeout(20);var original=facts();tx.executeWithoutResult(status->{try{change(kind);entityManager.flush();entityManager.clear();status.setRollbackOnly();}catch(Exception e){throw new RuntimeException(e);}});assertEquals(original,facts());}else{if(kind.equals("emptyRoleLoss"))publicRoles("DOCTOR_OUTP");else change(kind);if(!after)wanted=expected();}
+        try{gap.await();if(rollback){var tx=new TransactionTemplate(transactions);tx.setTimeout(20);var original=facts();tx.executeWithoutResult(status->{try{change(kind);entityManager.flush();entityManager.clear();status.setRollbackOnly();}catch(Exception e){throw new RuntimeException(e);}});assertEquals(original,facts());}else{
+                if(kind.equals("emptyRoleLoss"))publicRoles("DOCTOR_OUTP");else change(kind);
+                if (!after) {
+                    wanted = expected();
+                } else if (route.startsWith("copy")) {
+                    // The copy must still be authorized, but it copies the previously read body.
+                    Wanted current = expected();
+                    if (current.code() != 0) wanted = current;
+                }
+            }
             var before=facts();gap.release();Reply reply=pending.get(20,TimeUnit.SECONDS);verify(label,reply,wanted,before,auditBefore,gap,rollback);
         }finally{gap.release();pool.shutdown();assertTrue(pool.awaitTermination(25,TimeUnit.SECONDS));}
     }
@@ -188,7 +197,7 @@ class V152EmrHistoryAccessTest {
     void evidence(String label,Reply reply,Wanted wanted,Map<String,List<String>> before,Map<String,List<String>> after,List<Map<String,Object>> old,Gap gap,boolean rollback){String folder=System.getProperty("hip.v152.evidenceDir");if(folder==null)return;try{Path dir=Path.of(folder);Files.createDirectories(dir);var out=new LinkedHashMap<String,Object>();out.put("label",label);out.put("tag",tag);out.put("route",route);out.put("http",reply.http());out.put("response",reply.body());out.put("expectedHttp",wanted.http());out.put("expectedCode",wanted.code());out.put("expectedData",wanted.data());out.put("before",before);out.put("after",after);out.put("oldAudit",old);out.put("currentAudit",audit());out.put("publicChanges",maintenance);out.put("changesRolledBack",rollback);out.put("oldNonce",oldNonce);out.put("newNonce",newNonce);if(gap!=null)out.put("jdbcBoundary",gap.proof());Files.writeString(dir.resolve(tag+"-"+(++artifact)+".json"),mapper.writeValueAsString(out),StandardCharsets.UTF_8,StandardOpenOption.CREATE_NEW);}catch(Exception e){throw new AssertionError(e);}}
     static final class Gap{
         static final ThreadLocal<Gap> TRACE=new ThreadLocal<>();final boolean after;final CountDownLatch reached=new CountDownLatch(1),resume=new CountDownLatch(1);final AtomicInteger hits=new AtomicInteger();final List<Map<String,Object>> statements=new ArrayList<>();Gap(boolean after){this.after=after;}
-        void observe(String sql,Map<Integer,Object> params,boolean done,int fetchSize){String n=sql.replaceAll("\\s+"," ").toLowerCase(Locale.ROOT);if(!(n.contains("from inp_medical_record r")||n.contains("from outp_emr e"))||n.contains("for update"))return;var e=new LinkedHashMap<String,Object>();e.put("sql",sql);e.put("parameters",new TreeMap<>(params));e.put("position",done?"AFTER":"BEFORE");e.put("thread",Thread.currentThread().getName());e.put("time",Instant.now().toString());e.put("fetchSize",fetchSize);statements.add(e);if(done==after){assertEquals(1,hits.incrementAndGet());assertEquals(0,fetchSize);reached.countDown();try{assertTrue(resume.await(20,TimeUnit.SECONDS));}catch(InterruptedException x){Thread.currentThread().interrupt();throw new AssertionError(x);}}}
+        void observe(String sql,Map<Integer,Object> params,boolean done,int fetchSize){String n=sql.replaceAll("\\s+"," ").toLowerCase(Locale.ROOT);if(!(n.contains("from inp_medical_record r")||n.contains("from outp_emr e"))||n.contains("for update"))return;var e=new LinkedHashMap<String,Object>();e.put("sql",sql);e.put("parameters",new TreeMap<>(params));e.put("position",done?"AFTER":"BEFORE");e.put("thread",Thread.currentThread().getName());e.put("time",Instant.now().toString());e.put("fetchSize",fetchSize);statements.add(e);if(done==after&&hits.compareAndSet(0,1)){assertEquals(0,fetchSize);reached.countDown();try{assertTrue(resume.await(20,TimeUnit.SECONDS));}catch(InterruptedException x){Thread.currentThread().interrupt();throw new AssertionError(x);}}}
         void await()throws Exception{assertTrue(reached.await(15,TimeUnit.SECONDS),"Actual history payload execute boundary missing");assertEquals(1,hits.get());}void release(){resume.countDown();}Map<String,Object> proof(){return Map.of("kind","test-only JDBC executeQuery", "postgresLockWaitClaim",false,"after",after,"hits",hits.get(),"statements",statements);}
     }
     @TestConfiguration(proxyBeanMethods=false) static class JdbcConfiguration{@Bean @Primary JdbcTemplate historyBoundaryJdbcTemplate(DataSource actual){return new JdbcTemplate(new BoundaryDataSource(actual));}}

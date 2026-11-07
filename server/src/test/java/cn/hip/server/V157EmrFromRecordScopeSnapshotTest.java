@@ -180,7 +180,17 @@ class V157EmrFromRecordScopeSnapshotTest {
             assertTrue(worker.awaitTermination(25, TimeUnit.SECONDS), "The copy request did not exit");
         }
 
-        assertEquals(List.of("BEFORE", "AFTER"), gap.statements.stream().map(event -> event.get("position")).toList());
+        var positions = gap.statements.stream().map(event -> event.get("position")).toList();
+        if (scenario.code == 0) {
+            assertEquals(List.of("BEFORE", "AFTER", "BEFORE", "AFTER"), positions);
+            String recheck = (String) gap.statements.get(2).get("sql");
+            assertTrue(recheck.contains("selected.id as __history_row_id"));
+            assertTrue(recheck.contains(inpatient ? "from inp_medical_record r" : "from outp_emr e"));
+            assertFalse(recheck.contains(inpatient ? "r.content" : "e.chief_complaint"),
+                    "The final source authorization query must not retrieve clinical text");
+        } else {
+            assertEquals(List.of("BEFORE", "AFTER"), positions);
+        }
         assertEquals(List.of(
                 Map.of("username", controller.username(), "method", "PUT", "path", staffPath, "http_status", 200),
                 Map.of("username", actor.username(), "method", "POST", "path", COPY, "http_status", 200)),
