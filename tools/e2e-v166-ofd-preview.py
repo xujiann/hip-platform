@@ -126,7 +126,7 @@ class Fixture:
 
     def export(self, who, expected_code=0):
         request = urllib.request.Request(e2elib.BASE + self.preview_path, method='GET', headers={
-            'Authorization': 'Bearer ' + self.tokens[who], 'Accept': 'application/ofd',
+            'Authorization': 'Bearer ' + self.tokens[who], 'Accept': 'application/ofd, application/json',
         })
         try:
             response = urllib.request.urlopen(request, timeout=90)
