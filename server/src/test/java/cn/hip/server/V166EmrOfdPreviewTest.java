@@ -541,7 +541,7 @@ class V166EmrOfdPreviewTest {
                     Long.class, dept, tag + "2");
             alternateAdmission = jdbc.queryForObject("""
                     insert into inp_admission(admission_no,patient_id,dept_id,ward_id,bed_id,doctor_id,status)
-                    values (?,?,?,?,?,?,'IN_HOSPITAL') returning id
+                    values (?,?,?,?,?,?,'DISCHARGED') returning id
                     """, Long.class, tag + "2", patient, dept, dept, alternateBed, owner.id());
         }
         var before = facts();
