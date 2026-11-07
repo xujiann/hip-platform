@@ -2,6 +2,7 @@ package cn.hip.outpatient.web;
 
 import cn.hip.outpatient.service.DiagnosisVersionService;
 import cn.hip.outpatient.service.EmrVersionService;
+import cn.hip.outpatient.service.EmrOfdPreviewService;
 import cn.hip.platform.core.common.R;
 import cn.hip.platform.core.security.CurrentUserService;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -57,6 +58,21 @@ public class EmrVersionController {
     private final DiagnosisVersionService diagnosisVersionService;
     private final JdbcTemplate jdbc;
     private final CurrentUserService currentUserService;
+    private final EmrOfdPreviewService ofdPreviewService;
+
+    /** A fixed historical INP version exported as an unsigned, source-linked OFD-H preview. */
+    @GetMapping("/INP/{emrId}/versions/{versionNo}/ofd-preview")
+    public org.springframework.http.ResponseEntity<byte[]> ofdPreview(@PathVariable Long emrId,
+                                                                      @PathVariable Integer versionNo) {
+        byte[] document = ofdPreviewService.preview(emrId, versionNo);
+        String filename = "emr-INP-" + emrId + "-v" + versionNo + "-preview.ofd";
+        return org.springframework.http.ResponseEntity.ok()
+                .contentType(org.springframework.http.MediaType.parseMediaType("application/ofd"))
+                .cacheControl(org.springframework.http.CacheControl.noStore())
+                .header(org.springframework.http.HttpHeaders.CONTENT_DISPOSITION,
+                        org.springframework.http.ContentDisposition.attachment().filename(filename).build().toString())
+                .body(document);
+    }
 
     /**
      * v80 对象级校验（v79 甲组审计 R3）：此前只有类级角色门槛，门诊医生能读任何患者的病历全文与诊断历史，

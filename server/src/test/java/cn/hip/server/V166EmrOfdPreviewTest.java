@@ -184,7 +184,7 @@ class V166EmrOfdPreviewTest {
 
     private Map<String, byte[]> archive(MvcResult result, long requestedRecord) throws Exception {
         var response = result.getResponse();
-        assertEquals(200, response.getStatus(), response.getContentAsString(StandardCharsets.UTF_8));
+        assertEquals(200, response.getStatus(), () -> "Expected an OFD response, status=" + response.getStatus());
         assertEquals("application/ofd", response.getContentType());
         assertEquals("attachment; filename=\"emr-INP-" + requestedRecord + "-v1-preview.ofd\"",
                 response.getHeader("Content-Disposition"));

@@ -248,6 +248,11 @@
   <el-drawer v-model="drawer" size="60%" :title="detail ? `第 ${detail.versionNo} 版 · 当时的完整内容` : '单版查看'">
     <!-- 抽屉挂在 body 下（teleport），复制事件冒不到页面容器，须单独登记 -->
     <div v-if="detail" @copy="onCopy" @cut="onCopy">
+      <div v-if="detail.emrType === 'INP'" class="gap">
+        <el-alert type="info" :closable="false" show-icon
+                  title="OFD 预览未签署，正式归档需完成签章与验签。患者与姓名信息取自生成时的当前主索引。" />
+        <el-button class="gap-top" :loading="ofdDownloading" @click="downloadOfdPreview">导出本版 OFD 预览</el-button>
+      </div>
       <el-descriptions :column="2" border size="small" class="gap">
         <el-descriptions-item label="版本号">v{{ detail.versionNo }}</el-descriptions-item>
         <el-descriptions-item label="来源">{{ sourceLabel(detail.source) }}</el-descriptions-item>
@@ -280,7 +285,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import client from '../../../api/client'
@@ -403,6 +408,10 @@ async function load(reset: boolean) {
   }
   const target = { emrType: emrType.value, emrId: emrId.value }
   const switched = applied.value?.emrType !== target.emrType || applied.value?.emrId !== target.emrId
+  if (switched) {
+    invalidateDetail()
+    drawer.value = false
+  }
   if (reset || switched) page.value = 1
   const my = ++reqSeq
   loading.value = true
@@ -507,19 +516,91 @@ function isAdded(v: DiagVersion, display: string): boolean {
 const drawer = ref(false)
 const detail = ref<VersionDetailBody | null>(null)
 const detailLoading = ref(false)
+const ofdDownloading = ref(false)
+let detailSeq = 0
+
+function invalidateDetail() {
+  detailSeq++
+  detail.value = null
+  detailLoading.value = false
+  ofdDownloading.value = false
+}
+
+watch(drawer, open => { if (!open) invalidateDetail() }, { flush: 'sync' })
+watch(applied, (target, previous) => {
+  if (target?.emrType !== previous?.emrType || target?.emrId !== previous?.emrId) {
+    invalidateDetail()
+    drawer.value = false
+  }
+}, { flush: 'sync' })
+onUnmounted(invalidateDetail)
 
 async function openVersion(versionNo: number) {
   if (!applied.value) return
-  detail.value = null
+  invalidateDetail()
+  const sequence = detailSeq
+  const { emrType: type, emrId: id } = applied.value
   drawer.value = true
   detailLoading.value = true
   try {
-    const { emrType: t, emrId: id } = applied.value
-    detail.value = (await client.get(`/emr/versions/${t}/${id}/versions/${versionNo}`)).data.data
+    const response = await client.get(`/emr/versions/${type}/${id}/versions/${versionNo}`)
+    if (sequence !== detailSeq || !drawer.value) return
+    const loaded = response.data.data as VersionDetailBody
+    if (loaded.emrType !== type || loaded.emrId !== id || loaded.versionNo !== versionNo) {
+      ElMessage.error('版本返回对象不一致，请重新选择')
+      return
+    }
+    detail.value = loaded
   } catch {
-    detail.value = null
+    if (sequence === detailSeq) detail.value = null
   } finally {
-    detailLoading.value = false
+    if (sequence === detailSeq) detailLoading.value = false
+  }
+}
+
+async function downloadOfdPreview() {
+  const selected = detail.value
+  if (!selected || selected.emrType !== 'INP' || !drawer.value || ofdDownloading.value) return
+  const { emrType: type, emrId: id, versionNo } = selected
+  if (!Number.isSafeInteger(id) || id <= 0 || versionNo == null || !Number.isSafeInteger(versionNo) || versionNo <= 0) return
+  if (applied.value?.emrType !== type || applied.value?.emrId !== id) return
+  const sequence = detailSeq
+  const current = () => sequence === detailSeq && drawer.value
+    && applied.value?.emrType === type && applied.value?.emrId === id
+    && detail.value?.emrId === id && detail.value?.versionNo === versionNo
+  ofdDownloading.value = true
+  try {
+    const response = await client.get(`/emr/versions/INP/${id}/versions/${versionNo}/ofd-preview`, {
+      responseType: 'blob', timeout: 60000,
+    })
+    if (!current()) return
+    const blob = response.data as Blob
+    const contentType = String(response.headers['content-type'] ?? blob.type).split(';')[0]?.trim().toLowerCase()
+    if (!(blob instanceof Blob) || blob.size < 4 || contentType !== 'application/ofd') {
+      ElMessage.error('服务未返回 OFD 预览文件')
+      return
+    }
+    const prefix = new Uint8Array(await blob.slice(0, 4).arrayBuffer())
+    if (!current()) return
+    if (prefix[0] !== 80 || prefix[1] !== 75 || prefix[2] !== 3 || prefix[3] !== 4) {
+      ElMessage.error('OFD 预览文件格式不正确')
+      return
+    }
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    try {
+      link.href = url
+      link.download = `emr-INP-${id}-v${versionNo}-preview.ofd`
+      document.body.appendChild(link)
+      link.click()
+    } finally {
+      link.remove()
+      URL.revokeObjectURL(url)
+    }
+  } catch {
+    // The shared client reports HTTP and JSON-envelope failures.
+  } finally {
+    if (sequence === detailSeq) ofdDownloading.value = false
   }
 }
 
