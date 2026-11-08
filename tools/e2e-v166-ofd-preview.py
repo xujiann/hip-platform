@@ -124,9 +124,10 @@ class Fixture:
             'version2': self.api('GET', self.version_path + '/versions/2'),
         }
 
-    def export(self, who, expected_code=0):
-        request = urllib.request.Request(e2elib.BASE + self.preview_path, method='GET', headers={
-            'Authorization': 'Bearer ' + self.tokens[who], 'Accept': 'application/ofd, application/json',
+    def export(self, who, expected_code=0, *, accept='application/ofd, application/json',
+               path=None, expected_status=200, private_text=()):
+        request = urllib.request.Request(e2elib.BASE + (path or self.preview_path), method='GET', headers={
+            'Authorization': 'Bearer ' + self.tokens[who], 'Accept': accept,
         })
         try:
             response = urllib.request.urlopen(request, timeout=90)
@@ -135,12 +136,12 @@ class Fixture:
         with response:
             status, headers, body = response.status, response.headers, response.read()
         if expected_code:
-            assert status == 200, (who, status)
+            assert status == expected_status, (who, status, body[:200])
             assert headers.get_content_type() == 'application/json'
             assert headers.get('Content-Disposition') is None
             failure = json.loads(body.decode('utf-8'))
             assert failure['code'] == expected_code and failure.get('data') is None, failure
-            for private in [self.patient['name'], self.body_a, self.body_b]:
+            for private in [self.patient['name'], self.body_a, self.body_b, *private_text]:
                 assert private not in body.decode('utf-8'), 'A refusal exposed clinical source data'
             return None
         assert status == 200, (who, status, body[:200])
@@ -255,9 +256,15 @@ def main():
     before = fixture.source_projection()
     previews = []
     for who in ['admin', 'doctor']:
-        previews.append(fixture.export(who))
+        previews.append(fixture.export(who, accept='application/ofd' if who == 'doctor'
+                                       else 'application/ofd, application/json'))
         assert fixture.source_projection() == before, 'An export changed the exposed source or version projection'
     fixture.export('other', 4036)
+    fixture.export('other', 4036, accept='application/ofd')
+    fixture.export('doctor', 5703, accept='application/ofd',
+                   path=fixture.version_path + '/versions/999/ofd-preview')
+    fixture.export('doctor', 4000, accept='application/ofd',
+                   path='/emr/versions/INP/not-a-long/versions/1/ofd-preview')
     assert fixture.source_projection() == before, 'A forbidden export changed the source or versions'
     # The public attending change proves that the same original doctor's token
     # loses export access, while the new attending can read the selected old version.
@@ -269,12 +276,40 @@ def main():
     assert after_transfer['version1'] == before['version1']
     assert after_transfer['version2'] == before['version2']
     fixture.export('doctor', 4036)
-    previews.append(fixture.export('other'))
+    fixture.export('doctor', 4036, accept='application/ofd')
+    previews.append(fixture.export('other', accept='application/ofd'))
     assert fixture.source_projection() == after_transfer
+    # A real unsupported display character exercises 5709 without tampering with immutable snapshots.
+    unsupported_title = fixture.prefix + '模拟生成失败文书'
+    unsupported_body = fixture.prefix + '模拟正文含补充平面字\U00020bb7'
+    unsupported = fixture.api('POST', fixture.admission_path + '/records', {
+        'recordType': 'PROGRESS', 'title': unsupported_title, 'content': unsupported_body,
+    }, who='other')
+    unsupported_path = '/emr/versions/INP/' + str(unsupported['id']) + '/versions/1'
+    unsupported_before = fixture.api('GET', unsupported_path)
+    before_failure = fixture.source_projection()
+    fixture.export('other', 5709, accept='application/ofd', path=unsupported_path + '/ofd-preview',
+                   private_text=(unsupported_title, unsupported_body))
+    assert fixture.api('GET', unsupported_path) == unsupported_before
+    assert fixture.source_projection() == before_failure
+    # The same valid employee/token loses the export role, remains authenticated, and receives 403/1005.
+    actor = fixture.identities['other']
+    fixture.api('PUT', '/system/users/' + str(actor['id']), {
+        'username': actor['username'], 'realName': actor['realName'], 'deptId': fixture.dept,
+        'roleCodes': ['NURSE'],
+    })
+    before_role_denial = fixture.source_projection()
+    fixture.export('other', 1005, accept='application/ofd', expected_status=403)
+    still_logged_in = fixture.api('GET', '/auth/me', who='other')
+    assert still_logged_in['id'] == actor['id'] and still_logged_in['roles'] == ['NURSE']
+    assert fixture.source_projection() == before_role_denial
     receipt = {'public_api_only': True, 'record_id': fixture.record['id'],
                'admission_id': fixture.admission['id'], 'patient_id': fixture.patient['id'],
                'selected_version': 1, 'current_version': 2, 'read_only_projections': True,
-               'successful_exports': len(previews), 'known_object_refusals': 2,
+               'successful_exports': len(previews), 'known_object_refusals': 4,
+               'strict_accept_checks': {'successes': 2, 'object_refusals': 2, 'missing_version': 5703,
+                                        'bad_parameter': 4000, 'generation_failure': 5709,
+                                        'lost_role_http': 403, 'lost_role_code': 1005, 'token_still_valid': True},
                'previews': [{key: value for key, value in preview.items() if key not in ('body', 'metadata')}
                             for preview in previews]}
     if evidence is not None:
