@@ -232,6 +232,66 @@ class V168EmrOfdDocumentsHttpTest {
         assertEquals(1, writer.calls.get());
     }
 
+    @Test void committedDisableWhileTheActualDocumentInsertWaitsRollsBackThePreparedFile() throws Exception {
+        writer.next.set((id, title, body, metadata) -> new byte[]{'P', 'K', 3, 4});
+        try (var worker = java.util.concurrent.Executors.newSingleThreadExecutor();
+             var holder = dataSource.getConnection()) {
+            holder.setAutoCommit(false);
+            java.util.concurrent.Future<HttpResponse<byte[]>> pending;
+            try {
+                int holderPid;
+                try (var lock = holder.prepareStatement("select pg_backend_pid() from sys_user where id=? for update")) {
+                    lock.setLong(1, owner.id());
+                    lock.setQueryTimeout(10);
+                    try (var row = lock.executeQuery()) {
+                        assertTrue(row.next());
+                        holderPid = row.getInt(1);
+                    }
+                }
+                pending = worker.submit(() -> post(documents(1), owner));
+                long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(20);
+                Map<String, Object> observed = null;
+                while (System.nanoTime() < deadline) {
+                    if (pending.isDone()) fail("Document request completed without FK contention: "
+                            + new String(pending.get().body(), StandardCharsets.UTF_8));
+                    var waits = jdbc.queryForList("""
+                            select pid,wait_event,query from pg_stat_activity
+                            where datname=current_database() and wait_event_type='Lock'
+                              and ?=any(pg_blocking_pids(pid))
+                            """, holderPid);
+                    if (!waits.isEmpty()) {
+                        assertEquals(1, waits.size());
+                        observed = waits.getFirst();
+                        assertTrue(observed.get("query").toString().stripLeading()
+                                .toLowerCase(Locale.ROOT).startsWith("insert into emr_ofd_document"),
+                                observed.get("query").toString());
+                        break;
+                    }
+                    Thread.sleep(25);
+                }
+                assertNotNull(observed, "pg_stat_activity must prove the document INSERT waits on the held FK parent");
+                assertEquals(1, writer.calls.get(), "Generation must already have completed before the FK wait");
+                assertEquals(0, jdbc.queryForObject("select count(*) from emr_ofd_document where emr_id=?",
+                        Integer.class, record), "Uncommitted generated files must be invisible to other sessions");
+                try (var disable = holder.prepareStatement("update sys_user set enabled=false where id=?")) {
+                    disable.setLong(1, owner.id());
+                    assertEquals(1, disable.executeUpdate());
+                }
+                assertFalse(pending.isDone(), "The held parent must still block the original INSERT");
+                System.out.printf("V168 FK_WAIT holder=%d waiter=%s event=%s revoke=DISABLED%n",
+                        holderPid, observed.get("pid"), observed.get("wait_event"));
+                holder.commit(); // A real commit releases the INSERT and makes employee loss visible.
+            } finally {
+                holder.rollback();
+            }
+            denied(pending.get(20, java.util.concurrent.TimeUnit.SECONDS), 403, 1005);
+        }
+        assertEquals(false, jdbc.queryForObject("select enabled from sys_user where id=?", Boolean.class, owner.id()));
+        assertEquals(0, jdbc.queryForObject("select count(*) from emr_ofd_document where emr_id=?", Integer.class, record),
+                "The post-INSERT employee check must roll back the retained document");
+        assertEquals(1, writer.calls.get());
+    }
+
     Map<String, List<String>> facts() {
         Map<String, List<String>> value = new LinkedHashMap<>();
         for (String table : List.of("empi_patient", "inp_admission", "inp_medical_record", "emr_version", "sys_user")) {
@@ -270,7 +330,7 @@ class V168EmrOfdDocumentsHttpTest {
         writer.reset();
         if (record != null) {
             fixtureMutation("delete from emr_ofd_document where emr_id=?", record);
-            jdbc.update("delete from sys_audit_log where path like ?", "/api/emr/versions/INP/" + record + "%");
+            jdbc.update("delete from sys_audit_log where path like ?", "/api/emr/versions/INP/" + record + "/%");
             jdbc.update("delete from emr_version where emr_type='INP' and emr_id=?", record);
             jdbc.update("delete from inp_medical_record where id=?", record);
         }
