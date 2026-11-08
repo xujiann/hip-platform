@@ -290,6 +290,11 @@ class V168EmrOfdDocumentsHttpTest {
         assertEquals(0, jdbc.queryForObject("select count(*) from emr_ofd_document where emr_id=?", Integer.class, record),
                 "The post-INSERT employee check must roll back the retained document");
         assertEquals(1, writer.calls.get());
+        jdbc.update("update sys_user set enabled=true where id=?", owner.id());
+        String retried = createSmall(owner).path("documentId").asText();
+        assertArrayEquals(new byte[]{80, 75, 3, 4, 7, 8}, get(content(1, retried), owner, "application/ofd").body());
+        assertEquals(1, jdbc.queryForObject("select count(*) from emr_ofd_document where emr_id=?", Integer.class, record));
+        assertEquals(2, writer.calls.get(), "A safe retry must append exactly one new document");
     }
 
     JsonNode createSmall(Staff actor) throws Exception {
@@ -330,7 +335,10 @@ class V168EmrOfdDocumentsHttpTest {
             jdbc.update("insert into sys_user_role(user_id,role_id) select ?,id from sys_role where code=?", other.id(), role);
             String id = createSmall(other).path("documentId").asText();
             assertFalse(success(get(documents(1), other, "application/json")).path("items").isEmpty());
-            assertEquals(200, get(content(1, id), other, "application/ofd").statusCode());
+            var downloaded = get(content(1, id), other, "application/ofd");
+            assertEquals(200, downloaded.statusCode());
+            assertEquals("application/ofd", downloaded.headers().firstValue("Content-Type").orElse(""));
+            assertArrayEquals(new byte[]{80, 75, 3, 4, 7, 8}, downloaded.body());
             denied(get(content(1, id), owner, "application/ofd"), 200, 4036);
         }
     }
@@ -357,8 +365,9 @@ class V168EmrOfdDocumentsHttpTest {
         assertEquals(1, writer.calls.get());
     }
 
-    @Test void newestFiftyMetadataRowsAreBoundedWithoutReadingOrRenderingPayload() throws Exception {
-        String id = createSmall(owner).path("documentId").asText();
+    @Test void newestFiftyMetadataRowsAreBoundedAndDoNotInvokeRenderer() throws Exception {
+        var first = createSmall(owner);
+        String id = first.path("documentId").asText();
         jdbc.update("""
                 insert into emr_ofd_document(document_id,emr_id,version_no,source_version_id,source_hash,
                   admission_id,patient_id,generated_by,generated_at,status,byte_length,sha256,payload)
@@ -368,6 +377,9 @@ class V168EmrOfdDocumentsHttpTest {
                 """, tag, id);
         var rows = success(get(documents(1), owner, "application/json")).path("items");
         assertEquals(50, rows.size());
+        var start = java.time.Instant.parse(first.path("generatedAt").asText());
+        assertEquals(start.plusSeconds(51), java.time.Instant.parse(rows.get(0).path("generatedAt").asText()));
+        assertEquals(start.plusSeconds(2), java.time.Instant.parse(rows.get(49).path("generatedAt").asText()));
         for (int i = 1; i < rows.size(); i++) {
             assertTrue(java.time.Instant.parse(rows.get(i - 1).path("generatedAt").asText())
                     .isAfter(java.time.Instant.parse(rows.get(i).path("generatedAt").asText())));
