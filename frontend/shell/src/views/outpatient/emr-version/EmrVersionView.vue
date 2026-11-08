@@ -571,7 +571,7 @@ async function downloadOfdPreview() {
   ofdDownloading.value = true
   try {
     const response = await client.get(`/emr/versions/INP/${id}/versions/${versionNo}/ofd-preview`, {
-      responseType: 'blob', timeout: 60000,
+      responseType: 'blob', timeout: 180000,
     })
     if (!current()) return
     const blob = response.data as Blob

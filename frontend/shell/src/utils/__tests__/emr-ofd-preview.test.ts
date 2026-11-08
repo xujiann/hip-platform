@@ -153,6 +153,7 @@ describe('v166 actual historical version OFD download consumer', () => {
     const { wire, result } = await h.begin()
     expect(wire.config.url).toBe('/emr/versions/INP/41/versions/2/ofd-preview')
     expect(wire.config.responseType).toBe('blob')
+    expect(wire.config.timeout).toBe(180000)
     expect(String(wire.config.headers.Authorization)).toBe('Bearer v166-synthetic-token')
     wire.reply(ofd())
     await result
