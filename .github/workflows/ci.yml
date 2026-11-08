@@ -315,6 +315,7 @@ jobs:
           python3 tools/e2e-v160-emr-legacy-atomicity.py
           python3 tools/e2e-v161-emr-template-read-actor.py
           python3 tools/e2e-v166-ofd-preview.py
+          python3 tools/e2e-v168-ofd-documents.py
 
       - name: 失败时输出服务端日志
         if: failure()
