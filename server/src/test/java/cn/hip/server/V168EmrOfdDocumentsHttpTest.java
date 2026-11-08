@@ -292,6 +292,89 @@ class V168EmrOfdDocumentsHttpTest {
         assertEquals(1, writer.calls.get());
     }
 
+    JsonNode createSmall(Staff actor) throws Exception {
+        writer.next.set((id, title, body, metadata) -> new byte[]{80, 75, 3, 4, 7, 8});
+        return create(actor);
+    }
+
+    @Test void retainedBytesDoNotChangeWhenCurrentPatientNameAndCurrentClinicalTextChange() throws Exception {
+        String id = createSmall(owner).path("documentId").asText();
+        byte[] before = get(content(1, id), owner, "application/ofd").body();
+        jdbc.update("update empi_patient set name=? where id=?", tag + "更名", patient);
+        jdbc.update("update inp_medical_record set content=? where id=?", tag + "新正文", record);
+        assertArrayEquals(before, get(content(1, id), owner, "application/ofd").body());
+        assertEquals(1, writer.calls.get());
+    }
+
+    @Test void changedOriginalPatientIsFilteredFromListAndCannotBeDownloadedEvenByCurrentOwner() throws Exception {
+        String id = createSmall(owner).path("documentId").asText();
+        long replacement = jdbc.queryForObject("insert into empi_patient(patient_no,name,sex) values (?,?,'U') returning id",
+                Long.class, tag + "P2", tag + "另一患者");
+        try {
+            jdbc.update("update inp_admission set patient_id=? where id=?", replacement, admission);
+            assertTrue(success(get(documents(1), owner, "application/json")).path("items").isEmpty());
+            denied(get(content(1, id), owner, "application/ofd"), 200, 4036);
+            assertEquals(1, writer.calls.get());
+        } finally {
+            jdbc.update("update inp_admission set patient_id=? where id=?", patient, admission);
+            jdbc.update("delete from empi_patient where id=?", replacement);
+        }
+    }
+
+    @Test void nullAttendingDoesNotGiveAnyDoctorAccessButBothBroadRolesCanUseAllRoutes() throws Exception {
+        jdbc.update("update inp_admission set doctor_id=null where id=?", admission);
+        denied(post(documents(1), owner), 200, 4036);
+        denied(get(documents(1), owner, "application/json"), 200, 4036);
+        for (String role : List.of("ADMIN", "QUALITY")) {
+            jdbc.update("delete from sys_user_role where user_id=?", other.id());
+            jdbc.update("insert into sys_user_role(user_id,role_id) select ?,id from sys_role where code=?", other.id(), role);
+            String id = createSmall(other).path("documentId").asText();
+            assertFalse(success(get(documents(1), other, "application/json")).path("items").isEmpty());
+            assertEquals(200, get(content(1, id), other, "application/ofd").statusCode());
+            denied(get(content(1, id), owner, "application/ofd"), 200, 4036);
+        }
+    }
+
+    @Test void oversizedAndRevokedGenerationLeavesNoRetainedRow() throws Exception {
+        writer.next.set((id, title, body, metadata) -> new byte[32 * 1024 * 1024 + 1]);
+        denied(post(documents(1), owner), 200, 5713);
+        writer.next.set((id, title, body, metadata) -> {
+            jdbc.update("update inp_admission set doctor_id=? where id=?", other.id(), admission);
+            return new byte[]{80, 75, 3, 4};
+        });
+        denied(post(documents(1), owner), 200, 4036);
+        assertEquals(0, jdbc.queryForObject("select count(*) from emr_ofd_document where emr_id=?", Integer.class, record));
+    }
+
+    @Test void immutableGuardRejectsOrdinaryUpdateAndDeleteAndDamagedBytesAreNotRegenerated() throws Exception {
+        String id = createSmall(owner).path("documentId").asText();
+        assertThrows(org.springframework.dao.DataAccessException.class,
+                () -> jdbc.update("update emr_ofd_document set sha256=sha256 where document_id=?", id));
+        assertThrows(org.springframework.dao.DataAccessException.class,
+                () -> jdbc.update("delete from emr_ofd_document where document_id=?", id));
+        fixtureMutation("update emr_ofd_document set payload=set_byte(payload,0,81) where document_id=?", id);
+        denied(get(content(1, id), owner, "application/ofd"), 200, 5712);
+        assertEquals(1, writer.calls.get());
+    }
+
+    @Test void newestFiftyMetadataRowsAreBoundedWithoutReadingOrRenderingPayload() throws Exception {
+        String id = createSmall(owner).path("documentId").asText();
+        jdbc.update("""
+                insert into emr_ofd_document(document_id,emr_id,version_no,source_version_id,source_hash,
+                  admission_id,patient_id,generated_by,generated_at,status,byte_length,sha256,payload)
+                select md5(? || g::text),emr_id,version_no,source_version_id,source_hash,
+                  admission_id,patient_id,generated_by,generated_at + g * interval '1 second',status,byte_length,sha256,payload
+                from emr_ofd_document cross join generate_series(1,51) g where document_id=?
+                """, tag, id);
+        var rows = success(get(documents(1), owner, "application/json")).path("items");
+        assertEquals(50, rows.size());
+        for (int i = 1; i < rows.size(); i++) {
+            assertTrue(java.time.Instant.parse(rows.get(i - 1).path("generatedAt").asText())
+                    .isAfter(java.time.Instant.parse(rows.get(i).path("generatedAt").asText())));
+        }
+        assertEquals(1, writer.calls.get());
+    }
+
     Map<String, List<String>> facts() {
         Map<String, List<String>> value = new LinkedHashMap<>();
         for (String table : List.of("empi_patient", "inp_admission", "inp_medical_record", "emr_version", "sys_user")) {
