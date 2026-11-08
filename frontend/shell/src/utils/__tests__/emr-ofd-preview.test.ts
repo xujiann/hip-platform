@@ -21,7 +21,7 @@ function executable(source: string, filename: string) {
 type Wire = {
   config: any
   settled: boolean
-  reply: (body: Blob, status?: number) => void
+  reply: (body: any, status?: number) => void
 }
 
 async function setup() {
@@ -43,14 +43,14 @@ async function setup() {
   const calls: Array<{ method: string; url: string }> = []
   client.defaults.adapter = (config: any) => new Promise((resolve, reject) => {
     calls.push({ method: config.method, url: config.url })
-    if (String(config.url).endsWith('/ofd-preview')) {
+    if (String(config.url).endsWith('/ofd-preview') || String(config.url).includes('/ofd-documents')) {
       const wire: Wire = {
         config, settled: false,
         reply(body, status = 200) {
           expect(wire.settled).toBe(false)
           wire.settled = true
           const response = { config, status, statusText: String(status),
-            headers: { 'content-type': body.type }, data: body }
+            headers: { 'content-type': body instanceof Blob ? body.type : 'application/json' }, data: body }
           if (status >= 400) {
             reject(new axios.AxiosError('HTTP ' + status, 'ERR_BAD_REQUEST', config, undefined, response))
           } else resolve(response)
@@ -96,7 +96,11 @@ async function setup() {
     URL: urlApi, document, window: { URL: urlApi, document }, Blob, console }
   scope.run(() => runInNewContext(ts.transpileModule(executable(body, 'EmrVersionView.ts') + `
 globalThis.view = { applied, emrType, emrId, drawer, detail, openVersion, load,
-  downloadOfdPreview: typeof downloadOfdPreview === 'function' ? downloadOfdPreview : undefined };
+  downloadOfdPreview: typeof downloadOfdPreview === 'function' ? downloadOfdPreview : undefined,
+  retainOfdDocument: typeof retainOfdDocument === 'function' ? retainOfdDocument : undefined,
+  loadOfdDocuments: typeof loadOfdDocuments === 'function' ? loadOfdDocuments : undefined,
+  downloadOfdDocument: typeof downloadOfdDocument === 'function' ? downloadOfdDocument : undefined,
+  ofdDocuments: typeof ofdDocuments !== 'undefined' ? ofdDocuments : undefined };
 `, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText, box))
   const view = box.view
   const results: Array<Promise<unknown>> = []
@@ -138,6 +142,89 @@ globalThis.view = { applied, emrType, emrId, drawer, detail, openVersion, load,
 }
 
 type Harness = Awaited<ReturnType<typeof setup>>
+const retained = { documentId: 'a'.repeat(32), generatedAt: '2026-11-09T00:00:00Z', generatedBy: 7,
+  status: 'UNSIGNED_PREVIEW', byteLength: 4, sha256: 'b'.repeat(64) }
+async function documentRequest(h: Harness, name: string, ...args: unknown[]) {
+  expect(typeof h.view[name]).toBe('function')
+  const index = h.wires.length
+  const result = Promise.resolve(h.view[name](...args))
+  await vi.waitFor(() => expect(h.wires.length).toBe(index + 1), { interval: 1 })
+  return { wire: h.wires[index]!, result }
+}
+
+describe('v168 retained OFD consumer', () => {
+  it('appends only an explicit viewed version and prevents duplicate clicks', async () => {
+    const h = await setup(); await h.open()
+    const { wire, result } = await documentRequest(h, 'retainOfdDocument')
+    expect(wire.config.method).toBe('post')
+    expect(wire.config.url).toBe('/emr/versions/INP/41/versions/2/ofd-documents')
+    expect(wire.config.timeout).toBe(180000)
+    await h.view.retainOfdDocument()
+    expect(h.wires).toHaveLength(1)
+    wire.reply({ code: 0, data: retained }); await result
+    expect(h.view.ofdDocuments.value).toEqual([retained])
+    noDownload(h)
+  })
+  it('lists only the viewed version and consumes the returned metadata', async () => {
+    const h = await setup(); await h.open()
+    const { wire, result } = await documentRequest(h, 'loadOfdDocuments')
+    expect(wire.config.method).toBe('get')
+    expect(wire.config.url).toBe('/emr/versions/INP/41/versions/2/ofd-documents')
+    wire.reply({ code: 0, data: { items: [retained] } }); await result
+    expect(h.view.ofdDocuments.value).toEqual([retained])
+  })
+  it.each(['retainOfdDocument', 'loadOfdDocuments'])('discards late %s after closing and reopening', async name => {
+    const h = await setup(); await h.open()
+    const { wire, result } = await documentRequest(h, name)
+    h.view.drawer.value = false; await Vue.nextTick(); await h.open(42, 3)
+    wire.reply({ code: 0, data: name === 'loadOfdDocuments' ? { items: [retained] } : retained })
+    await result
+    expect(h.view.ofdDocuments.value).toEqual([])
+    noDownload(h)
+  })
+  it('discards a stale list when a newer list has completed', async () => {
+    const h = await setup(); await h.open()
+    const first = await documentRequest(h, 'loadOfdDocuments')
+    const second = await documentRequest(h, 'loadOfdDocuments')
+    second.wire.reply({ code: 0, data: { items: [retained] } }); await second.result
+    first.wire.reply({ code: 0, data: { items: [] } }); await first.result
+    expect(h.view.ofdDocuments.value).toEqual([retained])
+  })
+  it('takes back an existing document without posting another generation', async () => {
+    const h = await setup(); await h.open()
+    h.view.ofdDocuments.value = [retained]
+    const { wire, result } = await documentRequest(h, 'downloadOfdDocument', retained)
+    expect(wire.config.url).toBe(`/emr/versions/INP/41/versions/2/ofd-documents/${retained.documentId}/content`)
+    expect(wire.config.method).toBe('get')
+    expect(wire.config.responseType).toBe('blob')
+    wire.reply(ofd()); await result
+    expect(h.anchors[0]!.download).toBe(`emr-INP-41-v2-${retained.documentId}.ofd`)
+    expect(h.anchors[0]!.click).toHaveBeenCalledTimes(1)
+    expect(h.urlApi.revokeObjectURL).toHaveBeenCalledTimes(1)
+  })
+  it('does not download an old retained response after selection changes', async () => {
+    const h = await setup(); await h.open(); h.view.ofdDocuments.value = [retained]
+    const { wire, result } = await documentRequest(h, 'downloadOfdDocument', retained)
+    await h.open(42)
+    wire.reply(ofd()); await result
+    noDownload(h)
+  })
+  it('does not request a document absent from the current list', async () => {
+    const h = await setup(); await h.open()
+    expect(typeof h.view.downloadOfdDocument).toBe('function')
+    await h.view.downloadOfdDocument(retained)
+    expect(h.wires).toHaveLength(0)
+  })
+  it('rejects a JSON corruption error without downloading or clearing login', async () => {
+    const h = await setup(); await h.open(); h.view.ofdDocuments.value = [retained]
+    const { wire, result } = await documentRequest(h, 'downloadOfdDocument', retained)
+    wire.reply(new Blob([JSON.stringify({ code: 5712, message: '留存文件完整性校验失败' })], { type: 'application/json' }))
+    await result; noDownload(h)
+    expect(h.storage.has('hip_token')).toBe(true)
+    expect(h.ElMessage.error).toHaveBeenCalledWith('留存文件完整性校验失败')
+  })
+})
+
 function ofd() {
   return new Blob([new Uint8Array([80, 75, 3, 4])], { type: 'application/ofd' })
 }

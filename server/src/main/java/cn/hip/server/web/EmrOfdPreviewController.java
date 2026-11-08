@@ -1,6 +1,7 @@
 package cn.hip.server.web;
 
 import cn.hip.outpatient.service.EmrOfdPreviewService;
+import cn.hip.outpatient.service.EmrOfdDocumentService;
 import cn.hip.platform.core.common.HipBizException;
 import cn.hip.platform.core.common.R;
 import lombok.RequiredArgsConstructor;
@@ -21,18 +22,22 @@ import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 import java.util.NoSuchElementException;
+import java.util.Map;
+import java.util.List;
 
-/** Binary success and explicit JSON errors for the single OFD preview route. */
+/** Unsigned OFD preview/retention routes with explicit JSON errors, including OFD-only Accept. */
 @RestController
 @RequestMapping("/api/emr/versions")
 @RequiredArgsConstructor
 public class EmrOfdPreviewController {
     private final EmrOfdPreviewService previews;
+    private final EmrOfdDocumentService documents;
     private final GlobalExceptionHandler errors;
 
     // Apply entry roles only to the download; error handlers must not be authorized again.
@@ -46,6 +51,33 @@ public class EmrOfdPreviewController {
                 .header(HttpHeaders.CONTENT_DISPOSITION,
                         ContentDisposition.attachment().filename(filename).build().toString())
                 .body(document);
+    }
+
+    @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP','QUALITY')")
+    @PostMapping("/INP/{emrId}/versions/{versionNo}/ofd-documents")
+    public ResponseEntity<R<Map<String, Object>>> create(@PathVariable Long emrId, @PathVariable Integer versionNo) {
+        return ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).cacheControl(CacheControl.noStore())
+                .body(R.ok(documents.create(emrId, versionNo)));
+    }
+
+    @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP','QUALITY')")
+    @GetMapping("/INP/{emrId}/versions/{versionNo}/ofd-documents")
+    public ResponseEntity<R<Map<String, List<Map<String, Object>>>>> list(@PathVariable Long emrId,
+                                                                        @PathVariable Integer versionNo) {
+        return ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).cacheControl(CacheControl.noStore())
+                .body(R.ok(Map.of("items", documents.list(emrId, versionNo))));
+    }
+
+    @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP','QUALITY')")
+    @GetMapping("/INP/{emrId}/versions/{versionNo}/ofd-documents/{documentId}/content")
+    public ResponseEntity<byte[]> content(@PathVariable Long emrId, @PathVariable Integer versionNo,
+                                          @PathVariable String documentId) {
+        byte[] document = documents.content(emrId, versionNo, documentId);
+        String filename = "emr-INP-" + emrId + "-v" + versionNo + "-" + documentId + ".ofd";
+        return ResponseEntity.ok().contentType(MediaType.parseMediaType("application/ofd"))
+                .cacheControl(CacheControl.noStore())
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        ContentDisposition.attachment().filename(filename).build().toString()).body(document);
     }
 
     @ExceptionHandler(HipBizException.class)

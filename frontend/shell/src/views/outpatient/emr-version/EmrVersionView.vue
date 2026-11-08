@@ -252,6 +252,28 @@
         <el-alert type="info" :closable="false" show-icon
                   title="OFD 预览未签署，正式归档需完成签章与验签。患者与姓名信息取自生成时的当前主索引。" />
         <el-button class="gap-top" :loading="ofdDownloading" @click="downloadOfdPreview">导出本版 OFD 预览</el-button>
+        <el-button class="gap-top" :loading="ofdRetaining" @click="retainOfdDocument">生成并留存本版 OFD</el-button>
+        <el-button class="gap-top" :loading="ofdDocumentsLoading" :disabled="ofdRetaining" @click="loadOfdDocuments">查看本版已留存生成件</el-button>
+        <div class="hint gap-top">留存件为未签署预览。每次生成追加一份，取回原文件；下表最多显示最近 50 件。</div>
+        <el-table v-if="ofdDocumentsLoaded" :data="ofdDocuments" size="small" border class="gap-top"
+                  empty-text="本版尚无可读取的留存生成件">
+          <el-table-column label="文档标识 / SHA-256" min-width="220">
+            <template #default="{ row }">
+              <div class="code">{{ row.documentId }}</div>
+              <el-tooltip :content="row.sha256"><span class="code">{{ row.sha256.slice(0, 16) }}…</span></el-tooltip>
+            </template>
+          </el-table-column>
+          <el-table-column label="生成时间 / 生成员工" min-width="170">
+            <template #default="{ row }">{{ fmtTime(row.generatedAt) }}<br>员工 #{{ row.generatedBy }}</template>
+          </el-table-column>
+          <el-table-column label="状态 / 文件大小" min-width="135">
+            <template #default="{ row }">{{ row.status === 'UNSIGNED_PREVIEW' ? '未签署预览' : row.status }}<br>{{ row.byteLength }} 字节</template>
+          </el-table-column>
+          <el-table-column label="操作" width="110">
+            <template #default="{ row }"><el-button link type="primary" :loading="ofdDownloading"
+              @click="downloadOfdDocument(row)">取回原文件</el-button></template>
+          </el-table-column>
+        </el-table>
       </div>
       <el-descriptions :column="2" border size="small" class="gap">
         <el-descriptions-item label="版本号">v{{ detail.versionNo }}</el-descriptions-item>
@@ -517,6 +539,13 @@ const drawer = ref(false)
 const detail = ref<VersionDetailBody | null>(null)
 const detailLoading = ref(false)
 const ofdDownloading = ref(false)
+type OfdDocument = { documentId: string; generatedAt: string; generatedBy: number;
+  status: string; byteLength: number; sha256: string }
+const ofdRetaining = ref(false)
+const ofdDocumentsLoading = ref(false)
+const ofdDocumentsLoaded = ref(false)
+const ofdDocuments = ref<OfdDocument[]>([])
+let documentsSeq = 0
 let detailSeq = 0
 
 function invalidateDetail() {
@@ -524,6 +553,11 @@ function invalidateDetail() {
   detail.value = null
   detailLoading.value = false
   ofdDownloading.value = false
+  documentsSeq++
+  ofdRetaining.value = false
+  ofdDocumentsLoading.value = false
+  ofdDocumentsLoaded.value = false
+  ofdDocuments.value = []
 }
 
 watch(drawer, open => { if (!open) invalidateDetail() }, { flush: 'sync' })
@@ -601,6 +635,97 @@ async function downloadOfdPreview() {
     // The shared client reports HTTP and JSON-envelope failures.
   } finally {
     if (sequence === detailSeq) ofdDownloading.value = false
+  }
+}
+
+function ofdTarget() {
+  const selected = detail.value
+  if (!selected || selected.emrType !== 'INP' || !drawer.value) return null
+  const { emrId: id, versionNo } = selected
+  if (!Number.isSafeInteger(id) || id <= 0 || !Number.isSafeInteger(versionNo) || (versionNo ?? 0) <= 0
+      || applied.value?.emrType !== 'INP' || applied.value?.emrId !== id) return null
+  const sequence = detailSeq
+  return { path: `/emr/versions/INP/${id}/versions/${versionNo}/ofd-documents`, id, versionNo,
+    current: () => sequence === detailSeq && drawer.value && applied.value?.emrType === 'INP'
+      && applied.value?.emrId === id && detail.value?.emrId === id && detail.value?.versionNo === versionNo }
+}
+
+async function retainOfdDocument() {
+  const target = ofdTarget()
+  if (!target || ofdRetaining.value) return
+  const sequence = ++documentsSeq
+  ofdRetaining.value = true
+  ofdDocumentsLoading.value = false
+  try {
+    const response = await client.post(target.path, undefined, { timeout: 180000 })
+    if (!target.current() || sequence !== documentsSeq) return
+    const retained = response.data.data as OfdDocument
+    ofdDocuments.value = [retained, ...ofdDocuments.value.filter(item => item.documentId !== retained.documentId)].slice(0, 50)
+    ofdDocumentsLoaded.value = true
+    ElMessage.success('已留存未签署的 OFD 生成件')
+  } catch {
+    // A network timeout has an unknown outcome; refresh the list before generating again.
+    if (target.current()) ElMessage.warning('请先查看已留存生成件，确认结果后再生成')
+  } finally {
+    if (target.current()) ofdRetaining.value = false
+  }
+}
+
+async function loadOfdDocuments() {
+  const target = ofdTarget()
+  if (!target || ofdRetaining.value) return
+  const sequence = ++documentsSeq
+  ofdDocumentsLoading.value = true
+  try {
+    const response = await client.get(target.path)
+    if (!target.current() || sequence !== documentsSeq) return
+    ofdDocuments.value = response.data.data.items
+    ofdDocumentsLoaded.value = true
+  } catch {
+    if (target.current() && sequence === documentsSeq) {
+      ofdDocuments.value = []
+      ofdDocumentsLoaded.value = false
+    }
+  } finally {
+    if (target.current() && sequence === documentsSeq) ofdDocumentsLoading.value = false
+  }
+}
+
+async function downloadOfdDocument(item: OfdDocument) {
+  const target = ofdTarget()
+  if (!target || ofdDownloading.value || !ofdDocuments.value.some(row => row.documentId === item.documentId)
+      || !/^[a-f0-9]{32}$/.test(item.documentId)) return
+  ofdDownloading.value = true
+  try {
+    const response = await client.get(`${target.path}/${item.documentId}/content`, { responseType: 'blob', timeout: 180000 })
+    if (!target.current()) return
+    const blob = response.data as Blob
+    const contentType = String(response.headers['content-type'] ?? blob.type).split(';')[0]?.trim().toLowerCase()
+    if (!(blob instanceof Blob) || blob.size < 4 || contentType !== 'application/ofd') {
+      ElMessage.error('服务未返回 OFD 留存文件')
+      return
+    }
+    const prefix = new Uint8Array(await blob.slice(0, 4).arrayBuffer())
+    if (!target.current()) return
+    if (prefix[0] !== 80 || prefix[1] !== 75 || prefix[2] !== 3 || prefix[3] !== 4) {
+      ElMessage.error('OFD 留存文件格式不正确')
+      return
+    }
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    try {
+      link.href = url
+      link.download = `emr-INP-${target.id}-v${target.versionNo}-${item.documentId}.ofd`
+      document.body.appendChild(link)
+      link.click()
+    } finally {
+      link.remove()
+      URL.revokeObjectURL(url)
+    }
+  } catch {
+    // The shared client reports JSON/HTTP failures.
+  } finally {
+    if (target.current()) ofdDownloading.value = false
   }
 }
 
