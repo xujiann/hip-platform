@@ -260,7 +260,7 @@
           <el-table-column label="文档标识 / SHA-256" min-width="220">
             <template #default="{ row }">
               <div class="code">{{ row.documentId }}</div>
-              <el-tooltip :content="row.sha256"><span class="code">{{ row.sha256.slice(0, 16) }}…</span></el-tooltip>
+              <el-tooltip :content="row.sha256"><span class="code">{{ row.sha256.slice(0, 12) }}…</span></el-tooltip>
             </template>
           </el-table-column>
           <el-table-column label="生成时间 / 生成员工" min-width="170">
