@@ -387,6 +387,105 @@ class V168EmrOfdDocumentsHttpTest {
         assertEquals(1, writer.calls.get());
     }
 
+    @Test void cursorPagesKeepTiesInOrderAfterANewerDocumentIsCommitted() throws Exception {
+        String seed = createSmall(owner).path("documentId").asText();
+        var expected = new ArrayList<>(copyDocumentsAtSameTime(seed, 101, 1));
+        expected.add(seed);
+
+        JsonNode first = success(get(documents(1), owner, "application/json"));
+        assertEquals(expected.subList(0, 50), documentIds(first));
+        String firstCursor = nextCursor(first);
+
+        String appended = copyDocumentsAtSameTime(seed, 1, 2).getFirst();
+        JsonNode second = success(get(before(1, firstCursor), owner, "application/json"));
+        assertEquals(expected.subList(50, 100), documentIds(second));
+        JsonNode last = success(get(before(1, nextCursor(second)), owner, "application/json"));
+        assertEquals(expected.subList(100, expected.size()), documentIds(last));
+        assertTrue(last.path("nextCursor").isNull(), last.toString());
+
+        JsonNode refreshed = success(get(documents(1), owner, "application/json"));
+        assertEquals(appended, documentIds(refreshed).getFirst());
+        assertEquals(expected.subList(0, 49), documentIds(refreshed).subList(1, 50));
+        assertEquals(1, writer.calls.get());
+    }
+
+    @Test void emptyAndExactlyFiftyDocumentPagesHaveAnExplicitNullCursor() throws Exception {
+        JsonNode empty = success(get(documents(1), owner, "application/json"));
+        assertEquals(List.of(), documentIds(empty));
+        assertTrue(empty.path("nextCursor").isNull(), empty.toString());
+
+        String seed = createSmall(owner).path("documentId").asText();
+        copyDocumentsAtSameTime(seed, 49, 1);
+        JsonNode full = success(get(documents(1), owner, "application/json"));
+        assertEquals(50, documentIds(full).size());
+        assertTrue(full.path("nextCursor").isNull(), full.toString());
+    }
+
+    @Test void cursorIsScopedToTheOriginalVersionPatientAndCurrentEmployee() throws Exception {
+        String seed = createSmall(owner).path("documentId").asText();
+        copyDocumentsAtSameTime(seed, 50, 1);
+        String cursor = nextCursor(success(get(documents(1), owner, "application/json")));
+        denied(get(before(1, "not-a-cursor"), owner, "application/json"), 200, 4000);
+        denied(get(before(1, "0".repeat(32)), owner, "application/json"), 200, 5711);
+
+        assertEquals(1, jdbc.update("""
+                insert into emr_version(emr_type,emr_id,version_no,source,content,content_len,content_hash,saved_by,saved_at,saved_on)
+                select emr_type,emr_id,2,source,content,content_len,content_hash,saved_by,saved_at,saved_on
+                from emr_version where emr_type='INP' and emr_id=? and version_no=1
+                """, record));
+        denied(get(before(2, cursor), owner, "application/json"), 200, 5711);
+
+        long replacement = jdbc.queryForObject("insert into empi_patient(patient_no,name,sex) values (?,?,'U') returning id",
+                Long.class, tag + "P2", tag + "另一患者");
+        try {
+            assertEquals(1, jdbc.update("update inp_admission set patient_id=? where id=?", replacement, admission));
+            denied(get(before(1, cursor), owner, "application/json"), 200, 5711);
+        } finally {
+            jdbc.update("update inp_admission set patient_id=? where id=?", patient, admission);
+            jdbc.update("delete from empi_patient where id=?", replacement);
+        }
+
+        assertEquals(1, jdbc.update("update inp_admission set doctor_id=? where id=?", other.id(), admission));
+        denied(get(before(1, cursor), owner, "application/json"), 200, 4036);
+        assertFalse(documentIds(success(get(before(1, cursor), other, "application/json"))).isEmpty());
+        jdbc.update("delete from sys_user_role where user_id=?", other.id());
+        jdbc.update("insert into sys_user_role(user_id,role_id) select ?,id from sys_role where code='NURSE'", other.id());
+        denied(get(before(1, cursor), other, "application/json"), 403, 1005);
+        stillAuthenticated(other);
+        assertEquals(1, writer.calls.get());
+    }
+
+    List<String> copyDocumentsAtSameTime(String seed, int count, int seconds) {
+        String prefix = UUID.randomUUID().toString().replace("-", "").substring(0, 24);
+        assertEquals(count, jdbc.update("""
+                insert into emr_ofd_document(document_id,emr_id,version_no,source_version_id,source_hash,
+                  admission_id,patient_id,generated_by,generated_at,status,byte_length,sha256,payload)
+                select ? || lpad(to_hex(n),8,'0'),emr_id,version_no,source_version_id,source_hash,
+                  admission_id,patient_id,generated_by,generated_at + ? * interval '1 second',status,byte_length,sha256,payload
+                from emr_ofd_document cross join generate_series(1,?) n where document_id=?
+                """, prefix, seconds, count, seed));
+        var expected = new ArrayList<String>();
+        for (int n = count; n > 0; n--) expected.add(prefix + "%08x".formatted(n));
+        return expected;
+    }
+
+    List<String> documentIds(JsonNode page) {
+        assertTrue(page.path("items").isArray(), page.toString());
+        var ids = new ArrayList<String>();
+        page.path("items").forEach(item -> ids.add(item.path("documentId").asText()));
+        return ids;
+    }
+
+    String nextCursor(JsonNode page) {
+        JsonNode cursor = page.path("nextCursor");
+        assertTrue(cursor.isTextual() && !cursor.asText().isBlank(), "Expected a continuation cursor");
+        return cursor.asText();
+    }
+
+    String before(int version, String cursor) {
+        return documents(version) + "?before=" + java.net.URLEncoder.encode(cursor, StandardCharsets.UTF_8);
+    }
+
     Map<String, List<String>> facts() {
         Map<String, List<String>> value = new LinkedHashMap<>();
         for (String table : List.of("empi_patient", "inp_admission", "inp_medical_record", "emr_version", "sys_user")) {
