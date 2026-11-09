@@ -24,12 +24,12 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 import java.util.NoSuchElementException;
 import java.util.Map;
-import java.util.List;
 
 /** Unsigned OFD preview/retention routes with explicit JSON errors, including OFD-only Accept. */
 @RestController
@@ -62,10 +62,11 @@ public class EmrOfdPreviewController {
 
     @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP','QUALITY')")
     @GetMapping("/INP/{emrId}/versions/{versionNo}/ofd-documents")
-    public ResponseEntity<R<Map<String, List<Map<String, Object>>>>> list(@PathVariable Long emrId,
-                                                                        @PathVariable Integer versionNo) {
+    public ResponseEntity<R<EmrOfdDocumentService.DocumentPage>> list(@PathVariable Long emrId,
+                                                                     @PathVariable Integer versionNo,
+                                                                     @RequestParam(required = false) String before) {
         return ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).cacheControl(CacheControl.noStore())
-                .body(R.ok(Map.of("items", documents.list(emrId, versionNo))));
+                .body(R.ok(documents.list(emrId, versionNo, before)));
     }
 
     @PreAuthorize("hasAnyRole('ADMIN','DOCTOR_OUTP','QUALITY')")

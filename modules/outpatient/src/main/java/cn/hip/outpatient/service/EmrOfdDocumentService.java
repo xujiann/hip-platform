@@ -17,12 +17,15 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.regex.Pattern;
 
 /** Append-only retention of unsigned generated files; never changes clinical or archival state. */
 @Service
 @RequiredArgsConstructor
 public class EmrOfdDocumentService {
     private static final int MAX_DOCUMENT_BYTES = 32 * 1024 * 1024;
+    private static final int PAGE_SIZE = 50;
+    private static final Pattern DOCUMENT_ID = Pattern.compile("[0-9a-f]{32}");
     private static final String STATUS = "UNSIGNED_PREVIEW";
 
     private final JdbcTemplate jdbc;
@@ -95,28 +98,46 @@ public class EmrOfdDocumentService {
         });
     }
 
-    public List<Map<String, Object>> list(Long emrId, Integer versionNo) {
+    public record DocumentPage(List<Map<String, Object>> items, String nextCursor) {}
+
+    public DocumentPage list(Long emrId, Integer versionNo, String before) {
         previews.requireTarget(emrId, versionNo);
         String username = previews.username();
-        var rows = jdbc.queryForList(DOCUMENT_SCOPE + "select s.*, " + METADATA_COLUMNS + """
-                from document_scope s left join lateral (
+        if (before != null && !DOCUMENT_ID.matcher(before).matches()) {
+            throw new IllegalArgumentException("生成件翻页游标格式错误");
+        }
+        // Resolve the cursor inside the same authorized source snapshot used for the page.
+        String boundary = before == null ? "" : "and (d.generated_at, d.document_id) < (s.before_at, s.before_id)\n";
+        var rows = jdbc.queryForList(DOCUMENT_SCOPE + """
+                , page_scope as (
+                    select s.*, d.generated_at as before_at, d.document_id as before_id
+                    from document_scope s left join emr_ofd_document d
+                      on d.document_id=? and s.actor_allowed and s.source_allowed
+                         and d.emr_id=s.record_id and d.version_no=s.version_no and
+                """ + MATCH_ORIGINAL + """
+                )
+                select s.*,
+                """ + METADATA_COLUMNS + """
+                from page_scope s left join lateral (
                     select d.document_id, d.generated_at, d.generated_by, d.status, d.byte_length, d.sha256
                     from emr_ofd_document d
                     where s.actor_allowed and s.source_allowed
                       and d.emr_id=s.record_id and d.version_no=s.version_no and
-                """ + MATCH_ORIGINAL + """
-                    order by d.generated_at desc, d.document_id desc limit 50
+                """ + MATCH_ORIGINAL + boundary + """
+                    order by d.generated_at desc, d.document_id desc limit ?
                 ) d on true
                 order by d.generated_at desc, d.document_id desc
-                """, username, emrId, versionNo);
+                """, username, emrId, versionNo, before, PAGE_SIZE + 1);
         // LEFT JOIN preserves a status row for empty sets, so invalid employees cannot get an empty success.
         previews.requireVersion(rows.get(0));
+        recheckRead(rows.get(0), username, emrId, versionNo);
+        if (before != null && rows.get(0).get("before_id") == null) throw missingDocument();
         var documents = new ArrayList<Map<String, Object>>();
-        for (var row : rows) {
+        for (var row : rows.subList(0, Math.min(rows.size(), PAGE_SIZE))) {
             if (row.get("document_id") != null) documents.add(metadata(row));
         }
-        recheckRead(rows.get(0), username, emrId, versionNo);
-        return documents;
+        String nextCursor = rows.size() > PAGE_SIZE ? (String) rows.get(PAGE_SIZE - 1).get("document_id") : null;
+        return new DocumentPage(documents, nextCursor);
     }
 
     public byte[] content(Long emrId, Integer versionNo, String documentId) {

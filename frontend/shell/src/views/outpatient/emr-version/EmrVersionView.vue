@@ -253,8 +253,8 @@
                   title="OFD 预览未签署，正式归档需完成签章与验签。患者与姓名信息取自生成时的当前主索引。" />
         <el-button class="gap-top" :loading="ofdDownloading" @click="downloadOfdPreview">导出本版 OFD 预览</el-button>
         <el-button class="gap-top" :loading="ofdRetaining" @click="retainOfdDocument">生成并留存本版 OFD</el-button>
-        <el-button class="gap-top" :loading="ofdDocumentsLoading" :disabled="ofdRetaining" @click="loadOfdDocuments">查看本版已留存生成件</el-button>
-        <div class="hint gap-top">留存件为未签署预览。每次生成追加一份，取回原文件；下表最多显示最近 50 件。</div>
+        <el-button class="gap-top" :loading="ofdDocumentsLoading" :disabled="ofdRetaining" @click="loadOfdDocuments()">查看本版已留存生成件</el-button>
+        <div class="hint gap-top">留存件为未签署预览。每次生成追加一份，可取回原文件。每页最多 50 件，点击“查看本版已留存生成件”回到最新一页。</div>
         <el-table v-if="ofdDocumentsLoaded" :data="ofdDocuments" size="small" border class="gap-top"
                   empty-text="本版尚无可读取的留存生成件">
           <el-table-column label="文档标识 / SHA-256" min-width="220">
@@ -274,6 +274,8 @@
               @click="downloadOfdDocument(row)">取回原文件</el-button></template>
           </el-table-column>
         </el-table>
+        <el-button v-if="ofdNextCursor" class="gap-top" :disabled="ofdDocumentsLoading || ofdRetaining"
+                   @click="loadOfdDocuments(ofdNextCursor)">查看更早生成件</el-button>
       </div>
       <el-descriptions :column="2" border size="small" class="gap">
         <el-descriptions-item label="版本号">v{{ detail.versionNo }}</el-descriptions-item>
@@ -541,10 +543,12 @@ const detailLoading = ref(false)
 const ofdDownloading = ref(false)
 type OfdDocument = { documentId: string; generatedAt: string; generatedBy: number;
   status: string; byteLength: number; sha256: string }
+type OfdDocumentPage = { items: OfdDocument[]; nextCursor: string | null }
 const ofdRetaining = ref(false)
 const ofdDocumentsLoading = ref(false)
 const ofdDocumentsLoaded = ref(false)
 const ofdDocuments = ref<OfdDocument[]>([])
+const ofdNextCursor = ref<string | null>(null)
 let documentsSeq = 0
 let detailSeq = 0
 
@@ -558,6 +562,7 @@ function invalidateDetail() {
   ofdDocumentsLoading.value = false
   ofdDocumentsLoaded.value = false
   ofdDocuments.value = []
+  ofdNextCursor.value = null
 }
 
 watch(drawer, open => { if (!open) invalidateDetail() }, { flush: 'sync' })
@@ -660,7 +665,9 @@ async function retainOfdDocument() {
     const response = await client.post(target.path, undefined, { timeout: 180000 })
     if (!target.current() || sequence !== documentsSeq) return
     const retained = response.data.data as OfdDocument
-    ofdDocuments.value = [retained, ...ofdDocuments.value.filter(item => item.documentId !== retained.documentId)].slice(0, 50)
+    // The displayed page may be an older one; refresh is needed for a new page and cursor.
+    ofdDocuments.value = [retained]
+    ofdNextCursor.value = null
     ofdDocumentsLoaded.value = true
     ElMessage.success('已留存未签署的 OFD 生成件')
   } catch {
@@ -671,19 +678,23 @@ async function retainOfdDocument() {
   }
 }
 
-async function loadOfdDocuments() {
+async function loadOfdDocuments(before: string | null = null) {
   const target = ofdTarget()
   if (!target || ofdRetaining.value) return
+  if (before !== null && (before !== ofdNextCursor.value || ofdDocumentsLoading.value)) return
   const sequence = ++documentsSeq
   ofdDocumentsLoading.value = true
   try {
-    const response = await client.get(target.path)
+    const response = await client.get(target.path, before === null ? undefined : { params: { before } })
     if (!target.current() || sequence !== documentsSeq) return
-    ofdDocuments.value = response.data.data.items
+    const page = response.data.data as OfdDocumentPage
+    ofdDocuments.value = page.items
+    ofdNextCursor.value = page.nextCursor ?? null
     ofdDocumentsLoaded.value = true
   } catch {
     if (target.current() && sequence === documentsSeq) {
       ofdDocuments.value = []
+      ofdNextCursor.value = null
       ofdDocumentsLoaded.value = false
     }
   } finally {
