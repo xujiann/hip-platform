@@ -253,7 +253,8 @@
                   title="OFD 预览未签署，正式归档需完成签章与验签。患者与姓名信息取自生成时的当前主索引。" />
         <el-button class="gap-top" :loading="ofdDownloading" @click="downloadOfdPreview">导出本版 OFD 预览</el-button>
         <el-button class="gap-top" :loading="ofdRetaining" @click="retainOfdDocument">生成并留存本版 OFD</el-button>
-        <el-button class="gap-top" :loading="ofdDocumentsLoading" :disabled="ofdRetaining" @click="loadOfdDocuments()">查看本版已留存生成件</el-button>
+        <el-button class="gap-top" :loading="ofdDocumentsRequest === 'latest'" :disabled="ofdRetaining"
+                   @click="loadOfdDocuments()">查看本版已留存生成件</el-button>
         <div class="hint gap-top">留存件为未签署预览。每次生成追加一份，可取回原文件。每页最多 50 件，点击“查看本版已留存生成件”回到最新一页。</div>
         <el-table v-if="ofdDocumentsLoaded" :data="ofdDocuments" size="small" border class="gap-top"
                   empty-text="本版尚无可读取的留存生成件">
@@ -274,7 +275,8 @@
               @click="downloadOfdDocument(row)">取回原文件</el-button></template>
           </el-table-column>
         </el-table>
-        <el-button v-if="ofdNextCursor" class="gap-top" :disabled="ofdDocumentsLoading || ofdRetaining"
+        <el-button v-if="ofdNextCursor" class="gap-top" :loading="ofdDocumentsRequest === 'older'"
+                   :disabled="ofdDocumentsLoading || ofdRetaining"
                    @click="loadOfdDocuments(ofdNextCursor)">查看更早生成件</el-button>
       </div>
       <el-descriptions :column="2" border size="small" class="gap">
@@ -545,7 +547,8 @@ type OfdDocument = { documentId: string; generatedAt: string; generatedBy: numbe
   status: string; byteLength: number; sha256: string }
 type OfdDocumentPage = { items: OfdDocument[]; nextCursor: string | null }
 const ofdRetaining = ref(false)
-const ofdDocumentsLoading = ref(false)
+const ofdDocumentsRequest = ref<'latest' | 'older' | null>(null)
+const ofdDocumentsLoading = computed(() => ofdDocumentsRequest.value !== null)
 const ofdDocumentsLoaded = ref(false)
 const ofdDocuments = ref<OfdDocument[]>([])
 const ofdNextCursor = ref<string | null>(null)
@@ -559,7 +562,7 @@ function invalidateDetail() {
   ofdDownloading.value = false
   documentsSeq++
   ofdRetaining.value = false
-  ofdDocumentsLoading.value = false
+  ofdDocumentsRequest.value = null
   ofdDocumentsLoaded.value = false
   ofdDocuments.value = []
   ofdNextCursor.value = null
@@ -660,7 +663,7 @@ async function retainOfdDocument() {
   if (!target || ofdRetaining.value) return
   const sequence = ++documentsSeq
   ofdRetaining.value = true
-  ofdDocumentsLoading.value = false
+  ofdDocumentsRequest.value = null
   try {
     const response = await client.post(target.path, undefined, { timeout: 180000 })
     if (!target.current() || sequence !== documentsSeq) return
@@ -683,7 +686,7 @@ async function loadOfdDocuments(before: string | null = null) {
   if (!target || ofdRetaining.value) return
   if (before !== null && (before !== ofdNextCursor.value || ofdDocumentsLoading.value)) return
   const sequence = ++documentsSeq
-  ofdDocumentsLoading.value = true
+  ofdDocumentsRequest.value = before === null ? 'latest' : 'older'
   try {
     const response = await client.get(target.path, before === null ? undefined : { params: { before } })
     if (!target.current() || sequence !== documentsSeq) return
@@ -698,7 +701,7 @@ async function loadOfdDocuments(before: string | null = null) {
       ofdDocumentsLoaded.value = false
     }
   } finally {
-    if (target.current() && sequence === documentsSeq) ofdDocumentsLoading.value = false
+    if (target.current() && sequence === documentsSeq) ofdDocumentsRequest.value = null
   }
 }
 
