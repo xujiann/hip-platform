@@ -100,7 +100,8 @@ globalThis.view = { applied, emrType, emrId, drawer, detail, openVersion, load,
   retainOfdDocument: typeof retainOfdDocument === 'function' ? retainOfdDocument : undefined,
   loadOfdDocuments: typeof loadOfdDocuments === 'function' ? loadOfdDocuments : undefined,
   downloadOfdDocument: typeof downloadOfdDocument === 'function' ? downloadOfdDocument : undefined,
-  ofdDocuments: typeof ofdDocuments !== 'undefined' ? ofdDocuments : undefined };
+  ofdDocuments: typeof ofdDocuments !== 'undefined' ? ofdDocuments : undefined,
+  ofdNextCursor: typeof ofdNextCursor !== 'undefined' ? ofdNextCursor : undefined };
 `, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText, box))
   const view = box.view
   const results: Array<Promise<unknown>> = []
@@ -222,6 +223,93 @@ describe('v168 retained OFD consumer', () => {
     await result; noDownload(h)
     expect(h.storage.has('hip_token')).toBe(true)
     expect(h.ElMessage.error).toHaveBeenCalledWith('留存文件完整性校验失败')
+  })
+})
+
+describe('v169 retained OFD pages', () => {
+  const older = { ...retained, documentId: 'c'.repeat(32) }
+  const newest = { ...retained, documentId: 'd'.repeat(32) }
+  const firstCursor = retained.documentId
+  const newCursor = newest.documentId
+
+  async function replyLatest(h: Harness, items = [retained], nextCursor: string | null = firstCursor) {
+    const page = await documentRequest(h, 'loadOfdDocuments')
+    expect(page.wire.config.params?.before).toBeUndefined()
+    page.wire.reply({ code: 0, data: { items, nextCursor } })
+    await page.result
+  }
+
+  it('requests the next cursor and replaces the page until an explicit null cursor', async () => {
+    const h = await setup(); await h.open()
+    await replyLatest(h)
+    expect(h.view.ofdNextCursor?.value).toBe(firstCursor)
+    const page = await documentRequest(h, 'loadOfdDocuments', firstCursor)
+    expect(page.wire.config.method).toBe('get')
+    expect(page.wire.config.url).toBe('/emr/versions/INP/41/versions/2/ofd-documents')
+    expect(page.wire.config.params.before).toBe(firstCursor)
+    await h.view.loadOfdDocuments(firstCursor)
+    expect(h.wires).toHaveLength(2)
+    page.wire.reply({ code: 0, data: { items: [older], nextCursor: null } }); await page.result
+    expect(h.view.ofdDocuments.value).toEqual([older])
+    expect(h.view.ofdNextCursor.value).toBeNull()
+    await h.view.loadOfdDocuments(firstCursor)
+    expect(h.wires).toHaveLength(2)
+    await replyLatest(h, [newest], newCursor)
+    expect(h.view.ofdDocuments.value).toEqual([newest])
+    expect(h.view.ofdNextCursor.value).toBe(newCursor)
+    noDownload(h)
+  })
+
+  it('keeps a refreshed latest page when an older request completes last', async () => {
+    const h = await setup(); await h.open()
+    await replyLatest(h)
+    const old = await documentRequest(h, 'loadOfdDocuments', firstCursor)
+    expect(old.wire.config.params?.before).toBe(firstCursor)
+    await replyLatest(h, [newest], newCursor)
+    old.wire.reply({ code: 0, data: { items: [older], nextCursor: null } }); await old.result
+    expect(h.view.ofdDocuments.value).toEqual([newest])
+    expect(h.view.ofdNextCursor?.value).toBe(newCursor)
+  })
+
+  it('does not carry an older page or cursor into another version of the same record', async () => {
+    const h = await setup(); await h.open()
+    await replyLatest(h)
+    const old = await documentRequest(h, 'loadOfdDocuments', firstCursor)
+    expect(old.wire.config.params?.before).toBe(firstCursor)
+    await h.open(41, 3)
+    expect(h.view.ofdNextCursor?.value).toBeNull()
+    const current = await documentRequest(h, 'loadOfdDocuments')
+    expect(current.wire.config.url).toBe('/emr/versions/INP/41/versions/3/ofd-documents')
+    current.wire.reply({ code: 0, data: { items: [newest], nextCursor: newCursor } }); await current.result
+    old.wire.reply({ code: 0, data: { items: [older], nextCursor: firstCursor } }); await old.result
+    expect(h.view.ofdDocuments.value).toEqual([newest])
+    expect(h.view.ofdNextCursor.value).toBe(newCursor)
+  })
+
+  it('shows only the newly generated document and invalidates a pending older page', async () => {
+    const h = await setup(); await h.open()
+    await replyLatest(h)
+    const old = await documentRequest(h, 'loadOfdDocuments', firstCursor)
+    expect(old.wire.config.params?.before).toBe(firstCursor)
+    const generated = await documentRequest(h, 'retainOfdDocument')
+    generated.wire.reply({ code: 0, data: newest }); await generated.result
+    old.wire.reply({ code: 0, data: { items: [older], nextCursor: older.documentId } }); await old.result
+    expect(h.view.ofdDocuments.value).toEqual([newest])
+    expect(h.view.ofdNextCursor?.value).toBeNull()
+    noDownload(h)
+  })
+
+  it('clears an invalidated cursor and can reload the latest page after refusal', async () => {
+    const h = await setup(); await h.open()
+    await replyLatest(h)
+    const old = await documentRequest(h, 'loadOfdDocuments', firstCursor)
+    expect(old.wire.config.params?.before).toBe(firstCursor)
+    old.wire.reply({ code: 5711, message: '游标已失效', data: null }); await old.result
+    expect(h.view.ofdDocuments.value).toEqual([])
+    expect(h.view.ofdNextCursor?.value).toBeNull()
+    expect(h.storage.has('hip_token')).toBe(true)
+    await replyLatest(h, [newest], null)
+    expect(h.view.ofdDocuments.value).toEqual([newest])
   })
 })
 
